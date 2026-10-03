@@ -1,6 +1,6 @@
 # MASTER PROMPT — GitHub Spec Kit + Independent Review
 ## Office Asset & Consumable Management System
-Version: 3.1
+Version: 3.2
 Blueprint: `office-asset-management-blueprint-v1.0.2`
 
 ---
@@ -36,8 +36,16 @@ Do not build a second orchestration/governance framework on top of Spec Kit.
 3. relevant Feature Brief
 4. canonical Business Rules
 
+### Technical Direction
+`TECHNOLOGY.md` defines the project-wide selected technical baseline for planning and implementation.
+
+- It is subordinate to Business Authority.
+- Feature `plan.md` must begin from this baseline rather than silently reselecting the stack.
+- Exact minor/patch versions and items explicitly marked Deferred may be resolved in Plan.
+- Material deviations (for example database engine, frontend/backend framework, or production container runtime) require explicit rationale/impact and Product Owner decision before implementation.
+
 ### Project Principles
-The Constitution governs project-wide engineering principles and must remain compatible with Business Authority.
+The Constitution governs project-wide engineering principles and must remain compatible with Business Authority and the selected Technical Direction.
 
 ### Feature Delivery Artifacts
 - `spec.md` / clarifications
@@ -56,8 +64,9 @@ Use progressive disclosure:
 2. `docs/09-feature-map.md`
 3. active `features/<feature>.md`
 4. only relevant canonical docs/rules
-5. active Spec Kit artifacts
-6. relevant implementation/diff/tests
+5. `TECHNOLOGY.md` for Plan/Tasks/Implementation/technical review
+6. active Spec Kit artifacts
+7. relevant implementation/diff/tests
 
 Do not load or duplicate all Blueprint content by default.
 
@@ -80,6 +89,7 @@ Do not load or duplicate all Blueprint content by default.
 13. No speculative infrastructure/abstractions without current need.
 14. No unrelated refactors during bounded scopes.
 15. Do not recreate SHA/adoption/custom evidence/state-ledger machinery.
+16. Do not silently replace the selected stack in `TECHNOLOGY.md`; material deviation must be explicit and authorized before implementation.
 
 ---
 
@@ -118,6 +128,7 @@ DEV verifies:
 - Claude/Codex integrations installed/healthy,
 - Blueprint v1.0.2 present,
 - all 14 Feature Briefs present,
+- `TECHNOLOGY.md` selected baseline present and readable,
 - current active feature/spec state understood.
 
 Do not initialize Spec Kit inside this phase if initialization has not yet been done; report the missing prerequisite instead.
@@ -187,11 +198,21 @@ If unnecessary, report that it can be skipped.
 
 Run after spec is sufficiently clear.
 
-Plan may decide architecture, project structure, data model, contracts/interfaces, transaction boundaries, permission enforcement, audit implementation, testing strategy, and operational/migration concerns.
+Read `TECHNOLOGY.md` before technical planning. Treat its selected stack as the project baseline, not as a suggestion to re-evaluate from scratch.
+
+Plan may decide architecture details, exact compatible package versions, project structure, data model, contracts/interfaces, transaction boundaries, permission enforcement, audit implementation, testing strategy, deployment details, and operational/migration concerns.
+
+Resolve items marked **Deferred to Plan** in `TECHNOLOGY.md` when they are relevant to the active Feature.
+
+If a current requirement/environment creates a material conflict with the selected technical baseline:
+- document the concrete constraint,
+- identify the proposed deviation and impact,
+- do not silently substitute technology,
+- obtain Product Owner decision before implementation when the deviation changes a project-wide selected technology.
 
 Use least complex design satisfying current requirements. Preserve Feature boundaries. Avoid hypothetical future extensibility.
 
-Inspect generated Plan for semantic drift/overengineering. Report, STOP.
+Inspect generated Plan for business semantic drift, unauthorized technology drift, and overengineering. Report, STOP.
 
 ---
 
@@ -427,6 +448,7 @@ Reconstruct from:
 - active `specs/` artifacts,
 - `tasks.md` Phase/task completion,
 - relevant Blueprint/Feature Brief,
+- `TECHNOLOGY.md` for technical baseline when the current stage is Plan/Tasks/Implementation/review,
 - latest explicit Product Owner instruction/review result available in current context.
 
 Do not create custom `PROJECT-STATUS`, review ledger, or adoption state solely for orchestration memory.
@@ -484,4 +506,4 @@ If not justified now, do not add it.
 
 ## 29. First Instruction
 
-After repository setup, Claude DEV performs **Phase 0 — Repository / Blueprint Readiness only**, reports and STOPs.
+After repository setup, Claude DEV reads `CLAUDE.md`, this file, and `TECHNOLOGY.md`, then performs **Phase 0 — Repository / Blueprint Readiness only**, reports and STOPs.
