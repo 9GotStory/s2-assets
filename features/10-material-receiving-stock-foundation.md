@@ -125,12 +125,7 @@ Canonical wording อยู่ที่ `../docs/06-business-rules.md`; Feature 
 
 ## Clarification Candidates — Not Yet Requirements
 
-รายการต่อไปนี้มาจากประเด็น derived guardrail เดิมที่ **ยังไม่ถูกยืนยันเป็น canonical Business Rule**. ให้ใช้เป็นคำถามใน Specify/Clarify เท่านั้น ห้าม implement เป็น requirement โดยอัตโนมัติ.
-
-- ควรกำหนด explicit invariant ว่า stock-affecting source action ต้องสร้าง stock effect ให้ครบและเพียงครั้งเดียวหรือไม่
-- Concurrency ระหว่าง stock mutations ต้องมี invariant ระดับ Blueprint เพิ่มจาก NFR ปัจจุบันหรือปล่อยให้ Plan ออกแบบตามธุรกรรมจริง
-- Opening Balance ต้องมี explicit as-of cutover/trust-reconciliation rule เพิ่มจาก MOB-01–04 หรือไม่
-- เมื่อแก้ source transaction ต้องกำหนด explicit rule ป้องกัน dependent records ถูก orphan/invalidated หรือไม่
+— ไม่มีประเด็น integrity เพิ่มเติมจากรายการเดิมใน Blueprint v1.0.2: stock-effect completeness/uniqueness อยู่ที่ `MSL-04`, Opening Balance cutover อยู่ที่ `MOB-03`, dependent-reference correction integrity อยู่ที่ `MADJ-02` และ concurrent mutation เป็น NFR กลาง; รายละเอียดกลไก implementation ยังเป็น Plan decision.
 
 ## Plan Decisions / Risks
 
