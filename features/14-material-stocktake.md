@@ -125,8 +125,9 @@ Canonical wording อยู่ที่ `../docs/06-business-rules.md`; Feature 
 
 รายการต่อไปนี้มาจากประเด็น derived guardrail เดิมที่ **ยังไม่ถูกยืนยันเป็น canonical Business Rule**. ให้ใช้เป็นคำถามใน Specify/Clarify เท่านั้น ห้าม implement เป็น requirement โดยอัตโนมัติ.
 
-- ต้องยกระดับ concurrent stock mutation protection เป็น explicit business invariant เพิ่มหรือไม่
 - Physical Quantity และ Expected Quantity ต้องเปรียบเทียบบน usable-stock basis เดียวกันเป็น explicit rule หรือถือว่า derive ได้จาก current ledger semantics แล้ว
+
+Concurrent stock mutation ถูกกำหนดเป็น NFR กลางใน Blueprint v1.0.2 แล้ว; feature นี้ยังต้องเลือก reconciliation/transaction mechanism ที่เหมาะสมใน Plan.
 
 ## Plan Decisions / Risks
 
