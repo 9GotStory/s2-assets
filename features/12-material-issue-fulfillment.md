@@ -122,10 +122,7 @@ Canonical wording อยู่ที่ `../docs/06-business-rules.md`; Feature 
 
 ## Clarification Candidates — Not Yet Requirements
 
-รายการต่อไปนี้มาจากประเด็น derived guardrail เดิมที่ **ยังไม่ถูกยืนยันเป็น canonical Business Rule**. ให้ใช้เป็นคำถามใน Specify/Clarify เท่านั้น ห้าม implement เป็น requirement โดยอัตโนมัติ.
-
-- ควรกำหนด explicit exactly-once/complete stock-effect invariant สำหรับ Issue หรือให้เป็น transaction/NFR decision ใน Plan
-- ต้องยกระดับ concurrent stock mutation protection เป็น explicit business invariant เพิ่มหรือไม่
+— ไม่มีประเด็น integrity เพิ่มเติมจากรายการเดิมใน Blueprint v1.0.2: complete/single stock effect อยู่ที่ `MSL-04` และ concurrent stock mutation เป็น NFR กลาง; exact transaction/idempotency mechanism ยังเป็น Plan decision.
 
 ## Plan Decisions / Risks
 
