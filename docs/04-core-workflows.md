@@ -85,7 +85,7 @@ Current Stock changes
 
 ## 8. Opening Balance
 
-ใช้เฉพาะ initialization/migration พร้อม provenance ไม่ใช้เป็น Receiving ปลอมและไม่ใช้เป็นทางลัดแก้ยอดประจำวัน
+ใช้เฉพาะ initialization/migration พร้อม provenance และ As-of/Cutover point ที่ชัดเจนว่าตัวเลขตั้งต้นครอบคลุมข้อเท็จจริงถึงเมื่อใด; transaction history ที่รวมอยู่ในยอดตั้งต้นแล้วห้ามสร้าง Stock Movement ซ้ำจนเกิด double-count และไม่ใช้ Opening Balance เป็น Receiving ปลอมหรือทางลัดแก้ยอดประจำวัน
 
 ## 9. Return / Adjustment / Correction
 

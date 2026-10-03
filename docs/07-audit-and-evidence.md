@@ -30,6 +30,7 @@
 - Typo/metadata correction ไม่จำเป็นต้องสร้าง business lifecycle event ทุกครั้ง แต่ควร audit ตามความสำคัญ
 - Fact ที่มี downstream effect แล้วห้าม silent overwrite
 - Known transaction error ใช้ correction/reversal ที่ trace original
+- Correction ต้องไม่ orphan, delete หรือ silent-rewrite dependent business records/history; หาก correction ทำให้ downstream facts ไม่สอดคล้อง ต้อง surface reconciliation conflict เพื่อให้แก้ตามข้อเท็จจริง
 - Backdated facts ที่ conflict กับ history ต้อง preserve facts → detect conflict → human review → traceable correction
 
 ## Documents & Evidence
