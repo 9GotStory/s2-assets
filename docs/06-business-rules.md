@@ -284,7 +284,7 @@
 | `MRT-02` | CONFIRMED | Return ที่มาจาก Issue ในระบบต้อง trace กลับ Original Issue/Issue Line; cumulative valid source-linked Return ต้องไม่เกิน returnable quantity ของ source หลังคำนึงถึง correction/reversal ที่มีผล และห้ามทำให้ usable stock เพิ่มเกินจำนวนที่คืนได้จริง; legacy case ที่ไม่มี Issue history ห้ามสร้าง Issue ปลอมและต้องใช้ provenance ที่เหมาะสม |
 | `MRT-03` | CONFIRMED | Return ต้องระบุ StockMaterial ของจริงที่คืน และ Return Line เก็บ Original Quantity, Original Unit, Conversion Snapshot, Base Quantity |
 | `MRT-04` | CONFIRMED | เฉพาะจำนวนที่สำนักงานรับกลับและถือว่าสามารถกลับเข้าสู่ usable stock ได้จึงสร้าง positive Stock Movement |
-| `MRT-05` | CONFIRMED | ของที่คืนแต่ชำรุด/ใช้ไม่ได้ห้ามเพิ่มเป็น usable stock โดยอัตโนมัติ; ต้องเข้าสู่ Unusable/Adjustment semantics ตามข้อเท็จจริง |
+| `MRT-05` | CONFIRMED | ของที่คืนแต่ชำรุด/ใช้ไม่ได้ห้ามเพิ่มเป็น usable stock โดยอัตโนมัติ; หากของนั้นถูกนำออกจาก Office Stock ไปแล้วจาก Original Issue และไม่เคยกลับเข้า usable stock การรับคืนแบบ unusable ห้ามสร้าง negative Stock Movement ซ้ำเพียงเพราะสภาพ unusable; stock effect เพิ่มเติมทำได้เฉพาะเมื่อมีข้อเท็จจริงอื่นที่ต้อง Adjustment/Correction และต้อง trace เหตุนั้นชัดเจน |
 
 ## MADJ — Material Adjustment / Correction (7 rules)
 | Rule ID | Status | Rule |
