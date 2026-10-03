@@ -1,7 +1,7 @@
 # MASTER PROMPT — GitHub Spec Kit + Independent Review
 ## Office Asset & Consumable Management System
 Version: 3.1
-Blueprint: `office-asset-management-blueprint-v1.0.1`
+Blueprint: `office-asset-management-blueprint-v1.0.2`
 
 ---
 
@@ -32,7 +32,7 @@ Do not build a second orchestration/governance framework on top of Spec Kit.
 
 ### Business Authority
 1. current explicit Product Owner decision
-2. frozen Blueprint v1.0.1
+2. frozen Blueprint v1.0.2
 3. relevant Feature Brief
 4. canonical Business Rules
 
@@ -116,7 +116,7 @@ DEV verifies:
 - intended repository and Git state,
 - Spec Kit initialized,
 - Claude/Codex integrations installed/healthy,
-- Blueprint v1.0.1 present,
+- Blueprint v1.0.2 present,
 - all 14 Feature Briefs present,
 - current active feature/spec state understood.
 
