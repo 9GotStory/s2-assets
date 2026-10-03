@@ -1,7 +1,7 @@
 # Office Asset & Consumable Management System
 ## Ready-to-Develop Blueprint + GitHub Spec Kit + Claude DEV + Codex Review + Multica
 
-**Blueprint:** v1.0.1 — FROZEN  
+**Blueprint:** v1.0.2 — FROZEN  
 **Workflow baseline:** v1.2.0  
 **Master Prompt:** v3.1
 
@@ -24,7 +24,7 @@ Multica
 ```
 
 - **Product Owner** — business authority, human gate และอนุญาต implementation scope ถัดไป
-- **Blueprint v1.0.1** — business authority ของระบบ
+- **Blueprint v1.0.2** — business authority ของระบบ
 - **GitHub Spec Kit** — SDD workflow และ delivery artifacts
 - **Claude Code** — default DEV Executor
 - **Codex** — default Independent Reviewer แบบ read-only
@@ -247,7 +247,7 @@ Agent roles เปลี่ยนได้ในอนาคตโดยไม�
 
 ### Business Authority
 1. Explicit current Product Owner decision
-2. Blueprint v1.0.1
+2. Blueprint v1.0.2
 3. active Feature Brief
 4. canonical rules in `docs/06-business-rules.md`
 
