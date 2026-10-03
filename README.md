@@ -2,7 +2,7 @@
 
 > Canonical Blueprint baseline สำหรับพัฒนาระบบครุภัณฑ์สำนักงานและวัสดุสิ้นเปลืองด้วย GitHub Spec Kit, Claude DEV, Codex Independent Review และ Multica coordination
 
-| Baseline | Current state |
+| Baseline | Value |
 |---|---|
 | Blueprint | **v1.0.2 — FROZEN** |
 | Workflow | **v1.2.0** |
@@ -10,7 +10,7 @@
 | Business Rules | **252 canonical rules** |
 | Delivery decomposition | **14 Feature Briefs** |
 | Blueprint alignment | **`docs/` ↔ `features/` aligned** |
-| Spec Kit project state | **Not initialized yet in this canonical repository** |
+| Spec Kit scaffold | **Generated during repository initialization; intentionally not part of this baseline package** |
 | Ready package | `office-asset-management-ready-v1.2.0.zip` |
 
 หลักการของโครงการ:
