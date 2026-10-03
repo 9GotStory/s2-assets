@@ -120,9 +120,8 @@ Canonical wording อยู่ที่ `../docs/06-business-rules.md`; Feature 
 รายการต่อไปนี้ยังควรตัดสินใน Specify/Clarify เพราะไม่จำเป็นต้อง freeze เป็น canonical rule เพิ่มใน Blueprint v1.0.2:
 
 - Backdated correction ที่เป็นความจริงแต่ทำให้ช่วงเวลาหนึ่งดูผิดปกติควรมีรูปแบบ recording/reconciliation ใน feature นี้อย่างไร โดยต้องไม่ละเมิด `MSL-07`, `MSL-12` และ `MADJ-02`
-- Unusable Return ที่ไม่เคยกลับเข้า usable stock ควรแสดงผล/อธิบาย stock effect ใน UX อย่างไรเพื่อป้องกันผู้ใช้เข้าใจว่าเกิดการหัก stock ซ้ำ
 
-ประเด็น complete/single stock effect, concurrency, dependent-reference integrity, source-linked Return, returnable quantity และ historical inactive StockMaterial ถูกกำหนดแล้วโดย `MSL-04`, NFR กลาง, `MADJ-02`, `MRT-02` และ `MC-14` ตามลำดับ.
+ประเด็น complete/single stock effect, concurrency, dependent-reference integrity, source-linked Return, returnable quantity, unusable-return double-decrement prevention และ historical inactive StockMaterial ถูกกำหนดแล้วโดย `MSL-04`, NFR กลาง, `MADJ-02`, `MRT-02`, `MRT-05` และ `MC-14` ตามลำดับ.
 
 ## Plan Decisions / Risks
 
