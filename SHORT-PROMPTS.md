@@ -1,11 +1,11 @@
 # SHORT-PROMPTS.md — Spec Kit + Claude DEV + Codex Review
 
-ใช้หลัง repository มี `CLAUDE.md`, `AGENTS.md`, `MASTER-PROMPT.md`, `REVIEWER.md`
+ใช้หลัง repository มี `CLAUDE.md`, `AGENTS.md`, `MASTER-PROMPT.md`, `REVIEWER.md`, `TECHNOLOGY.md`
 
 ## Claude DEV — Phase 0
 
 ```text
-อ่าน CLAUDE.md และ MASTER-PROMPT.md แล้วดำเนินการ Phase 0 — Repository / Blueprint Readiness เท่านั้น ตรวจ Claude/Codex Spec Kit integrations และ repository state รายงานแล้ว STOP
+อ่าน CLAUDE.md, MASTER-PROMPT.md และ TECHNOLOGY.md แล้วดำเนินการ Phase 0 — Repository / Blueprint Readiness เท่านั้น ตรวจ Claude/Codex Spec Kit integrations และ repository state รายงานแล้ว STOP
 ```
 
 ## Claude DEV — Constitution
@@ -29,7 +29,7 @@
 ## Claude DEV — Plan
 
 ```text
-ดำเนินการ Plan สำหรับ active feature เท่านั้น ใช้ spec ที่ยืนยันแล้ว เลือก simplest sufficient design ตรวจ semantic drift/overengineering แล้ว STOP
+ดำเนินการ Plan สำหรับ active feature เท่านั้น ใช้ spec ที่ยืนยันแล้วและ TECHNOLOGY.md เป็น selected technical baseline resolve เฉพาะ Deferred decisions ที่เกี่ยวข้อง ห้าม silent technology drift เลือก simplest sufficient design ตรวจ semantic drift/overengineering แล้ว STOP
 ```
 
 ## Claude DEV — Checklist
@@ -53,7 +53,7 @@
 ## Codex Reviewer — Delivery Readiness
 
 ```text
-ทำหน้าที่ Independent Reviewer ตาม AGENTS.md และ REVIEWER.md ตรวจ Delivery Readiness ของ active feature หลัง Analyze แบบ read-only ห้ามแก้ไฟล์ ส่ง PASS / CHANGES REQUIRED / REVIEW BLOCKED แล้ว STOP
+ทำหน้าที่ Independent Reviewer ตาม AGENTS.md และ REVIEWER.md ตรวจ Delivery Readiness ของ active feature หลัง Analyze แบบ read-only รวม alignment กับ TECHNOLOGY.md/authorized deviation เมื่อมี technical Plan ห้ามแก้ไฟล์ ส่ง PASS / CHANGES REQUIRED / REVIEW BLOCKED แล้ว STOP
 ```
 
 ## Claude DEV — Select and Implement Next Safe Scope
@@ -77,7 +77,7 @@
 ## Codex Reviewer — Review Current Implementation Scope
 
 ```text
-ทำ Independent Implementation Scope Review ของ authorized scope ล่าสุดตาม REVIEWER.md แบบ read-only ตรวจทุก Task ID ใน scope, spec/plan/relevant Blueprint rules, diff, interactions และ tests/verification ส่ง PASS / CHANGES REQUIRED / REVIEW BLOCKED แล้ว STOP
+ทำ Independent Implementation Scope Review ของ authorized scope ล่าสุดตาม REVIEWER.md แบบ read-only ตรวจทุก Task ID ใน scope, spec/plan/relevant Blueprint rules, TECHNOLOGY.md/authorized deviation, diff, interactions และ tests/verification ส่ง PASS / CHANGES REQUIRED / REVIEW BLOCKED แล้ว STOP
 ```
 
 ## Claude DEV — Rework Current Scope
@@ -115,7 +115,7 @@ Re-review authorized scope เดิมหลัง DEV แก้ findings ต�
 ## Fresh Session Recovery — DEV
 
 ```text
-กู้สถานะจาก Git, Spec Kit integrations/artifacts, tasks.md Phase/task state และ relevant Blueprint/Feature Brief ระบุ current feature/stage และ recommended next action/scope หนึ่งอย่าง แล้ว STOP
+กู้สถานะจาก Git, Spec Kit integrations/artifacts, tasks.md Phase/task state, relevant Blueprint/Feature Brief และ TECHNOLOGY.md สำหรับ technical stage ระบุ current feature/stage และ recommended next action/scope หนึ่งอย่าง แล้ว STOP
 ```
 
 ## Blueprint Conflict

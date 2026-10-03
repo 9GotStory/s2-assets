@@ -14,6 +14,7 @@ Claude supports:
 Claude is **not** the independent reviewer of its own implementation.
 
 Before work, read `MASTER-PROMPT.md`.
+For Plan/Tasks/Implementation/technical rework, also read `TECHNOLOGY.md` before making technical choices.
 For review corrections, use the exact Reviewer findings supplied in the current run context.
 
 ## Business Authority
@@ -25,6 +26,16 @@ For business meaning:
 4. canonical rules in `docs/06-business-rules.md`
 
 Spec Kit artifacts refine delivery but may not silently redefine Blueprint business meaning.
+
+## Technical Direction
+
+`TECHNOLOGY.md` is the selected project-wide technical baseline.
+
+- Start technical planning/implementation from that baseline.
+- Resolve exact versions and explicitly Deferred choices in Plan.
+- Do not replace selected runtime/framework/database/container direction because of preference or familiarity.
+- If a current requirement/environment materially conflicts with the baseline, report the concrete constraint and required technology deviation; obtain Product Owner decision before implementation when it changes project-wide selected technology.
+- A technology change does not itself modify Blueprint business semantics unless the business contract also changes.
 
 ## Working Rules
 
@@ -41,6 +52,7 @@ Spec Kit artifacts refine delivery but may not silently redefine Blueprint busin
 - Do not modify frozen Blueprint automatically.
 - `Clarification Candidate — Not Yet Requirement` remains a question until resolved.
 - Prefer Simple — Structured — Sustainable.
+- Preserve the selected `TECHNOLOGY.md` baseline unless an explicit authorized deviation applies.
 - Do not recreate custom SHA/adoption/review/state-ledger machinery.
 
 ## Selecting an Implementation Scope

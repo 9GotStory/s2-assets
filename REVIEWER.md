@@ -29,7 +29,8 @@ Review business meaning against:
 3. relevant canonical Business Rules
 4. agreed `spec.md` / clarifications
 
-Review technical implementation against:
+Review technical planning/implementation against:
+- `TECHNOLOGY.md` selected baseline and any explicitly authorized deviation
 - `plan.md`
 - `tasks.md`
 - exact authorized implementation scope
@@ -52,7 +53,8 @@ Check:
 - task coverage of required behavior,
 - boundary violations,
 - unresolved high-impact ambiguity,
-- unnecessary architecture that creates real implementation risk.
+- unnecessary architecture that creates real implementation risk,
+- unauthorized or unexplained material deviation from `TECHNOLOGY.md`.
 
 Do not redesign merely for preference.
 
@@ -75,7 +77,8 @@ Check:
 - tests/verification that would fail if the scope were wrong,
 - no accidental implementation of tasks outside scope,
 - no scope creep/unrelated changes,
-- no needless complexity that materially harms maintainability.
+- no needless complexity that materially harms maintainability,
+- implementation remains within `TECHNOLOGY.md` or an explicitly authorized documented deviation.
 
 If one blocking defect exists anywhere in a batch, the verdict for the **scope** is `CHANGES REQUIRED`; identify the affected Task ID(s) precisely.
 

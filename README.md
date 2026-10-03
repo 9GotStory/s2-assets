@@ -6,12 +6,12 @@
 |---|---|
 | Blueprint | **v1.0.2 — FROZEN** |
 | Workflow | **v1.2.0** |
-| Master Prompt | **v3.1** |
+| Master Prompt | **v3.2** |
+| Technology Direction | **`TECHNOLOGY.md` v1.0.0 — SELECTED BASELINE** |
 | Business Rules | **252 canonical rules** |
 | Delivery decomposition | **14 Feature Briefs** |
 | Blueprint alignment | **`docs/` ↔ `features/` aligned** |
-| Spec Kit scaffold | **Generated during repository initialization; intentionally not part of this baseline package** |
-| Ready package | `office-asset-management-ready-v1.2.0.zip` |
+| Spec Kit scaffold | **Generated during repository initialization; intentionally not part of the pre-init baseline** |
 
 หลักการของโครงการ:
 
@@ -35,9 +35,10 @@ Repository นี้เก็บสิ่งที่ต้องนิ่งก
 - non-functional requirements
 - delivery decomposition 14 features
 - Feature Briefs สำหรับ handoff เข้า Spec Kit
+- project-wide technical direction สำหรับ AI/Spec Kit Plan
 - DEV / Reviewer / coordination workflow contracts
 
-Application code, database schema, API shape, deployment topology และ technical implementation details **ยังไม่ freeze ใน Blueprint** และให้ตัดสินใน Spec Kit `Plan` ตาม context จริง
+Technology baseline ระดับ project อยู่ที่ `TECHNOLOGY.md`; ส่วน exact package versions, provider/configuration, schema/API shape และ implementation details ให้ยืนยันใน Spec Kit `Plan` ตาม context จริง โดยห้าม silent-replace selected technology baseline
 
 ---
 
@@ -53,6 +54,15 @@ Application code, database schema, API shape, deployment topology และ tech
 4. Canonical rules ใน `docs/06-business-rules.md`
 
 Feature Brief และ Spec Kit artifacts อาจ **refine delivery details** แต่ห้าม silent-redefine business meaning ที่อยู่ใน authority ระดับสูงกว่า
+
+### Technical Direction
+
+`TECHNOLOGY.md` เป็น **project-wide selected technical baseline** สำหรับ Plan/Tasks/Implementation/technical review
+
+- technical direction อยู่ใต้ Business Authority
+- Plan ต้องเริ่มจาก baseline นี้ ไม่เลือก stack ใหม่ตาม preference
+- exact minor/patch versions และรายการที่ระบุ Deferred ให้ Plan resolve ตาม compatibility/environment
+- material deviation เช่นเปลี่ยน database engine, frontend/backend framework หรือ production container runtime ต้อง explicit พร้อมเหตุผล/ผลกระทบและ Product Owner decision ก่อน implementation
 
 ### Delivery Authority
 
@@ -121,6 +131,7 @@ Multica Issue/comments/run history ใช้สำหรับ coordination แ�
 s2-assets/
 ├── README.md
 ├── BLUEPRINT.md
+├── TECHNOLOGY.md
 ├── CLAUDE.md
 ├── AGENTS.md
 ├── MASTER-PROMPT.md
@@ -153,7 +164,6 @@ s2-assets/
 │   ├── 12-material-issue-fulfillment.md
 │   ├── 13-material-return-adjustment.md
 │   └── 14-material-stocktake.md
-└── office-asset-management-ready-v1.2.0.zip
 ```
 
 ก่อน initialize Spec Kit จะยังไม่มี:
@@ -175,26 +185,30 @@ directory เหล่านี้ต้องให้ Spec Kit CLI เป็�
 
 1. `README.md`
 2. `BLUEPRINT.md`
-3. `docs/09-feature-map.md`
-4. Feature Brief ที่เกี่ยวข้อง
-5. canonical docs/rules ที่ feature นั้น route ถึง
+3. `TECHNOLOGY.md` เมื่อพิจารณา technical/deployment direction
+4. `docs/09-feature-map.md`
+5. Feature Brief ที่เกี่ยวข้อง
+6. canonical docs/rules ที่ feature นั้น route ถึง
 
 ### Claude DEV
 
 1. `CLAUDE.md`
 2. `MASTER-PROMPT.md`
 3. `BLUEPRINT.md`
-4. `docs/09-feature-map.md`
-5. active Feature Brief
-6. relevant canonical docs/rules
-7. active Spec Kit artifacts
+4. `TECHNOLOGY.md` สำหรับ Plan/Tasks/Implementation และ technical rework
+5. `docs/09-feature-map.md`
+6. active Feature Brief
+7. relevant canonical docs/rules
+8. active Spec Kit artifacts
 
 ### Codex Independent Reviewer
 
 1. `AGENTS.md`
 2. `REVIEWER.md`
-3. relevant authority / Spec Kit artifacts
-4. exact reviewed diff/code/tests/evidence
+3. relevant Business Authority
+4. `TECHNOLOGY.md` เมื่อ review Plan/technical implementation/deployment
+5. relevant Spec Kit artifacts
+6. exact reviewed diff/code/tests/evidence
 
 หลักคือ **progressive disclosure** — อ่านเฉพาะ context ที่จำเป็น ไม่โหลด/copy Blueprint ทั้งชุดเข้า feature spec โดยอัตโนมัติ
 
@@ -365,6 +379,7 @@ Reviewer ไม่แก้ implementation/spec/Blueprint เองระหว�
 | File | Role |
 |---|---|
 | `BLUEPRINT.md` | top-level frozen business/system baseline |
+| `TECHNOLOGY.md` | project-wide selected technical baseline; subordinate to Business Authority |
 | `docs/` | canonical cross-feature domain documentation |
 | `features/` | bounded delivery context + rule routing |
 | `MASTER-PROMPT.md` | project workflow contract |
@@ -378,17 +393,13 @@ Agent implementation สามารถเปลี่ยนภายหลั�
 
 ---
 
-## 12. Ready package ZIP
+## 12. Repository artifact policy
 
-`office-asset-management-ready-v1.2.0.zip` เป็น **distribution/convenience artifact** ของ baseline เท่านั้น
+- canonical project truth อยู่ใน text/source artifacts บน repository `main`
+- ไม่ใช้ generated ZIP/binary package เป็น second source of truth
+- Spec Kit-generated directories/artifacts ถูกสร้างหลัง initialization ตาม workflow
+- หากมี distribution package ในอนาคต ให้ถือเป็น convenience artifact และต้อง derive จาก canonical repository state
 
-กติกา:
-
-- canonical source คือ text files ใน repository `main`
-- ZIP **ไม่ใช่ source of truth แยกอีกชุด**
-- เมื่อ packaged text files เปลี่ยน ต้อง rebuild ZIP ใน PR เดียวกัน
-- ก่อน merge ต้องตรวจว่า packaged files ที่เปลี่ยนตรงกับ branch counterpart
-- workflow package version `v1.2.0` แยกจาก Blueprint version `v1.0.2`
 
 ---
 
@@ -413,7 +424,7 @@ Agent implementation สามารถเปลี่ยนภายหลั�
 Trigger Claude DEV ด้วย instruction:
 
 ```text
-อ่าน CLAUDE.md และ MASTER-PROMPT.md แล้วดำเนินการ Phase 0 — Repository / Blueprint Readiness เท่านั้น ตรวจ Spec Kit integrations และ repository state รายงาน Phase Result แล้ว STOP
+อ่าน CLAUDE.md, MASTER-PROMPT.md และ TECHNOLOGY.md แล้วดำเนินการ Phase 0 — Repository / Blueprint Readiness เท่านั้น ตรวจ Spec Kit integrations และ repository state รายงาน Phase Result แล้ว STOP
 ```
 
 จากนั้นใช้ `SHORT-PROMPTS.md` สำหรับ phase/scope/review/rework ถัดไป
@@ -429,6 +440,6 @@ Blueprint พร้อมเริ่ม Spec Kit เมื่อ Product Owner 
 3. critical workflows ไม่มี business path สำคัญที่ทราบว่าขาด
 4. canonical Business Rules 252 ข้อไม่มีข้อที่ทราบว่าไม่ต้องการ
 
-สถานะ repository ปัจจุบันผ่านการจัด alignment ของ Blueprint documents และ Feature Briefs แล้ว
+สถานะ repository ปัจจุบันผ่านการจัด alignment ของ Blueprint documents และ Feature Briefs แล้ว และมี `TECHNOLOGY.md` เป็น selected technical baseline สำหรับเริ่ม Application Foundation Plan
 
 จากจุดนี้ให้ **หยุด recursive Blueprint review ที่ไม่มี trigger ใหม่** และใช้ Specify/Clarify ของ feature จริงเป็นจุดตัดสินรายละเอียดที่ยังเปิดอยู่

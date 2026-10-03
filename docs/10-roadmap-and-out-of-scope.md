@@ -43,11 +43,16 @@
 - exact validation/permission behavior ที่ยังไม่จำเป็นต้อง global
 
 ### Plan owns
-- framework/database/schema/API shape
-- deployment/topology
+ภายใต้ project-wide selected baseline ใน `../TECHNOLOGY.md` หรือ Technology Deviation ที่ Product Owner อนุมัติแล้ว:
+- exact framework/database integration และ compatible package versions
+- schema/API shape
+- deployment/topology details
 - transaction strategy
 - exact precision/storage types
 - observability/backup implementation
+- decisions ที่ `TECHNOLOGY.md` ระบุเป็น Deferred to Plan
+
+Plan ไม่ reselect project-wide runtime/framework/database/container baseline ใหม่โดยไม่มี explicit deviation ที่ได้รับอนุมัติ
 
 ### Checklist/Analyze assists
 - ตรวจคุณภาพ/ความสอดคล้องของ requirements และ delivery artifacts ตามความเหมาะสม
