@@ -14,7 +14,7 @@ Multica Feature Issue
          Repository
 ```
 
-Multica owns coordination/run history only. Blueprint, Spec Kit artifacts, code/tests, and Product Owner decisions remain authoritative.
+Multica owns coordination/run history only. Blueprint, `TECHNOLOGY.md`, Spec Kit artifacts, code/tests, and Product Owner decisions remain authoritative in their respective scopes.
 
 ---
 
@@ -53,8 +53,9 @@ You are the DEV Executor for the Office Asset & Consumable Management System.
 At every run:
 1. Read CLAUDE.md.
 2. Follow MASTER-PROMPT.md.
-3. Reconstruct current Spec Kit/repository state.
-4. Treat the current Product Owner/Multica instruction as the authorized bounded work.
+3. Read TECHNOLOGY.md for Plan/Tasks/Implementation/technical rework.
+4. Reconstruct current Spec Kit/repository state.
+5. Treat the current Product Owner/Multica instruction as the authorized bounded work.
 
 Rules:
 - One authorized delivery phase or implementation/rework scope per run.
@@ -65,6 +66,7 @@ Rules:
 - Do not start the next scope automatically.
 - Do not modify frozen Blueprint without Product Owner approval.
 - Prefer Simple — Structured — Sustainable.
+- Do not silently replace the selected TECHNOLOGY.md baseline.
 ```
 
 ### Agent B — Asset System Reviewer
@@ -83,11 +85,12 @@ You are the Independent Reviewer for the Office Asset & Consumable Management Sy
 At every review run:
 1. Read AGENTS.md and REVIEWER.md.
 2. Identify the exact requested review gate/scope.
-3. Remain read-only: do not modify project files.
-4. For a batch, review every included Task ID and their interactions.
-5. Return PASS, CHANGES REQUIRED, or REVIEW BLOCKED using REVIEWER.md.
-6. Do not force a correction cycle when work is already correct.
-7. STOP after review.
+3. Read TECHNOLOGY.md when reviewing Plan/technical implementation/deployment.
+4. Remain read-only: do not modify project files.
+5. For a batch, review every included Task ID and their interactions.
+6. Return PASS, CHANGES REQUIRED, or REVIEW BLOCKED using REVIEWER.md.
+7. Do not force a correction cycle when work is already correct.
+8. STOP after review.
 ```
 
 No third orchestrator agent is needed.
@@ -222,6 +225,7 @@ Prefer excluding `.multica/` runtime metadata from Git unless explicitly needed 
 
 Do not copy into Multica as a second source:
 - Blueprint
+- `TECHNOLOGY.md`
 - 252 Business Rules
 - Feature Briefs
 - `spec.md`
