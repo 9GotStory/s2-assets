@@ -13,7 +13,7 @@ Feature key: `application-foundation`
 - Configuration/secrets baseline
 - Error/transaction boundary baseline
 - Audit/history primitives ที่ domain features เรียกใช้ได้เท่าที่จำเป็น
-- Test foundation และ runtime/deployment baseline ในระดับที่ Plan เลือก
+- Test foundation และ runtime/deployment implementation details ภายใน selected baseline จาก `../TECHNOLOGY.md` หรือ Technology Deviation ที่ Product Owner อนุมัติแล้ว
 
 ## Out of Scope
 
@@ -74,7 +74,7 @@ Canonical wording อยู่ที่ `../docs/06-business-rules.md`; Feature 
 - Foundation ต้องเป็น technical/bootstrap exception ไม่ใช่ catch-all
 - Authorization ต้อง fail closed และ QR/deep link ห้าม bypass permission
 - ห้าม fabricate business data เพื่อให้ระบบผ่าน validation
-- Technical choices ให้ตัดสินใน Plan ตาม stack/deployment จริง
+- Technical choices ให้ Plan ยืนยันรายละเอียดจาก selected baseline ใน `../TECHNOLOGY.md`; ห้าม reselect project-wide stack ใหม่โดยไม่มี Technology Deviation ที่ Product Owner อนุมัติ
 
 ## UX Expectations
 
@@ -104,7 +104,9 @@ Canonical wording อยู่ที่ `../docs/06-business-rules.md`; Feature 
 
 ## Plan Decisions / Risks
 
-- repository/application structure และ runtime/deployment ที่เหมาะกับข้อจำกัดจริง
+ใช้ `../TECHNOLOGY.md` เป็น selected technical baseline; Plan ยืนยัน exact implementation details/Deferred decisions ที่เกี่ยวข้อง หรือเสนอ Technology Deviation เมื่อมี concrete constraint จริง
+
+- repository/application structure และ runtime/deployment details ที่เหมาะกับข้อจำกัดจริงภายใน selected baseline
 - authentication/authorization mechanism ขั้นต่ำ
 - configuration/secrets/error handling/test harness
 - minimal audit/identity primitives ที่มี current use case
@@ -117,4 +119,4 @@ Repository พร้อมให้ feature แรกใช้งาน authenti
 
 ## Handoff Boundary
 
-Feature Brief นี้เป็น Blueprint context ไม่ใช่ `spec.md`. เมื่อเริ่มพัฒนาจริง ให้ Spec Kit สร้าง user scenarios, acceptance criteria, technical plan และ tasks จากข้อมูลนี้ร่วมกับ Blueprint canonical documents.
+Feature Brief นี้เป็น Blueprint context ไม่ใช่ `spec.md`. เมื่อเริ่มพัฒนาจริง ให้ Spec Kit สร้าง user scenarios, acceptance criteria, technical plan และ tasks จากข้อมูลนี้ร่วมกับ Blueprint canonical documents และใช้ `../TECHNOLOGY.md` เป็น project-wide technical baseline สำหรับ Plan.
