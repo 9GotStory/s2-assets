@@ -1,7 +1,9 @@
 # Blueprint — ระบบครุภัณฑ์สำนักงานและวัสดุสิ้นเปลือง
 
-เวอร์ชัน: **1.0.1**  
+เวอร์ชัน: **1.0.2**  
 สถานะ: **FROZEN**
+
+> **v1.0.2 integrity-hardening patch:** ไม่เปลี่ยน scope, 14-feature decomposition หรือ dependency graph; ยกระดับเฉพาะ canonical stock-integrity semantics สำหรับ stock-effect completeness/uniqueness, Opening Balance cutover, source-linked Return, downstream-safe Correction และ concurrent stock mutation.
 
 ## 1. System Purpose
 

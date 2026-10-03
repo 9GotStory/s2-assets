@@ -117,16 +117,11 @@ Canonical wording อยู่ที่ `../docs/06-business-rules.md`; Feature 
 
 ## Clarification Candidates — Not Yet Requirements
 
-รายการต่อไปนี้มาจากประเด็น derived guardrail เดิมที่ **ยังไม่ถูกยืนยันเป็น canonical Business Rule**. ให้ใช้เป็นคำถามใน Specify/Clarify เท่านั้น ห้าม implement เป็น requirement โดยอัตโนมัติ.
+รายการต่อไปนี้ยังควรตัดสินใน Specify/Clarify เพราะไม่จำเป็นต้อง freeze เป็น canonical rule เพิ่มใน Blueprint v1.0.2:
 
-- ควรกำหนด explicit exactly-once/complete stock-effect invariant สำหรับ Return/Adjustment/Correction หรือไม่
-- ต้องยกระดับ concurrent stock mutation protection เป็น explicit business invariant เพิ่มหรือไม่
-- Backdated correction ที่เป็นความจริงแต่ทำให้ช่วงเวลาหนึ่งดูผิดปกติควรมี explicit recording/reconciliation rule เพิ่มหรือไม่
-- Source correction ต้องป้องกัน dependent Return/Stocktake references ถูก orphan/invalidated ด้วย explicit rule หรือไม่
-- Cumulative source-linked Return ต้องห้ามเกิน returnable quantity ของ source เป็น explicit rule หรือไม่
-- Unusable Return ที่ไม่เคยกลับเข้า usable stock ต้องยืนยันหรือไม่ว่าไม่มี extra negative stock effect
-- MRT-02 เพียงพอสำหรับ source-linked Return หรือควรยกระดับ “เมื่อ source มี ต้อง link source Issue” เป็น MUST
-- Inactive/zero-stock StockMaterial ต้องยัง reachable สำหรับ source-linked Return/Correction ในทุกกรณีหรือไม่
+- Backdated correction ที่เป็นความจริงแต่ทำให้ช่วงเวลาหนึ่งดูผิดปกติควรมีรูปแบบ recording/reconciliation ใน feature นี้อย่างไร โดยต้องไม่ละเมิด `MSL-07`, `MSL-12` และ `MADJ-02`
+
+ประเด็น complete/single stock effect, concurrency, dependent-reference integrity, source-linked Return, returnable quantity, unusable-return double-decrement prevention และ historical inactive StockMaterial ถูกกำหนดแล้วโดย `MSL-04`, NFR กลาง, `MADJ-02`, `MRT-02`, `MRT-05` และ `MC-14` ตามลำดับ.
 
 ## Plan Decisions / Risks
 

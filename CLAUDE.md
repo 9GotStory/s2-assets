@@ -20,7 +20,7 @@ For review corrections, use the exact Reviewer findings supplied in the current 
 
 For business meaning:
 1. current explicit Product Owner decision
-2. `BLUEPRINT.md` — v1.0.1 FROZEN
+2. `BLUEPRINT.md` — v1.0.2 FROZEN
 3. relevant `features/<feature>.md`
 4. canonical rules in `docs/06-business-rules.md`
 

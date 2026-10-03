@@ -1,6 +1,6 @@
 # 06 — Business Rules
 
-สถานะ: **FROZEN — Blueprint v1.0.1**  
+สถานะ: **FROZEN — Blueprint v1.0.2**  
 บทบาท: Catalog ของกติกาธุรกิจที่ต้องรักษาระหว่าง Specify/Clarify/Plan/Implement
 
 เอกสารนี้รวบรวม Business Rule ทั้ง **252 ข้อ** จาก Domain baseline เดิม โดยตัดกลไก governance ออก แต่คงความหมายของกติกาไว้สำหรับการพัฒนา feature จริง
@@ -12,6 +12,7 @@
 - `CONFIRMED` คือกติกาที่มี product/domain decision ชัดเจน
 - `DERIVED GUARDRAIL` คือข้อคุ้มกันที่อนุมานจาก decision ที่ยืนยันแล้ว และควรรักษาไว้เว้นแต่ Product Owner เปลี่ยนความหมาย
 - `BASELINE` คือกติกาฝั่ง Asset/System ที่เป็น baseline ของ Blueprint
+- `BASELINE`, `CONFIRMED` และ `DERIVED GUARDRAIL` ระบุ provenance/ที่มาของกติกา ไม่ใช่ระดับความสำคัญหรือระดับการบังคับใช้; ภายใต้ Blueprint ที่ FROZEN ทุก rule เป็น normative constraint จนกว่า Product Owner จะเปลี่ยน Blueprint โดย `DERIVED GUARDRAIL` อาจถูกแก้เมื่อยืนยันได้ว่าการอนุมานเดิมไม่ตรง product/domain intent
 - การเปลี่ยน rule ต้องเป็นการแก้ Blueprint เชิงธุรกิจ ไม่ใช่การแก้ control metadata
 
 ## SYS — System Boundary (4 rules)
@@ -273,23 +274,23 @@
 |---|---|---|
 | `MOB-01` | CONFIRMED | Opening Balance ใช้สำหรับ initialization/migration ของ stock เดิมเมื่อไม่ควร fabricate Receiving history ย้อนหลัง |
 | `MOB-02` | CONFIRMED | Opening Balance เป็น traceable initialization movement ที่สะท้อนยอดตั้งต้นซึ่งตรวจสอบ/ยอมรับตามข้อมูลจริง ไม่ใช่ Material Receiving; baseline นี้ยังไม่สร้าง semantics ของ “negative Opening Balance” เพิ่มเอง |
-| `MOB-03` | CONFIRMED | Opening Balance ต้องมี provenance/แหล่งที่มาของยอด เช่น stocktake เดิม, Excel, สมุดคุม หรือ migration source; ห้ามสร้าง history ที่ไม่มีหลักฐานรองรับ |
+| `MOB-03` | CONFIRMED | Opening Balance ต้องมี provenance/แหล่งที่มาของยอด เช่น stocktake เดิม, Excel, สมุดคุม หรือ migration source และต้องระบุ As-of/Cutover point ที่ชัดเจนว่าตัวเลขตั้งต้นครอบคลุมข้อเท็จจริงถึงเมื่อใด; transaction history ที่รวมอยู่ในยอดตั้งต้นแล้วห้ามสร้าง Stock Movement ซ้ำจนทำให้ stock effect ถูกนับซ้ำ และห้ามสร้าง history ที่ไม่มีหลักฐานรองรับ |
 | `MOB-04` | CONFIRMED | หลัง Stock Ledger เริ่มใช้งานแล้ว Opening Balance ห้ามใช้เป็น transaction ประจำวันหรือทางลัดแก้ยอด; discrepancy ภายหลังใช้ Correction/Adjustment ตามข้อเท็จจริง |
 
 ## MRT — Material Return (5 rules)
 | Rule ID | Status | Rule |
 |---|---|---|
 | `MRT-01` | CONFIRMED | Material Return เป็น business event แยกจาก Issue; ห้ามแก้ Issue เดิมย้อนหลังเพื่อจำลองการคืน |
-| `MRT-02` | CONFIRMED | Return ที่มาจาก Issue ในระบบควร trace กลับ Original Issue/Issue Line ได้; legacy case ที่ไม่มี Issue history ห้ามสร้าง Issue ปลอมและต้องใช้ provenance ที่เหมาะสม |
+| `MRT-02` | CONFIRMED | Return ที่มาจาก Issue ในระบบต้อง trace กลับ Original Issue/Issue Line; cumulative valid source-linked Return ต้องไม่เกิน returnable quantity ของ source หลังคำนึงถึง correction/reversal ที่มีผล และห้ามทำให้ usable stock เพิ่มเกินจำนวนที่คืนได้จริง; legacy case ที่ไม่มี Issue history ห้ามสร้าง Issue ปลอมและต้องใช้ provenance ที่เหมาะสม |
 | `MRT-03` | CONFIRMED | Return ต้องระบุ StockMaterial ของจริงที่คืน และ Return Line เก็บ Original Quantity, Original Unit, Conversion Snapshot, Base Quantity |
 | `MRT-04` | CONFIRMED | เฉพาะจำนวนที่สำนักงานรับกลับและถือว่าสามารถกลับเข้าสู่ usable stock ได้จึงสร้าง positive Stock Movement |
-| `MRT-05` | CONFIRMED | ของที่คืนแต่ชำรุด/ใช้ไม่ได้ห้ามเพิ่มเป็น usable stock โดยอัตโนมัติ; ต้องเข้าสู่ Unusable/Adjustment semantics ตามข้อเท็จจริง |
+| `MRT-05` | CONFIRMED | ของที่คืนแต่ชำรุด/ใช้ไม่ได้ห้ามเพิ่มเป็น usable stock โดยอัตโนมัติ; หากของนั้นถูกนำออกจาก Office Stock ไปแล้วจาก Original Issue และไม่เคยกลับเข้า usable stock การรับคืนแบบ unusable ห้ามสร้าง negative Stock Movement ซ้ำเพียงเพราะสภาพ unusable; stock effect เพิ่มเติมทำได้เฉพาะเมื่อมีข้อเท็จจริงอื่นที่ต้อง Adjustment/Correction และต้อง trace เหตุนั้นชัดเจน |
 
 ## MADJ — Material Adjustment / Correction (7 rules)
 | Rule ID | Status | Rule |
 |---|---|---|
 | `MADJ-01` | CONFIRMED | Adjustment เป็น traceable Stock Movement; ผู้ใช้ห้ามแก้ Current Stock โดยตรง |
-| `MADJ-02` | CONFIRMED | Correction ใช้เมื่อรู้ว่า transaction เดิมถูกบันทึกผิดและต้อง trace กลับ source transaction พร้อมรักษา original history; exact reversal-vs-delta implementation ยังให้ Plan/Clarify กำหนดโดยไม่ละเมิดหลักนี้ |
+| `MADJ-02` | CONFIRMED | Correction ใช้เมื่อรู้ว่า transaction เดิมถูกบันทึกผิดและต้อง trace กลับ source transaction พร้อมรักษา original history; correction ต้องไม่ orphan, delete หรือ silent-rewrite dependent business records/history และหาก correction ทำให้ข้อเท็จจริง downstream ไม่สอดคล้องต้อง surface reconciliation conflict เพื่อให้แก้ตามข้อเท็จจริง; exact reversal-vs-delta implementation ยังให้ Plan/Clarify กำหนดโดยไม่ละเมิดหลักนี้ |
 | `MADJ-03` | CONFIRMED | Adjustment ใช้เมื่อพบข้อเท็จจริงใหม่ เช่น stocktake discrepancy หรือความคลาดเคลื่อนที่อ้าง source transaction เดิมไม่ได้ตรง ๆ; ห้ามสร้าง Receipt/Issue ปลอมเพื่อทำให้ยอดลงตัว |
 | `MADJ-04` | CONFIRMED | Adjustment รองรับทั้งเพิ่มและลดเมื่อข้อเท็จจริงรองรับ; หากรู้ transaction ต้นเหตุจริงต้องใช้ correction path ไม่ใช้ generic adjustment เป็นทางลัด |
 | `MADJ-05` | CONFIRMED | วัสดุที่ไม่สามารถจ่ายใช้งานต่อได้ต้องถูกนำออกจาก usable stock ด้วย traceable event พร้อม reason/provenance ตามความเหมาะสม |
@@ -302,7 +303,7 @@
 | `MSL-01` | CONFIRMED | v1 ใช้ One Logical Office Stock; ไม่แยก balance ตามห้อง ตู้ กลุ่มงาน ผู้เบิก หรือผู้ใช้งาน |
 | `MSL-02` | CONFIRMED | เมื่อ Material Issue เกิดจริง จำนวนที่จ่ายถือว่าออกจาก Office Stock และระบบไม่ติดตามการบริโภคหลังผู้รับนำไปใช้; multi-location/transfer เพิ่มภายหลังเฉพาะเมื่อมีคลังหลายแห่งที่บริหารยอดแยกจริง |
 | `MSL-03` | CONFIRMED | Current Stock เป็น derived state จาก authoritative Stock Movement effects เช่น Opening Balance + Receiving + Usable Return ± Adjustment/Correction − Issue |
-| `MSL-04` | CONFIRMED | ผู้ใช้ทำ business action แล้วระบบสร้าง Stock Movement; ไม่เปิด raw ledger movement/current balance ให้แก้ตรง ๆ เป็น normal workflow |
+| `MSL-04` | CONFIRMED | ผู้ใช้ทำ stock-affecting business action แล้วระบบสร้าง Stock Movement; business action ที่ยืนยันสำเร็จต้องมี stock effect ที่ครบถ้วนและเกิดเพียงครั้งเดียวตามข้อเท็จจริง พร้อม trace/reconcile กลับ source business record ได้ และไม่เปิด raw ledger movement/current balance ให้แก้ตรง ๆ เป็น normal workflow |
 | `MSL-05` | CONFIRMED | Stock Movement normalize ด้วย Base Quantity และรักษา Original Quantity/Unit/Conversion Snapshot พร้อม trace กลับ source business record |
 | `MSL-06` | CONFIRMED | หาก implementation cache/materialize Current Stock ค่า cache ต้อง reconcile กลับ authoritative movements ได้; mismatch เป็น integrity problem และห้าม rewrite history เพื่อให้ตาม cache |
 | `MSL-07` | CONFIRMED | Business timeline ของ Stock Movement ใช้ Effective Date ส่วน audit timeline รักษา Recorded At/Recorded By; ห้ามใช้เวลาใดแทนอีกเวลา |
