@@ -69,6 +69,8 @@ Canonical wording อยู่ที่ `../docs/06-business-rules.md`; Feature 
 
 `MC-01–MC-05`, `MC-10–MC-13`, `MC-17–MC-18`, `MC-22–MC-26` — catalog semantics constrain stock movements but do not transfer implementation ownership
 
+`MADJ-02` — correction that affects source/dependent records must preserve downstream integrity and surface reconciliation conflict rather than silently orphan/rewrite facts
+
 ## Cross-Feature Responsibilities
 
 - เป็นเจ้าของ authoritative movement ledger/current-stock derivation ที่ทุก stock feature ใช้ร่วมกัน
