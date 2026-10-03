@@ -17,6 +17,7 @@
 - history ที่มีผลแล้วห้าม silent overwrite
 - stock balance ต้อง reconcile กับ authoritative movement set
 - issue ที่ stock เชื่อถือได้ห้ามทำให้ Current Stock ติดลบ
+- concurrent stock-affecting operations ต้องรักษา stock, entitlement และ source-to-movement invariants เดียวกับการทำงานแบบลำดับปกติ; กลไก transaction/locking/idempotency ที่ใช้จริงให้ Plan เลือกตาม stack และความเสี่ยง
 - unit conversion transaction ต้องรักษา snapshot
 - migration/import ต้องมี provenance
 
