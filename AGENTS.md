@@ -65,6 +65,22 @@ supports the relevant technology.
   and surface the conflict instead of silently substituting a dependency,
   workaround, or architecture.
 
+
+## Exact Multica Mention Targets
+
+Agent-to-agent execution triggers MUST use Multica structured mention markdown
+with the exact agent UUID. Plain `@name` text and name-based
+`mention://agent/<name>` links are not valid execution triggers.
+
+Canonical role mentions:
+
+- Lead: `[@agy-lead-reviewer](mention://agent/a299846c-c6ad-45b0-a190-cb802a44caec)`
+- Developer: `[@agy-developer](mention://agent/450509d9-bea0-4d4e-a360-c484bfe93a37)`
+- Independent Reviewer: `[@agy-independent-reviewer](mention://agent/cb25c497-7933-4c9b-9263-f914bb726a2e)`
+
+Do not synthesize a mention URI from the display name. If the target UUID cannot
+be verified, STOP instead of posting a non-triggering handoff.
+
 ## Shared Invariants
 
 - Developer != Reviewer.
@@ -95,5 +111,11 @@ supports the relevant technology.
   Product Owner.
 - If safe at-most-once behavior cannot be established from server-side evidence,
   STOP and require Human intervention instead of replaying the action.
+- Inside a daemon-managed Multica task, do not treat `multica daemon status` as
+  authoritative host-daemon state and do not attempt to start/restart the host
+  daemon from the task.
+- If runtime-managed repository checkout is unavailable or `multica repo checkout`
+  fails inside the task, STOP/BLOCK rather than bypassing the runtime with an
+  ad-hoc manual `git clone` into scratch or another unmanaged path.
 
 See `MASTER-PROMPT.md`, `MULTICA.md`, and `REVIEWER.md` for workflow details.

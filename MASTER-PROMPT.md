@@ -1,6 +1,6 @@
 # MASTER PROMPT — GitHub Spec Kit + AGY 3-Role Review
 ## Office Asset & Consumable Management System
-Version: **3.4**
+Version: **3.5**
 Blueprint: **v1.0.2 FROZEN**
 Technology: **v1.0.1 SELECTED BASELINE**
 
@@ -223,7 +223,7 @@ Authorization should identify:
 - inspects the authorized task and source-of-truth artifacts
 - verifies baseline/readiness
 - delegates exactly one bounded scope to `agy-developer`
-- actively mentions only `agy-developer`
+- actively mentions only `[@agy-developer](mention://agent/450509d9-bea0-4d4e-a360-c484bfe93a37)`
 - never implements or reviews the result
 - treats published delegation comments as immutable
 - checks server-side issue/comment history before posting any delegation,
@@ -235,6 +235,19 @@ Authorization should identify:
 - STOPs immediately after delegation
 
 If scope is ambiguous or materially conflicts with authority, return `HANDOFF_BLOCKED` and require Human Gate.
+
+## 15A. Structured Mention Contract
+
+Multica execution triggers are structured mentions, not display-name text.
+Use these exact forms:
+
+- Lead: `[@agy-lead-reviewer](mention://agent/a299846c-c6ad-45b0-a190-cb802a44caec)`
+- Developer: `[@agy-developer](mention://agent/450509d9-bea0-4d4e-a360-c484bfe93a37)`
+- Reviewer: `[@agy-independent-reviewer](mention://agent/cb25c497-7933-4c9b-9263-f914bb726a2e)`
+
+Never emit `mention://agent/<display-name>`. If the exact UUID cannot be
+verified, STOP rather than publishing a handoff that looks correct but cannot
+trigger the target agent.
 
 ## 16. Developer Execution
 
@@ -249,7 +262,7 @@ If scope is ambiguous or materially conflicts with authority, return `HANDOFF_BL
 - does not expand scope opportunistically
 - publishes `IMPLEMENTATION_RESULT`
 - checks server-side history before reviewer handoff
-- mentions `agy-independent-reviewer` exactly once for the exact candidate
+- mentions `[@agy-independent-reviewer](mention://agent/cb25c497-7933-4c9b-9263-f914bb726a2e)` exactly once for the exact candidate
 - on resume/retry, never repeats an already published implementation result or
   reviewer handoff solely because the provider stream was interrupted
 - STOPs
@@ -302,6 +315,15 @@ exact candidate/context, include no agent mention, trigger no agent run, require
 Human Gate, and STOP.
 
 ---
+
+## 17A. Runtime-Managed Repository Boundary
+
+Inside a daemon-managed run, do not start/restart the Multica daemon and do not
+treat task-local daemon status as host-daemon truth. Use the runtime-managed
+repository checkout. If the supported task-local checkout cannot reach its
+daemon endpoint, return BLOCKED and surface the runtime failure. Do not replace
+that path with a manual scratch clone merely to make verification appear to
+pass.
 
 # COMPLETION
 

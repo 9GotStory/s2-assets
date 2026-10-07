@@ -45,7 +45,7 @@ APIs/configuration, verify Context7 first when supported; if insufficient, use
 authoritative first-party documentation and report the fallback. Run required
 verification and inspect final diff. Before publishing IMPLEMENTATION_RESULT or
 mentioning the reviewer, inspect server-side history for the exact candidate.
-Publish/mention `agy-independent-reviewer` at most once. On resume/retry, never
+Publish/mention `[@agy-independent-reviewer](mention://agent/cb25c497-7933-4c9b-9263-f914bb726a2e)` at most once. On resume/retry, never
 replay an existing result or reviewer handoff solely because the stream failed.
 Then STOP. Do not emit reviewer verdict.
 
@@ -63,7 +63,7 @@ Independently inspect exact scope, repository evidence, diff and tests. Re-check
 material version-sensitive external claims through Context7 when supported or
 authoritative first-party fallback when necessary. Do not modify implementation.
 Before any verdict after resume/retry, inspect server-side history. Return
-exactly PASS / REWORK / BLOCKED. REWORK mentions only `agy-developer` exactly
+exactly PASS / REWORK / BLOCKED. REWORK mentions only `[@agy-developer](mention://agent/450509d9-bea0-4d4e-a360-c484bfe93a37)` exactly
 once for that candidate/finding set. PASS/BLOCKED is terminal: no agent mention,
 no Lead return, no replay if already published; control returns to Product
 Owner. STOP.
@@ -86,3 +86,19 @@ intervention.
 
 Multica implementation issues remain Human-owned or unassigned between agent
 runs; do not rely on a persistent agent assignee as an implicit router.
+
+## Multica Structured Mentions
+
+Use exact structured mention markdown only:
+
+- `[@agy-lead-reviewer](mention://agent/a299846c-c6ad-45b0-a190-cb802a44caec)`
+- `[@agy-developer](mention://agent/450509d9-bea0-4d4e-a360-c484bfe93a37)`
+- `[@agy-independent-reviewer](mention://agent/cb25c497-7933-4c9b-9263-f914bb726a2e)`
+
+Plain `@name` and `mention://agent/<name>` are not valid triggers.
+
+## Daemon-Managed Run Guard
+
+Do not start/restart the host daemon from inside a run. If runtime-managed
+repository checkout fails, return BLOCKED; do not hide the failure with an
+unmanaged manual clone into scratch.

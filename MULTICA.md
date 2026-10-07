@@ -49,6 +49,21 @@ The implementation issue should remain Human-owned or unassigned while the
 multi-agent chain is in progress. Starting a role does not grant that role
 persistent ownership of later comments.
 
+## 2A. Exact Structured Mentions
+
+All execution handoffs MUST use Multica structured mention markdown with the
+exact agent UUID:
+
+- Lead: `[@agy-lead-reviewer](mention://agent/a299846c-c6ad-45b0-a190-cb802a44caec)`
+- Developer: `[@agy-developer](mention://agent/450509d9-bea0-4d4e-a360-c484bfe93a37)`
+- Independent Reviewer: `[@agy-independent-reviewer](mention://agent/cb25c497-7933-4c9b-9263-f914bb726a2e)`
+
+Plain `@agy-...` text is not a trigger. A link such as
+`mention://agent/agy-developer` is also invalid because the target component
+must be the exact agent UUID.
+
+Never guess or synthesize mention markdown from a display name.
+
 ## 3. Human Gate Semantics
 
 A Product Owner-assigned Multica task created after accepted Spec Kit Analyze is already authorized for inspection, coordination and delegation within its exact scope.
@@ -69,7 +84,8 @@ Lead MUST:
 - inspect relevant source-of-truth artifacts
 - verify baseline
 - publish exactly one bounded delegation
-- actively mention exactly one implementation target: `agy-developer`
+- actively mention exactly one implementation target using
+  `[@agy-developer](mention://agent/450509d9-bea0-4d4e-a360-c484bfe93a37)`
 - STOP after delegation
 
 ### Atomic Delegation
@@ -118,7 +134,7 @@ Before the reviewer handoff, inspect current server-side issue/comment history
 for the exact Developer → Reviewer transition key. If it already exists, do not
 mention the reviewer again.
 
-Then actively mention `agy-independent-reviewer` exactly once and STOP.
+Then actively mention `[@agy-independent-reviewer](mention://agent/cb25c497-7933-4c9b-9263-f914bb726a2e)` exactly once and STOP.
 
 On REWORK, correct only cited findings within the same authorized scope and
 return to the same reviewer role using a new corrective-result identity (for
@@ -132,8 +148,9 @@ Reviewer:
 - inspects actual evidence independently
 - never edits production files
 - checks server-side history before publishing a verdict after any resume/retry
-- on `REWORK`, mentions only `agy-developer`, at most once for that exact
-  finding set/candidate
+- on `REWORK`, mentions only
+  `[@agy-developer](mention://agent/450509d9-bea0-4d4e-a360-c484bfe93a37)`,
+  at most once for that exact finding set/candidate
 - on `PASS`, publishes the terminal verdict without any agent mention and
   returns control to Product Owner
 - on `BLOCKED`, publishes the terminal verdict without any agent mention and
@@ -207,6 +224,20 @@ Role requirements:
 - unexpected changes block clean acceptance
 - commit/push/merge/deploy occur only when Product Owner authorization permits
 - do not use Multica comments as a substitute for repository evidence
+
+## 9A. Daemon-Managed Task Boundary
+
+A Multica/AGY run executes inside a daemon-managed task environment.
+
+- Do not start/restart the host Multica daemon from inside the task.
+- Do not use task-local `multica daemon status` as proof that the host daemon is
+  stopped.
+- Repository access should use the runtime-managed checkout supplied for the
+  task or the supported task-local checkout path.
+- If `multica repo checkout` cannot reach the task daemon endpoint, treat that
+  as a runtime/integration failure and return `BLOCKED`.
+- Do not hide such a failure by manually cloning the repository into AGY brain
+  scratch, `/tmp`, or another unmanaged directory.
 
 ## 10. What Multica Must Not Duplicate
 

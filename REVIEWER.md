@@ -82,7 +82,7 @@ Concrete bounded defects are correctable within the same authorized scope.
 - state each finding precisely
 - identify evidence/file/test
 - inspect server-side history before any replay after resume/retry
-- mention only `agy-developer`, exactly once for that candidate/finding set
+- mention only `[@agy-developer](mention://agent/450509d9-bea0-4d4e-a360-c484bfe93a37)`, exactly once for that candidate/finding set
 - never replay an existing REWORK trigger
 - STOP
 
@@ -92,6 +92,15 @@ Review cannot safely conclude because authority, baseline, evidence, scope, or m
 
 BLOCKED is terminal for automation. Explain the blocker at most once for the
 same candidate/context, use no agent mention, require Human Gate, and STOP.
+
+## Structured Mention Safety
+
+On REWORK, the only permitted agent trigger is:
+
+`[@agy-developer](mention://agent/450509d9-bea0-4d4e-a360-c484bfe93a37)`
+
+Do not use plain `@agy-developer` or
+`mention://agent/agy-developer`. PASS/BLOCKED contains no agent mention.
 
 ## Finding Quality
 
