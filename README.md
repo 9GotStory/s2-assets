@@ -1,445 +1,262 @@
 # Office Asset & Consumable Management System
 
-> Canonical Blueprint baseline สำหรับพัฒนาระบบครุภัณฑ์สำนักงานและวัสดุสิ้นเปลืองด้วย GitHub Spec Kit, Claude DEV, Codex Independent Review และ Multica coordination
+> Canonical Blueprint baseline สำหรับพัฒนาระบบครุภัณฑ์สำนักงานและวัสดุสิ้นเปลืองด้วย GitHub Spec Kit, AGY/Antigravity และ Multica 3-role coordination
 
 | Baseline | Value |
 |---|---|
 | Blueprint | **v1.0.2 — FROZEN** |
-| Workflow | **v1.2.0** |
-| Master Prompt | **v3.2** |
-| Technology Direction | **`TECHNOLOGY.md` v1.0.0 — SELECTED BASELINE** |
+| Workflow | **v1.3.0 — AGY 3-role** |
+| Master Prompt | **v3.3** |
+| Technology Direction | **`TECHNOLOGY.md` v1.0.1 — SELECTED BASELINE** |
 | Business Rules | **252 canonical rules** |
 | Delivery decomposition | **14 Feature Briefs** |
-| Blueprint alignment | **`docs/` ↔ `features/` aligned** |
-| Spec Kit scaffold | **Generated during repository initialization; intentionally not part of the pre-init baseline** |
+| Spec Kit | **1.1.1 / AGY integration** |
 
 หลักการของโครงการ:
 
 > **Simple — Structured — Sustainable**
 
-Repository นี้เป็น **ready-to-develop business/system baseline** ไม่ใช่ application implementation ที่เสร็จแล้ว และไม่ใช่ ERP / Procurement / Accounting replacement
+Repository นี้เป็น ready-to-develop business/system baseline ไม่ใช่ ERP / Procurement / Accounting replacement
 
 ---
 
-## 1. What this repository contains
-
-Repository นี้เก็บสิ่งที่ต้องนิ่งก่อนเริ่ม Spec-Driven Development:
-
-- business scope / non-goals
-- domain semantics
-- actors และ permission principles
-- core workflows
-- conceptual domain model
-- canonical Business Rules 252 ข้อ
-- audit/evidence principles
-- non-functional requirements
-- delivery decomposition 14 features
-- Feature Briefs สำหรับ handoff เข้า Spec Kit
-- project-wide technical direction สำหรับ AI/Spec Kit Plan
-- DEV / Reviewer / coordination workflow contracts
-
-Technology baseline ระดับ project อยู่ที่ `TECHNOLOGY.md`; ส่วน exact package versions, provider/configuration, schema/API shape และ implementation details ให้ยืนยันใน Spec Kit `Plan` ตาม context จริง โดยห้าม silent-replace selected technology baseline
-
----
-
-## 2. Authority and source of truth
+## 1. Authority and source of truth
 
 ### Business Authority
 
-ลำดับอำนาจในการตีความ business meaning:
-
 1. Explicit current **Product Owner decision**
 2. `BLUEPRINT.md` — Blueprint v1.0.2 FROZEN
-3. Feature Brief ที่กำลังพัฒนาใน `features/`
-4. Canonical rules ใน `docs/06-business-rules.md`
+3. active Feature Brief ใน `features/`
+4. canonical rules ใน `docs/06-business-rules.md`
 
-Feature Brief และ Spec Kit artifacts อาจ **refine delivery details** แต่ห้าม silent-redefine business meaning ที่อยู่ใน authority ระดับสูงกว่า
+Spec Kit artifacts refine delivery details แต่ห้าม silent-redefine business meaning ที่อยู่ใน authority สูงกว่า
 
 ### Technical Direction
 
-`TECHNOLOGY.md` เป็น **project-wide selected technical baseline** สำหรับ Plan/Tasks/Implementation/technical review
+`TECHNOLOGY.md` v1.0.1 เป็น project-wide selected technical baseline
 
-- technical direction อยู่ใต้ Business Authority
-- Plan ต้องเริ่มจาก baseline นี้ ไม่เลือก stack ใหม่ตาม preference
-- exact minor/patch versions และรายการที่ระบุ Deferred ให้ Plan resolve ตาม compatibility/environment
-- material deviation เช่นเปลี่ยน database engine, frontend/backend framework หรือ production container runtime ต้อง explicit พร้อมเหตุผล/ผลกระทบและ Product Owner decision ก่อน implementation
+- Plan ต้องเริ่มจาก baseline นี้
+- exact minor/patch versions และ Deferred decisions ให้ Plan resolve ตาม environment จริง
+- material technology deviation ต้อง explicit พร้อมเหตุผล/ผลกระทบและ Product Owner decision ก่อน implementation
+- local application development runtime ใช้ **Rootless Podman**
+- Git, Git worktrees, Spec Kit, Multica และ AGY agents อยู่บน host
 
-### Delivery Authority
+### Project / Delivery Authority
 
 หลัง initialize Spec Kit:
 
 - Constitution — project-wide engineering principles
 - `spec.md` / clarifications — feature behavior และ acceptance
-- `plan.md` — technical implementation strategy
+- `plan.md` — implementation strategy
 - `tasks.md` — executable delivery decomposition
 - implementation + tests — delivered behavior
 
-### Coordination Evidence
-
-Multica Issue/comments/run history ใช้สำหรับ coordination และ trace การทำงาน แต่ **ไม่ใช่ requirement source of truth ใหม่**
+Multica Issue/comments/run history เป็น coordination evidence ไม่ใช่ requirement source of truth ใหม่
 
 ---
 
-## 3. How `docs/` and `features/` relate
+## 2. Blueprint and feature structure
 
-สอง directory นี้เชื่อมโยงกัน แต่มีหน้าที่ต่างกัน
+`docs/` เป็น canonical cross-feature domain layer และ `features/` เป็น bounded delivery slicing layer
 
-### `docs/` — Canonical Blueprint / Domain Layer
-
-`docs/` อธิบายความจริงของระบบแบบ cross-feature:
-
-| File | Responsibility |
-|---|---|
-| `01-scope-and-goals.md` | scope, goals, explicit non-goals |
-| `02-actors-and-permissions.md` | actors และ permission principles |
-| `03-system-modules.md` | business capabilities |
-| `04-core-workflows.md` | core end-to-end workflows |
-| `05-domain-model.md` | conceptual domain model |
-| `06-business-rules.md` | **252 canonical Business Rules** |
-| `07-audit-and-evidence.md` | history, correction, evidence |
-| `08-non-functional-requirements.md` | security, integrity, quality, operations |
-| `09-feature-map.md` | 14 features + delivery dependencies |
-| `10-roadmap-and-out-of-scope.md` | sequencing และ future/non-baseline scope |
-
-### `features/` — Delivery Slicing Layer
-
-`features/` แบ่ง Blueprint ออกเป็น 14 bounded delivery slices สำหรับ Spec Kit
-
-แต่ละ Feature Brief ระบุ:
-
-- Purpose / In Scope / Out of Scope
-- Actors
-- Owned Workflow
-- Domain Concepts
-- Business Rule Routing
-- Cross-Feature Responsibilities
-- Key Invariants
-- Relevant NFR
-- Delivery Dependencies
-- Open Decisions / Clarification Candidates
-- Handoff Boundary
-
-**Feature Brief ไม่ทำสำเนา canonical rule wording** แต่ route ด้วย Rule ID กลับไปที่ `docs/06-business-rules.md`
-
-ปัจจุบัน Rule routing ครอบคลุม **252/252 canonical rules** และ dependency ของ Feature Brief สอดคล้องกับ `docs/09-feature-map.md`
+- 252 canonical Business Rules อยู่ใน `docs/06-business-rules.md`
+- 14 features และ dependencies อยู่ใน `docs/09-feature-map.md`
+- Feature Brief route กลับไปหา canonical Rule IDs แทนการ copy rule wording
+- Feature 01 คือ `application-foundation`
 
 ---
 
-## 4. Repository structure before Spec Kit initialization
+## 3. Runtime and delivery model
+
+### Before Human Gate
+
+ใช้ GitHub Spec Kit ผ่าน AGY integration:
 
 ```text
-s2-assets/
-├── README.md
-├── BLUEPRINT.md
-├── TECHNOLOGY.md
-├── CLAUDE.md
-├── AGENTS.md
-├── MASTER-PROMPT.md
-├── REVIEWER.md
-├── SHORT-PROMPTS.md
-├── MULTICA.md
-├── docs/
-│   ├── 01-scope-and-goals.md
-│   ├── 02-actors-and-permissions.md
-│   ├── 03-system-modules.md
-│   ├── 04-core-workflows.md
-│   ├── 05-domain-model.md
-│   ├── 06-business-rules.md
-│   ├── 07-audit-and-evidence.md
-│   ├── 08-non-functional-requirements.md
-│   ├── 09-feature-map.md
-│   └── 10-roadmap-and-out-of-scope.md
-├── features/
-│   ├── 01-application-foundation.md
-│   ├── 02-asset-registry.md
-│   ├── 03-asset-assignment-movement.md
-│   ├── 04-loan-return.md
-│   ├── 05-repair-maintenance.md
-│   ├── 06-annual-asset-verification.md
-│   ├── 07-asset-retirement.md
-│   ├── 08-material-catalog-units.md
-│   ├── 09-material-request-entry.md
-│   ├── 10-material-receiving-stock-foundation.md
-│   ├── 11-material-request-decision.md
-│   ├── 12-material-issue-fulfillment.md
-│   ├── 13-material-return-adjustment.md
-│   └── 14-material-stocktake.md
+Constitution
+→ Specify
+→ Clarify (when needed)
+→ Plan
+→ Checklist (when useful)
+→ Tasks
+→ Analyze
+→ Human Gate
 ```
 
-ก่อน initialize Spec Kit จะยังไม่มี:
+### After Human Gate
+
+ใช้ Multica native 3-role chain:
+
+```text
+Human Product Owner
+        ↓
+agy-lead-reviewer
+Gemini 3.1 Pro High
+        ↓
+agy-developer
+Gemini 3.8 Flash High
+        ↓
+agy-independent-reviewer
+Gemini 3.1 Pro High
+        ↓
+Human Acceptance
+```
+
+Role separation เป็น mandatory:
+
+- `agy-lead-reviewer` — planning/handoff/orchestration only after Human Gate
+- `agy-developer` — exact authorized implementation/rework only
+- `agy-independent-reviewer` — fresh independent review only
+- Product Owner — final business authority, Human Gate และ final acceptance
+
+Developer และ Reviewer ต้องเป็นคนละ Multica agent identity และ reviewer ต้องตรวจ evidence/repository จริง ไม่อาศัย developer summary อย่างเดียว
+
+---
+
+## 4. Spec Kit integration
+
+Repository นี้ใช้ Spec Kit **1.1.1** และ integration **`agy`**
+
+Expected project infrastructure:
 
 ```text
 .specify/
-.claude/skills/
 .agents/skills/
 specs/
 ```
 
-directory เหล่านี้ต้องให้ Spec Kit CLI เป็นผู้ scaffold/manage ไม่สร้างด้วยมือจาก Blueprint package
+Initialize existing repository:
+
+```bash
+specify init \
+  --here \
+  --force \
+  --non-interactive \
+  --integration agy \
+  --script sh
+```
+
+ไม่ติดตั้ง Claude/Codex integration เป็น default workflow
 
 ---
 
-## 5. Recommended reading order
+## 5. Rootless Podman development baseline
 
-### Product Owner / human reviewer
+Application runtime และ infrastructure dependencies สำหรับ normal development ต้องรันด้วย Rootless Podman ตาม `TECHNOLOGY.md`
+
+```text
+Fedora Host
+├── Git / worktrees
+├── GitHub Spec Kit
+├── Multica
+├── AGY agents
+│
+└── Rootless Podman
+    ├── web
+    ├── api
+    └── PostgreSQL
+```
+
+Quadlet เป็น production service-management baseline ไม่ใช่ requirement สำหรับ day-to-day development
+
+---
+
+## 6. Delivery order
+
+Feature sequencing canonical อยู่ที่ `docs/09-feature-map.md`
+
+เริ่มจาก:
+
+1. `application-foundation`
+2. `asset-registry`
+3. `asset-assignment-movement`
+4. `loan-return`
+5. `repair-maintenance`
+6. `annual-asset-verification`
+7. `asset-retirement`
+8. `material-catalog-units`
+9. `material-request-entry`
+10. `material-receiving-stock-foundation`
+11. `material-request-decision`
+12. `material-issue-fulfillment`
+13. `material-return-adjustment`
+14. `material-stocktake`
+
+หนึ่ง feature ทำทีละช่วงตาม Spec Kit; ห้ามใช้ feature แรกสร้าง framework เผื่อทุก feature หลัง
+
+---
+
+## 7. Reading order
+
+### Product Owner / Spec Kit authoring
 
 1. `README.md`
 2. `BLUEPRINT.md`
-3. `TECHNOLOGY.md` เมื่อพิจารณา technical/deployment direction
+3. `TECHNOLOGY.md`
 4. `docs/09-feature-map.md`
-5. Feature Brief ที่เกี่ยวข้อง
-6. canonical docs/rules ที่ feature นั้น route ถึง
+5. active Feature Brief
+6. relevant canonical docs/rules
+7. active Spec Kit artifacts
 
-### Claude DEV
-
-1. `CLAUDE.md`
-2. `MASTER-PROMPT.md`
-3. `BLUEPRINT.md`
-4. `TECHNOLOGY.md` สำหรับ Plan/Tasks/Implementation และ technical rework
-5. `docs/09-feature-map.md`
-6. active Feature Brief
-7. relevant canonical docs/rules
-8. active Spec Kit artifacts
-
-### Codex Independent Reviewer
+### AGY implementation/review roles
 
 1. `AGENTS.md`
-2. `REVIEWER.md`
-3. relevant Business Authority
-4. `TECHNOLOGY.md` เมื่อ review Plan/technical implementation/deployment
-5. relevant Spec Kit artifacts
-6. exact reviewed diff/code/tests/evidence
+2. `MASTER-PROMPT.md`
+3. `MULTICA.md`
+4. `REVIEWER.md` when reviewing
+5. relevant Business Authority / Technology Direction
+6. exact active Spec Kit artifacts
+7. exact diff/tests/evidence for the authorized scope
 
-หลักคือ **progressive disclosure** — อ่านเฉพาะ context ที่จำเป็น ไม่โหลด/copy Blueprint ทั้งชุดเข้า feature spec โดยอัตโนมัติ
-
----
-
-## 6. Working model
-
-```text
-Product Owner
-    │
-    ├── authorizes business decisions / delivery scopes
-    │
-    └── human acceptance gate
-            │
-            ▼
-        Multica
-        coordination
-        / run history
-            │
-      ┌─────┴─────┐
-      ▼           ▼
-Claude Code     Codex
-DEV Executor    Independent Reviewer
-      │           │
-      └─────┬─────┘
-            ▼
-      GitHub Spec Kit
-            │
-            ▼
-        Repository
-```
-
-- **Product Owner** — final business authority และ human gate
-- **Claude Code** — default DEV Executor
-- **Codex** — default Independent Reviewer แบบ read-only
-- **GitHub Spec Kit** — SDD workflow + delivery artifacts
-- **Multica** — coordination / Issue / run history
-- **Git** — source/history ของ implementation
-
-Independent review เป็นข้อบังคับสำหรับ implementation scope แต่ **ไม่บังคับให้ต้องมี CHANGES REQUIRED ก่อน PASS**
+ใช้ progressive disclosure; ห้าม copy Blueprint ทั้งชุดเข้า feature spec โดยอัตโนมัติ
 
 ---
 
-## 7. Initialize Spec Kit in this repository
-
-Repository นี้เป็น non-empty repository ที่มี Blueprint baseline commit แล้ว จึงให้ตรวจ environment ก่อน init
-
-### 7.1 Check CLI and agent tools
-
-```bash
-specify check
-specify version --features
-```
-
-ถ้าต้องการตรวจว่ามี Specify CLI รุ่นใหม่หรือไม่:
-
-```bash
-specify self check
-```
-
-### 7.2 Initialize with Claude as default integration
-
-```bash
-specify init --here --force --integration claude
-```
-
-จากนั้นตรวจผลก่อนทำขั้นถัดไป:
-
-```bash
-git status
-git diff
-```
-
-### 7.3 Install Codex as additional integration
-
-```bash
-specify integration install codex
-specify integration status
-```
-
-การติดตั้ง integration เพิ่ม **ไม่เปลี่ยน default integration อัตโนมัติ** — workflow นี้ตั้งใจให้ Claude remain เป็น default delivery integration เว้นแต่ Product Owner สั่งเปลี่ยน
-
-Expected structure หลัง init/integration:
-
-```text
-.specify/          ← shared Spec Kit project infrastructure
-.claude/skills/    ← Claude integration
-.agents/skills/    ← Codex integration
-specs/             ← generated feature delivery artifacts
-```
-
----
-
-## 8. Delivery flow
-
-### Project-level
-
-```text
-Phase 0 — Repository / Blueprint Readiness
-→ Constitution (เมื่อยังไม่มีหรือ Product Owner ตั้งใจเปลี่ยน)
-```
-
-### Per feature
-
-```text
-Specify
-→ Clarify (conditional)
-→ Plan
-→ Checklist (conditional)
-→ Tasks
-→ Analyze
-→ Independent Delivery Readiness Review
-→ Authorized Implementation Scope Loop
-→ Converge
-→ Independent Final Feature Review
-→ Human Acceptance
-```
-
-รายละเอียด authoritative workflow อยู่ใน `MASTER-PROMPT.md`; README นี้เป็นเพียง entry point และไม่ควร duplicate workflow logic ทั้งหมด
-
----
-
-## 9. Authorized Implementation Scope
-
-Workflow v1.2.0 **ไม่บังคับ 1 Task = 1 Run**
-
-หนึ่ง implementation scope อาจเป็น:
-
-- task เดี่ยว
-- bounded same-Phase batch
-
-ใช้ batch เมื่อ dependency พร้อม, concern ต่อเนื่อง, verification ชัด และ diff ยัง review ได้อย่างมีคุณภาพ
-
-ให้ลด scope เมื่อเกี่ยวกับความเสี่ยงสูง เช่น:
-
-- security / authorization
-- transaction / concurrency
-- stock quantity / unit conversion
-- lifecycle/state transition
-- audit/evidence integrity
-- destructive migration
-- cross-feature business invariants
-
-Product Owner ต้อง authorize scope ก่อน implement และ Reviewer ต้อง review **exact authorized scope**
-
----
-
-## 10. Independent review gates
-
-Review contract canonical อยู่ที่ `REVIEWER.md`
-
-1. **Delivery Readiness Review** — หลัง Analyze ก่อน implementation
-2. **Implementation Scope Review** — หลังทุก authorized implementation scope/rework
-3. **Final Feature Review** — หลัง Converge ก่อน Human Acceptance
-
-Reviewer ใช้ verdict:
-
-- `PASS`
-- `CHANGES REQUIRED`
-- `REVIEW BLOCKED`
-
-Reviewer ไม่แก้ implementation/spec/Blueprint เองระหว่างทำหน้าที่ review
-
----
-
-## 11. File roles
+## 8. Repository governance files
 
 | File | Role |
 |---|---|
-| `BLUEPRINT.md` | top-level frozen business/system baseline |
-| `TECHNOLOGY.md` | project-wide selected technical baseline; subordinate to Business Authority |
+| `BLUEPRINT.md` | frozen business/system baseline |
+| `TECHNOLOGY.md` | selected technical baseline |
 | `docs/` | canonical cross-feature domain documentation |
 | `features/` | bounded delivery context + rule routing |
-| `MASTER-PROMPT.md` | project workflow contract |
-| `CLAUDE.md` | Claude DEV adapter |
-| `AGENTS.md` | Codex project adapter |
+| `.specify/memory/constitution.md` | project engineering constitution |
+| `MASTER-PROMPT.md` | end-to-end project workflow contract |
+| `AGENTS.md` | AGY role adapter and shared invariants |
 | `REVIEWER.md` | independent review contract |
-| `SHORT-PROMPTS.md` | concise phase/review/rework prompts |
-| `MULTICA.md` | coordination/routing conventions |
+| `MULTICA.md` | 3-role coordination/routing contract |
+| `SHORT-PROMPTS.md` | concise operational prompts |
 
-Agent implementation สามารถเปลี่ยนภายหลังได้ แต่ repository artifacts ยังคงเป็น project truth
-
----
-
-## 12. Repository artifact policy
-
-- canonical project truth อยู่ใน text/source artifacts บน repository `main`
-- ไม่ใช้ generated ZIP/binary package เป็น second source of truth
-- Spec Kit-generated directories/artifacts ถูกสร้างหลัง initialization ตาม workflow
-- หากมี distribution package ในอนาคต ให้ถือเป็น convenience artifact และต้อง derive จาก canonical repository state
-
+Repository text/source artifacts on `main` are canonical; generated packages are not a second source of truth
 
 ---
 
-## 13. Do not add back
+## 9. Anti-overengineering boundary
 
-หลีกเลี่ยงการสร้าง governance/architecture ซ้ำโดยไม่มี requirement จริง เช่น:
+Do not add without a current requirement:
 
-- forced `CHANGES REQUIRED`
-- custom review database/ledger
-- SHA/adoption orchestration protocol
-- duplicate `PROJECT-STATUS` สำหรับจำ workflow
-- Codex-as-orchestrator layer
-- Planner/Tester/Architect agents เพิ่มโดยไม่มี requirement
-- automatic whole-Phase implementation โดยไม่ประเมิน risk
-- Blueprint/Spec Kit content ที่ copy ซ้ำเข้า Multica
-- framework/abstraction เผื่ออนาคตที่ยังไม่มี current feature ใช้
+- microservices / Kubernetes / service mesh
+- event sourcing / generic event bus
+- generic workflow/BPM engine
+- generic shared-services framework
+- extra planner/tester/architect agents
+- custom review ledger or second state database
+- automatic whole-phase implementation without bounded authorization
+- one agent acting as both implementation author and independent reviewer
 
 ---
 
-## 14. First run after Spec Kit initialization
+## 10. Current start point
 
-Trigger Claude DEV ด้วย instruction:
+After Spec Kit bootstrap and Constitution are accepted, begin:
 
 ```text
-อ่าน CLAUDE.md, MASTER-PROMPT.md และ TECHNOLOGY.md แล้วดำเนินการ Phase 0 — Repository / Blueprint Readiness เท่านั้น ตรวจ Spec Kit integrations และ repository state รายงาน Phase Result แล้ว STOP
+Feature 001 — application-foundation
+Specify
+→ Clarify
+→ Plan
+→ Tasks
+→ Analyze
+→ Human Gate
+→ Multica AGY 3-role implementation
 ```
-
-จากนั้นใช้ `SHORT-PROMPTS.md` สำหรับ phase/scope/review/rework ถัดไป
-
----
-
-## 15. Ready-to-start criterion
-
-Blueprint พร้อมเริ่ม Spec Kit เมื่อ Product Owner ยืนยันว่า:
-
-1. scope / non-goals ถูกต้อง
-2. 14 feature boundaries ใช้เป็น starting decomposition ได้
-3. critical workflows ไม่มี business path สำคัญที่ทราบว่าขาด
-4. canonical Business Rules 252 ข้อไม่มีข้อที่ทราบว่าไม่ต้องการ
-
-สถานะ repository ปัจจุบันผ่านการจัด alignment ของ Blueprint documents และ Feature Briefs แล้ว และมี `TECHNOLOGY.md` เป็น selected technical baseline สำหรับเริ่ม Application Foundation Plan
-
-จากจุดนี้ให้ **หยุด recursive Blueprint review ที่ไม่มี trigger ใหม่** และใช้ Specify/Clarify ของ feature จริงเป็นจุดตัดสินรายละเอียดที่ยังเปิดอยู่
