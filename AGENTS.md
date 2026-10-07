@@ -34,8 +34,16 @@ the relevant documentation instead of relying on model memory.
 Use the configured Context7 MCP as the first documentation source when it
 supports the relevant technology.
 
-- The workspace MCP definition is `.agents/mcp_config.json`; the expected server
-  name is `context7`.
+- The repository-local MCP definition is `.agents/mcp_config.json`; the expected
+  server name is `context7`. This is used by direct Antigravity CLI sessions
+  whose active workspace root is this repository.
+- Multica launches Antigravity from its orchestration work directory and exposes
+  the repository as an added directory. In that topology, repository-local MCP
+  discovery is not sufficient. The `multica-agent` runtime MUST also provision
+  the same `context7` server globally at
+  `~/.gemini/config/mcp_config.json`.
+- The global runtime MCP file is host-local configuration and MUST NOT contain
+  committed credentials or be copied into this repository.
 - Resolve documentation for the actual library/tool and exact version relevant
   to the approved plan, manifest, lockfile, or authorized task.
 - Use Context7 to verify supported APIs, configuration, compatibility,

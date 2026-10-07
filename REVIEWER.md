@@ -97,6 +97,9 @@ Do not force REWORK for ceremony. PASS on first review is valid when evidence su
 For external documentation:
 
 - use Context7 first when the relevant technology is supported;
+- for Multica runs, confirm Context7 evidence came from the runtime-visible
+  global MCP configuration or record that Context7 was unavailable and an
+  authoritative first-party fallback was used;
 - resolve the actual authorized version;
 - fall back to authoritative first-party documentation or package metadata when
   Context7 is unavailable or insufficient;

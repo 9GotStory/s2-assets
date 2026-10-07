@@ -121,8 +121,21 @@ Context7 is the first documentation source for current or version-sensitive
 framework, library, SDK, API, database, container, and developer-tool behavior
 when the relevant technology is supported.
 
-The AGY workspace MCP definition is `.agents/mcp_config.json` with server name
-`context7`.
+The repository-local AGY MCP definition is `.agents/mcp_config.json` with
+server name `context7`. It supports direct AGY sessions started with this
+repository as the active workspace.
+
+For Multica execution, this is NOT sufficient by itself: Multica starts AGY
+from an orchestration work directory and exposes the checked-out repository as
+an added directory. Therefore the runtime account (`multica-agent`) MUST also
+configure `context7` globally in `~/.gemini/config/mcp_config.json`.
+Authentication/token material remains host-local and MUST NOT be committed.
+
+Before beginning a version-sensitive implementation task, runtime readiness
+should be demonstrated by a headless Context7 smoke test under the same
+`multica-agent` identity used by Multica. If Context7 is unavailable, the
+agent may use the documented authoritative first-party fallback but MUST report
+that Context7 was unavailable and why.
 
 Role requirements:
 

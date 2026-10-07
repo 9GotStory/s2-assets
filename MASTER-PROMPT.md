@@ -84,8 +84,13 @@ Do not load or duplicate the whole Blueprint by default.
 For current or version-sensitive framework/library/SDK/API/database/container
 tooling behavior, verify documentation rather than relying on model memory.
 
-- Use workspace Context7 MCP (`.agents/mcp_config.json`, server `context7`) as
-  the first documentation source when supported.
+- Use Context7 MCP (server `context7`) as the first documentation source when
+  supported.
+- `.agents/mcp_config.json` is the repository-local declaration for direct AGY
+  sessions. Multica's `multica-agent` runtime must additionally provision the
+  same server globally at `~/.gemini/config/mcp_config.json`, because Multica
+  executes AGY from an orchestration work directory rather than this repository
+  as the active workspace root.
 - Resolve the actual technology and exact version authorized by the Plan,
   manifest, lockfile, or task.
 - Verify supported APIs, configuration, compatibility and migration behavior
