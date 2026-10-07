@@ -41,9 +41,12 @@ supports the relevant technology.
   the repository as an added directory. In that topology, repository-local MCP
   discovery is not sufficient. The `multica-agent` runtime MUST also provision
   the same `context7` server globally at
-  `~/.gemini/config/mcp_config.json`.
+  `~/.gemini/config/mcp_config.json`. For headless Multica execution, prefer the
+  standard `https://mcp.context7.com/mcp` endpoint; OAuth is not the runtime
+  baseline because it requires interactive authorization state.
 - The global runtime MCP file is host-local configuration and MUST NOT contain
-  committed credentials or be copied into this repository.
+  committed credentials or be copied into this repository. If a Context7 API
+  key is used, provide it only through host-local headers/secret configuration.
 - Resolve documentation for the actual library/tool and exact version relevant
   to the approved plan, manifest, lockfile, or authorized task.
 - Use Context7 to verify supported APIs, configuration, compatibility,

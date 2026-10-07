@@ -90,7 +90,8 @@ tooling behavior, verify documentation rather than relying on model memory.
   sessions. Multica's `multica-agent` runtime must additionally provision the
   same server globally at `~/.gemini/config/mcp_config.json`, because Multica
   executes AGY from an orchestration work directory rather than this repository
-  as the active workspace root.
+  as the active workspace root. For this headless runtime, prefer the standard
+  `https://mcp.context7.com/mcp` endpoint; OAuth is not the baseline.
 - Resolve the actual technology and exact version authorized by the Plan,
   manifest, lockfile, or task.
 - Verify supported APIs, configuration, compatibility and migration behavior

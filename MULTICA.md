@@ -129,7 +129,10 @@ For Multica execution, this is NOT sufficient by itself: Multica starts AGY
 from an orchestration work directory and exposes the checked-out repository as
 an added directory. Therefore the runtime account (`multica-agent`) MUST also
 configure `context7` globally in `~/.gemini/config/mcp_config.json`.
-Authentication/token material remains host-local and MUST NOT be committed.
+For headless Multica execution, use the standard
+`https://mcp.context7.com/mcp` endpoint. OAuth is not the baseline for this
+runtime because it depends on interactive authorization state. Optional API-key
+headers remain host-local and MUST NOT be committed.
 
 Before beginning a version-sensitive implementation task, runtime readiness
 should be demonstrated by a headless Context7 smoke test under the same
