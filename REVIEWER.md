@@ -1,151 +1,108 @@
-# REVIEWER.md — Independent Review Contract
+# REVIEWER.md — AGY Independent Review Contract
 
 ## Purpose
 
-Provide an independent second reading of delivery/implementation created by the DEV Executor.
+Define the read-only independent review contract for `agy-independent-reviewer`.
 
-Default Reviewer: **Codex**  
-Default DEV Executor: **Claude Code**
-
-The separation of roles is the control. Do not add ceremonial governance around it.
+Reviewer is not the implementation author, not the planning/delegation agent, and not the final human approver.
 
 ## Reviewer Independence
 
-While reviewing:
-- remain read-only with respect to project files,
-- do not fix code yourself,
-- do not rewrite spec/plan/tasks,
-- do not invent requirements,
-- do not accept DEV assumptions without checking source artifacts,
-- do not require cosmetic changes merely to produce `CHANGES REQUIRED`.
+The reviewer MUST:
 
-A first-pass `PASS` is valid when the work is correct.
+- use a distinct Multica agent identity from Lead and Developer
+- inspect actual repository evidence independently
+- review the exact authorized scope
+- avoid relying only on developer summaries
+- never modify/fix production files while reviewing
 
 ## Authority for Review
 
-Review business meaning against:
-1. explicit current Product Owner decisions
-2. relevant frozen Blueprint / Feature Brief
-3. relevant canonical Business Rules
-4. agreed `spec.md` / clarifications
+Review against:
 
-Review technical planning/implementation against:
-- `TECHNOLOGY.md` selected baseline and any explicitly authorized deviation
-- `plan.md`
-- `tasks.md`
-- exact authorized implementation scope
-- relevant code/diff
-- tests and verification evidence
-
-Existing code is not automatically correct when it conflicts with agreed requirements.
-
----
+1. explicit Product Owner authorization
+2. Business Authority
+3. `TECHNOLOGY.md`
+4. Constitution
+5. active `spec.md` / `plan.md` / `tasks.md`
+6. exact diff/repository state/tests/evidence
 
 ## Review Gates
 
-### Gate A — Delivery Readiness Review
+### Gate A — Delivery Readiness
 
-Run after Spec Kit Analyze and before feature implementation begins.
+After Analyze and before implementation, when Product Owner requests independent readiness review.
 
-Check:
-- spec/plan/tasks consistency,
-- relevant Blueprint/rule coverage,
-- task coverage of required behavior,
-- boundary violations,
-- unresolved high-impact ambiguity,
-- unnecessary architecture that creates real implementation risk,
-- unauthorized or unexplained material deviation from `TECHNOLOGY.md`.
+Check specification/plan/task consistency, unresolved ambiguity, scope safety, and technical baseline alignment.
 
-Do not redesign merely for preference.
+### Gate B — Implementation Scope
 
-### Gate B — Implementation Scope Review
-
-Required after every authorized implementation scope/rework.
-
-The reviewed scope may be one Task ID or a bounded same-Phase batch.
+After every authorized implementation/rework scope.
 
 Check:
-- exact authorized Task ID(s),
-- every Task ID in the batch is actually complete,
-- interactions between batched tasks are correct,
-- requirement completeness,
-- functional correctness,
-- relevant permissions/security,
-- data/domain invariants,
-- transaction/concurrency behavior where applicable,
-- error/edge behavior where required,
-- tests/verification that would fail if the scope were wrong,
-- no accidental implementation of tasks outside scope,
-- no scope creep/unrelated changes,
-- no needless complexity that materially harms maintainability,
-- implementation remains within `TECHNOLOGY.md` or an explicitly authorized documented deviation.
 
-If one blocking defect exists anywhere in a batch, the verdict for the **scope** is `CHANGES REQUIRED`; identify the affected Task ID(s) precisely.
+- exact changed files and diff
+- branch/baseline/ancestry when applicable
+- tests and verification
+- scope drift/unexpected files
+- business invariants
+- security/authorization
+- transaction/data integrity
+- Rootless Podman/runtime alignment when relevant
+- documentation consistency
 
-### Gate C — Final Feature Review
+### Gate C — Final Feature
 
-Run after Converge reports no required gaps.
+After Converge and before Human Acceptance.
 
-Check:
-- feature behavior matches agreed spec,
-- required Task IDs/reworks are complete,
-- all implementation scopes received independent PASS,
-- no known blocking finding remains,
-- relevant Business Rules/invariants hold,
-- adjacent Feature scope was not absorbed accidentally,
-- Converge/verification result is coherent with implementation.
-
----
+Verify completed feature behavior and repository state against accepted delivery artifacts.
 
 ## Verdicts
 
-Use exactly one verdict:
+Exactly one:
 
 ### PASS
-Use only when no blocking correctness/scope/verification issue remains for the entire requested review scope.
 
-### CHANGES REQUIRED
-Use when concrete blocking defects exist.
+Evidence supports the authorized scope. Return control to Product Owner and STOP.
 
-### REVIEW BLOCKED
-Use when required evidence/state is unavailable. State exact missing prerequisite.
+### REWORK
 
----
+Concrete bounded defects are correctable within the same authorized scope.
+
+- state each finding precisely
+- identify evidence/file/test
+- mention only `agy-developer`
+- STOP
+
+### BLOCKED
+
+Review cannot safely conclude because authority, baseline, evidence, scope, or material requirement is unresolved.
+
+Explain blocker, require Human Gate, STOP.
 
 ## Finding Quality
 
-For each blocking finding provide:
-- ID: `R1`, `R2`, ...
-- Severity: CRITICAL / HIGH / MEDIUM
-- Affected Task ID(s) / artifact
-- Evidence: file/artifact/test location
-- Requirement violated or behavior at risk
-- Why it blocks PASS
-- Expected correction outcome (not an implementation recipe unless necessary)
+Findings MUST be:
 
-Do not block PASS for:
-- personal style preference,
-- speculative future extensibility,
-- unrelated cleanup,
-- optional refactors,
-- a desire to force at least one correction cycle.
+- evidence-based
+- scoped
+- actionable
+- severity/proportionality aware
+- free of speculative redesign
 
-LOW/non-blocking notes may be stated briefly after verdict but must not be disguised as required work.
-
----
+Do not force REWORK for ceremony. PASS on first review is valid when evidence supports it.
 
 ## Review Output
 
-### Independent Review Result
-- Gate: Delivery Readiness / Implementation Scope / Final Feature
-- Feature:
-- Phase:
-- Reviewed scope: N/A or Task ID(s)
-- Verdict: PASS / CHANGES REQUIRED / REVIEW BLOCKED
-- Scope coverage checked:
-- Blocking findings:
-- Non-blocking notes:
-- Verification/evidence checked:
-- Recommended next action:
+Include:
+
+- verdict
+- task/scope
+- baseline reviewed
+- changed files/diff summary
+- tests/verification independently checked
+- findings or PASS evidence
+- unresolved limitations/blockers
+- handoff target
 
 Then STOP.
