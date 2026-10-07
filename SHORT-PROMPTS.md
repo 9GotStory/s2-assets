@@ -102,3 +102,13 @@ Plain `@name` and `mention://agent/<name>` are not valid triggers.
 Do not start/restart the host daemon from inside a run. If runtime-managed
 repository checkout fails, return BLOCKED; do not hide the failure with an
 unmanaged manual clone into scratch.
+
+## Single-Target Trigger Rule
+
+One trigger comment = one executable structured mention.
+
+- Human → Lead: only Lead is executable in that comment.
+- Lead → Developer: only Developer is executable in that comment.
+- Developer → Reviewer: only Reviewer is executable in that comment.
+- Never include a later/downstream structured mention in the same comment, even
+  as an example or instruction.

@@ -1,6 +1,6 @@
 # MASTER PROMPT — GitHub Spec Kit + AGY 3-Role Review
 ## Office Asset & Consumable Management System
-Version: **3.5**
+Version: **3.6**
 Blueprint: **v1.0.2 FROZEN**
 Technology: **v1.0.1 SELECTED BASELINE**
 
@@ -248,6 +248,10 @@ Use these exact forms:
 Never emit `mention://agent/<display-name>`. If the exact UUID cannot be
 verified, STOP rather than publishing a handoff that looks correct but cannot
 trigger the target agent.
+
+- Every trigger/handoff comment MUST contain exactly one executable structured agent mention.
+- Never include a downstream agent structured mention in the same comment, even as an example, quoted instruction, or future-step template.
+- Human → Lead comments mention only Lead; Lead → Developer comments mention only Developer; Developer → Reviewer comments mention only Reviewer.
 
 ## 16. Developer Execution
 

@@ -81,6 +81,10 @@ Canonical role mentions:
 Do not synthesize a mention URI from the display name. If the target UUID cannot
 be verified, STOP instead of posting a non-triggering handoff.
 
+- Every trigger/handoff comment MUST contain exactly one executable structured agent mention.
+- Never include a downstream agent structured mention in the same comment, even as an example, quoted instruction, or future-step template.
+- Human → Lead comments mention only Lead; Lead → Developer comments mention only Developer; Developer → Reviewer comments mention only Reviewer.
+
 ## Shared Invariants
 
 - Developer != Reviewer.

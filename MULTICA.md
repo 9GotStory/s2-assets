@@ -64,6 +64,10 @@ must be the exact agent UUID.
 
 Never guess or synthesize mention markdown from a display name.
 
+- Every trigger/handoff comment MUST contain exactly one executable structured agent mention.
+- Never include a downstream agent structured mention in the same comment, even as an example, quoted instruction, or future-step template.
+- Human → Lead comments mention only Lead; Lead → Developer comments mention only Developer; Developer → Reviewer comments mention only Reviewer.
+
 ## 3. Human Gate Semantics
 
 A Product Owner-assigned Multica task created after accepted Spec Kit Analyze is already authorized for inspection, coordination and delegation within its exact scope.
