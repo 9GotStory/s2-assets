@@ -1,7 +1,7 @@
 # TECHNOLOGY.md — Project Technology Direction
 ## Office Asset & Consumable Management System
 
-Version: **1.0.0**  
+Version: **1.0.1**  
 Status: **SELECTED BASELINE**
 
 > Technical direction สำหรับการพัฒนา `s2-assets`. เอกสารนี้ไม่ใช่ Business Authority และไม่เปลี่ยนความหมายของ Blueprint/Business Rules
@@ -236,19 +236,61 @@ PostgreSQL native indexing/search capabilities ให้ใช้ก่อนจ
 
 ---
 
-## 9. Container and Deployment
+## 9. Container, Development Runtime, and Deployment
 
 ### Selected baseline
 
 | Concern | Technology |
 |---|---|
 | Image format | **OCI-compatible Containerfile/image** |
+| Development container runtime | **Rootless Podman** |
 | Production container runtime | **Rootless Podman** |
-| Service management | **systemd + Quadlet** |
+| Production service management | **systemd + Quadlet** |
 | Image registry | **GHCR** |
 | Reverse proxy | **Deferred to Plan; Caddy preferred when no infrastructure standard exists** |
 
 Application ต้องไม่เขียนให้ผูกกับ Podman API โดยตรง; OCI image ควรรันกับ compatible runtime ได้
+
+### Development environment
+
+Local development MUST use **Rootless Podman** as the application runtime baseline.
+
+The source repository, Git worktrees, GitHub Spec Kit, Multica, and AI agents remain on the host operating system. Application services and infrastructure dependencies execute in Rootless Podman containers.
+
+Baseline development topology:
+
+```text
+Fedora Host
+├── Git repository / worktrees
+├── GitHub Spec Kit
+├── Multica
+├── AGY agents
+│
+└── Rootless Podman
+    ├── web
+    ├── api
+    └── PostgreSQL
+```
+
+Development principles:
+
+- ไม่ require PostgreSQL ที่ติดตั้งบน host สำหรับ normal development
+- ไม่ require host-installed application Node.js dependencies สำหรับ normal development
+- ใช้ bind mount หรือ equivalent development mount เมื่อเหมาะสมสำหรับ source-driven hot reload
+- development/test commands ที่พึ่ง application runtime หรือ database state ให้รันใน containers
+- ใช้ runtime/database major line เดียวกับ selected project baseline
+- แยก development tooling ออกจาก production image stage เมื่อ production ไม่จำเป็นต้องใช้
+- container configuration ต้องคง OCI-compatible และห้ามผูก application เข้ากับ Podman API โดยตรง
+- persistent development data ใช้ explicit named volumes หรือ equivalent managed storage
+- secrets ห้าม commit ลง image, Containerfile, Compose-compatible configuration หรือ repository
+
+### Development orchestration
+
+Application Foundation Plan ต้องกำหนด local development orchestration ที่เรียบง่ายที่สุดและเพียงพอสำหรับ Rootless Podman
+
+สามารถใช้ Podman-compatible Compose configuration หรือ repository scripts ขนาดเล็กได้ แต่ห้ามสร้าง Kubernetes, custom orchestration framework หรือบังคับใช้ systemd/Quadlet สำหรับ day-to-day development โดยไม่มี requirement จริง
+
+**Quadlet เป็น production service-management baseline ไม่ใช่ requirement สำหรับ ordinary local development.**
 
 ### Expected production topology
 
@@ -405,6 +447,12 @@ Feature `01-application-foundation` Plan ต้องยืนยันอย่
 - session storage/schema
 - secrets/configuration strategy
 - production filesystem/volume layout
+- development Containerfile/stage strategy
+- Rootless Podman local development topology
+- source bind-mount / hot-reload strategy
+- development PostgreSQL volume lifecycle
+- development/test command entrypoints
+- container UID/GID and filesystem permission strategy
 - backup/restore implementation
 - health/readiness contract
 - CI checks และ image build/publish strategy
