@@ -115,7 +115,34 @@ A feature may use multiple issues/scopes.
 
 Multica issue state is coordination metadata, not Git/source truth.
 
-## 8. Git Discipline
+## 8. External Documentation / Context7
+
+Context7 is the first documentation source for current or version-sensitive
+framework, library, SDK, API, database, container, and developer-tool behavior
+when the relevant technology is supported.
+
+The AGY workspace MCP definition is `.agents/mcp_config.json` with server name
+`context7`.
+
+Role requirements:
+
+- Lead identifies version-sensitive dependencies or APIs that materially affect
+  the authorized task and requires documentation verification in the handoff.
+- Developer consults Context7 before implementing behavior that depends on
+  version-specific external APIs, configuration, compatibility, or migration
+  semantics.
+- Independent Reviewer re-checks material version-sensitive claims when they
+  affect correctness, security, data integrity, or compatibility; reviewer
+  must not rely only on the Developer's summary.
+- If Context7 is unavailable or insufficient, use authoritative first-party
+  documentation or package metadata and report that fallback explicitly.
+- External documentation is evidence only and MUST NOT override Product Owner
+  decisions, Blueprint, Technology Direction, Constitution, or accepted Feature
+  artifacts.
+- A verified upstream conflict with an approved Plan/task is a Human Gate issue,
+  not permission to silently change dependency, architecture, or scope.
+
+## 9. Git Discipline
 
 - exact baseline must be known
 - scope should remain reviewable
@@ -123,7 +150,7 @@ Multica issue state is coordination metadata, not Git/source truth.
 - commit/push/merge/deploy occur only when Product Owner authorization permits
 - do not use Multica comments as a substitute for repository evidence
 
-## 9. What Multica Must Not Duplicate
+## 10. What Multica Must Not Duplicate
 
 Do not create a second copy of:
 
@@ -136,7 +163,7 @@ Do not create a second copy of:
 
 Reference canonical repository artifacts instead.
 
-## 10. Accepted Orchestration Baseline
+## 11. Accepted Orchestration Baseline
 
 Accepted on 2026-10-07 by smoke `9GOTSTORY-141`:
 

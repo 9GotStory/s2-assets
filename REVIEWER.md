@@ -15,6 +15,7 @@ The reviewer MUST:
 - review the exact authorized scope
 - avoid relying only on developer summaries
 - never modify/fix production files while reviewing
+- independently verify material version-sensitive external claims through Context7 when supported, rather than relying only on developer claims
 
 ## Authority for Review
 
@@ -50,6 +51,7 @@ Check:
 - transaction/data integrity
 - Rootless Podman/runtime alignment when relevant
 - documentation consistency
+- version-sensitive framework/library/tooling claims and compatibility evidence when material
 
 ### Gate C — Final Feature
 
@@ -91,6 +93,16 @@ Findings MUST be:
 - free of speculative redesign
 
 Do not force REWORK for ceremony. PASS on first review is valid when evidence supports it.
+
+For external documentation:
+
+- use Context7 first when the relevant technology is supported;
+- resolve the actual authorized version;
+- fall back to authoritative first-party documentation or package metadata when
+  Context7 is unavailable or insufficient;
+- treat external documentation as technical evidence, not Product authority;
+- BLOCK rather than silently accept a material upstream conflict with the
+  approved Plan/task.
 
 ## Review Output
 

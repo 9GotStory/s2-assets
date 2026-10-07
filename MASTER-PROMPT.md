@@ -79,6 +79,25 @@ Do not load or duplicate the whole Blueprint by default.
 
 ---
 
+## 3A. External Documentation and Context7
+
+For current or version-sensitive framework/library/SDK/API/database/container
+tooling behavior, verify documentation rather than relying on model memory.
+
+- Use workspace Context7 MCP (`.agents/mcp_config.json`, server `context7`) as
+  the first documentation source when supported.
+- Resolve the actual technology and exact version authorized by the Plan,
+  manifest, lockfile, or task.
+- Verify supported APIs, configuration, compatibility and migration behavior
+  before making version-sensitive decisions or implementation changes.
+- If Context7 is unavailable or insufficient, use authoritative first-party
+  upstream documentation or authoritative package metadata and report the
+  fallback source.
+- External documentation is technical evidence, never Product authority.
+- If verified upstream behavior conflicts with an approved Plan or task, STOP
+  and return the conflict to the current Human Gate instead of inventing a
+  workaround, dependency substitution, or architecture change.
+
 ## 4. Non-Negotiable Rules
 
 1. One active Feature at a time.
@@ -96,6 +115,7 @@ Do not load or duplicate the whole Blueprint by default.
 13. Implementation author MUST NOT independently approve its own work.
 14. Independent Reviewer MUST inspect repository evidence, not only developer claims.
 15. No commit/push/merge/deploy unless the exact authorization permits it.
+16. Version-sensitive external behavior MUST be verified through Context7 first when supported, with authoritative first-party fallback when necessary.
 
 ---
 
@@ -205,6 +225,8 @@ If scope is ambiguous or materially conflicts with authority, return `HANDOFF_BL
 
 - implements only the delegated scope
 - preserves architecture and business meaning
+- verifies version-sensitive external APIs/configuration through Context7 before relying on them
+- records material documentation evidence or authoritative fallback when relevant
 - runs required tests/verification
 - inspects final diff
 - does not expand scope opportunistically
@@ -226,6 +248,7 @@ No overall reviewer verdict is emitted by Developer.
 - security/integrity concerns
 - unexpected files/commits
 - documentation consistency when relevant
+- independent verification of material version-sensitive external claims through Context7 or authoritative first-party sources when relevant
 
 Verdict is exactly one of:
 
