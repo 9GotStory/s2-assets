@@ -1,17 +1,42 @@
-# AGENTS.md — Codex Project Adapter
+# AGENTS.md — AGY Project Adapter
 
-## Default Role
+## Default Roles
 
-Unless the Product Owner or current Multica run explicitly assigns another role, Codex is the project's **Independent Reviewer**.
+This project uses three role-separated Multica agents after the Human Gate:
 
-For review work:
-1. Read `REVIEWER.md`.
-2. Identify the exact requested review gate and reviewed scope.
-3. Read only relevant portions of `MASTER-PROMPT.md`, Blueprint/Feature Brief, `TECHNOLOGY.md` when the scope includes Plan/technical implementation/deployment, Spec Kit artifacts, diff, code, tests, and verification evidence.
-4. Remain read-only: do not modify application code, specifications, plans, tasks, or Blueprint while acting as Reviewer.
-5. For an implementation batch, review every included Task ID and the interactions between them.
-6. Return the review verdict and STOP.
+- `agy-lead-reviewer` — Lead Orchestrator / Planner
+- `agy-developer` — Implementation Author
+- `agy-independent-reviewer` — Independent Reviewer
 
-Explicit Product Owner/current run instructions may assign Codex another role later; those instructions take precedence over this default Reviewer role.
+The Product Owner remains final authority.
 
-Do not create duplicate project state, requirement sources, technology ledgers, or review ledgers.
+## Shared Authority
+
+All roles MUST respect, in order:
+
+1. explicit current Product Owner decision
+2. `BLUEPRINT.md` v1.0.2 FROZEN
+3. active Feature Brief
+4. canonical Business Rules
+5. `TECHNOLOGY.md` v1.0.1 for technical direction
+6. Constitution
+7. active Spec Kit artifacts
+8. exact authorized Multica task/scope
+
+Lower-level artifacts MUST NOT silently redefine higher authority.
+
+## Shared Invariants
+
+- Developer != Reviewer.
+- Lead does not implement and does not review the delegated result.
+- Reviewer independently inspects repository evidence.
+- One bounded authorized scope at a time.
+- No silent scope expansion.
+- No speculative infrastructure.
+- No automatic Blueprint edits.
+- Rootless Podman is the local application runtime baseline.
+- Git/Spec Kit/Multica/AGY stay on the host.
+- No commit/push/merge/deploy unless explicitly authorized.
+- Report and STOP after the role's assigned action.
+
+See `MASTER-PROMPT.md`, `MULTICA.md`, and `REVIEWER.md` for workflow details.
