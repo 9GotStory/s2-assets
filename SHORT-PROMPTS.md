@@ -112,3 +112,15 @@ One trigger comment = one executable structured mention.
 - Developer → Reviewer: only Reviewer is executable in that comment.
 - Never include a later/downstream structured mention in the same comment, even
   as an example or instruction.
+
+## Ownership Rule
+
+Agents never run `multica issue assign`. Assignment/unassignment is Human-only.
+If an issue is agent-assigned at handoff time, STOP/BLOCK for Human correction.
+
+## Interruption Rule
+
+After any stream/provider interruption, inspect issue state + comments + runs +
+timeline before any side effect. Never redelegate, republish a result, or
+repeat a verdict when server-side evidence shows that exact transition already
+occurred. Git state alone is not enough.

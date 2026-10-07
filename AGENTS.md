@@ -123,3 +123,51 @@ be verified, STOP instead of posting a non-triggering handoff.
   ad-hoc manual `git clone` into scratch or another unmanaged path.
 
 See `MASTER-PROMPT.md`, `MULTICA.md`, and `REVIEWER.md` for workflow details.
+
+## Multica Ownership Boundary
+
+Issue assignment is Human-only orchestration control.
+
+- Agents MUST NOT run `multica issue assign` to assign or unassign themselves,
+  another agent, a squad, or a member.
+- Agents MUST NOT claim persistent issue ownership as part of starting,
+  continuing, reviewing, retrying, or recovering a task.
+- Human-triggered implementation chains SHOULD begin with the issue unassigned
+  (or Human-owned where supported) and use exactly one structured mention per
+  transition.
+- Before any agent-to-agent handoff, inspect current issue state. If the issue
+  is assigned to an agent, STOP and return `BLOCKED` for Human correction;
+  do not hand off while persistent agent ownership remains.
+- Status changes do not imply ownership and MUST NOT be paired with an
+  assignment operation by an agent.
+
+## Stream-Interruption Recovery Guard
+
+A provider/stream interruption is ambiguous completion, never proof that the
+previous external action failed.
+
+On any run whose trigger, context, or history mentions an interruption,
+continuation, retry, replay, or prior failed run, the agent MUST inspect
+server-side state before any externally visible action:
+
+1. `multica issue get <issue>`
+2. `multica issue comment list <issue>` including the relevant thread
+3. `multica issue runs <issue> --full-id`
+4. `multica issue timeline <issue> --full-id`
+
+The agent MUST then determine whether the exact transition/result already
+exists. If an existing comment, trigger, delegated child run, implementation
+result, reviewer verdict, commit SHA, or other server-side evidence proves the
+transition happened, the agent MUST NOT repeat the comment, mention,
+delegation, status change, commit, push, or other side effect.
+
+In particular:
+
+- Lead MUST NOT redelegate merely because a Developer run ended with
+  `The stream was interrupted`.
+- Developer MUST NOT republish an `IMPLEMENTATION_RESULT` or Reviewer handoff
+  already present for the same candidate.
+- Reviewer MUST NOT republish PASS/BLOCKED for the same candidate, and MUST NOT
+  re-trigger Lead after a terminal verdict.
+- If server-side evidence is insufficient to establish safe at-most-once
+  behavior, STOP and return `BLOCKED` for Human inspection instead of replay.

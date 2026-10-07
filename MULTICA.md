@@ -68,6 +68,39 @@ Never guess or synthesize mention markdown from a display name.
 - Never include a downstream agent structured mention in the same comment, even as an example, quoted instruction, or future-step template.
 - Human → Lead comments mention only Lead; Lead → Developer comments mention only Developer; Developer → Reviewer comments mention only Reviewer.
 
+## 2B. Human-Only Issue Assignment
+
+Issue assignment is Human-only orchestration control.
+
+- No agent may invoke `multica issue assign` for itself or any other target.
+- An agent MUST NOT pair task startup with self-assignment.
+- The normal chain is driven by single-target structured mentions while the
+  issue remains unassigned (or Human-owned where supported).
+- Before a downstream handoff, the current agent MUST inspect the issue. If
+  `assignee_type=agent`, it MUST STOP/BLOCK for Human correction rather than
+  hand off under persistent agent ownership.
+
+## 2C. Interruption/Replay Barrier
+
+A stream/provider interruption is ambiguous completion.
+
+Before any retry, continuation, or recovery action, inspect the server-side
+issue, comments/thread, runs, and timeline. Git state alone is insufficient.
+
+For the transition key
+`{task-or-scope, candidate-or-baseline, from-role, to-role}`:
+
+- if the handoff comment already exists, do not repost it;
+- if a child run already exists for that handoff, do not retrigger it;
+- if an implementation result already exists for the candidate, do not
+  republish it;
+- if a Reviewer PASS/BLOCKED already exists for the candidate, automation is
+  terminal and no agent may be triggered afterward.
+
+Lead MUST NOT interpret a Developer stream interruption by itself as authority
+to redelegate. If safe at-most-once recovery cannot be established from
+server-side evidence, return BLOCKED to the Human Product Owner.
+
 ## 3. Human Gate Semantics
 
 A Product Owner-assigned Multica task created after accepted Spec Kit Analyze is already authorized for inspection, coordination and delegation within its exact scope.

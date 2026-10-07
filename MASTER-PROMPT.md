@@ -1,6 +1,6 @@
 # MASTER PROMPT — GitHub Spec Kit + AGY 3-Role Review
 ## Office Asset & Consumable Management System
-Version: **3.6**
+Version: **3.7**
 Blueprint: **v1.0.2 FROZEN**
 Technology: **v1.0.1 SELECTED BASELINE**
 
@@ -252,6 +252,39 @@ trigger the target agent.
 - Every trigger/handoff comment MUST contain exactly one executable structured agent mention.
 - Never include a downstream agent structured mention in the same comment, even as an example, quoted instruction, or future-step template.
 - Human → Lead comments mention only Lead; Lead → Developer comments mention only Developer; Developer → Reviewer comments mention only Reviewer.
+
+## 15B. Human-Only Ownership Contract
+
+Multica issue assignment is Human-only.
+
+Agents MUST NOT call `multica issue assign`, including self-assignment at the
+start of a run. Structured mentions are the execution-routing mechanism; issue
+ownership must not be used as implicit routing state.
+
+Before an agent-to-agent handoff, inspect current issue state. If the issue is
+assigned to an agent, STOP/BLOCK for Human correction and do not create the
+handoff.
+
+## 15C. Mandatory Recovery Read-Set
+
+On any continuation/retry after a stream/provider interruption, repository
+state alone is insufficient. Before any side effect, read:
+
+- current issue state;
+- current comments / relevant trigger thread;
+- full run history;
+- timeline.
+
+If server-side evidence shows the exact result or transition already happened,
+do not repeat it. A failed/interrupted run status never overrides evidence that
+its externally visible handoff/result was already published.
+
+Lead MUST NOT redelegate solely because Developer ended with a stream
+interruption. Developer MUST NOT republish an existing implementation result or
+Reviewer handoff. Reviewer PASS/BLOCKED remains terminal.
+
+If uniqueness cannot be established safely, return BLOCKED for Human
+inspection.
 
 ## 16. Developer Execution
 

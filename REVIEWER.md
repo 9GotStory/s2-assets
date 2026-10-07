@@ -145,3 +145,12 @@ server-side issue/comment state. A local stream interruption is ambiguous
 completion and MUST NOT cause a verdict or downstream mention to be replayed.
 
 Then STOP.
+
+## Ownership and Terminal-State Guard
+
+- Reviewer MUST NOT assign/unassign the issue or any agent.
+- PASS/BLOCKED is terminal for automation and contains no executable agent
+  mention.
+- Before publishing a verdict after any interruption/retry, inspect server-side
+  comments, runs, and timeline; do not duplicate an existing verdict for the
+  same candidate.
