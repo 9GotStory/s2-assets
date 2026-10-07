@@ -46,14 +46,16 @@ Sync Impact Report:
 Pre-implementation delivery MUST follow the Spec Kit workflow:
 `Specify → Clarify when needed → Plan → Checklist when useful → Tasks → Analyze → Human Gate`
 
-After Human Gate, authorized implementation uses the AGY 3-role chain:
-`agy-lead-reviewer → agy-developer → agy-independent-reviewer → Human Product Owner`
+After Human Gate, authorized implementation uses the AGY 2-role chain:
+`agy-lead-reviewer → agy-developer → agy-lead-reviewer → Human Product Owner`
 
 **Required invariants:**
-- Developer MUST NOT independently approve its own implementation.
-- Lead MUST NOT implement or independently review the delegated result.
-- Independent Reviewer MUST inspect actual repository evidence, not rely solely on developer claims.
-- Product Owner remains the final acceptance authority.
+- `agy-lead-reviewer` coordinates the bounded handoff and later performs review, but MUST NOT implement or modify the delegated result.
+- `agy-developer` implements/reworks only and MUST NOT approve its own work.
+- Review MUST inspect actual repository evidence independently rather than rely only on developer claims.
+- PASS/BLOCKED returns control to the Human Product Owner; Human remains final acceptance authority.
+- REWORK may return bounded findings to `agy-developer`, followed by another Lead/Reviewer review.
+- A separate third reviewer agent is not required for the normal s2-assets workflow.
 - No commit, push, merge, deploy, or destructive action is allowed unless the exact authorization explicitly permits it.
 
 ## Governance
@@ -67,4 +69,4 @@ After Human Gate, authorized implementation uses the AGY 3-role chain:
   - PATCH: Clarification with no change in meaning.
 - **Justified Deviations:** Any justified deviations MUST be explicit, proportionate, and MUST NOT silently override Business Authority or Technology Direction.
 
-**Version**: 1.0.0 | **Ratified**: 2026-10-07 | **Last Amended**: 2026-10-07
+**Version**: 2.0.0 | **Ratified**: 2026-10-07 | **Last Amended**: 2026-10-07

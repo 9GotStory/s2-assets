@@ -1,12 +1,11 @@
 # Office Asset & Consumable Management System
 
-> Canonical Blueprint baseline สำหรับพัฒนาระบบครุภัณฑ์สำนักงานและวัสดุสิ้นเปลืองด้วย GitHub Spec Kit, AGY/Antigravity และ Multica 3-role coordination
+> Canonical Blueprint baseline สำหรับพัฒนาระบบครุภัณฑ์สำนักงานและวัสดุสิ้นเปลืองด้วย GitHub Spec Kit, AGY/Antigravity และ Multica 2-role coordination
 
 | Baseline | Value |
 |---|---|
 | Blueprint | **v1.0.2 — FROZEN** |
-| Workflow | **v1.3.0 — AGY 3-role** |
-| Master Prompt | **v3.3** |
+| Workflow | **v2.0.0 — AGY 2-role (Songhealth-style)** |
 | Technology Direction | **`TECHNOLOGY.md` v1.0.1 — SELECTED BASELINE** |
 | Business Rules | **252 canonical rules** |
 | Delivery decomposition | **14 Feature Briefs** |
@@ -85,31 +84,30 @@ Constitution
 
 ### After Human Gate
 
-ใช้ Multica native 3-role chain:
+ใช้ Multica/AGY 2-role pattern แบบเดียวกับ Songhealth โดย runtime ยังเป็น AGY:
 
 ```text
 Human Product Owner
         ↓
 agy-lead-reviewer
-Gemini 3.1 Pro High
+(Codex-equivalent coordination)
         ↓
 agy-developer
-Gemini 3.8 Flash High
+(Claude-equivalent implementation)
         ↓
-agy-independent-reviewer
-Gemini 3.1 Pro High
+agy-lead-reviewer
+(independent review run)
         ↓
 Human Acceptance
 ```
 
-Role separation เป็น mandatory:
+Role separation:
 
-- `agy-lead-reviewer` — planning/handoff/orchestration only after Human Gate
+- `agy-lead-reviewer` — coordination/handoff ก่อน implementation และ review หลัง Developer
 - `agy-developer` — exact authorized implementation/rework only
-- `agy-independent-reviewer` — fresh independent review only
-- Product Owner — final business authority, Human Gate และ final acceptance
+- Product Owner — Human Gate และ final acceptance
 
-Developer และ Reviewer ต้องเป็นคนละ Multica agent identity และ reviewer ต้องตรวจ evidence/repository จริง ไม่อาศัย developer summary อย่างเดียว
+Lead/Reviewer ห้าม implement ผลงานที่ตนจะ review และ Developer ห้าม approve งานของตัวเอง จึงคง independence ระหว่าง implementation author กับ reviewer โดยไม่ต้องมี third reviewer agent.
 
 ---
 
@@ -201,12 +199,10 @@ Feature sequencing canonical อยู่ที่ `docs/09-feature-map.md`
 ### AGY implementation/review roles
 
 1. `AGENTS.md`
-2. `MASTER-PROMPT.md`
-3. `MULTICA.md`
-4. `REVIEWER.md` when reviewing
-5. relevant Business Authority / Technology Direction
-6. exact active Spec Kit artifacts
-7. exact diff/tests/evidence for the authorized scope
+2. `CLAUDE.md` เพิ่มเติมสำหรับ `agy-developer`
+3. relevant Business Authority / Technology Direction
+4. exact active Spec Kit artifacts
+5. exact diff/tests/evidence for the authorized scope
 
 ใช้ progressive disclosure; ห้าม copy Blueprint ทั้งชุดเข้า feature spec โดยอัตโนมัติ
 
@@ -221,11 +217,8 @@ Feature sequencing canonical อยู่ที่ `docs/09-feature-map.md`
 | `docs/` | canonical cross-feature domain documentation |
 | `features/` | bounded delivery context + rule routing |
 | `.specify/memory/constitution.md` | project engineering constitution |
-| `MASTER-PROMPT.md` | end-to-end project workflow contract |
-| `AGENTS.md` | AGY role adapter and shared invariants |
-| `REVIEWER.md` | independent review contract |
-| `MULTICA.md` | 3-role coordination/routing contract |
-| `SHORT-PROMPTS.md` | concise operational prompts |
+| `AGENTS.md` | shared repository contract + AGY Lead/Reviewer coordination |
+| `CLAUDE.md` | AGY Developer executor contract using the Songhealth Claude-role pattern |
 
 Repository text/source artifacts on `main` are canonical; generated packages are not a second source of truth
 
@@ -258,5 +251,5 @@ Specify
 → Tasks
 → Analyze
 → Human Gate
-→ Multica AGY 3-role implementation
+→ Multica AGY 2-role implementation
 ```
