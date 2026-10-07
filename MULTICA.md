@@ -42,7 +42,12 @@ Human Product Owner
   → Human Product Owner
 ```
 
-No manual trigger is required between correctly routed agent runs.
+Agent-to-agent transitions are explicit and at-most-once. Do not use a
+persistent agent assignee as an implicit fallback router between roles.
+
+The implementation issue should remain Human-owned or unassigned while the
+multi-agent chain is in progress. Starting a role does not grant that role
+persistent ownership of later comments.
 
 ## 3. Human Gate Semantics
 
@@ -71,13 +76,29 @@ Lead MUST:
 
 Before publishing, compose and validate the complete delegation.
 
+Use the transition key:
+
+```text
+{task-or-scope, candidate-or-baseline, from-role, to-role}
+```
+
+Before any handoff comment or active mention, inspect current server-side issue
+and comment history. If that transition key has already been published, do not
+publish or mention it again.
+
 After publication:
 
 - never edit/delete the delegation comment
 - never replace it with another delegation
-- never publish a second implementation delegation for the same scope in the same run
+- never publish a second implementation delegation for the same transition key
+- never treat a local stream interruption as proof that the server-side
+  delegation failed
 
 Agent mentions are execution triggers and are immutable once published.
+
+If a run resumes/retries after an interruption, it MUST verify whether the
+handoff already exists before taking any external side effect. If existence
+cannot be determined safely, STOP and require Human intervention.
 
 Reviewer routing in the Lead comment should be plain text only; Developer performs the active reviewer mention.
 
@@ -93,9 +114,16 @@ Developer result MUST include:
 - exact results
 - blockers/limitations
 
-Then actively mention `agy-independent-reviewer` and STOP.
+Before the reviewer handoff, inspect current server-side issue/comment history
+for the exact Developer → Reviewer transition key. If it already exists, do not
+mention the reviewer again.
 
-On REWORK, correct only cited findings within the same authorized scope and return to the same reviewer role.
+Then actively mention `agy-independent-reviewer` exactly once and STOP.
+
+On REWORK, correct only cited findings within the same authorized scope and
+return to the same reviewer role using a new corrective-result identity (for
+example, a new candidate commit SHA). A resumed run MUST NOT replay the prior
+Reviewer handoff.
 
 ## 6. Reviewer Routing
 
@@ -103,9 +131,18 @@ Reviewer:
 
 - inspects actual evidence independently
 - never edits production files
-- on `REWORK`, mentions only `agy-developer`
-- on `PASS`, returns control to Product Owner
-- on `BLOCKED`, requires Human Gate
+- checks server-side history before publishing a verdict after any resume/retry
+- on `REWORK`, mentions only `agy-developer`, at most once for that exact
+  finding set/candidate
+- on `PASS`, publishes the terminal verdict without any agent mention and
+  returns control to Product Owner
+- on `BLOCKED`, publishes the terminal verdict without any agent mention and
+  requires Human Gate
+- never re-posts an already published verdict for the same candidate merely
+  because the local provider stream was interrupted
+- never routes a terminal verdict back to Lead
+
+`PASS` and `BLOCKED` are terminal for automated orchestration.
 
 ## 7. Issue Strategy
 
@@ -114,6 +151,11 @@ Prefer one Multica Issue per authorized implementation scope when that keeps evi
 A feature may use multiple issues/scopes.
 
 Multica issue state is coordination metadata, not Git/source truth.
+
+During the role chain, the issue MUST NOT keep an agent as a persistent assignee
+or other implicit routing target. Use explicit transitions only. If the runtime
+cannot continue without an agent assignee, STOP and require Human/operator
+intervention rather than accepting implicit comment routing.
 
 ## 8. External Documentation / Context7
 
@@ -190,3 +232,9 @@ Accepted on 2026-10-07 by smoke `9GOTSTORY-141`:
 - no `cancelled_by_comment_change`
 - no repository modifications in smoke
 - Reviewer PASS returned to Human Product Owner
+
+A later interrupted-stream incident on T002 demonstrated that successful
+provider-side side effects can outlive a failed local stream. The contract now
+therefore requires resume-safe, at-most-once handoffs and terminal verdicts.
+No role may replay a previously published transition merely to recover from a
+stream interruption.

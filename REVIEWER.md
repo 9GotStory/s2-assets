@@ -65,7 +65,15 @@ Exactly one:
 
 ### PASS
 
-Evidence supports the authorized scope. Return control to Product Owner and STOP.
+Evidence supports the authorized scope.
+
+PASS is terminal for automation. Before publishing, inspect server-side
+issue/comment history for the exact candidate. Publish PASS at most once, use no
+agent mention, trigger no further role, return control to Product Owner, and
+STOP.
+
+If PASS is already present after a resumed/retried provider session, do not
+re-post it.
 
 ### REWORK
 
@@ -73,14 +81,17 @@ Concrete bounded defects are correctable within the same authorized scope.
 
 - state each finding precisely
 - identify evidence/file/test
-- mention only `agy-developer`
+- inspect server-side history before any replay after resume/retry
+- mention only `agy-developer`, exactly once for that candidate/finding set
+- never replay an existing REWORK trigger
 - STOP
 
 ### BLOCKED
 
 Review cannot safely conclude because authority, baseline, evidence, scope, or material requirement is unresolved.
 
-Explain blocker, require Human Gate, STOP.
+BLOCKED is terminal for automation. Explain the blocker at most once for the
+same candidate/context, use no agent mention, require Human Gate, and STOP.
 
 ## Finding Quality
 
@@ -119,5 +130,9 @@ Include:
 - findings or PASS evidence
 - unresolved limitations/blockers
 - handoff target
+
+Before any verdict or handoff after a provider resume/retry, verify the current
+server-side issue/comment state. A local stream interruption is ambiguous
+completion and MUST NOT cause a verdict or downstream mention to be replayed.
 
 Then STOP.

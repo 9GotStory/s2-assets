@@ -1,6 +1,6 @@
 # MASTER PROMPT — GitHub Spec Kit + AGY 3-Role Review
 ## Office Asset & Consumable Management System
-Version: **3.3**
+Version: **3.4**
 Blueprint: **v1.0.2 FROZEN**
 Technology: **v1.0.1 SELECTED BASELINE**
 
@@ -122,6 +122,11 @@ tooling behavior, verify documentation rather than relying on model memory.
 14. Independent Reviewer MUST inspect repository evidence, not only developer claims.
 15. No commit/push/merge/deploy unless the exact authorization permits it.
 16. Version-sensitive external behavior MUST be verified through Context7 first when supported, with authoritative first-party fallback when necessary.
+17. Agent-to-agent handoffs and verdicts are externally visible side effects and MUST be at-most-once.
+18. A resumed/retried run MUST inspect server-side issue/comment state before replaying any handoff, verdict, assignment, status change, commit, push, or other external action.
+19. A provider stream interruption MUST be treated as ambiguous completion, never as proof that a prior side effect failed.
+20. Multica implementation issues MUST remain Human-owned or unassigned between role runs; do not use a persistent agent assignee as implicit routing.
+21. Reviewer PASS/BLOCKED is terminal for automation and MUST NOT mention or trigger another agent.
 
 ---
 
@@ -221,6 +226,12 @@ Authorization should identify:
 - actively mentions only `agy-developer`
 - never implements or reviews the result
 - treats published delegation comments as immutable
+- checks server-side issue/comment history before posting any delegation,
+  especially after a resumed/retried provider session
+- uses the transition key
+  `{task-or-scope, candidate-or-baseline, from-role, to-role}` and never
+  triggers the same downstream transition twice
+- if the exact delegation already exists, does not re-post or re-mention it
 - STOPs immediately after delegation
 
 If scope is ambiguous or materially conflicts with authority, return `HANDOFF_BLOCKED` and require Human Gate.
@@ -237,7 +248,10 @@ If scope is ambiguous or materially conflicts with authority, return `HANDOFF_BL
 - inspects final diff
 - does not expand scope opportunistically
 - publishes `IMPLEMENTATION_RESULT`
-- mentions `agy-independent-reviewer`
+- checks server-side history before reviewer handoff
+- mentions `agy-independent-reviewer` exactly once for the exact candidate
+- on resume/retry, never repeats an already published implementation result or
+  reviewer handoff solely because the provider stream was interrupted
 - STOPs
 
 No overall reviewer verdict is emitted by Developer.
@@ -266,17 +280,26 @@ Reviewer MUST NOT edit/fix implementation while reviewing.
 
 ### REWORK
 
-Return concrete bounded findings, mention only `agy-developer`, then STOP.
+Before posting after any resume/retry, inspect server-side history. Return
+concrete bounded findings and mention only `agy-developer` exactly once for the
+exact candidate/finding set, then STOP. Never replay an existing REWORK trigger.
 
-Developer corrects the same authorized scope and returns to the independent reviewer.
+Developer corrects the same authorized scope and returns to the independent reviewer with a new corrective-result identity.
 
 ### PASS
 
-Return evidence and control to Human Product Owner.
+PASS is terminal for automation. Publish it at most once for the exact candidate,
+include no agent mention, trigger no Lead/Developer/Reviewer run, and return
+control to Human Product Owner.
+
+If a resumed/retried reviewer finds that PASS is already present server-side,
+do not re-post it; report no new external action and STOP.
 
 ### BLOCKED
 
-Explain the blocker and require Human Gate.
+BLOCKED is terminal for automation. Explain the blocker at most once for the
+exact candidate/context, include no agent mention, trigger no agent run, require
+Human Gate, and STOP.
 
 ---
 
@@ -331,6 +354,10 @@ For the accepted AGY baseline:
 - Reviewer: `agy-independent-reviewer`
 
 Reviewer uses a separate Multica agent identity and separate provider session from Lead.
+
+A resumed provider session retains its role but not permission to replay
+external side effects. Server-side state must be checked before any repeated
+comment, mention, assignment, status change, commit, or push.
 
 ## 24. Meaning of “Continue”
 

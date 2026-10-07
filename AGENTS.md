@@ -78,5 +78,22 @@ supports the relevant technology.
 - Git/Spec Kit/Multica/AGY stay on the host.
 - No commit/push/merge/deploy unless explicitly authorized.
 - Report and STOP after the role's assigned action.
+- Agent-to-agent handoffs are at-most-once external side effects.
+- A resumed/retried run MUST inspect current server-side issue/comment state before
+  repeating any comment, mention, assignment, status change, commit, push, or
+  other externally visible action.
+- A stream interruption is an ambiguous-completion event: never assume an
+  external side effect failed merely because the local provider stream failed.
+- The same transition key
+  `{task-or-scope, candidate-or-baseline, from-role, to-role}` MUST NOT trigger
+  the downstream agent more than once.
+- Multica implementation issues MUST NOT retain an agent assignee as an implicit
+  routing target while the role chain is in progress. Use explicit role
+  transitions; keep the issue Human-owned or unassigned between agent runs.
+- Reviewer `PASS` and `BLOCKED` are terminal for automation: no agent mention,
+  no redelegation, and no automatic return to Lead. Control returns to the Human
+  Product Owner.
+- If safe at-most-once behavior cannot be established from server-side evidence,
+  STOP and require Human intervention instead of replaying the action.
 
 See `MASTER-PROMPT.md`, `MULTICA.md`, and `REVIEWER.md` for workflow details.

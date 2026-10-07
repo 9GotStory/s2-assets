@@ -28,19 +28,45 @@ Check spec/plan/tasks/Constitution/Business Authority/Technology Direction consi
 
 ## AGY Lead — Authorized Handoff
 
-Inspect the exact Product Owner-authorized implementation scope and baseline. Identify any material version-sensitive dependency/API verification required through Context7. Delegate exactly one bounded scope to `agy-developer`, actively mention only that agent, never edit the published delegation, then STOP. If authority/scope is unclear, return HANDOFF_BLOCKED.
+Inspect the exact Product Owner-authorized implementation scope and baseline.
+Identify any material version-sensitive dependency/API verification required
+through Context7. Before posting, inspect server-side issue/comment history for
+the transition key `{scope, baseline-or-candidate, Lead, Developer}`. If it
+already exists, do not re-post or re-mention it. Otherwise delegate exactly one
+bounded scope to `agy-developer`, actively mention only that agent exactly
+once, never edit the published delegation, then STOP. Treat stream interruption
+as ambiguous completion. If authority/scope or prior side-effect state is
+unclear, return HANDOFF_BLOCKED without replaying the handoff.
 
 ## AGY Developer — Implement
 
-Implement only the delegated scope. Before relying on version-sensitive external APIs/configuration, verify Context7 first when supported; if insufficient, use authoritative first-party documentation and report the fallback. Run required verification, inspect final diff, publish IMPLEMENTATION_RESULT with material documentation evidence when relevant, actively mention `agy-independent-reviewer`, then STOP. Do not emit reviewer verdict.
+Implement only the delegated scope. Before relying on version-sensitive external
+APIs/configuration, verify Context7 first when supported; if insufficient, use
+authoritative first-party documentation and report the fallback. Run required
+verification and inspect final diff. Before publishing IMPLEMENTATION_RESULT or
+mentioning the reviewer, inspect server-side history for the exact candidate.
+Publish/mention `agy-independent-reviewer` at most once. On resume/retry, never
+replay an existing result or reviewer handoff solely because the stream failed.
+Then STOP. Do not emit reviewer verdict.
 
 ## AGY Developer — Rework
 
-Correct only the independent review findings inside the same authorized scope. Re-run verification, publish CORRECTIVE_RESULT, mention `agy-independent-reviewer`, then STOP.
+Correct only the independent review findings inside the same authorized scope.
+Re-run verification and produce a new corrective-result identity. Inspect
+server-side history before publishing CORRECTIVE_RESULT or mentioning
+`agy-independent-reviewer`; perform that transition at most once. Never replay
+the prior reviewer handoff after a stream interruption. Then STOP.
 
 ## AGY Reviewer — Review
 
-Independently inspect exact scope, repository evidence, diff and tests. Re-check material version-sensitive external claims through Context7 when supported or authoritative first-party fallback when necessary. Do not modify implementation. Return exactly PASS / REWORK / BLOCKED. REWORK mentions only `agy-developer`; PASS/BLOCKED returns to Product Owner. STOP.
+Independently inspect exact scope, repository evidence, diff and tests. Re-check
+material version-sensitive external claims through Context7 when supported or
+authoritative first-party fallback when necessary. Do not modify implementation.
+Before any verdict after resume/retry, inspect server-side history. Return
+exactly PASS / REWORK / BLOCKED. REWORK mentions only `agy-developer` exactly
+once for that candidate/finding set. PASS/BLOCKED is terminal: no agent mention,
+no Lead return, no replay if already published; control returns to Product
+Owner. STOP.
 
 ## Spec Kit — Converge
 
@@ -49,3 +75,14 @@ After authorized implementation scopes are complete, reconcile Spec Kit delivery
 ## Blueprint Conflict
 
 STOP. Identify the exact conflict with Product Owner/Blueprint/Feature Brief/canonical rule. Do not silently edit authority. Request Human Gate.
+
+## AGY Resume / Retry Guard
+
+A provider stream interruption is ambiguous completion. Before repeating any
+comment, mention, assignment, status change, commit, push, or other external
+side effect, inspect current server-side state. Never replay an existing
+transition. If safe at-most-once behavior cannot be established, STOP for Human
+intervention.
+
+Multica implementation issues remain Human-owned or unassigned between agent
+runs; do not rely on a persistent agent assignee as an implicit router.
