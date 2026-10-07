@@ -1,285 +1,149 @@
-# MULTICA.md — Thin Coordination for DEV + Independent Review
+# MULTICA.md — AGY 3-Role Coordination Contract
 
 ## Purpose
 
-Multica coordinates two role-separated AI runs without becoming a second development methodology.
+Multica coordinates authorized implementation work after the Spec Kit Human Gate.
+
+It does not replace Blueprint, Technology Direction, Constitution, Spec Kit artifacts, Git history, or Product Owner decisions.
+
+## 1. Baseline Agents
+
+### agy-lead-reviewer
+
+- Multica role: Lead Orchestrator / Planner
+- Model: Gemini 3.1 Pro High
+- inspects authorization and delegates one bounded implementation scope
+- does not implement
+- does not independently review the delegated result
+
+### agy-developer
+
+- Multica role: Implementation Author
+- Model: Gemini 3.8 Flash High
+- implements/reworks only the authorized scope
+- publishes `IMPLEMENTATION_RESULT`
+- hands off to independent reviewer
+
+### agy-independent-reviewer
+
+- Multica role: Independent Reviewer
+- Model: Gemini 3.1 Pro High
+- distinct Multica agent identity
+- independent provider session from Lead
+- verdict: `PASS`, `REWORK`, or `BLOCKED`
+
+## 2. Native Delegation Chain
 
 ```text
-Product Owner
-    ↓
-Multica Feature Issue
-    ├── Asset System DEV      → Claude Code
-    └── Asset System Reviewer → Codex CLI
-             ↓
-         Repository
+Human Product Owner
+  → agy-lead-reviewer
+  → agy-developer
+  → agy-independent-reviewer
+  → Human Product Owner
 ```
 
-Multica owns coordination/run history only. Blueprint, `TECHNOLOGY.md`, Spec Kit artifacts, code/tests, and Product Owner decisions remain authoritative in their respective scopes.
+No manual trigger is required between correctly routed agent runs.
 
----
+## 3. Human Gate Semantics
 
-## 1. Baseline Configuration
+A Product Owner-assigned Multica task created after accepted Spec Kit Analyze is already authorized for inspection, coordination and delegation within its exact scope.
 
-```text
-Project: Office Asset & Consumable Management System
-Resource: Local Git checkout
-Execution mode: Direct / in_place
-Active Features: 1
-Autopilot: off
-Squads: off
-Parallel feature work: off
-```
+Lead MUST NOT ask for a duplicate approval unless:
 
-Use sequential Direct / `in_place` for cumulative phase/scope/review runs on the same checkout.
-Do not run DEV and Reviewer concurrently against the same project state.
+- scope is ambiguous
+- baseline is invalid
+- material authority conflict exists
+- destructive/security-sensitive action exceeds authorization
+- commit/push/merge/deploy permission is missing but required
 
----
+## 4. Lead Delegation Rules
 
-## 2. Agents
+Lead MUST:
 
-### Agent A — Asset System DEV
+- identify exact approved task/scope
+- inspect relevant source-of-truth artifacts
+- verify baseline
+- publish exactly one bounded delegation
+- actively mention exactly one implementation target: `agy-developer`
+- STOP after delegation
 
-```text
-Runtime: Claude Code
-Concurrency: 1
-Default role: DEV Executor
-```
+### Atomic Delegation
 
-Recommended Agent Instructions:
+Before publishing, compose and validate the complete delegation.
 
-```text
-You are the DEV Executor for the Office Asset & Consumable Management System.
+After publication:
 
-At every run:
-1. Read CLAUDE.md.
-2. Follow MASTER-PROMPT.md.
-3. Read TECHNOLOGY.md for Plan/Tasks/Implementation/technical rework.
-4. Reconstruct current Spec Kit/repository state.
-5. Treat the current Product Owner/Multica instruction as the authorized bounded work.
+- never edit/delete the delegation comment
+- never replace it with another delegation
+- never publish a second implementation delegation for the same scope in the same run
 
-Rules:
-- One authorized delivery phase or implementation/rework scope per run.
-- An implementation scope may be one task or a safe bounded same-Phase batch.
-- Never implement the whole Phase automatically just because tasks share a Phase heading.
-- Never declare independent review PASS yourself.
-- After implementation/rework and verification, report READY FOR INDEPENDENT REVIEW and STOP.
-- Do not start the next scope automatically.
-- Do not modify frozen Blueprint without Product Owner approval.
-- Prefer Simple — Structured — Sustainable.
-- Do not silently replace the selected TECHNOLOGY.md baseline.
-```
+Agent mentions are execution triggers and are immutable once published.
 
-### Agent B — Asset System Reviewer
+Reviewer routing in the Lead comment should be plain text only; Developer performs the active reviewer mention.
 
-```text
-Runtime: Codex CLI
-Concurrency: 1
-Default role: Independent Reviewer
-```
+## 5. Developer Handoff
 
-Recommended Agent Instructions:
+Developer result MUST include:
 
-```text
-You are the Independent Reviewer for the Office Asset & Consumable Management System.
+- task/scope ID
+- implementation summary
+- changed files
+- branch/commit/baseline when applicable
+- tests and verification
+- exact results
+- blockers/limitations
 
-At every review run:
-1. Read AGENTS.md and REVIEWER.md.
-2. Identify the exact requested review gate/scope.
-3. Read TECHNOLOGY.md when reviewing Plan/technical implementation/deployment.
-4. Remain read-only: do not modify project files.
-5. For a batch, review every included Task ID and their interactions.
-6. Return PASS, CHANGES REQUIRED, or REVIEW BLOCKED using REVIEWER.md.
-7. Do not force a correction cycle when work is already correct.
-8. STOP after review.
-```
+Then actively mention `agy-independent-reviewer` and STOP.
 
-No third orchestrator agent is needed.
+On REWORK, correct only cited findings within the same authorized scope and return to the same reviewer role.
 
----
+## 6. Reviewer Routing
 
-## 3. Spec Kit Integrations
+Reviewer:
 
-Initialize Claude as default in the non-empty baseline repository, then add Codex:
+- inspects actual evidence independently
+- never edits production files
+- on `REWORK`, mentions only `agy-developer`
+- on `PASS`, returns control to Product Owner
+- on `BLOCKED`, requires Human Gate
 
-```bash
-specify init --here --force --integration claude
-specify integration install codex
-specify integration status
-```
+## 7. Issue Strategy
 
-Expected roots:
+Prefer one Multica Issue per authorized implementation scope when that keeps evidence bounded and reviewable.
 
-```text
-.claude/skills/    ← Claude Spec Kit skills
-.agents/skills/    ← Codex Spec Kit skills
-.specify/          ← shared
-specs/             ← shared feature artifacts
-```
+A feature may use multiple issues/scopes.
 
-Codex does not need to invoke Spec Kit commands for ordinary review; its integration supports project portability/future role changes.
+Multica issue state is coordination metadata, not Git/source truth.
 
----
+## 8. Git Discipline
 
-## 4. Issue Strategy
+- exact baseline must be known
+- scope should remain reviewable
+- unexpected changes block clean acceptance
+- commit/push/merge/deploy occur only when Product Owner authorization permits
+- do not use Multica comments as a substitute for repository evidence
 
-Use **one Multica Issue per Blueprint Feature**.
+## 9. What Multica Must Not Duplicate
 
-```text
-01 — Application Foundation
-02 — Asset Registry
-...
-14 — Material Stocktake
-```
+Do not create a second copy of:
 
-Do not create one Issue per Task unless a real operational need appears.
-
-Example sequential runs:
-
-```text
-Claude — Specify
-Claude — Clarify (if needed)
-Claude — Plan
-Claude — Tasks
-Claude — Analyze
-Codex  — Delivery Readiness Review
-Claude — Implement T006–T009       (safe bounded batch example)
-Codex  — Review T006–T009
-Claude — Rework T008               (inside same authorized scope, if required)
-Codex  — Re-review T006–T009
-Claude — Implement T010            (next high-risk task, if authorized)
-Codex  — Review T010
-...
-Claude — Converge
-Codex  — Final Feature Review
-Product Owner — Acceptance
-```
-
----
-
-## 5. Routing Rules
-
-Role transitions are explicit.
-
-### After Claude reports READY FOR INDEPENDENT REVIEW
-
-```text
-@Asset System Reviewer
-ทำ Independent Implementation Scope Review ของ scope ล่าสุดตาม REVIEWER.md แบบ read-only ตรวจทุก Task ID ใน scope แล้ว STOP
-```
-
-### After Codex returns CHANGES REQUIRED
-
-```text
-@Asset System DEV
-แก้เฉพาะ blocking findings ของ authorized implementation scope ล่าสุด รัน verification ที่เกี่ยวข้อง แล้วรายงาน READY FOR INDEPENDENT REVIEW จากนั้น STOP
-```
-
-### After Codex returns PASS
-
-Product Owner decides whether to continue. If yes:
-
-```text
-@Asset System DEV
-อ่าน Phase ปัจจุบันใน tasks.md แล้วดำเนินการ next safe bounded implementation scope ตาม MASTER-PROMPT.md เพียง scope เดียว จากนั้น STOP
-```
-
-If Product Owner wants an exact batch:
-
-```text
-@Asset System DEV
-ดำเนินการเฉพาะ T006–T009 ตาม tasks.md ตรวจ dependency/risk ก่อน ห้ามขยาย scope ทำ verification ครบ แล้ว STOP เพื่อ Independent Review
-```
-
----
-
-## 6. Review Gates
-
-### Gate A — Delivery Readiness
-After Analyze, before first implementation scope.
-
-### Gate B — Every Implementation Scope
-After every implementation/rework scope before progression.
-
-### Gate C — Final Feature
-After Converge, before Human Acceptance.
-
-Independent review is mandatory. `CHANGES REQUIRED` is not mandatory when no blocker exists.
-
----
-
-## 7. Working Copy / Git Discipline
-
-With Direct / `in_place`:
-- DEV and Reviewer inspect the same checkout sequentially,
-- Reviewer remains read-only,
-- inspect `git status`/`git diff` as needed,
-- never overlap DEV/Reviewer runs,
-- commit/push at chosen checkpoints,
-- Multica Issue state never substitutes for Git history.
-
-Prefer excluding `.multica/` runtime metadata from Git unless explicitly needed later.
-
----
-
-## 8. What Multica Must Not Duplicate
-
-Do not copy into Multica as a second source:
-- Blueprint
-- `TECHNOLOGY.md`
-- 252 Business Rules
+- Blueprint/business rules
 - Feature Briefs
-- `spec.md`
-- `plan.md`
-- `tasks.md`
-- review ledger/state database
-- custom task authorization records
+- Constitution
+- spec/plan/tasks
+- implementation state ledger
+- custom approval database
 
-Issue descriptions should reference repository artifacts, not duplicate them.
+Reference canonical repository artifacts instead.
 
----
+## 10. Accepted Orchestration Baseline
 
-## 9. No Review Theater
+Accepted on 2026-10-07 by smoke `9GOTSTORY-141`:
 
-Wrong:
-
-```text
-Every scope must receive at least one CHANGES REQUIRED before PASS.
-```
-
-Correct:
-
-```text
-Every implementation scope must receive independent review before progression.
-```
-
-Reviewer quality is measured by evidence/correctness, not correction-round count.
-
----
-
-## 10. Agent Replacement
-
-Roles are replaceable, e.g. Codex = DEV and Claude = Reviewer.
-
-When changing roles:
-- prefer a clean implementation-scope or feature boundary,
-- retain repository/Spec Kit artifacts,
-- use explicit Multica role instructions,
-- do not rebuild Blueprint/spec/history.
-
----
-
-## 11. Baseline Summary
-
-```text
-Agents: 2
-DEV: Claude Code
-Reviewer: Codex
-Implementation unit: authorized scope (1 task or safe same-Phase batch)
-Independent review gates: 3
-Agent concurrency: 1 each
-Same local resource: sequential Direct / in_place
-Active Features: 1
-Autopilot: off
-Squads: off
-Custom governance ledger: none
-```
+- exactly 3 successful role runs
+- Lead → Developer → Independent Reviewer
+- separate Lead and Reviewer sessions
+- no duplicate/self-trigger
+- no `cancelled_by_comment_change`
+- no repository modifications in smoke
+- Reviewer PASS returned to Human Product Owner
