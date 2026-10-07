@@ -75,6 +75,7 @@ Canonical wording อยู่ที่ `../docs/06-business-rules.md`; Feature 
 - Authorization ต้อง fail closed และ QR/deep link ห้าม bypass permission
 - ห้าม fabricate business data เพื่อให้ระบบผ่าน validation
 - Technical choices ให้ Plan ยืนยันรายละเอียดจาก selected baseline ใน `../TECHNOLOGY.md`; ห้าม reselect project-wide stack ใหม่โดยไม่มี Technology Deviation ที่ Product Owner อนุมัติ
+- Application Foundation ต้อง establish reproducible **Rootless Podman development environment** ที่สอดคล้องกับ `../TECHNOLOGY.md` โดยไม่ย้าย Git/Spec Kit/Multica/AI agents เข้า application containers
 
 ## UX Expectations
 
@@ -107,6 +108,7 @@ Canonical wording อยู่ที่ `../docs/06-business-rules.md`; Feature 
 ใช้ `../TECHNOLOGY.md` เป็น selected technical baseline; Plan ยืนยัน exact implementation details/Deferred decisions ที่เกี่ยวข้อง หรือเสนอ Technology Deviation เมื่อมี concrete constraint จริง
 
 - repository/application structure และ runtime/deployment details ที่เหมาะกับข้อจำกัดจริงภายใน selected baseline
+- Rootless Podman development topology, development image/stage, source mount/hot-reload, PostgreSQL development volume และ standard development/test entrypoints
 - authentication/authorization mechanism ขั้นต่ำ
 - configuration/secrets/error handling/test harness
 - minimal audit/identity primitives ที่มี current use case
