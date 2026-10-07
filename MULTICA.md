@@ -103,7 +103,7 @@ server-side evidence, return BLOCKED to the Human Product Owner.
 
 ## 3. Human Gate Semantics
 
-A Product Owner-assigned Multica task created after accepted Spec Kit Analyze is already authorized for inspection, coordination and delegation within its exact scope.
+A Product Owner-authorized Multica task created after accepted Spec Kit Analyze is already authorized for inspection, coordination and delegation within its exact scope. This authorization does not require or imply agent issue assignment.
 
 Lead MUST NOT ask for a duplicate approval unless:
 
