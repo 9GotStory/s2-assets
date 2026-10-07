@@ -154,3 +154,13 @@ Then STOP.
 - Before publishing a verdict after any interruption/retry, inspect server-side
   comments, runs, and timeline; do not duplicate an existing verdict for the
   same candidate.
+
+## Trigger Provenance Guard
+
+Reviewer SHOULD execute only from a Developer-originated implementation handoff
+(or from a Human-authorized direct review). If a Reviewer run is triggered by
+Lead recovery for the same implementation candidate, treat that as invalid
+orchestration and STOP/BLOCK rather than re-posting PASS/BLOCKED.
+
+For a given candidate, if a PASS/BLOCKED verdict already exists, do not publish
+another verdict.

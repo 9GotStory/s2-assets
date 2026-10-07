@@ -1,6 +1,6 @@
 # MASTER PROMPT — GitHub Spec Kit + AGY 3-Role Review
 ## Office Asset & Consumable Management System
-Version: **3.7**
+Version: **3.8**
 Blueprint: **v1.0.2 FROZEN**
 Technology: **v1.0.1 SELECTED BASELINE**
 
@@ -285,6 +285,25 @@ Reviewer handoff. Reviewer PASS/BLOCKED remains terminal.
 
 If uniqueness cannot be established safely, return BLOCKED for Human
 inspection.
+
+## 15D. Fixed Transition Graph
+
+Automated routing is role-bounded:
+
+- Human → Lead
+- Lead → Developer
+- Developer → Independent Reviewer
+- Independent Reviewer → Developer only on REWORK
+- Independent Reviewer → Human on PASS/BLOCKED
+
+Lead is never authorized to trigger Independent Reviewer directly.
+
+After a Developer interruption, Lead may only inspect and classify:
+
+1. Reviewer handoff already exists → STOP; no new trigger.
+2. Reviewer handoff does not exist → BLOCKED for Human intervention.
+
+Lead MUST NOT manufacture Developer's missing Reviewer handoff.
 
 ## 16. Developer Execution
 

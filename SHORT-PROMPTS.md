@@ -124,3 +124,15 @@ After any stream/provider interruption, inspect issue state + comments + runs +
 timeline before any side effect. Never redelegate, republish a result, or
 repeat a verdict when server-side evidence shows that exact transition already
 occurred. Git state alone is not enough.
+
+## Allowed Transition Graph
+
+Only these automated transitions are valid:
+
+Human → Lead → Developer → Reviewer → Human
+
+REWORK exception: Reviewer → Developer.
+
+Lead never triggers Reviewer. If Developer interruption occurs after Reviewer
+handoff exists, Lead STOPs. If the handoff does not exist, Lead BLOCKs for Human
+instead of creating it.

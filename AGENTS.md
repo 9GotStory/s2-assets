@@ -171,3 +171,27 @@ In particular:
   re-trigger Lead after a terminal verdict.
 - If server-side evidence is insufficient to establish safe at-most-once
   behavior, STOP and return `BLOCKED` for Human inspection instead of replay.
+
+## Allowed Multica Transition Graph
+
+The automated implementation chain has a strict role-transition graph:
+
+- Human Product Owner → Lead
+- Lead → Developer
+- Developer → Independent Reviewer
+- Independent Reviewer → Developer only for REWORK
+- Independent Reviewer → Human Product Owner for PASS/BLOCKED
+
+No other automated edge is permitted.
+
+In particular:
+
+- Lead MUST NEVER trigger or mention the Independent Reviewer.
+- Lead recovery after a Developer failure/interruption MUST NOT "skip ahead" to
+  Reviewer, even when an IMPLEMENTATION_RESULT already exists.
+- If Developer already published the Reviewer handoff, Lead does nothing and
+  STOPs after confirming the existing downstream run/comment.
+- If Developer failed before publishing the Reviewer handoff, Lead MUST NOT
+  synthesize that handoff on Developer's behalf. Return BLOCKED to the Human
+  Product Owner instead.
+- Reviewer PASS/BLOCKED is terminal and MUST NOT be re-posted or re-triggered.

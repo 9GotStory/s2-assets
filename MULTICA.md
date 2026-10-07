@@ -101,6 +101,35 @@ Lead MUST NOT interpret a Developer stream interruption by itself as authority
 to redelegate. If safe at-most-once recovery cannot be established from
 server-side evidence, return BLOCKED to the Human Product Owner.
 
+## 2D. Strict Role-Transition Graph
+
+Permitted automated transitions are exactly:
+
+`Human → Lead → Developer → Independent Reviewer → Human`
+
+with one corrective exception:
+
+`Independent Reviewer → Developer` on REWORK.
+
+Forbidden transitions include:
+
+- Lead → Independent Reviewer
+- Lead → Lead
+- Developer → Lead
+- Reviewer → Lead
+- Reviewer → Reviewer
+- Developer → Developer
+
+Lead MUST NEVER publish an executable Reviewer mention. After a Developer
+stream interruption:
+
+- if a Developer → Reviewer handoff already exists, Lead STOPs without any new
+  downstream trigger;
+- if no Developer → Reviewer handoff exists, Lead returns BLOCKED to the Human
+  Product Owner rather than creating that handoff itself.
+
+A Reviewer PASS/BLOCKED is terminal and cannot be replayed.
+
 ## 3. Human Gate Semantics
 
 A Product Owner-authorized Multica task created after accepted Spec Kit Analyze is already authorized for inspection, coordination and delegation within its exact scope. This authorization does not require or imply agent issue assignment.
