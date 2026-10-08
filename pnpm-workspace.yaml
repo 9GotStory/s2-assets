@@ -2,6 +2,7 @@ packages:
   - "apps/*"
   - "packages/*"
 allowBuilds:
+  argon2: true
   cpu-features: false
   protobufjs: false
   ssh2: false
