@@ -15,55 +15,36 @@ Use this order:
 
 A downstream artifact MUST NOT silently override an upstream authority.
 
-## Working Model
-
-This repository uses the same two-role delivery pattern as Songhealth, while
-the runtime remains AGY/Antigravity through Multica.
-
-- `agy-lead-reviewer` — Codex-equivalent role: coordinate/handoff before
-  implementation, then independently review the Developer result.
-- `agy-developer` — Claude-equivalent role: implementation/rework executor.
-- Human Product Owner — Human Gate and final acceptance.
-
-Normal post-gate flow:
-
-`Human → agy-lead-reviewer → agy-developer → agy-lead-reviewer → Human`
-
-REWORK:
-
-`agy-lead-reviewer → agy-developer → agy-lead-reviewer`
-
-There is no normal third reviewer role. `agy-independent-reviewer` is not part
-of the s2-assets delivery workflow.
-
-The Lead/Reviewer MUST NOT implement or modify the delegated result while
-reviewing. The Developer MUST NOT approve its own work.
-
 ## Spec Kit Usage
 
-Use the current upstream `github/spec-kit` process through AGY. Local
-`.specify/` files are project state/templates, not a second workflow system.
+Use the current upstream `github/spec-kit` process through the AI agent selected
+for the task. Local `.specify/` files are project state/templates, not a second
+workflow system.
 
-Pre-implementation flow:
+Pre-implementation delivery follows:
 
 `Specify → Clarify when needed → Plan → Checklist when useful → Tasks → Analyze → Human Gate`
 
-Implementation requires explicit Product Owner authorization of the exact
-bounded task/scope.
+Implementation may begin only after the Product Owner explicitly authorizes the
+bounded task or scope.
+
+Repository governance defines authority and engineering invariants. Runtime
+agent assignment, delegation, mentions, retries, and reviewer routing belong to
+the active coordination system and MUST NOT be hardcoded here.
 
 ## Context Discipline
 
 Read only the minimum current authority needed for the task.
 
-For implementation/review:
+For implementation or review:
 
 1. read this file;
 2. read the Constitution;
 3. read the exact active task and only relevant spec/plan/research context;
-4. read relevant Blueprint/Business Rule/Technology sections;
-5. inspect the exact diff/tests/evidence required by the authorized scope.
+4. read relevant Blueprint, Business Rule, and Technology sections;
+5. inspect the exact diff, tests, and evidence required by the authorized scope.
 
-Developer additionally reads `CLAUDE.md`.
+Implementation executors additionally read `CLAUDE.md` when applicable.
 
 ## External Documentation and Context7
 
@@ -72,9 +53,7 @@ tooling behavior, verify documentation rather than relying on model memory.
 
 Use configured Context7 MCP first when it supports the relevant technology.
 
-- Repository-local AGY MCP config: `.agents/mcp_config.json`.
-- Multica's `multica-agent` runtime also requires the same Context7 server in
-  host-local AGY configuration.
+- Repository-local AGY MCP config is `.agents/mcp_config.json`.
 - Resolve the actual technology and exact authorized version.
 - If Context7 is unavailable or insufficient, use authoritative first-party
   documentation or authoritative package metadata and report the fallback.
@@ -89,46 +68,33 @@ There is no standing implementation authorization.
 Do not create unrelated code, infrastructure, dependencies, schema, or
 future-feature abstractions merely because a task list exists.
 
-## Delivery Routing and Candidate Evidence
+For an explicitly authorized implementation or corrective-revision task, the
+implementation author may create one atomic candidate commit and push the
+runtime-managed candidate branch for review evidence unless the Product Owner
+explicitly forbids it.
 
-Multica routing is operational coordination, not repository authority. Keep it
-minimal and task-bounded.
+That authorization does NOT include merge, deploy, destructive operations, or
+starting adjacent tasks.
 
-Normal delivery remains:
+## Independent Delivery Invariants
 
-`Human → agy-lead-reviewer → agy-developer → agy-lead-reviewer → Human`
-
-For an explicitly authorized implementation/rework task, the Developer may
-create one atomic candidate commit and push the runtime-managed agent branch as
-review evidence. This does not authorize merge, deploy, destructive operations,
-or adjacent tasks.
-
-Handoff safety:
-
-- Lead/Reviewer hands implementation or REWORK only to Developer.
-- Developer hands a candidate only back to Lead/Reviewer.
-- PASS/BLOCKED returns to the Human Product Owner without triggering another
-  agent.
-- Never include an executable structured mention for your own role.
-- A handoff comment must not trigger more than the intended counterpart.
-- Do not use `agy-independent-reviewer`.
-
-Agent IDs, when an active Multica task requires them:
-
-- Lead/Reviewer: `a299846c-c6ad-45b0-a190-cb802a44caec`
-- Developer: `450509d9-bea0-4d4e-a360-c484bfe93a37`
-
-Provider/stream interruption is ambiguous completion. Before retrying an
-external side effect, inspect the current issue/comments/runs. If the exact
-candidate, push, handoff, or verdict already exists, do not repeat it.
+- The implementation author MUST NOT approve their own work.
+- Independent review MUST inspect repository evidence rather than rely only on
+  implementation summaries.
+- Review findings must be concrete, bounded, and tied to approved authority.
+- Corrective work must remain inside the same authorized scope.
+- Final acceptance belongs to the Human Product Owner.
+- Runtime coordination details are operational metadata, not repository
+  requirements or architecture.
 
 ## Runtime and Git Discipline
 
-- Git repositories, Spec Kit, Multica and AGY run on the Fedora host.
-- Normal application services/infrastructure run in Rootless Podman.
-- Use the runtime-managed repository/worktree supplied by Multica.
-- Do not start/restart the host Multica daemon from inside a daemon-managed run.
+- Git repositories, Spec Kit, Multica, and AGY run on the Fedora host.
+- Normal application services and infrastructure run in Rootless Podman.
+- Use the runtime-managed repository/worktree supplied by the active
+  coordination system.
+- Do not start or restart the host Multica daemon from inside a daemon-managed
+  run.
 - Do not hide checkout/runtime failures with ad-hoc scratch clones.
-- Commit/push/merge/deploy only when exact authorization permits it.
 - Keep changes bounded and reviewable.
 - Product Owner remains final acceptance authority.

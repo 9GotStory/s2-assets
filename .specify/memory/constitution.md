@@ -1,8 +1,8 @@
 <!--
 Sync Impact Report:
-- Version change: 2.0.0 -> 3.0.0
+- Version change: 3.0.0 -> 4.0.0
 - Modified principles: VI. Human-Gated Independent Delivery
-- Rationale: align candidate commit/push semantics with the accepted two-role workflow and remove unnecessary repository-level orchestration friction
+- Rationale: decouple repository governance from Multica/agent-specific routing while preserving author-reviewer separation and Human final acceptance
 - Added sections: None
 - Removed sections: None
 - Deferred/TODOs: None
@@ -47,17 +47,17 @@ Sync Impact Report:
 Pre-implementation delivery MUST follow the Spec Kit workflow:
 `Specify → Clarify when needed → Plan → Checklist when useful → Tasks → Analyze → Human Gate`
 
-After Human Gate, authorized implementation uses the AGY 2-role chain:
-`agy-lead-reviewer → agy-developer → agy-lead-reviewer → Human Product Owner`
+After Human Gate, authorized implementation MUST preserve independent authorship
+and review without hardcoding runtime-specific agent topology into repository
+governance.
 
 **Required invariants:**
-- `agy-lead-reviewer` coordinates the bounded handoff and later performs review, but MUST NOT implement or modify the delegated result.
-- `agy-developer` implements/reworks only and MUST NOT approve its own work.
-- Review MUST inspect actual repository evidence independently rather than rely only on developer claims.
-- PASS/BLOCKED returns control to the Human Product Owner; Human remains final acceptance authority.
-- REWORK may return bounded findings to `agy-developer`, followed by another Lead/Reviewer review.
-- A separate third reviewer agent is not required for the normal s2-assets workflow.
-- Authorization of a bounded implementation/rework task includes creating one atomic candidate commit and pushing the runtime-managed agent branch for independent review, unless the Product Owner explicitly forbids it.
+- The implementation author MUST NOT independently approve their own work.
+- Independent review MUST inspect actual repository evidence rather than rely only on implementation claims.
+- Review findings and corrective revisions MUST remain bounded by the approved task/scope.
+- Final acceptance belongs to the Human Product Owner.
+- Runtime agent assignment, delegation, mentions, retries, and reviewer routing are operational coordination concerns and MUST NOT redefine repository authority.
+- Authorization of a bounded implementation/rework task includes creating one atomic candidate commit and pushing the runtime-managed candidate branch for independent review, unless the Product Owner explicitly forbids it.
 - Merge, deploy, destructive operations, and adjacent tasks remain outside that authorization and require explicit Product Owner approval.
 
 ## Governance
@@ -71,4 +71,4 @@ After Human Gate, authorized implementation uses the AGY 2-role chain:
   - PATCH: Clarification with no change in meaning.
 - **Justified Deviations:** Any justified deviations MUST be explicit, proportionate, and MUST NOT silently override Business Authority or Technology Direction.
 
-**Version**: 3.0.0 | **Ratified**: 2026-10-07 | **Last Amended**: 2026-10-08
+**Version**: 4.0.0 | **Ratified**: 2026-10-07 | **Last Amended**: 2026-10-08

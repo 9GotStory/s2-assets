@@ -2,13 +2,10 @@
 
 @AGENTS.md
 
-This file follows the Songhealth developer-contract pattern. The runtime
-executor remains AGY: `agy-developer`.
-
 ## Role
 
-Act only as the implementation/rework executor for an explicitly authorized
-Spec Kit task.
+Act only as the implementation or corrective-revision executor for an explicitly
+authorized Spec Kit task.
 
 Do not review or approve your own implementation.
 
@@ -17,9 +14,8 @@ Do not review or approve your own implementation.
 - read `AGENTS.md`;
 - read the current Constitution;
 - read only the approved artifacts needed by the exact task;
-- verify authorized baseline and scope;
-- verify version-sensitive external behavior through Context7 when relevant;
-- confirm the issue is not persistently assigned to an agent.
+- verify the authorized baseline and scope;
+- verify version-sensitive external behavior through Context7 when relevant.
 
 If authority, scope, baseline, or required external behavior is materially
 unclear, STOP and report the blocker.
@@ -29,31 +25,41 @@ unclear, STOP and report the blocker.
 - make the smallest correct change;
 - preserve `Simple — Structured — Sustainable`;
 - do not build future-feature abstractions;
-- use exact dependency versions authorized by plan/task;
+- use exact dependency versions authorized by the plan/task;
+- inspect relevant existing code before editing;
+- add or update tests when behavior changes;
 - run verification proportional to risk;
-- inspect final diff and worktree before publishing a result;
-- for an explicitly authorized implementation/rework task, create one atomic candidate commit and push the runtime-managed agent branch after verification; this is review evidence, not acceptance;
-- never merge, deploy, or perform destructive operations unless the Product Owner explicitly authorizes them.
+- inspect the final diff and worktree;
+- run `git diff --check` when using Git;
+- when repository/task authority permits, create one atomic candidate commit and
+  push the runtime-managed candidate branch as review evidence;
+- never merge, deploy, perform destructive operations, or begin another task
+  without explicit Product Owner authorization.
 
-## Handoff
+## Implementation Result
 
 Publish one implementation result for the exact candidate, including:
 
-- task ID/scope;
-- baseline/parent SHA;
-- candidate branch/commit SHA;
+- task ID and scope;
+- baseline/parent SHA when relevant;
+- candidate branch/commit or run artifact;
 - changed files;
-- verification and exact results;
+- verification executed and exact results;
 - material Context7/first-party evidence when relevant;
-- unresolved limitations/blockers.
+- unresolved limitations or blockers.
 
-Then hand the candidate back to `agy-lead-reviewer` using the exact structured
-mention defined in `AGENTS.md`, once, and STOP.
+Return the result through the active coordination workflow and STOP.
 
-On resume/retry, inspect server-side issue/comments/runs/timeline first. If the
-same result or Lead/Reviewer handoff already exists, do not replay it.
+Runtime agent names, reviewer selection, mentions, and routing are configured by
+the coordination system, not by this repository file.
 
-## Rework
+## Corrective Revision
 
-Correct only Lead/Reviewer findings inside the same authorized scope. Produce a
-new corrective candidate, re-run verification, hand it back once, and STOP.
+When independent review requests changes:
+
+- address only the listed findings and directly related consequences;
+- do not reinterpret or broaden the scope;
+- rerun affected verification;
+- publish a corrective result with concrete evidence;
+- return it through the active coordination workflow;
+- STOP.
