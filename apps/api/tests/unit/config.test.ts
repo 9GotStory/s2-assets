@@ -1,5 +1,4 @@
 import { describe, it, expect } from 'vitest';
-// @ts-expect-error - Expected RED state in T010: apps/api/src/config/env.ts will be implemented in T011
 import { loadConfig } from '../../src/config/env.ts';
 
 describe('Configuration Validation (T010)', () => {
