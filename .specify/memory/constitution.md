@@ -1,9 +1,10 @@
 <!--
 Sync Impact Report:
-- Version change: N/A -> 1.0.0
-- Modified principles: N/A
-- Added sections: Core Principles (I. Authority Preservation, II. Feature-Bounded Delivery and Simplicity, III. Rootless Podman Development, IV. Server-Side Security and Data Integrity, V. Verification Against Real Invariants, VI. Human-Gated Independent Delivery), Governance
-- Removed sections: N/A
+- Version change: 2.0.0 -> 3.0.0
+- Modified principles: VI. Human-Gated Independent Delivery
+- Rationale: align candidate commit/push semantics with the accepted two-role workflow and remove unnecessary repository-level orchestration friction
+- Added sections: None
+- Removed sections: None
 - Deferred/TODOs: None
 -->
 # s2-assets Constitution
@@ -56,7 +57,8 @@ After Human Gate, authorized implementation uses the AGY 2-role chain:
 - PASS/BLOCKED returns control to the Human Product Owner; Human remains final acceptance authority.
 - REWORK may return bounded findings to `agy-developer`, followed by another Lead/Reviewer review.
 - A separate third reviewer agent is not required for the normal s2-assets workflow.
-- No commit, push, merge, deploy, or destructive action is allowed unless the exact authorization explicitly permits it.
+- Authorization of a bounded implementation/rework task includes creating one atomic candidate commit and pushing the runtime-managed agent branch for independent review, unless the Product Owner explicitly forbids it.
+- Merge, deploy, destructive operations, and adjacent tasks remain outside that authorization and require explicit Product Owner approval.
 
 ## Governance
 
@@ -69,4 +71,4 @@ After Human Gate, authorized implementation uses the AGY 2-role chain:
   - PATCH: Clarification with no change in meaning.
 - **Justified Deviations:** Any justified deviations MUST be explicit, proportionate, and MUST NOT silently override Business Authority or Technology Direction.
 
-**Version**: 2.0.0 | **Ratified**: 2026-10-07 | **Last Amended**: 2026-10-07
+**Version**: 3.0.0 | **Ratified**: 2026-10-07 | **Last Amended**: 2026-10-08

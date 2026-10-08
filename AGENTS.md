@@ -89,57 +89,38 @@ There is no standing implementation authorization.
 Do not create unrelated code, infrastructure, dependencies, schema, or
 future-feature abstractions merely because a task list exists.
 
-## Multica Routing
+## Delivery Routing and Candidate Evidence
 
-Issue assignment is Human-only orchestration control.
+Multica routing is operational coordination, not repository authority. Keep it
+minimal and task-bounded.
 
-Agents MUST NOT call `multica issue assign` for themselves or another agent.
-Normal routing uses one structured mention per handoff while the issue remains
-unassigned (or Human-owned where supported).
+Normal delivery remains:
 
-Exact AGY mentions:
+`Human → agy-lead-reviewer → agy-developer → agy-lead-reviewer → Human`
 
-- Lead/Reviewer:
-  `[@agy-lead-reviewer](mention://agent/a299846c-c6ad-45b0-a190-cb802a44caec)`
-- Developer:
-  `[@agy-developer](mention://agent/450509d9-bea0-4d4e-a360-c484bfe93a37)`
+For an explicitly authorized implementation/rework task, the Developer may
+create one atomic candidate commit and push the runtime-managed agent branch as
+review evidence. This does not authorize merge, deploy, destructive operations,
+or adjacent tasks.
 
-One trigger comment MUST contain exactly one executable structured mention.
+Handoff safety:
 
-Permitted automated transitions are only:
+- Lead/Reviewer hands implementation or REWORK only to Developer.
+- Developer hands a candidate only back to Lead/Reviewer.
+- PASS/BLOCKED returns to the Human Product Owner without triggering another
+  agent.
+- Never include an executable structured mention for your own role.
+- A handoff comment must not trigger more than the intended counterpart.
+- Do not use `agy-independent-reviewer`.
 
-- Human → Lead/Reviewer
-- Lead/Reviewer → Developer
-- Developer → Lead/Reviewer
-- Lead/Reviewer → Developer on REWORK
-- Lead/Reviewer → Human on PASS/BLOCKED, with no executable agent mention
+Agent IDs, when an active Multica task requires them:
 
-Do not mention or trigger `agy-independent-reviewer`.
+- Lead/Reviewer: `a299846c-c6ad-45b0-a190-cb802a44caec`
+- Developer: `450509d9-bea0-4d4e-a360-c484bfe93a37`
 
-## Resume / Retry Safety
-
-A provider or stream interruption is ambiguous completion, not proof that an
-external action failed.
-
-Before any retry/recovery side effect, inspect server-side:
-
-1. current issue state;
-2. relevant comments/thread;
-3. full run history;
-4. timeline.
-
-If the exact handoff, implementation result, review request, verdict, commit,
-push, or other external action already exists, do not repeat it.
-
-- Lead/Reviewer: if Developer already published a result and handed it back to
-  Lead/Reviewer, do not redelegate.
-- Developer: do not republish an existing implementation result or review
-  handoff.
-- Lead/Reviewer: do not republish an existing PASS/BLOCKED for the same
-  candidate.
-
-If safe at-most-once behavior cannot be established, STOP/BLOCK for Human
-inspection instead of replaying the action.
+Provider/stream interruption is ambiguous completion. Before retrying an
+external side effect, inspect the current issue/comments/runs. If the exact
+candidate, push, handoff, or verdict already exists, do not repeat it.
 
 ## Runtime and Git Discipline
 

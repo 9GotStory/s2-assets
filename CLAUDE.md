@@ -32,7 +32,8 @@ unclear, STOP and report the blocker.
 - use exact dependency versions authorized by plan/task;
 - run verification proportional to risk;
 - inspect final diff and worktree before publishing a result;
-- commit/push only when explicitly authorized.
+- for an explicitly authorized implementation/rework task, create one atomic candidate commit and push the runtime-managed agent branch after verification; this is review evidence, not acceptance;
+- never merge, deploy, or perform destructive operations unless the Product Owner explicitly authorizes them.
 
 ## Handoff
 
