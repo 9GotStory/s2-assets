@@ -312,7 +312,10 @@ describe('Standard Fastify Error Handler (T014)', () => {
       const app = Fastify();
       app.setErrorHandler(errorHandler);
 
-      app.get('/test-default-request-id', async () => {
+      let capturedRequestId: string | undefined;
+
+      app.get('/test-default-request-id', async (req) => {
+        capturedRequestId = req.id;
         throw new Error('Sample error for default request id check');
       });
 
@@ -323,10 +326,13 @@ describe('Standard Fastify Error Handler (T014)', () => {
         url: '/test-default-request-id',
       });
 
+      expect(capturedRequestId).toBeDefined();
+      expect(typeof capturedRequestId).toBe('string');
+      expect(capturedRequestId!.length).toBeGreaterThan(0);
+
       const body = response.json<StandardErrorPayload>();
       expect(body.error.request_id).toBeDefined();
-      expect(typeof body.error.request_id).toBe('string');
-      expect(body.error.request_id.length).toBeGreaterThan(0);
+      expect(body.error.request_id).toBe(capturedRequestId);
 
       await app.close();
     });
@@ -480,25 +486,57 @@ describe('Standard Fastify Error Handler (T014)', () => {
       await app.close();
     });
 
-    it('returns empty details object for non-validation errors (500, 401, 403, 404)', async () => {
+    it('returns empty details object for non-validation errors (401, 403, 404, and 500)', async () => {
       const app = Fastify();
       app.setErrorHandler(errorHandler);
 
-      app.get('/test-empty-details-on-500', async () => {
-        throw new Error('Non-validation error');
+      app.get('/test-details-401', async () => {
+        const err = new Error('Authentication required') as Error & { statusCode?: number };
+        err.statusCode = 401;
+        throw err;
+      });
+
+      app.get('/test-details-403', async () => {
+        const err = new Error('Permission denied') as Error & { statusCode?: number };
+        err.statusCode = 403;
+        throw err;
+      });
+
+      app.get('/test-details-404', async () => {
+        const err = new Error('Resource not found') as Error & { statusCode?: number };
+        err.statusCode = 404;
+        throw err;
+      });
+
+      app.get('/test-details-500', async () => {
+        throw new Error('Internal server error');
       });
 
       await app.ready();
 
-      const response = await app.inject({
-        method: 'GET',
-        url: '/test-empty-details-on-500',
-      });
+      const res401 = await app.inject({ method: 'GET', url: '/test-details-401' });
+      expect(res401.statusCode).toBe(401);
+      const body401 = res401.json<StandardErrorPayload>();
+      expect(body401.error.details).toBeDefined();
+      expect(body401.error.details).toEqual({});
 
-      expect(response.statusCode).toBe(500);
-      const body = response.json<StandardErrorPayload>();
-      expect(body.error.details).toBeDefined();
-      expect(body.error.details).toEqual({});
+      const res403 = await app.inject({ method: 'GET', url: '/test-details-403' });
+      expect(res403.statusCode).toBe(403);
+      const body403 = res403.json<StandardErrorPayload>();
+      expect(body403.error.details).toBeDefined();
+      expect(body403.error.details).toEqual({});
+
+      const res404 = await app.inject({ method: 'GET', url: '/test-details-404' });
+      expect(res404.statusCode).toBe(404);
+      const body404 = res404.json<StandardErrorPayload>();
+      expect(body404.error.details).toBeDefined();
+      expect(body404.error.details).toEqual({});
+
+      const res500 = await app.inject({ method: 'GET', url: '/test-details-500' });
+      expect(res500.statusCode).toBe(500);
+      const body500 = res500.json<StandardErrorPayload>();
+      expect(body500.error.details).toBeDefined();
+      expect(body500.error.details).toEqual({});
 
       await app.close();
     });
@@ -527,6 +565,7 @@ describe('Standard Fastify Error Handler (T014)', () => {
       });
 
       const rawPayload = response.payload;
+      const rawHeaders = JSON.stringify(response.headers);
       const body = response.json() as Record<string, any>;
 
       expect(body).not.toHaveProperty('stack');
@@ -535,6 +574,12 @@ describe('Standard Fastify Error Handler (T014)', () => {
       expect(rawPayload).not.toContain('node:internal/modules');
       expect(rawPayload).not.toContain('db.ts:42');
       expect(rawPayload).not.toMatch(/at\s+[a-zA-Z0-9_.]+\s+\(/);
+
+      expect(rawHeaders).not.toContain('/home/multica-agent/');
+      expect(rawHeaders).not.toContain('node:internal/modules');
+      expect(rawHeaders).not.toContain('db.ts:42');
+      expect(rawHeaders).not.toMatch(/at\s+[a-zA-Z0-9_.]+\s+\(/);
+      expect(rawHeaders).not.toContain('stack');
 
       await app.close();
     });
@@ -557,11 +602,19 @@ describe('Standard Fastify Error Handler (T014)', () => {
       });
 
       const rawPayload = response.payload;
+      const rawHeaders = JSON.stringify(response.headers);
+
       expect(rawPayload).not.toContain(rawSqlQuery);
       expect(rawPayload).not.toContain('SELECT id, username');
       expect(rawPayload).not.toContain('FROM users');
       expect(rawPayload).not.toContain('password_hash');
       expect(rawPayload).not.toContain('QueryFailedError');
+
+      expect(rawHeaders).not.toContain(rawSqlQuery);
+      expect(rawHeaders).not.toContain('SELECT');
+      expect(rawHeaders).not.toContain('FROM users');
+      expect(rawHeaders).not.toContain('password_hash');
+      expect(rawHeaders).not.toContain('QueryFailedError');
 
       await app.close();
     });
@@ -584,10 +637,17 @@ describe('Standard Fastify Error Handler (T014)', () => {
       });
 
       const rawPayload = response.payload;
+      const rawHeaders = JSON.stringify(response.headers);
+
       expect(rawPayload).not.toContain(secretDbPassword);
       expect(rawPayload).not.toContain(databaseUrl);
       expect(rawPayload).not.toContain('s2_user');
       expect(rawPayload).not.toContain('postgresql://');
+
+      expect(rawHeaders).not.toContain(secretDbPassword);
+      expect(rawHeaders).not.toContain(databaseUrl);
+      expect(rawHeaders).not.toContain('s2_user');
+      expect(rawHeaders).not.toContain('postgresql://');
 
       await app.close();
     });
@@ -614,9 +674,15 @@ describe('Standard Fastify Error Handler (T014)', () => {
       });
 
       const rawPayload = response.payload;
+      const rawHeaders = JSON.stringify(response.headers);
+
       expect(rawPayload).not.toContain(rawBearerToken);
       expect(rawPayload).not.toContain(rawCookieSecret);
       expect(rawPayload).not.toContain(rawSecretPassword);
+
+      expect(rawHeaders).not.toContain(rawBearerToken);
+      expect(rawHeaders).not.toContain(rawCookieSecret);
+      expect(rawHeaders).not.toContain(rawSecretPassword);
 
       await app.close();
     });
@@ -639,10 +705,17 @@ describe('Standard Fastify Error Handler (T014)', () => {
       });
 
       const rawPayload = response.payload;
+      const rawHeaders = JSON.stringify(response.headers);
+
       expect(rawPayload).not.toContain(internalPath);
       expect(rawPayload).not.toContain('/home/multica-agent/');
       expect(rawPayload).not.toContain('auth.service.ts');
       expect(rawPayload).not.toContain(internalClass);
+
+      expect(rawHeaders).not.toContain(internalPath);
+      expect(rawHeaders).not.toContain('/home/multica-agent/');
+      expect(rawHeaders).not.toContain('auth.service.ts');
+      expect(rawHeaders).not.toContain(internalClass);
 
       await app.close();
     });
