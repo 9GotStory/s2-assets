@@ -106,12 +106,22 @@ describe('Configuration Validation (T010)', () => {
       const secretPassword = 'SYNTHETIC_SECRET_PASSWORD_DO_NOT_LEAK';
       const malformedDbUrlWithSecret = `postgresql://user:${secretPassword}@invalid-domain:badport/db`;
 
+      // 1. Explicitly assert that the malformed DATABASE_URL is rejected
+      expect(() => {
+        loadConfig({ ...validBaseEnv, DATABASE_URL: malformedDbUrlWithSecret });
+      }).toThrow();
+
+      // 2. Assert that the resulting error message does not expose the synthetic password
+      let thrownError: unknown;
       try {
-        loadConfig({ ...validBaseEnv, DATABASE_URL: malformedDbUrlWithSecret, PORT: 'invalid' });
+        loadConfig({ ...validBaseEnv, DATABASE_URL: malformedDbUrlWithSecret });
       } catch (error: unknown) {
-        const errorMessage = error instanceof Error ? error.message : String(error);
-        expect(errorMessage).not.toContain(secretPassword);
+        thrownError = error;
       }
+
+      expect(thrownError).toBeDefined();
+      const errorMessage = thrownError instanceof Error ? thrownError.message : String(thrownError);
+      expect(errorMessage).not.toContain(secretPassword);
     });
   });
 });
