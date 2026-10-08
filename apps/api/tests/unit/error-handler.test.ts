@@ -1,6 +1,5 @@
 import { describe, it, expect } from 'vitest';
 import Fastify, { type FastifyInstance } from 'fastify';
-// @ts-expect-error - Expected RED state in T014: apps/api/src/plugins/error-handler.ts will be implemented in T015
 import { errorHandler, errorHandlerPlugin } from '../../src/plugins/error-handler.ts';
 
 interface StandardErrorPayload {
