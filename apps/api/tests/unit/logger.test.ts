@@ -1,7 +1,6 @@
 import { describe, it, expect } from 'vitest';
 import Fastify from 'fastify';
 import { Writable } from 'node:stream';
-// @ts-expect-error - Expected RED state in T012: apps/api/src/plugins/logger.ts will be implemented in T013
 import { createLogger, getLoggerOptions, REDACTED_PATHS } from '../../src/plugins/logger.ts';
 
 function createLogCapture() {
