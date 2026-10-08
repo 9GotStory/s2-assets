@@ -2,6 +2,9 @@
   "name": "api",
   "private": true,
   "type": "module",
+  "scripts": {
+    "test": "vitest run"
+  },
   "dependencies": {
     "@fastify/swagger": "9.9.1",
     "@fastify/type-provider-zod": "1.0.0",
@@ -9,6 +12,10 @@
     "zod": "4.6.5"
   },
   "devDependencies": {
+    "@testcontainers/postgresql": "12.2.0",
+    "@types/pg": "8.23.1",
+    "pg": "8.23.1",
+    "testcontainers": "12.2.0",
     "typescript": "6.0.3",
     "vitest": "5.0.3"
   }

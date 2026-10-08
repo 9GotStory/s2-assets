@@ -18,7 +18,7 @@
 
 - [ ] T007 Implement Kysely explicit migration runner/CLI script in `packages/db/src/migrator.ts`.
 - [ ] T008 Create database migration `packages/db/src/migrations/0001_foundation.ts` for users (`id`: UUID Primary Key, `username`: String Unique canonical login identifier, `password_hash`: String Argon2id, `is_active`: Boolean Default true, `created_at`: Timestamp, `updated_at`: Timestamp), sessions (`id`: String SHA-256 Digest of Secure Opaque Token, `user_id`: UUID Foreign Key to `users`, `expires_at`: Timestamp, `created_at`: Timestamp), roles (`id`: String Primary Key explicit identifier e.g., 'ADMINISTRATOR', 'SYSTEM_MAINTAINER', `description`: String), and user_roles (`user_id`: UUID Foreign Key, `role_id`: String Foreign Key).
-- [ ] T009 Implement integration test in `apps/api/tests/integration/db.test.ts` to verify migrations apply successfully to a clean real PostgreSQL database.
+- [x] T009 Implement integration test in `apps/api/tests/integration/db.test.ts` to verify migrations apply successfully to a clean real PostgreSQL database.
 - [ ] T010 Create unit tests in `apps/api/tests/unit/config.test.ts` verifying missing required configuration is rejected, malformed required configuration is rejected, and the application cannot enter the ready operational path with invalid configuration.
 - [ ] T011 Implement Zod-based config loader in `apps/api/src/config/env.ts` that fails closed immediately on missing or malformed required configuration.
 - [ ] T012 Create unit tests in `apps/api/tests/unit/logger.test.ts` verifying configured secret fields are redacted and raw secrets do not appear in emitted operational logs.
