@@ -2,6 +2,13 @@
   "name": "db",
   "private": true,
   "type": "module",
+  "scripts": {
+    "migrate": "node src/migrator.ts",
+    "migrate:latest": "node src/migrator.ts latest",
+    "migrate:up": "node src/migrator.ts up",
+    "migrate:down": "node src/migrator.ts down",
+    "typecheck": "tsc --noEmit"
+  },
   "dependencies": {
     "kysely": "0.29.6",
     "pg": "8.23.1"

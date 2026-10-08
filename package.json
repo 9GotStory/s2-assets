@@ -4,5 +4,9 @@
   "packageManager": "pnpm@12.9.1",
   "engines": {
     "node": "24.21.0"
+  },
+  "scripts": {
+    "db:migrate": "pnpm --filter db migrate:latest",
+    "db:migrate:down": "pnpm --filter db migrate:down"
   }
 }
