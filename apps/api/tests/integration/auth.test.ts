@@ -277,6 +277,105 @@ function getCookieNameValuePair(response: { headers: Record<string, any> }, cook
   return header.split(';')[0];
 }
 
+interface ParsedCookie {
+  name: string;
+  value: string;
+  maxAge?: number;
+  expires?: Date;
+  httpOnly: boolean;
+  secure: boolean;
+  sameSite?: string;
+  path?: string;
+}
+
+// Cookie helper: parse Set-Cookie header string into structured attributes
+function parseSetCookie(cookieHeader: string): ParsedCookie {
+  const parts = cookieHeader.split(';').map((p) => p.trim()).filter(Boolean);
+  if (parts.length === 0) {
+    throw new Error('Empty cookie header');
+  }
+
+  const [firstPart, ...attributeParts] = parts;
+  const equalsIdx = firstPart.indexOf('=');
+  const name = equalsIdx !== -1 ? firstPart.slice(0, equalsIdx).trim() : firstPart.trim();
+  const value = equalsIdx !== -1 ? firstPart.slice(equalsIdx + 1).trim() : '';
+
+  let maxAge: number | undefined;
+  let expires: Date | undefined;
+  let httpOnly = false;
+  let secure = false;
+  let sameSite: string | undefined;
+  let path: string | undefined;
+
+  for (const part of attributeParts) {
+    const eq = part.indexOf('=');
+    const attrName = (eq !== -1 ? part.slice(0, eq) : part).trim().toLowerCase();
+    const attrVal = eq !== -1 ? part.slice(eq + 1).trim() : '';
+
+    if (attrName === 'max-age') {
+      const parsed = parseInt(attrVal, 10);
+      if (!Number.isNaN(parsed)) {
+        maxAge = parsed;
+      }
+    } else if (attrName === 'expires') {
+      const parsedDate = new Date(attrVal);
+      if (!Number.isNaN(parsedDate.getTime())) {
+        expires = parsedDate;
+      }
+    } else if (attrName === 'httponly') {
+      httpOnly = true;
+    } else if (attrName === 'secure') {
+      secure = true;
+    } else if (attrName === 'samesite') {
+      sameSite = attrVal;
+    } else if (attrName === 'path') {
+      path = attrVal;
+    }
+  }
+
+  return {
+    name,
+    value,
+    maxAge,
+    expires,
+    httpOnly,
+    secure,
+    sameSite,
+    path,
+  };
+}
+
+// Cookie helper: assert that a Set-Cookie header explicitly and safely clears the session cookie
+function assertClearingSessionCookie(cookieHeader: string | undefined): void {
+  // 1. Explicit clearing cookie presence
+  expect(cookieHeader).toBeDefined();
+  expect(typeof cookieHeader).toBe('string');
+
+  const parsed = parseSetCookie(cookieHeader!);
+
+  // 2. Cookie name check
+  expect(parsed.name.toLowerCase()).toBe('session');
+
+  // 3. Must specify at least Max-Age or Expires to clear the cookie
+  const hasMaxAge = parsed.maxAge !== undefined;
+  const hasExpires = parsed.expires !== undefined;
+  expect(hasMaxAge || hasExpires).toBe(true);
+
+  // 4. Reject positive Max-Age values, require non-positive (<= 0)
+  if (hasMaxAge) {
+    expect(parsed.maxAge).toBeLessThanOrEqual(0);
+  }
+
+  // 5. Reject future expiry dates, require date in the past
+  if (hasExpires) {
+    expect(parsed.expires!.getTime()).toBeLessThan(Date.now());
+  }
+
+  // 6. Preserve security attributes
+  expect(parsed.httpOnly).toBe(true);
+  expect(parsed.sameSite?.toLowerCase()).toBe('lax');
+}
+
 // Helper to obtain a genuine CSRF token via the test harness route without any dummy fallback
 async function fetchGenuineCsrfToken(
   app: FastifyInstance,
@@ -665,8 +764,7 @@ describe('Authentication & Session Integration Tests (T016)', () => {
 
       // Verify Set-Cookie header MUST explicitly return a clearing session cookie
       const clearCookieHeader = getCookieHeader(response);
-      expect(clearCookieHeader).toBeDefined();
-      expect(clearCookieHeader).toMatch(/(max-age=0|expires=)/i);
+      assertClearingSessionCookie(clearCookieHeader);
       expect(clearCookieHeader).toMatch(/;\s*HttpOnly/i);
       expect(clearCookieHeader).toMatch(/;\s*SameSite=Lax/i);
 
@@ -836,8 +934,7 @@ describe('Authentication & Session Integration Tests (T016)', () => {
 
       // Unconditionally require Set-Cookie header on logout
       const cookieHeader = getCookieHeader(response);
-      expect(cookieHeader).toBeDefined();
-      expect(cookieHeader).toMatch(/(max-age=0|expires=)/i);
+      assertClearingSessionCookie(cookieHeader);
       expect(cookieHeader).toMatch(/;\s*HttpOnly/i);
       expect(cookieHeader).toMatch(/;\s*SameSite=Lax/i);
     });
@@ -1073,8 +1170,7 @@ describe('Authentication & Session Integration Tests (T016)', () => {
 
       // 7. Verify logout unconditionally returns a clearing session cookie
       const clearCookieHeader = getCookieHeader(logoutRes);
-      expect(clearCookieHeader).toBeDefined();
-      expect(clearCookieHeader).toMatch(/(max-age=0|expires=)/i);
+      assertClearingSessionCookie(clearCookieHeader);
       expect(clearCookieHeader).toMatch(/;\s*HttpOnly/i);
       expect(clearCookieHeader).toMatch(/;\s*SameSite=Lax/i);
 
