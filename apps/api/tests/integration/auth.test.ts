@@ -15,25 +15,95 @@ const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
 const migrationFolder = path.resolve(__dirname, '../../../../packages/db/src/migrations');
 
-// Helper to determine if an error is due to a genuinely absent/unimplemented module
-function isMissingModuleError(err: unknown): boolean {
+// Explicit allowlist of modules intentionally absent during TDD RED phase
+const EXPECTED_TDD_MODULES = new Set([
+  '../../src/app.ts',
+  '@fastify/cookie',
+  '../../src/plugins/csrf.ts',
+  '../../src/plugins/auth.ts',
+  '../../src/routes/auth.routes.ts',
+  'argon2',
+]);
+
+// Helper to determine if an error is strictly due to a genuinely absent/unimplemented expected module
+function isExpectedMissingModuleError(err: unknown, moduleSpecifier: string): boolean {
+  if (!EXPECTED_TDD_MODULES.has(moduleSpecifier)) {
+    return false;
+  }
   if (!err || typeof err !== 'object') return false;
   const e = err as Record<string, any>;
-  const code = e.code;
   const message = typeof e.message === 'string' ? e.message : '';
 
-  if (code === 'ERR_MODULE_NOT_FOUND' || code === 'MODULE_NOT_FOUND') {
-    return true;
-  }
-  if (
+  // Ensure it is a genuine module resolution failure, not a syntax error or runtime initialization crash
+  const isResolutionFailure =
+    e.code === 'ERR_MODULE_NOT_FOUND' ||
+    e.code === 'MODULE_NOT_FOUND' ||
     message.includes('Failed to resolve import') ||
     message.includes('Cannot find module') ||
     message.includes('Cannot find package') ||
-    message.includes('Does the file exist')
-  ) {
-    return true;
+    message.includes('Does the file exist');
+
+  if (!isResolutionFailure) {
+    return false;
   }
-  return false;
+
+  // Derive normalized target suffix from moduleSpecifier
+  // e.g. '../../src/app.ts' -> 'src/app.ts'
+  // e.g. '@fastify/cookie' -> '@fastify/cookie'
+  const cleanTarget = moduleSpecifier.replace(/^(\.\.\/)+/, '').replace(/^\.\//, '');
+
+  // Extract the missing target and the importer if available from Vite/Node error patterns
+  const viteMatch = message.match(/Cannot find module '([^']+)' imported from ([^\n\r]+)/);
+  const viteResolveMatch = message.match(/Failed to resolve import "([^"]+)" from "([^"]+)"/);
+  const nodeMatch = message.match(/Cannot find (?:module|package) '([^']+)'/);
+
+  if (viteMatch) {
+    const missingTarget = viteMatch[1];
+    const importer = viteMatch[2];
+    // Importer must be the test file, NOT a transitive module
+    if (!importer.includes('auth.test.ts')) {
+      return false;
+    }
+    const matchesTarget =
+      missingTarget === moduleSpecifier ||
+      missingTarget === cleanTarget ||
+      missingTarget === `/${cleanTarget}` ||
+      missingTarget.endsWith(`/${cleanTarget}`);
+    return matchesTarget;
+  }
+
+  if (viteResolveMatch) {
+    const missingTarget = viteResolveMatch[1];
+    const importer = viteResolveMatch[2];
+    if (!importer.includes('auth.test.ts')) {
+      return false;
+    }
+    const matchesTarget =
+      missingTarget === moduleSpecifier ||
+      missingTarget === cleanTarget ||
+      missingTarget === `/${cleanTarget}` ||
+      missingTarget.endsWith(`/${cleanTarget}`);
+    return matchesTarget;
+  }
+
+  if (nodeMatch) {
+    const missingTarget = nodeMatch[1];
+    const matchesTarget =
+      missingTarget === moduleSpecifier ||
+      missingTarget === cleanTarget ||
+      missingTarget === `/${cleanTarget}` ||
+      missingTarget.endsWith(`/${cleanTarget}`);
+    return matchesTarget;
+  }
+
+  // Fallback: check that the clean target is referenced directly in the resolution error
+  const referencesModule =
+    message.includes(moduleSpecifier) ||
+    message.includes(`'/${cleanTarget}'`) ||
+    message.includes(`'${cleanTarget}'`) ||
+    message.includes(`"${cleanTarget}"`);
+
+  return referencesModule;
 }
 
 // Helper to hash password using argon2 if available, or fallback test hash representation
@@ -44,7 +114,7 @@ async function hashTestPassword(password: string): Promise<string> {
       return await argon2.hash(password);
     }
   } catch (err) {
-    if (!isMissingModuleError(err)) {
+    if (!isExpectedMissingModuleError(err, 'argon2')) {
       throw err;
     }
   }
@@ -61,7 +131,7 @@ async function setupTestApp(options: { databaseUrl: string; secure?: boolean }):
       return await factory({ databaseUrl: options.databaseUrl, secure: options.secure });
     }
   } catch (err) {
-    if (!isMissingModuleError(err)) {
+    if (!isExpectedMissingModuleError(err, '../../src/app.ts')) {
       throw err;
     }
   }
@@ -77,7 +147,7 @@ async function setupTestApp(options: { databaseUrl: string; secure?: boolean }):
       await app.register(cookiePlugin);
     }
   } catch (err) {
-    if (!isMissingModuleError(err)) {
+    if (!isExpectedMissingModuleError(err, '@fastify/cookie')) {
       throw err;
     }
   }
@@ -90,10 +160,23 @@ async function setupTestApp(options: { databaseUrl: string; secure?: boolean }):
       await app.register(csrfPlugin);
     }
   } catch (err) {
-    if (!isMissingModuleError(err)) {
+    if (!isExpectedMissingModuleError(err, '../../src/plugins/csrf.ts')) {
       throw err;
     }
   }
+
+  // Test-only harness route to obtain a genuine CSRF token from the registered CSRF protection plugin
+  app.get('/test-csrf-token', async (request, reply) => {
+    if (typeof (reply as any).generateCsrf === 'function') {
+      const token = (reply as any).generateCsrf();
+      return { csrfToken: token };
+    }
+    if (typeof (app as any).csrfProtection === 'function') {
+      const token = (app as any).csrfProtection(request, reply);
+      return { csrfToken: token };
+    }
+    return { csrfToken: undefined };
+  });
 
   // 4. Try to register auth plugin
   try {
@@ -103,7 +186,7 @@ async function setupTestApp(options: { databaseUrl: string; secure?: boolean }):
       await app.register(authPlugin, { databaseUrl: options.databaseUrl, secure: options.secure });
     }
   } catch (err) {
-    if (!isMissingModuleError(err)) {
+    if (!isExpectedMissingModuleError(err, '../../src/plugins/auth.ts')) {
       throw err;
     }
   }
@@ -116,7 +199,7 @@ async function setupTestApp(options: { databaseUrl: string; secure?: boolean }):
       await app.register(routesPlugin, { prefix: '/auth', databaseUrl: options.databaseUrl });
     }
   } catch (err) {
-    if (!isMissingModuleError(err)) {
+    if (!isExpectedMissingModuleError(err, '../../src/routes/auth.routes.ts')) {
       throw err;
     }
   }
@@ -194,26 +277,49 @@ function getCookieNameValuePair(response: { headers: Record<string, any> }, cook
   return header.split(';')[0];
 }
 
-// CSRF helper: extract or provide CSRF token from response/headers
-function extractCsrfToken(response: { headers: Record<string, any>; json?: () => any }): string {
-  if (response.headers['x-csrf-token']) {
+// Helper to obtain a genuine CSRF token via the test harness route without any dummy fallback
+async function fetchGenuineCsrfToken(
+  app: FastifyInstance,
+  cookieHeader?: string
+): Promise<{ csrfToken: string; cookieHeader?: string }> {
+  const response = await app.inject({
+    method: 'GET',
+    url: '/test-csrf-token',
+    headers: cookieHeader ? { cookie: cookieHeader } : {},
+  });
+
+  const body = response.json();
+  const csrfToken = body?.csrfToken;
+  if (!csrfToken || typeof csrfToken !== 'string') {
+    throw new Error(
+      'Genuine CSRF token could not be obtained: CSRF protection plugin is not initialized or failed to generate token'
+    );
+  }
+
+  const setCookie = response.headers['set-cookie'];
+  const newCookieHeader = setCookie
+    ? Array.isArray(setCookie)
+      ? setCookie.map((c: string) => c.split(';')[0]).join('; ')
+      : setCookie.split(';')[0]
+    : undefined;
+
+  return {
+    csrfToken,
+    cookieHeader: newCookieHeader,
+  };
+}
+
+// CSRF helper: extract CSRF token explicitly provided by a response (no hardcoded fallback)
+function extractCsrfTokenFromResponse(response: { headers: Record<string, any>; json?: () => any }): string | undefined {
+  if (typeof response.headers['x-csrf-token'] === 'string' && response.headers['x-csrf-token'].length > 0) {
     return response.headers['x-csrf-token'];
   }
   try {
     const body = response.json ? response.json() : undefined;
-    if (body?.csrfToken) return body.csrfToken;
-    if (body?.csrf_token) return body.csrf_token;
+    if (typeof body?.csrfToken === 'string' && body.csrfToken.length > 0) return body.csrfToken;
+    if (typeof body?.csrf_token === 'string' && body.csrf_token.length > 0) return body.csrf_token;
   } catch {}
-  const setCookie = response.headers['set-cookie'];
-  if (setCookie) {
-    const headers = Array.isArray(setCookie) ? setCookie : [setCookie];
-    const csrfCookie = headers.find((h: string) => /^_csrf=/i.test(h));
-    if (csrfCookie) {
-      const match = csrfCookie.match(/^_csrf=([^;]+)/);
-      if (match) return match[1];
-    }
-  }
-  return 'valid_test_csrf_token';
+  return undefined;
 }
 
 describe('Authentication & Session Integration Tests (T016)', () => {
@@ -527,14 +633,21 @@ describe('Authentication & Session Integration Tests (T016)', () => {
         expiresAt: new Date(Date.now() + 8 * 60 * 60 * 1000),
       });
 
-      // State-changing logout supplies valid session cookie AND valid CSRF credentials
-      const validCsrfToken = 'valid_test_csrf_token';
+      // State-changing logout supplies valid session cookie AND genuine CSRF credentials
+      const { csrfToken, cookieHeader: csrfCookie } = await fetchGenuineCsrfToken(
+        app,
+        `session=${session.rawToken}`
+      );
+
+      const cookies = [`session=${session.rawToken}`];
+      if (csrfCookie) cookies.push(csrfCookie);
+
       const response = await app.inject({
         method: 'POST',
         url: '/auth/logout',
         headers: {
-          cookie: `session=${session.rawToken}`,
-          'x-csrf-token': validCsrfToken,
+          cookie: cookies.join('; '),
+          'x-csrf-token': csrfToken,
         },
       });
 
@@ -702,13 +815,20 @@ describe('Authentication & Session Integration Tests (T016)', () => {
         expiresAt: new Date(Date.now() + 8 * 60 * 60 * 1000),
       });
 
-      const validCsrfToken = 'valid_test_csrf_token';
+      const { csrfToken, cookieHeader: csrfCookie } = await fetchGenuineCsrfToken(
+        app,
+        `session=${session.rawToken}`
+      );
+
+      const cookies = [`session=${session.rawToken}`];
+      if (csrfCookie) cookies.push(csrfCookie);
+
       const response = await app.inject({
         method: 'POST',
         url: '/auth/logout',
         headers: {
-          cookie: `session=${session.rawToken}`,
-          'x-csrf-token': validCsrfToken,
+          cookie: cookies.join('; '),
+          'x-csrf-token': csrfToken,
         },
       });
 
@@ -791,13 +911,21 @@ describe('Authentication & Session Integration Tests (T016)', () => {
         expiresAt: new Date(Date.now() + 8 * 60 * 60 * 1000),
       });
 
-      const validCsrfToken = 'valid_test_csrf_token';
+      // Obtain genuine CSRF token via the testing harness route
+      const { csrfToken, cookieHeader: csrfCookie } = await fetchGenuineCsrfToken(
+        app,
+        `session=${session.rawToken}`
+      );
+
+      const cookies = [`session=${session.rawToken}`];
+      if (csrfCookie) cookies.push(csrfCookie);
+
       const response = await app.inject({
         method: 'POST',
         url: '/auth/logout',
         headers: {
-          cookie: `session=${session.rawToken}`,
-          'x-csrf-token': validCsrfToken,
+          cookie: cookies.join('; '),
+          'x-csrf-token': csrfToken,
         },
       });
 
@@ -893,15 +1021,15 @@ describe('Authentication & Session Integration Tests (T016)', () => {
 
       // Verify database session record was created with SHA-256 digest
       const rawToken = sessionCookiePair!.split('=')[1];
-      const client = new Client({ connectionString: databaseUrl });
-      await client.connect();
+      const dbClient = new Client({ connectionString: databaseUrl });
+      await dbClient.connect();
       try {
-        const dbSessions = await client.query('SELECT * FROM sessions WHERE user_id = $1', [user.id]);
+        const dbSessions = await dbClient.query('SELECT * FROM sessions WHERE user_id = $1', [user.id]);
         expect(dbSessions.rows).toHaveLength(1);
         const expectedDigest = crypto.createHash('sha256').update(rawToken).digest('hex');
         expect(dbSessions.rows[0].id).toBe(expectedDigest);
       } finally {
-        await client.end();
+        await dbClient.end();
       }
 
       // 5. Use the real session cookie to access authenticated session-check endpoint
@@ -919,14 +1047,25 @@ describe('Authentication & Session Integration Tests (T016)', () => {
       expect(checkBody.user.id).toBe(user.id);
       expect(checkBody.user.username).toBe('lifecycle_user');
 
-      // 6. Logout using the real session cookie AND valid CSRF credentials
-      const csrfToken = extractCsrfToken(loginRes);
+      // 6. Logout using the real session cookie AND genuine CSRF credentials (no fake fallbacks)
+      let csrfToken = extractCsrfTokenFromResponse(loginRes);
+      let csrfCookie: string | undefined;
+      if (!csrfToken) {
+        const csrfCreds = await fetchGenuineCsrfToken(app, sessionCookiePair);
+        csrfToken = csrfCreds.csrfToken;
+        csrfCookie = csrfCreds.cookieHeader;
+      }
+      expect(csrfToken).toBeDefined();
+
+      const logoutCookies = [sessionCookiePair!];
+      if (csrfCookie) logoutCookies.push(csrfCookie);
+
       const logoutRes = await app.inject({
         method: 'POST',
         url: '/auth/logout',
         headers: {
-          cookie: sessionCookiePair!,
-          'x-csrf-token': csrfToken,
+          cookie: logoutCookies.join('; '),
+          'x-csrf-token': csrfToken!,
         },
       });
 
@@ -939,13 +1078,14 @@ describe('Authentication & Session Integration Tests (T016)', () => {
       expect(clearCookieHeader).toMatch(/;\s*HttpOnly/i);
       expect(clearCookieHeader).toMatch(/;\s*SameSite=Lax/i);
 
-      // 8. Verify session record is deleted from PostgreSQL
-      await client.connect();
+      // 8. Verify session record is deleted from PostgreSQL using a fresh Client instance
+      const verifyClient = new Client({ connectionString: databaseUrl });
+      await verifyClient.connect();
       try {
-        const remainingSessions = await client.query('SELECT * FROM sessions WHERE user_id = $1', [user.id]);
+        const remainingSessions = await verifyClient.query('SELECT * FROM sessions WHERE user_id = $1', [user.id]);
         expect(remainingSessions.rows).toHaveLength(0);
       } finally {
-        await client.end();
+        await verifyClient.end();
       }
 
       // 9. Verify subsequent session-check with the same cookie is rejected
