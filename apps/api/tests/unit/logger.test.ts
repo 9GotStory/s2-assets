@@ -65,7 +65,38 @@ describe('Logger Secret Redaction (T012)', () => {
       } else {
         expect(options.redact.paths).toBeDefined();
         expect(options.redact.paths.length).toBeGreaterThan(0);
+        expect(options.redact.censor).toBe('[REDACTED]');
       }
+    });
+
+    it('enforces mandatory [REDACTED] censor and prevents caller bypass via custom censor function', () => {
+      const { stream, getRawLogs, getParsedLogs } = createLogCapture();
+      const unsafeOptions = getLoggerOptions({
+        stream,
+        redact: {
+          paths: ['password'],
+          censor: ((value: unknown) => value) as any,
+        },
+      });
+
+      expect(unsafeOptions.redact.censor).toBe('[REDACTED]');
+
+      const logger = createLogger(unsafeOptions);
+      const rawSecretPassword = 'CALLER_PROVIDED_UNSAFE_PASSWORD_999';
+
+      logger.info(
+        {
+          password: rawSecretPassword,
+        },
+        'attempted censor bypass operation'
+      );
+
+      const rawOutput = getRawLogs();
+      expect(rawOutput).not.toContain(rawSecretPassword);
+
+      const logs = getParsedLogs();
+      expect(logs.length).toBeGreaterThan(0);
+      expect(logs[0].password).toBe('[REDACTED]');
     });
   });
 

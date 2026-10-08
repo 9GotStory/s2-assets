@@ -53,7 +53,7 @@ export const REDACTED_PATHS: readonly string[] = [
   '*.req.body.secret',
 ];
 
-export const CENSOR_VALUE = '[REDACTED]';
+export const CENSOR_VALUE = '[REDACTED]' as const;
 
 export type AppLoggerOptions = LoggerOptions & {
   stream?: DestinationStream;
@@ -62,8 +62,7 @@ export type AppLoggerOptions = LoggerOptions & {
 export type ConfiguredLoggerOptions = Omit<AppLoggerOptions, 'redact'> & {
   redact: {
     paths: string[];
-    censor: string | ((value: unknown, path: string[]) => unknown);
-    remove?: boolean;
+    censor: typeof CENSOR_VALUE;
   };
 };
 
@@ -79,16 +78,11 @@ export function getLoggerOptions(options?: AppLoggerOptions): ConfiguredLoggerOp
     }
   }
 
-  const censor =
-    customRedact && typeof customRedact === 'object' && !Array.isArray(customRedact) && customRedact.censor !== undefined
-      ? customRedact.censor
-      : CENSOR_VALUE;
-
   return {
     ...options,
     redact: {
       paths,
-      censor,
+      censor: CENSOR_VALUE,
     },
   };
 }
