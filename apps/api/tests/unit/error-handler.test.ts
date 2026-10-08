@@ -1026,5 +1026,60 @@ describe('Standard Fastify Error Handler (T014)', () => {
 
       await app.close();
     });
+
+    it('rejects unknown but syntactically valid uppercase error codes (e.g. BACKEND_DSN_EU1_7F4A) and falls back to safe code', async () => {
+      const app = Fastify();
+      app.setErrorHandler(errorHandler);
+
+      const unknownValidCode = 'BACKEND_DSN_EU1_7F4A';
+      app.get('/test-reject-backend-dsn-code', async () => {
+        const err = new Error('Database service unavailable') as Error & { statusCode?: number; code?: string };
+        err.statusCode = 503;
+        err.code = unknownValidCode;
+        throw err;
+      });
+
+      await app.ready();
+
+      const response = await app.inject({
+        method: 'GET',
+        url: '/test-reject-backend-dsn-code',
+      });
+
+      expect(response.statusCode).toBe(503);
+      const body = response.json<StandardErrorPayload>();
+      expect(body.error.code).toBe('SERVICE_UNAVAILABLE');
+      expect(response.payload).not.toContain(unknownValidCode);
+      expect(JSON.stringify(response.headers)).not.toContain(unknownValidCode);
+
+      await app.close();
+    });
+
+    it('rejects unknown syntactically valid codes on HTTP 400 and defaults to BAD_REQUEST', async () => {
+      const app = Fastify();
+      app.setErrorHandler(errorHandler);
+
+      const unknownValidCode = 'CUSTOM_INTERNAL_FLAG_ALPHA';
+      app.get('/test-reject-unknown-syntactic-code-400', async () => {
+        const err = new Error('Client parameter issue') as Error & { statusCode?: number; code?: string };
+        err.statusCode = 400;
+        err.code = unknownValidCode;
+        throw err;
+      });
+
+      await app.ready();
+
+      const response = await app.inject({
+        method: 'GET',
+        url: '/test-reject-unknown-syntactic-code-400',
+      });
+
+      expect(response.statusCode).toBe(400);
+      const body = response.json<StandardErrorPayload>();
+      expect(body.error.code).toBe('BAD_REQUEST');
+      expect(response.payload).not.toContain(unknownValidCode);
+
+      await app.close();
+    });
   });
 });

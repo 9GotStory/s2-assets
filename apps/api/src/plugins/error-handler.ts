@@ -136,46 +136,9 @@ const KEYWORD_TO_DESCRIPTION_MAP: Record<string, string> = {
   enum: 'Invalid value',
 };
 
-const ERROR_CODE_FORMAT = /^[A-Z][A-Z0-9_]{1,63}$/;
-const DISALLOWED_CODE_PREFIXES = ['FST_', 'ERR_', 'NODE_', 'PG_', 'SQL_'];
-const SENSITIVE_CODE_KEYWORDS = [
-  'SECRET',
-  'PASSWORD',
-  'TOKEN',
-  'KEY',
-  'CREDENTIAL',
-  'DATABASE',
-  'URL',
-  'POSTGRES',
-  'STACK',
-  'INTERNAL',
-  'QUERY',
-];
-
 export function isTrustedErrorCode(code: unknown): code is string {
   if (typeof code !== 'string') return false;
-
-  if (STANDARD_ERROR_CODES.has(code) || APPROVED_CUSTOM_ERROR_CODES.has(code)) {
-    return true;
-  }
-
-  if (!ERROR_CODE_FORMAT.test(code)) {
-    return false;
-  }
-
-  for (const prefix of DISALLOWED_CODE_PREFIXES) {
-    if (code.startsWith(prefix)) {
-      return false;
-    }
-  }
-
-  for (const keyword of SENSITIVE_CODE_KEYWORDS) {
-    if (code.includes(keyword)) {
-      return false;
-    }
-  }
-
-  return true;
+  return STANDARD_ERROR_CODES.has(code) || APPROVED_CUSTOM_ERROR_CODES.has(code);
 }
 
 export function sanitizeFieldName(rawField: string): string {
