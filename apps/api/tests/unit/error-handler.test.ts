@@ -771,4 +771,260 @@ describe('Standard Fastify Error Handler (T014)', () => {
       await app.close();
     });
   });
+
+  describe('Security Hardening & Fail-Closed Regression Tests (Review Rework)', () => {
+    it('rejects untrusted error codes containing internal URLs or non-alphanumeric characters', async () => {
+      const app = Fastify();
+      app.setErrorHandler(errorHandler);
+
+      const sensitiveUrl = 'https://internal-vault.cluster.local/v1/secrets';
+      app.get('/test-reject-url-code', async () => {
+        const err = new Error('Generic failure') as Error & { statusCode?: number; code?: string };
+        err.statusCode = 400;
+        err.code = sensitiveUrl;
+        throw err;
+      });
+
+      await app.ready();
+
+      const response = await app.inject({
+        method: 'GET',
+        url: '/test-reject-url-code',
+      });
+
+      expect(response.statusCode).toBe(400);
+      const body = response.json<StandardErrorPayload>();
+      expect(body.error.code).toBe('BAD_REQUEST');
+      expect(response.payload).not.toContain(sensitiveUrl);
+      expect(response.payload).not.toContain('internal-vault');
+      expect(JSON.stringify(response.headers)).not.toContain('internal-vault');
+
+      await app.close();
+    });
+
+    it('rejects error codes containing sensitive keywords (e.g. SECRET, DATABASE, TOKEN)', async () => {
+      const app = Fastify();
+      app.setErrorHandler(errorHandler);
+
+      const sensitiveCode = 'SECRET_DATABASE_TOKEN_INTERNAL';
+      app.get('/test-reject-sensitive-code', async () => {
+        const err = new Error('Database exception') as Error & { statusCode?: number; code?: string };
+        err.statusCode = 500;
+        err.code = sensitiveCode;
+        throw err;
+      });
+
+      await app.ready();
+
+      const response = await app.inject({
+        method: 'GET',
+        url: '/test-reject-sensitive-code',
+      });
+
+      expect(response.statusCode).toBe(500);
+      const body = response.json<StandardErrorPayload>();
+      expect(body.error.code).toBe('INTERNAL_SERVER_ERROR');
+      expect(response.payload).not.toContain(sensitiveCode);
+      expect(JSON.stringify(response.headers)).not.toContain(sensitiveCode);
+
+      await app.close();
+    });
+
+    it('rejects untrusted error codes with SQL injection or HTML/XSS syntax', async () => {
+      const app = Fastify();
+      app.setErrorHandler(errorHandler);
+
+      app.get('/test-reject-injection-code', async () => {
+        const err = new Error('Syntax error') as Error & { statusCode?: number; code?: string };
+        err.statusCode = 400;
+        err.code = '<script>alert("xss")</script>';
+        throw err;
+      });
+
+      await app.ready();
+
+      const response = await app.inject({
+        method: 'GET',
+        url: '/test-reject-injection-code',
+      });
+
+      expect(response.statusCode).toBe(400);
+      const body = response.json<StandardErrorPayload>();
+      expect(body.error.code).toBe('BAD_REQUEST');
+      expect(response.payload).not.toContain('<script>');
+
+      await app.close();
+    });
+
+    it('preserves explicitly approved custom machine-readable codes', async () => {
+      const app = Fastify();
+      app.setErrorHandler(errorHandler);
+
+      app.get('/test-preserve-approved-custom', async () => {
+        const err = new Error('Account inactive') as Error & { statusCode?: number; code?: string };
+        err.statusCode = 401;
+        err.code = 'INVALID_CREDENTIALS';
+        throw err;
+      });
+
+      await app.ready();
+
+      const response = await app.inject({
+        method: 'GET',
+        url: '/test-preserve-approved-custom',
+      });
+
+      expect(response.statusCode).toBe(401);
+      const body = response.json<StandardErrorPayload>();
+      expect(body.error.code).toBe('INVALID_CREDENTIALS');
+
+      await app.close();
+    });
+
+    it('fails closed to safe default messages for HTTP 4xx errors with non-allowlisted messages containing internal URLs', async () => {
+      const app = Fastify();
+      app.setErrorHandler(errorHandler);
+
+      const sensitiveUrlMessage = 'Failed to connect upstream at https://payment-gateway.internal.corp:8443/charge';
+      app.get('/test-leak-url-message', async () => {
+        const err = new Error(sensitiveUrlMessage) as Error & { statusCode?: number };
+        err.statusCode = 400;
+        throw err;
+      });
+
+      await app.ready();
+
+      const response = await app.inject({
+        method: 'GET',
+        url: '/test-leak-url-message',
+      });
+
+      expect(response.statusCode).toBe(400);
+      const body = response.json<StandardErrorPayload>();
+      expect(body.error.message).toBe('Bad request');
+      expect(response.payload).not.toContain('payment-gateway');
+      expect(response.payload).not.toContain('8443');
+      expect(JSON.stringify(response.headers)).not.toContain('payment-gateway');
+
+      await app.close();
+    });
+
+    it('fails closed to safe default messages for HTTP 403 and 404 with non-allowlisted messages', async () => {
+      const app = Fastify();
+      app.setErrorHandler(errorHandler);
+
+      const sensitive403Message = 'Access denied: token eyJhbGciOi... cannot access https://vault.internal.local';
+      app.get('/test-leak-403', async () => {
+        const err = new Error(sensitive403Message) as Error & { statusCode?: number };
+        err.statusCode = 403;
+        throw err;
+      });
+
+      const sensitive404Message = 'Certificate at /etc/ssl/certs/internal.pem on https://s3.corp not found';
+      app.get('/test-leak-404', async () => {
+        const err = new Error(sensitive404Message) as Error & { statusCode?: number };
+        err.statusCode = 404;
+        throw err;
+      });
+
+      await app.ready();
+
+      const res403 = await app.inject({ method: 'GET', url: '/test-leak-403' });
+      expect(res403.statusCode).toBe(403);
+      const body403 = res403.json<StandardErrorPayload>();
+      expect(body403.error.message).toBe('Permission denied');
+      expect(res403.payload).not.toContain('vault.internal.local');
+      expect(res403.payload).not.toContain('eyJhbGciOi');
+
+      const res404 = await app.inject({ method: 'GET', url: '/test-leak-404' });
+      expect(res404.statusCode).toBe(404);
+      const body404 = res404.json<StandardErrorPayload>();
+      expect(body404.error.message).toBe('Requested resource not found');
+      expect(res404.payload).not.toContain('internal.pem');
+      expect(res404.payload).not.toContain('s3.corp');
+
+      await app.close();
+    });
+
+    it('strictly enforces allowlisted validation descriptions in error.details preventing URL and arbitrary text leakage', async () => {
+      const app = Fastify();
+      app.setErrorHandler(errorHandler);
+
+      app.get('/test-details-leak-prevention', async () => {
+        const err = new Error('Validation failed') as Error & {
+          statusCode?: number;
+          validation?: Array<{ keyword: string; instancePath: string; message: string }>;
+        };
+        err.statusCode = 400;
+        err.validation = [
+          {
+            keyword: 'format',
+            instancePath: '/callback_url',
+            message: 'must match internal schema https://internal-schema.corp/v1/url.json',
+          },
+          {
+            keyword: 'custom_keyword',
+            instancePath: '/token_payload',
+            message: 'leaked arbitrary string with secret token_abc123',
+          },
+        ];
+        throw err;
+      });
+
+      await app.ready();
+
+      const response = await app.inject({
+        method: 'GET',
+        url: '/test-details-leak-prevention',
+      });
+
+      expect(response.statusCode).toBe(400);
+      const body = response.json<StandardErrorPayload>();
+      expect(body.error.code).toBe('VALIDATION_FAILED');
+      expect(body.error.details).toBeDefined();
+      expect(body.error.details?.callback_url).toBe('Invalid format');
+      expect(body.error.details?.token_payload).toBe('Invalid value');
+      expect(response.payload).not.toContain('internal-schema.corp');
+      expect(response.payload).not.toContain('token_abc123');
+
+      await app.close();
+    });
+
+    it('sanitizes untrusted property names containing internal URLs in error.details', async () => {
+      const app = Fastify();
+      app.setErrorHandler(errorHandler);
+
+      app.get('/test-details-field-name-leak', async () => {
+        const err = new Error('Validation error') as Error & {
+          statusCode?: number;
+          validation?: Array<{ keyword: string; instancePath: string; message: string }>;
+        };
+        err.statusCode = 400;
+        err.validation = [
+          {
+            keyword: 'type',
+            instancePath: '/https://leak.internal.corp/secret_field',
+            message: 'must be string',
+          },
+        ];
+        throw err;
+      });
+
+      await app.ready();
+
+      const response = await app.inject({
+        method: 'GET',
+        url: '/test-details-field-name-leak',
+      });
+
+      expect(response.statusCode).toBe(400);
+      const body = response.json<StandardErrorPayload>();
+      expect(body.error.details).toBeDefined();
+      expect(body.error.details).toHaveProperty('invalid_field');
+      expect(body.error.details?.invalid_field).toBe('Invalid type');
+      expect(response.payload).not.toContain('leak.internal.corp');
+
+      await app.close();
+    });
+  });
 });
