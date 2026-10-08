@@ -33,7 +33,9 @@ VERSION_OUTPUT=$(podman compose version 2>&1) || {
   return 1 2>/dev/null || exit 1
 }
 
-if ! echo "${VERSION_OUTPUT}" | grep -q "podman-compose version 1.6.0"; then
+CLEAN_VERSION_OUTPUT=$(echo "${VERSION_OUTPUT}" | sed 's/\x1b\[[0-9;]*[a-zA-Z]//g')
+
+if ! echo "${CLEAN_VERSION_OUTPUT}" | grep -Eq "^podman-compose version 1\.6\.0[[:space:]]*$"; then
   _fail "ERROR: Requires podman-compose 1.6.0"
   return 1 2>/dev/null || exit 1
 fi
