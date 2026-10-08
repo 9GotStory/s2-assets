@@ -238,13 +238,13 @@ describe('Logger Secret Redaction (T012)', () => {
 
   describe('Fastify Operational Request Logging Integration', () => {
     it('redacts sensitive headers in Fastify HTTP requests', async () => {
-      const { stream, getRawLogs } = createLogCapture();
+      const { stream, getRawLogs, getParsedLogs } = createLogCapture();
       const loggerOptions = getLoggerOptions({ stream });
 
       const app = Fastify({ logger: loggerOptions });
 
       app.get('/test-auth', async (req) => {
-        req.log.info('handling test-auth route');
+        req.log.info({ headers: req.headers }, 'handling test-auth route');
         return { ok: true };
       });
 
@@ -268,11 +268,20 @@ describe('Logger Secret Redaction (T012)', () => {
       expect(rawLogs).not.toContain(rawSecretBearer);
       expect(rawLogs).not.toContain(rawCookieSecret);
 
+      const parsedLogs = getParsedLogs();
+      const headerLog = parsedLogs.find(
+        (entry) => (entry as any).msg === 'handling test-auth route'
+      ) as any;
+      expect(headerLog).toBeDefined();
+      expect(headerLog.headers).toBeDefined();
+      expect(headerLog.headers.authorization).toBe('[REDACTED]');
+      expect(headerLog.headers.cookie).toBe('[REDACTED]');
+
       await app.close();
     });
 
     it('redacts sensitive request body fields in Fastify HTTP requests', async () => {
-      const { stream, getRawLogs } = createLogCapture();
+      const { stream, getRawLogs, getParsedLogs } = createLogCapture();
       const loggerOptions = getLoggerOptions({ stream });
 
       const app = Fastify({ logger: loggerOptions });
@@ -300,6 +309,15 @@ describe('Logger Secret Redaction (T012)', () => {
       const rawLogs = getRawLogs();
       expect(rawLogs).not.toContain(rawSubmittedPassword);
       expect(rawLogs).toContain('testuser');
+
+      const parsedLogs = getParsedLogs();
+      const bodyLog = parsedLogs.find(
+        (entry) => (entry as any).msg === 'processing login payload'
+      ) as any;
+      expect(bodyLog).toBeDefined();
+      expect(bodyLog.body).toBeDefined();
+      expect(bodyLog.body.username).toBe('testuser');
+      expect(bodyLog.body.password).toBe('[REDACTED]');
 
       await app.close();
     });
