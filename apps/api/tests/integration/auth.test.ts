@@ -15,6 +15,27 @@ const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
 const migrationFolder = path.resolve(__dirname, '../../../../packages/db/src/migrations');
 
+// Helper to determine if an error is due to a genuinely absent/unimplemented module
+function isMissingModuleError(err: unknown): boolean {
+  if (!err || typeof err !== 'object') return false;
+  const e = err as Record<string, any>;
+  const code = e.code;
+  const message = typeof e.message === 'string' ? e.message : '';
+
+  if (code === 'ERR_MODULE_NOT_FOUND' || code === 'MODULE_NOT_FOUND') {
+    return true;
+  }
+  if (
+    message.includes('Failed to resolve import') ||
+    message.includes('Cannot find module') ||
+    message.includes('Cannot find package') ||
+    message.includes('Does the file exist')
+  ) {
+    return true;
+  }
+  return false;
+}
+
 // Helper to hash password using argon2 if available, or fallback test hash representation
 async function hashTestPassword(password: string): Promise<string> {
   try {
@@ -22,13 +43,15 @@ async function hashTestPassword(password: string): Promise<string> {
     if (argon2 && typeof argon2.hash === 'function') {
       return await argon2.hash(password);
     }
-  } catch {
-    // argon2 not installed yet in TDD RED state
+  } catch (err) {
+    if (!isMissingModuleError(err)) {
+      throw err;
+    }
   }
   return `$argon2id$v=19$m=65536,t=3,p=4$c29tZXNhbHQ$RdescudvJCsgqlfreuzphiOZoHzAcTXbgFixda/50No`;
 }
 
-// Helper to setup test Fastify application
+// Helper to setup test Fastify application, surfacing actual runtime/syntax errors
 async function setupTestApp(options: { databaseUrl: string; secure?: boolean }): Promise<FastifyInstance> {
   // 1. Try to load buildApp / createApp factory if present
   try {
@@ -37,7 +60,11 @@ async function setupTestApp(options: { databaseUrl: string; secure?: boolean }):
     if (typeof factory === 'function') {
       return await factory({ databaseUrl: options.databaseUrl, secure: options.secure });
     }
-  } catch {}
+  } catch (err) {
+    if (!isMissingModuleError(err)) {
+      throw err;
+    }
+  }
 
   const app = Fastify();
   await app.register(errorHandlerPlugin);
@@ -49,7 +76,11 @@ async function setupTestApp(options: { databaseUrl: string; secure?: boolean }):
     if (typeof cookiePlugin === 'function') {
       await app.register(cookiePlugin);
     }
-  } catch {}
+  } catch (err) {
+    if (!isMissingModuleError(err)) {
+      throw err;
+    }
+  }
 
   // 3. Try to register csrf plugin
   try {
@@ -58,7 +89,11 @@ async function setupTestApp(options: { databaseUrl: string; secure?: boolean }):
     if (typeof csrfPlugin === 'function') {
       await app.register(csrfPlugin);
     }
-  } catch {}
+  } catch (err) {
+    if (!isMissingModuleError(err)) {
+      throw err;
+    }
+  }
 
   // 4. Try to register auth plugin
   try {
@@ -67,7 +102,11 @@ async function setupTestApp(options: { databaseUrl: string; secure?: boolean }):
     if (typeof authPlugin === 'function') {
       await app.register(authPlugin, { databaseUrl: options.databaseUrl, secure: options.secure });
     }
-  } catch {}
+  } catch (err) {
+    if (!isMissingModuleError(err)) {
+      throw err;
+    }
+  }
 
   // 5. Try to register auth routes
   try {
@@ -76,7 +115,11 @@ async function setupTestApp(options: { databaseUrl: string; secure?: boolean }):
     if (typeof routesPlugin === 'function') {
       await app.register(routesPlugin, { prefix: '/auth', databaseUrl: options.databaseUrl });
     }
-  } catch {}
+  } catch (err) {
+    if (!isMissingModuleError(err)) {
+      throw err;
+    }
+  }
 
   await app.ready();
   return app;
@@ -149,6 +192,28 @@ function getCookieNameValuePair(response: { headers: Record<string, any> }, cook
   const header = getCookieHeader(response, cookieNameRegex);
   if (!header) return undefined;
   return header.split(';')[0];
+}
+
+// CSRF helper: extract or provide CSRF token from response/headers
+function extractCsrfToken(response: { headers: Record<string, any>; json?: () => any }): string {
+  if (response.headers['x-csrf-token']) {
+    return response.headers['x-csrf-token'];
+  }
+  try {
+    const body = response.json ? response.json() : undefined;
+    if (body?.csrfToken) return body.csrfToken;
+    if (body?.csrf_token) return body.csrf_token;
+  } catch {}
+  const setCookie = response.headers['set-cookie'];
+  if (setCookie) {
+    const headers = Array.isArray(setCookie) ? setCookie : [setCookie];
+    const csrfCookie = headers.find((h: string) => /^_csrf=/i.test(h));
+    if (csrfCookie) {
+      const match = csrfCookie.match(/^_csrf=([^;]+)/);
+      if (match) return match[1];
+    }
+  }
+  return 'valid_test_csrf_token';
 }
 
 describe('Authentication & Session Integration Tests (T016)', () => {
@@ -451,7 +516,7 @@ describe('Authentication & Session Integration Tests (T016)', () => {
       expect(['SESSION_EXPIRED', 'UNAUTHORIZED']).toContain(body.error.code);
     });
 
-    it('revokes session on logout, deletes digest from database, and clears cookie', async () => {
+    it('revokes session on logout, deletes digest from database, and explicitly returns a clearing session cookie', async () => {
       const user = await insertUser(databaseUrl, {
         username: 'eve',
         isActive: true,
@@ -462,11 +527,14 @@ describe('Authentication & Session Integration Tests (T016)', () => {
         expiresAt: new Date(Date.now() + 8 * 60 * 60 * 1000),
       });
 
+      // State-changing logout supplies valid session cookie AND valid CSRF credentials
+      const validCsrfToken = 'valid_test_csrf_token';
       const response = await app.inject({
         method: 'POST',
         url: '/auth/logout',
         headers: {
           cookie: `session=${session.rawToken}`,
+          'x-csrf-token': validCsrfToken,
         },
       });
 
@@ -482,11 +550,12 @@ describe('Authentication & Session Integration Tests (T016)', () => {
         await client.end();
       }
 
-      // Verify Set-Cookie header clears the session cookie (Max-Age=0 or expired)
+      // Verify Set-Cookie header MUST explicitly return a clearing session cookie
       const clearCookieHeader = getCookieHeader(response);
-      if (clearCookieHeader) {
-        expect(clearCookieHeader).toMatch(/(max-age=0|expires=)/i);
-      }
+      expect(clearCookieHeader).toBeDefined();
+      expect(clearCookieHeader).toMatch(/(max-age=0|expires=)/i);
+      expect(clearCookieHeader).toMatch(/;\s*HttpOnly/i);
+      expect(clearCookieHeader).toMatch(/;\s*SameSite=Lax/i);
 
       // Subsequent request using revoked session token must be denied
       const subsequentRes = await app.inject({
@@ -633,21 +702,24 @@ describe('Authentication & Session Integration Tests (T016)', () => {
         expiresAt: new Date(Date.now() + 8 * 60 * 60 * 1000),
       });
 
+      const validCsrfToken = 'valid_test_csrf_token';
       const response = await app.inject({
         method: 'POST',
         url: '/auth/logout',
         headers: {
           cookie: `session=${session.rawToken}`,
+          'x-csrf-token': validCsrfToken,
         },
       });
 
       expect([200, 204]).toContain(response.statusCode);
 
+      // Unconditionally require Set-Cookie header on logout
       const cookieHeader = getCookieHeader(response);
-      if (cookieHeader) {
-        expect(cookieHeader).toMatch(/;\s*HttpOnly/i);
-        expect(cookieHeader).toMatch(/;\s*SameSite=Lax/i);
-      }
+      expect(cookieHeader).toBeDefined();
+      expect(cookieHeader).toMatch(/(max-age=0|expires=)/i);
+      expect(cookieHeader).toMatch(/;\s*HttpOnly/i);
+      expect(cookieHeader).toMatch(/;\s*SameSite=Lax/i);
     });
   });
 
@@ -655,9 +727,9 @@ describe('Authentication & Session Integration Tests (T016)', () => {
   // 5. CSRF protection behavior
   // =========================================================================
   describe('CSRF Protection Behavior', () => {
-    it('rejects state-changing POST requests when CSRF token is missing or invalid', async () => {
+    it('rejects state-changing POST requests when CSRF token is missing with HTTP 403 and CSRF_TOKEN_INVALID', async () => {
       const user = await insertUser(databaseUrl, {
-        username: 'judy',
+        username: 'csrf_missing_user',
         isActive: true,
       });
 
@@ -666,21 +738,93 @@ describe('Authentication & Session Integration Tests (T016)', () => {
         expiresAt: new Date(Date.now() + 8 * 60 * 60 * 1000),
       });
 
-      // State-changing request with invalid CSRF token
+      // Authenticated state-changing request WITHOUT CSRF token header
       const response = await app.inject({
         method: 'POST',
         url: '/auth/logout',
         headers: {
           cookie: `session=${session.rawToken}`,
-          'x-csrf-token': 'tampered_invalid_csrf_token',
         },
       });
 
-      // CSRF protection must fail closed with HTTP 403 Forbidden
       expect(response.statusCode).toBe(403);
       const body = response.json();
       expect(body.error).toBeDefined();
       expect(['CSRF_TOKEN_INVALID', 'FORBIDDEN']).toContain(body.error.code);
+    });
+
+    it('rejects state-changing POST requests when CSRF token is invalid/tampered with HTTP 403 and CSRF_TOKEN_INVALID', async () => {
+      const user = await insertUser(databaseUrl, {
+        username: 'csrf_invalid_user',
+        isActive: true,
+      });
+
+      const session = await insertSession(databaseUrl, {
+        userId: user.id,
+        expiresAt: new Date(Date.now() + 8 * 60 * 60 * 1000),
+      });
+
+      // Authenticated state-changing request WITH invalid/tampered CSRF token
+      const response = await app.inject({
+        method: 'POST',
+        url: '/auth/logout',
+        headers: {
+          cookie: `session=${session.rawToken}`,
+          'x-csrf-token': 'tampered_invalid_csrf_token_value',
+        },
+      });
+
+      expect(response.statusCode).toBe(403);
+      const body = response.json();
+      expect(body.error).toBeDefined();
+      expect(['CSRF_TOKEN_INVALID', 'FORBIDDEN']).toContain(body.error.code);
+    });
+
+    it('allows state-changing POST requests when valid CSRF token is provided', async () => {
+      const user = await insertUser(databaseUrl, {
+        username: 'csrf_valid_user',
+        isActive: true,
+      });
+
+      const session = await insertSession(databaseUrl, {
+        userId: user.id,
+        expiresAt: new Date(Date.now() + 8 * 60 * 60 * 1000),
+      });
+
+      const validCsrfToken = 'valid_test_csrf_token';
+      const response = await app.inject({
+        method: 'POST',
+        url: '/auth/logout',
+        headers: {
+          cookie: `session=${session.rawToken}`,
+          'x-csrf-token': validCsrfToken,
+        },
+      });
+
+      // Valid CSRF credentials should allow request through (not blocked by 403 CSRF error)
+      expect([200, 204]).toContain(response.statusCode);
+    });
+
+    it('permits unauthenticated login requests as a bootstrap exception without pre-existing session CSRF token', async () => {
+      const password = 'BootstrapPassword123!';
+      const passwordHash = await hashTestPassword(password);
+      await insertUser(databaseUrl, {
+        username: 'bootstrap_user',
+        passwordHash,
+        isActive: true,
+      });
+
+      // Initial unauthenticated login does not require a pre-existing authenticated session CSRF token
+      const response = await app.inject({
+        method: 'POST',
+        url: '/auth/login',
+        payload: {
+          username: 'bootstrap_user',
+          password,
+        },
+      });
+
+      expect(response.statusCode).toBe(200);
     });
 
     it('does not require CSRF token for safe read-only GET requests', async () => {
@@ -694,7 +838,7 @@ describe('Authentication & Session Integration Tests (T016)', () => {
         expiresAt: new Date(Date.now() + 8 * 60 * 60 * 1000),
       });
 
-      // GET request without CSRF token should NOT be blocked by CSRF
+      // GET request without CSRF token must NOT be rejected by CSRF
       const response = await app.inject({
         method: 'GET',
         url: '/auth/session-check',
@@ -703,11 +847,120 @@ describe('Authentication & Session Integration Tests (T016)', () => {
         },
       });
 
-      // Status should be 200 (authenticated), definitely NOT 403 CSRF error
       expect(response.statusCode).toBe(200);
       const body = response.json();
       expect(body.user).toBeDefined();
       expect(body.user.id).toBe(user.id);
+    });
+  });
+
+  // =========================================================================
+  // 6. Complete End-to-End Authentication & Session Flow
+  // =========================================================================
+  describe('Complete Authentication & Session Flow', () => {
+    it('executes full end-to-end lifecycle: login -> authenticated session-check -> authenticated logout with CSRF -> subsequent rejection', async () => {
+      // 1. Arrange: seed active user in DB
+      const password = 'LifecyclePassword123!';
+      const passwordHash = await hashTestPassword(password);
+      const user = await insertUser(databaseUrl, {
+        username: 'lifecycle_user',
+        passwordHash,
+        isActive: true,
+      });
+
+      // 2. Act: log in with valid credentials
+      const loginRes = await app.inject({
+        method: 'POST',
+        url: '/auth/login',
+        payload: {
+          username: 'lifecycle_user',
+          password,
+        },
+      });
+
+      // 3. Assert login response
+      expect(loginRes.statusCode).toBe(200);
+      const loginBody = loginRes.json();
+      expect(loginBody.user).toBeDefined();
+      expect(loginBody.user.id).toBe(user.id);
+      expect(loginBody.user.username).toBe('lifecycle_user');
+
+      // 4. Extract the REAL session cookie issued during login
+      const sessionCookieHeader = getCookieHeader(loginRes);
+      expect(sessionCookieHeader).toBeDefined();
+      const sessionCookiePair = getCookieNameValuePair(loginRes);
+      expect(sessionCookiePair).toBeDefined();
+
+      // Verify database session record was created with SHA-256 digest
+      const rawToken = sessionCookiePair!.split('=')[1];
+      const client = new Client({ connectionString: databaseUrl });
+      await client.connect();
+      try {
+        const dbSessions = await client.query('SELECT * FROM sessions WHERE user_id = $1', [user.id]);
+        expect(dbSessions.rows).toHaveLength(1);
+        const expectedDigest = crypto.createHash('sha256').update(rawToken).digest('hex');
+        expect(dbSessions.rows[0].id).toBe(expectedDigest);
+      } finally {
+        await client.end();
+      }
+
+      // 5. Use the real session cookie to access authenticated session-check endpoint
+      const sessionCheckRes = await app.inject({
+        method: 'GET',
+        url: '/auth/session-check',
+        headers: {
+          cookie: sessionCookiePair!,
+        },
+      });
+
+      expect(sessionCheckRes.statusCode).toBe(200);
+      const checkBody = sessionCheckRes.json();
+      expect(checkBody.user).toBeDefined();
+      expect(checkBody.user.id).toBe(user.id);
+      expect(checkBody.user.username).toBe('lifecycle_user');
+
+      // 6. Logout using the real session cookie AND valid CSRF credentials
+      const csrfToken = extractCsrfToken(loginRes);
+      const logoutRes = await app.inject({
+        method: 'POST',
+        url: '/auth/logout',
+        headers: {
+          cookie: sessionCookiePair!,
+          'x-csrf-token': csrfToken,
+        },
+      });
+
+      expect([200, 204]).toContain(logoutRes.statusCode);
+
+      // 7. Verify logout unconditionally returns a clearing session cookie
+      const clearCookieHeader = getCookieHeader(logoutRes);
+      expect(clearCookieHeader).toBeDefined();
+      expect(clearCookieHeader).toMatch(/(max-age=0|expires=)/i);
+      expect(clearCookieHeader).toMatch(/;\s*HttpOnly/i);
+      expect(clearCookieHeader).toMatch(/;\s*SameSite=Lax/i);
+
+      // 8. Verify session record is deleted from PostgreSQL
+      await client.connect();
+      try {
+        const remainingSessions = await client.query('SELECT * FROM sessions WHERE user_id = $1', [user.id]);
+        expect(remainingSessions.rows).toHaveLength(0);
+      } finally {
+        await client.end();
+      }
+
+      // 9. Verify subsequent session-check with the same cookie is rejected
+      const postLogoutCheckRes = await app.inject({
+        method: 'GET',
+        url: '/auth/session-check',
+        headers: {
+          cookie: sessionCookiePair!,
+        },
+      });
+
+      expect(postLogoutCheckRes.statusCode).toBe(401);
+      const postLogoutBody = postLogoutCheckRes.json();
+      expect(postLogoutBody.error).toBeDefined();
+      expect(['SESSION_REVOKED', 'SESSION_NOT_FOUND', 'UNAUTHORIZED']).toContain(postLogoutBody.error.code);
     });
   });
 });
