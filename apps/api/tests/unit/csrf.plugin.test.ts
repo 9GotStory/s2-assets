@@ -430,12 +430,68 @@ describe('CSRF Protection Plugin (T021)', () => {
       expect(delRes.statusCode).toBe(403);
     });
 
-    it('fails closed if POST /auth/login is explicitly declared protected', async () => {
+    it('fails closed if POST /auth/login is explicitly declared with config: { csrf: true }', async () => {
       const strictApp = Fastify();
       await strictApp.register(errorHandlerPlugin);
       await strictApp.register(csrfPlugin);
 
       strictApp.post('/auth/login', { config: { csrf: true } }, async () => ({ strict: true }));
+      await strictApp.ready();
+
+      const res = await strictApp.inject({ method: 'POST', url: '/auth/login' });
+      expect(res.statusCode).toBe(403);
+      expect(res.json().error.code).toBe('CSRF_TOKEN_INVALID');
+      await strictApp.close();
+    });
+
+    it('fails closed if POST /auth/login is explicitly declared with config: { protected: true }', async () => {
+      const strictApp = Fastify();
+      await strictApp.register(errorHandlerPlugin);
+      await strictApp.register(csrfPlugin);
+
+      strictApp.post('/auth/login', { config: { protected: true } }, async () => ({ protected: true }));
+      await strictApp.ready();
+
+      const res = await strictApp.inject({ method: 'POST', url: '/auth/login' });
+      expect(res.statusCode).toBe(403);
+      expect(res.json().error.code).toBe('CSRF_TOKEN_INVALID');
+      await strictApp.close();
+    });
+
+    it('fails closed if POST /auth/login is explicitly declared with config: { auth: true }', async () => {
+      const strictApp = Fastify();
+      await strictApp.register(errorHandlerPlugin);
+      await strictApp.register(csrfPlugin);
+
+      strictApp.post('/auth/login', { config: { auth: true } }, async () => ({ auth: true }));
+      await strictApp.ready();
+
+      const res = await strictApp.inject({ method: 'POST', url: '/auth/login' });
+      expect(res.statusCode).toBe(403);
+      expect(res.json().error.code).toBe('CSRF_TOKEN_INVALID');
+      await strictApp.close();
+    });
+
+    it('fails closed if POST /auth/login is explicitly declared with config: { requireAuth: true }', async () => {
+      const strictApp = Fastify();
+      await strictApp.register(errorHandlerPlugin);
+      await strictApp.register(csrfPlugin);
+
+      strictApp.post('/auth/login', { config: { requireAuth: true } }, async () => ({ requireAuth: true }));
+      await strictApp.ready();
+
+      const res = await strictApp.inject({ method: 'POST', url: '/auth/login' });
+      expect(res.statusCode).toBe(403);
+      expect(res.json().error.code).toBe('CSRF_TOKEN_INVALID');
+      await strictApp.close();
+    });
+
+    it('fails closed if POST /auth/login is explicitly declared with config: { requireCsrf: true }', async () => {
+      const strictApp = Fastify();
+      await strictApp.register(errorHandlerPlugin);
+      await strictApp.register(csrfPlugin);
+
+      strictApp.post('/auth/login', { config: { requireCsrf: true } }, async () => ({ requireCsrf: true }));
       await strictApp.ready();
 
       const res = await strictApp.inject({ method: 'POST', url: '/auth/login' });
@@ -574,7 +630,7 @@ describe('CSRF Protection Plugin (T021)', () => {
 
       const prodApp = Fastify();
       await prodApp.register(errorHandlerPlugin);
-      await prodApp.register(csrfPlugin, { secure: false });
+      await prodApp.register(csrfPlugin, { secure: false, secret: 'test-production-secret-key-123456789' });
 
       prodApp.get('/token', async (req, reply) => {
         return { token: reply.generateCsrf({ secure: false } as any) };
@@ -760,10 +816,133 @@ describe('CSRF Protection Plugin (T021)', () => {
   });
 
   // =========================================================================
-  // 16. Failure handling for missing configuration or verification errors
+  // 16. Cookie Tossing Resistance and Fail-Closed Configuration
   // =========================================================================
-  describe('16. Fail-Closed Error Handling', () => {
-    it('fails closed with signed cookie enabled when signature is invalid/tampered', async () => {
+  describe('16. Cookie Tossing Resistance and Fail-Closed Configuration (Finding 2)', () => {
+    const originalEnv = process.env.NODE_ENV;
+
+    afterEach(() => {
+      process.env.NODE_ENV = originalEnv;
+    });
+
+    it('fails closed during plugin registration when signed: true is enabled but no secret is configured', async () => {
+      const appWithoutSecret = Fastify();
+      await appWithoutSecret.register(errorHandlerPlugin);
+
+      await expect(
+        appWithoutSecret.register(csrfPlugin, { signed: true })
+      ).rejects.toThrow(/cookie signing is required/i);
+
+      await appWithoutSecret.close();
+    });
+
+    it('fails closed during plugin registration when signing secret is empty string or whitespace', async () => {
+      const appWithEmptySecret = Fastify();
+      await appWithEmptySecret.register(errorHandlerPlugin);
+
+      await expect(
+        appWithEmptySecret.register(csrfPlugin, { signed: true, secret: '   ' })
+      ).rejects.toThrow();
+
+      await appWithEmptySecret.close();
+    });
+
+    it('fails closed during plugin registration if @fastify/cookie was pre-registered without secret but signed: true is enabled', async () => {
+      const appPreRegistered = Fastify();
+      await appPreRegistered.register(errorHandlerPlugin);
+      // Pre-register cookie plugin without secret
+      await appPreRegistered.register(fastifyCookie);
+
+      await expect(
+        appPreRegistered.register(csrfPlugin, { signed: true })
+      ).rejects.toThrow(/without a signing secret/i);
+
+      await appPreRegistered.close();
+    });
+
+    it('fails closed in production environment when no cookie signing secret is configured', async () => {
+      process.env.NODE_ENV = 'production';
+      const prodAppWithoutSecret = Fastify();
+      await prodAppWithoutSecret.register(errorHandlerPlugin);
+
+      await expect(
+        prodAppWithoutSecret.register(csrfPlugin)
+      ).rejects.toThrow(/cookie signing is required/i);
+
+      await prodAppWithoutSecret.close();
+    });
+
+    it('succeeds in production environment when valid cookie signing secret is configured and enforces signed and secure cookie', async () => {
+      process.env.NODE_ENV = 'production';
+      const prodApp = Fastify();
+      await prodApp.register(errorHandlerPlugin);
+      await prodApp.register(csrfPlugin, { secret: 'trusted-prod-secret-key-1234567890' });
+
+      prodApp.get('/token', async (req, reply) => ({ token: reply.generateCsrf() }));
+      prodApp.post('/action', async () => ({ success: true }));
+      await prodApp.ready();
+
+      const tokenRes = await prodApp.inject({ method: 'GET', url: '/token' });
+      expect(tokenRes.statusCode).toBe(200);
+
+      const cookieHeader = tokenRes.headers['set-cookie']?.toString() || '';
+      const parsed = parseCookieHeader(cookieHeader);
+
+      // Verify Secure is enforced in production
+      expect(parsed.secure).toBe(true);
+      // Verify cookie value is signed (contains HMAC signature separator '.')
+      expect(parsed.value?.toString()).toContain('.');
+
+      const token = tokenRes.json().token;
+      const cookiePair = cookieHeader.split(';')[0];
+
+      // Request with genuine signed cookie and token succeeds
+      const postRes = await prodApp.inject({
+        method: 'POST',
+        url: '/action',
+        headers: {
+          cookie: cookiePair,
+          'x-csrf-token': token,
+        },
+      });
+      expect(postRes.statusCode).toBe(200);
+      expect(postRes.json()).toEqual({ success: true });
+
+      await prodApp.close();
+    });
+
+    it('rejects injected unsigned cookie (cookie tossing attack) in signed mode with HTTP 403 CSRF_TOKEN_INVALID', async () => {
+      const signedApp = Fastify();
+      await signedApp.register(errorHandlerPlugin);
+      await signedApp.register(fastifyCookie, { secret: 'secret-signature-key-1234567890' });
+      await signedApp.register(csrfPlugin, { signed: true });
+
+      signedApp.get('/token', async (req, reply) => ({ token: reply.generateCsrf() }));
+      signedApp.post('/api/action', async () => ({ ok: true }));
+      await signedApp.ready();
+
+      const tokenRes = await signedApp.inject({ method: 'GET', url: '/token' });
+      const validToken = tokenRes.json().token;
+
+      // Attacker attempts cookie tossing by injecting an unsigned _csrf cookie from an untrusted domain
+      const injectedUnsignedCookie = '_csrf=attacker_injected_secret_value_123';
+
+      const res = await signedApp.inject({
+        method: 'POST',
+        url: '/api/action',
+        headers: {
+          cookie: injectedUnsignedCookie,
+          'x-csrf-token': validToken,
+        },
+      });
+
+      expect(res.statusCode).toBe(403);
+      expect(res.json().error.code).toBe('CSRF_TOKEN_INVALID');
+
+      await signedApp.close();
+    });
+
+    it('rejects tampered signed cookie in signed mode with HTTP 403 CSRF_TOKEN_INVALID', async () => {
       const signedApp = Fastify();
       await signedApp.register(errorHandlerPlugin);
       await signedApp.register(fastifyCookie, { secret: 'secret-signature-key-1234567890' });
@@ -777,7 +956,7 @@ describe('CSRF Protection Plugin (T021)', () => {
       const validToken = tokenRes.json().token;
       const cookieHeader = tokenRes.headers['set-cookie']?.toString().split(';')[0]!;
 
-      // Tamper signed cookie
+      // Tamper signed cookie value
       const tamperedCookie = `${cookieHeader}tampered`;
 
       const res = await signedApp.inject({
@@ -793,6 +972,42 @@ describe('CSRF Protection Plugin (T021)', () => {
       expect(res.json().error.code).toBe('CSRF_TOKEN_INVALID');
 
       await signedApp.close();
+    });
+
+    it('rejects cookie signed with foreign untrusted secret in signed mode with HTTP 403 CSRF_TOKEN_INVALID', async () => {
+      const app1 = Fastify();
+      await app1.register(errorHandlerPlugin);
+      await app1.register(fastifyCookie, { secret: 'secret-key-instance-one-123456789' });
+      await app1.register(csrfPlugin, { signed: true });
+      app1.get('/token1', async (req, reply) => ({ token: reply.generateCsrf() }));
+      await app1.ready();
+
+      const tokenRes1 = await app1.inject({ method: 'GET', url: '/token1' });
+      const cookie1 = tokenRes1.headers['set-cookie']?.toString().split(';')[0]!;
+      const token1 = tokenRes1.json().token;
+      await app1.close();
+
+      const app2 = Fastify();
+      await app2.register(errorHandlerPlugin);
+      await app2.register(fastifyCookie, { secret: 'secret-key-instance-two-different987' });
+      await app2.register(csrfPlugin, { signed: true });
+      app2.post('/action', async () => ({ ok: true }));
+      await app2.ready();
+
+      // Send cookie from app1 (signed with foreign key) to app2
+      const res = await app2.inject({
+        method: 'POST',
+        url: '/action',
+        headers: {
+          cookie: cookie1,
+          'x-csrf-token': token1,
+        },
+      });
+
+      expect(res.statusCode).toBe(403);
+      expect(res.json().error.code).toBe('CSRF_TOKEN_INVALID');
+
+      await app2.close();
     });
   });
 

@@ -5,23 +5,11 @@ import type {
   FastifyRequest,
 } from 'fastify';
 import fastifyCookie from '@fastify/cookie';
-import { createRequire } from 'node:module';
-
-// Resolve @fastify/csrf via @fastify/csrf-protection dependency tree
-const requireModule = createRequire(import.meta.url);
-let FastifyCsrfConstructor: any;
-try {
-  FastifyCsrfConstructor = requireModule('@fastify/csrf');
-} catch {
-  const csrfProtPath = import.meta.resolve('@fastify/csrf-protection');
-  FastifyCsrfConstructor = createRequire(csrfProtPath)('@fastify/csrf');
-}
+import fastifyCsrfProtection from '@fastify/csrf-protection';
 
 export const DEFAULT_CSRF_COOKIE_NAME = '_csrf';
 export const SAFE_HTTP_METHODS: ReadonlySet<string> = new Set(['GET', 'HEAD', 'OPTIONS']);
 export const UNSAFE_HTTP_METHODS: ReadonlySet<string> = new Set(['POST', 'PUT', 'PATCH', 'DELETE']);
-
-const kCsrfSecret = Symbol.for('fastify.csrf.secret');
 
 export class CsrfError extends Error {
   statusCode: number;
@@ -41,7 +29,7 @@ export interface CsrfCookieOptions {
   domain?: string;
   signed?: boolean;
   userInfo?: string;
-  // Disallowed overrides typed as unknown to gracefully reject/prevent caller weakening
+  // Disallowed overrides typed as unknown to prevent caller weakening
   httpOnly?: unknown;
   sameSite?: unknown;
   path?: unknown;
@@ -53,6 +41,8 @@ export interface CsrfPluginOptions {
   secure?: boolean;
   domain?: string;
   signed?: boolean;
+  secret?: string;
+  cookieSecret?: string;
   exemptRoutes?: readonly (string | RegExp)[];
   csrfOpts?: Record<string, unknown>;
   getUserInfo?: (req: FastifyRequest) => string | undefined;
@@ -68,6 +58,18 @@ export function resolveCookieSecure(optionsSecure?: boolean): boolean {
     return true;
   }
   return optionsSecure ?? false;
+}
+
+/**
+ * Resolves whether CSRF secret cookies must be signed.
+ * In production, cookie signing is strictly enforced for cookie tossing resistance.
+ * In test/development, explicit options decide (default: false).
+ */
+export function resolveCookieSigned(optionsSigned?: boolean): boolean {
+  if (process.env.NODE_ENV === 'production') {
+    return true;
+  }
+  return optionsSigned ?? false;
 }
 
 /**
@@ -183,12 +185,14 @@ export function isBootstrapLoginRoute(request: FastifyRequest): boolean {
     return false;
   }
 
-  // Explicit route config protection takes precedence -> fail closed
+  // Explicit route config protection takes precedence -> fail closed (Finding 3)
   const config = request.routeOptions?.config as Record<string, any> | undefined;
   if (
     config?.csrf === true ||
     config?.requireCsrf === true ||
-    config?.protected === true
+    config?.protected === true ||
+    config?.auth === true ||
+    config?.requireAuth === true
   ) {
     return false;
   }
@@ -216,11 +220,13 @@ export function isRouteCsrfExempt(
 ): boolean {
   const config = request.routeOptions?.config as Record<string, any> | undefined;
 
-  // 1. Explicit protection declarations ALWAYS take precedence -> FAIL CLOSED
+  // 1. Explicit protection declarations ALWAYS take precedence -> FAIL CLOSED (Finding 3)
   if (
     config?.csrf === true ||
     config?.requireCsrf === true ||
-    config?.protected === true
+    config?.protected === true ||
+    config?.auth === true ||
+    config?.requireAuth === true
   ) {
     return false;
   }
@@ -258,18 +264,41 @@ export function isRouteCsrfExempt(
   return false;
 }
 
-declare module 'fastify' {
-  interface FastifyInstance {
-    csrfProtection: (
-      req: FastifyRequest,
-      reply: FastifyReply,
-      done?: (err?: Error) => void
-    ) => Promise<void> | void;
-    generateCsrf: (reply: FastifyReply, options?: CsrfCookieOptions) => string;
+/**
+ * Enforces rigid cookie attributes preventing callers from weakening httpOnly, sameSite, path, or secure in production.
+ */
+export function sanitizeCallerCookieOptions(
+  opts?: CsrfCookieOptions & { userInfo?: string },
+  defaultSecure: boolean = false,
+  defaultDomain?: string,
+  defaultSigned: boolean = false
+): Record<string, unknown> {
+  const sanitized: Record<string, unknown> = {
+    path: '/',
+    httpOnly: true,
+    sameSite: 'lax',
+    secure: resolveCookieSecure(opts?.secure ?? defaultSecure),
+  };
+
+  if (defaultSigned || opts?.signed) {
+    sanitized.signed = true;
   }
 
-  interface FastifyReply {
-    generateCsrf: (options?: CsrfCookieOptions & { userInfo?: string }) => string;
+  const domain = opts?.domain ?? defaultDomain;
+  if (domain && isValidCookieDomain(domain)) {
+    sanitized.domain = domain.trim();
+  }
+
+  if (opts?.userInfo !== undefined) {
+    sanitized.userInfo = opts.userInfo;
+  }
+
+  return sanitized;
+}
+
+declare module 'fastify' {
+  interface FastifyInstance {
+    generateCsrf: (reply: FastifyReply, options?: CsrfCookieOptions) => string;
   }
 }
 
@@ -277,156 +306,162 @@ export const csrfPlugin: FastifyPluginAsync<CsrfPluginOptions> = async (
   fastify: FastifyInstance,
   options: CsrfPluginOptions = {}
 ): Promise<void> => {
-  // 1. Ensure @fastify/cookie is registered first
-  if (!fastify.parseCookie && !fastify.hasRequestDecorator('cookies')) {
-    await fastify.register(fastifyCookie);
-  }
-
   const cookieKey = options.cookieName ?? options.cookieKey ?? DEFAULT_CSRF_COOKIE_NAME;
   const pluginSecure = resolveCookieSecure(options.secure);
-  const pluginDomain = options.domain;
-  const isSigned = options.signed ?? false;
+  const isSigned = resolveCookieSigned(options.signed);
+  const pluginDomain =
+    options.domain && isValidCookieDomain(options.domain) ? options.domain.trim() : undefined;
   const exemptRoutes = options.exemptRoutes ?? [];
-  const getUserInfo = options.getUserInfo;
 
-  const csrfInstance = new FastifyCsrfConstructor(options.csrfOpts ?? {});
+  // Finding 2 — Cookie tossing resistance:
+  // When signing is required (production or signed: true), verify trusted configuration is present.
+  const trustedSecret =
+    options.cookieSecret ??
+    options.secret ??
+    process.env.COOKIE_SECRET ??
+    process.env.CSRF_SECRET;
 
-  // 2. Token generation helper enforcing rigid cookie security attributes
-  const generateCsrfToken = (
-    reply: FastifyReply,
-    opts?: CsrfCookieOptions & { userInfo?: string }
-  ): string => {
-    const request = reply.request;
-    let secret = (reply as any)[kCsrfSecret] ?? (request as any)?.[kCsrfSecret];
+  const hasConfiguredSigner = Boolean(
+    fastify.hasDecorator('unsignCookie') ||
+    typeof (fastify as any).unsignCookie === 'function'
+  );
 
-    if (!secret) {
-      secret = getCsrfSecret(request, cookieKey, isSigned);
-    }
-
-    if (!secret) {
-      secret = csrfInstance.secretSync();
-      (reply as any)[kCsrfSecret] = secret;
-      if (request) {
-        (request as any)[kCsrfSecret] = secret;
+  if (isSigned) {
+    if (!hasConfiguredSigner) {
+      if (!fastify.parseCookie && !fastify.hasRequestDecorator('cookies')) {
+        if (!trustedSecret || typeof trustedSecret !== 'string' || trustedSecret.trim().length === 0) {
+          throw new Error(
+            'CSRF cookie signing is required (in production or when signed: true) but no valid cookie signing secret is configured. ' +
+            'Provide a trusted secret via options (secret or cookieSecret) or register @fastify/cookie with secret.'
+          );
+        }
+      } else {
+        throw new Error(
+          'CSRF cookie signing is required but @fastify/cookie was already registered without a signing secret. ' +
+          'Register @fastify/cookie with a secret to resist cookie tossing.'
+        );
       }
-
-      const isSecure = resolveCookieSecure(opts?.secure ?? pluginSecure);
-      const resolvedDomain =
-        opts?.domain && isValidCookieDomain(opts.domain)
-          ? opts.domain.trim()
-          : pluginDomain && isValidCookieDomain(pluginDomain)
-          ? pluginDomain.trim()
-          : undefined;
-
-      const cookieOpts: Record<string, unknown> = {
-        path: '/',
-        httpOnly: true,
-        sameSite: 'lax',
-        secure: isSecure,
-      };
-
-      if (resolvedDomain) {
-        cookieOpts.domain = resolvedDomain;
-      }
-      if (isSigned) {
-        cookieOpts.signed = true;
-      }
-
-      reply.setCookie(cookieKey, secret, cookieOpts as any);
+    } else if (trustedSecret !== undefined && (typeof trustedSecret !== 'string' || trustedSecret.trim().length === 0)) {
+      throw new Error('Invalid empty cookie signing secret provided.');
     }
+  }
 
-    const userInfo = opts?.userInfo ?? (getUserInfo && request ? getUserInfo(request) : undefined);
-    return csrfInstance.create(secret, userInfo);
-  };
-
-  // 3. CSRF verification logic
-  const verifyCsrf = async (request: FastifyRequest, reply: FastifyReply): Promise<void> => {
-    // Safe read-only HTTP methods (GET, HEAD, OPTIONS) are exempt unless explicitly configured
-    if (isSafeMethod(request.method || '')) {
-      const config = request.routeOptions?.config as Record<string, any> | undefined;
-      if (config?.csrf !== true && config?.requireCsrf !== true) {
-        return;
-      }
-    }
-
-    // Check bootstrap login exception or route exemption
-    if (isRouteCsrfExempt(request, exemptRoutes)) {
-      return;
-    }
-
-    // Extract secret
-    let secret = (reply as any)[kCsrfSecret] ?? (request as any)[kCsrfSecret];
-    if (!secret) {
-      secret = getCsrfSecret(request, cookieKey, isSigned);
-    }
-
-    if (!secret || typeof secret !== 'string' || secret.trim().length === 0) {
-      request.log?.warn?.('CSRF verification failed: missing or empty secret cookie');
-      throw new CsrfError();
-    }
-
-    // Extract token
-    const token = getCsrfToken(request);
-    if (!token || typeof token !== 'string' || token.trim().length === 0) {
-      request.log?.warn?.('CSRF verification failed: missing or empty x-csrf-token header');
-      throw new CsrfError();
-    }
-
-    // Cryptographically verify token
-    let isValid = false;
-    try {
-      const userInfo = getUserInfo ? getUserInfo(request) : undefined;
-      isValid = csrfInstance.verify(secret, token, userInfo);
-    } catch (err) {
-      request.log?.warn?.({ err }, 'CSRF token cryptographic verification threw error');
-      throw new CsrfError();
-    }
-
-    if (!isValid) {
-      request.log?.warn?.('CSRF verification failed: invalid or tampered token');
-      throw new CsrfError();
-    }
-  };
-
-  // 4. Decorate Reply
-  if (!fastify.hasReplyDecorator('generateCsrf')) {
-    fastify.decorateReply('generateCsrf', function (
-      this: FastifyReply,
-      opts?: CsrfCookieOptions & { userInfo?: string }
-    ) {
-      return generateCsrfToken(this, opts);
+  // 1. Ensure @fastify/cookie is registered
+  if (!fastify.parseCookie && !fastify.hasRequestDecorator('cookies')) {
+    await fastify.register(fastifyCookie, {
+      secret: trustedSecret && trustedSecret.trim().length > 0 ? trustedSecret.trim() : undefined,
     });
   }
 
-  // 5. Decorate Fastify Instance
+  // 2. Register official @fastify/csrf-protection plugin (Finding 1)
+  const resolvedCookieOpts: Record<string, unknown> = {
+    path: '/',
+    httpOnly: true,
+    sameSite: 'lax',
+    secure: pluginSecure,
+    signed: isSigned,
+  };
+  if (pluginDomain) {
+    resolvedCookieOpts.domain = pluginDomain;
+  }
+
+  const csrfProtOptions: Record<string, unknown> = {
+    cookieKey,
+    cookieOpts: resolvedCookieOpts,
+    sessionPlugin: '@fastify/cookie',
+    getToken: (req: FastifyRequest) => getCsrfToken(req) || '',
+    ...(typeof options.getUserInfo === 'function' ? { getUserInfo: options.getUserInfo } : {}),
+    ...(options.csrfOpts ? { csrfOpts: options.csrfOpts } : {}),
+  };
+
+  await fastify.register(fastifyCsrfProtection, csrfProtOptions as any);
+
+  // 3. Wrap reply.generateCsrf on Reply prototype to enforce rigid cookie security attributes
+  const replySym = Object.getOwnPropertySymbols(fastify).find(
+    (s) => s.description === 'fastify.Reply'
+  );
+  const ReplyClass = replySym ? (fastify as any)[replySym] : undefined;
+  if (ReplyClass?.prototype?.generateCsrf) {
+    const originalGenerateCsrf = ReplyClass.prototype.generateCsrf;
+    ReplyClass.prototype.generateCsrf = function (
+      this: FastifyReply,
+      opts?: CsrfCookieOptions & { userInfo?: string }
+    ) {
+      const sanitized = sanitizeCallerCookieOptions(opts, pluginSecure, pluginDomain, isSigned);
+      return originalGenerateCsrf.call(this, sanitized);
+    };
+  }
+
+  // Also hook onRequest to ensure instance/route-level replies enforce rigid cookie attributes
+  const kCsrfWrapped = Symbol.for('fastify.csrf.generateCsrfWrapped');
+  fastify.addHook('onRequest', async (_request: FastifyRequest, reply: FastifyReply) => {
+    if (typeof reply.generateCsrf === 'function' && !(reply.generateCsrf as any)[kCsrfWrapped]) {
+      const orig = reply.generateCsrf;
+      const wrapped = function (
+        this: FastifyReply,
+        opts?: CsrfCookieOptions & { userInfo?: string }
+      ) {
+        const sanitized = sanitizeCallerCookieOptions(opts, pluginSecure, pluginDomain, isSigned);
+        return orig.call(this, sanitized as any);
+      };
+      (wrapped as any)[kCsrfWrapped] = true;
+      (reply as any).generateCsrf = wrapped;
+    }
+  });
+
+  // 4. Decorate Fastify Instance with generateCsrf for full compatibility
   if (!fastify.hasDecorator('generateCsrf')) {
     fastify.decorate('generateCsrf', function (
       reply: FastifyReply,
       opts?: CsrfCookieOptions & { userInfo?: string }
     ) {
-      return generateCsrfToken(reply, opts);
+      return (reply as any).generateCsrf(opts);
     });
   }
 
-  if (!fastify.hasDecorator('csrfProtection')) {
-    fastify.decorate('csrfProtection', function (
-      this: FastifyInstance,
-      req: FastifyRequest,
-      reply: FastifyReply,
-      done?: (err?: Error) => void
+  // 5. Wrap fastify.csrfProtection to handle both callback and hook invocations safely
+  const officialCsrfProtection = fastify.csrfProtection;
+  (fastify as any).csrfProtection = function (
+    this: FastifyInstance,
+    req: FastifyRequest,
+    reply: FastifyReply,
+    next?: (err?: Error) => void
+  ) {
+    const nextFn = typeof next === 'function' ? next : () => {};
+    return officialCsrfProtection.call(this, req, reply, nextFn);
+  };
+
+  // 6. Map CSRF errors to standard HTTP 403 CSRF_TOKEN_INVALID envelope
+  fastify.addHook('onError', async (_request: FastifyRequest, _reply: FastifyReply, error: any) => {
+    if (
+      error?.code === 'FST_CSRF_MISSING_SECRET' ||
+      error?.code === 'FST_CSRF_INVALID_TOKEN' ||
+      error?.name === 'CsrfError'
     ) {
-      if (typeof done === 'function') {
-        verifyCsrf(req, reply)
-          .then(() => done())
-          .catch((err) => done(err));
-        return;
-      }
-      return verifyCsrf(req, reply);
-    });
-  }
+      error.code = 'CSRF_TOKEN_INVALID';
+      error.message = 'Permission denied';
+      error.statusCode = 403;
+    }
+  });
 
-  // 6. Global fail-closed preHandler hook across all routes
-  fastify.addHook('preHandler', verifyCsrf);
+  // 7. Global fail-closed preHandler hook across all routes
+  fastify.addHook('preHandler', (request: FastifyRequest, reply: FastifyReply, done: (err?: Error) => void) => {
+    // Safe read-only HTTP methods (GET, HEAD, OPTIONS) are exempt unless explicitly configured
+    if (isSafeMethod(request.method || '')) {
+      const config = request.routeOptions?.config as Record<string, any> | undefined;
+      if (config?.csrf !== true && config?.requireCsrf !== true) {
+        return done();
+      }
+    }
+
+    // Check bootstrap login exception or route exemption
+    if (isRouteCsrfExempt(request, exemptRoutes)) {
+      return done();
+    }
+
+    // Delegate to official CSRF protection
+    fastify.csrfProtection(request, reply, done);
+  });
 };
 
 // Global plugin encapsulation escape (fastify-plugin contract)
