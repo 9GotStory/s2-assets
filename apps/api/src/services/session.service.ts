@@ -20,21 +20,12 @@ export interface DatabaseClient {
 export interface SessionServiceOptions {
   db?: DatabaseClient | any;
   ttlMs?: number;
-  /**
-   * Internal clock provider for test-time clock isolation.
-   * Defaults to Date.now in production.
-   */
-  _clock?: () => number;
 }
 
 export interface CreateSessionOptions {
   userId?: string;
   ttlMs?: number;
   expiresAt?: Date;
-  /**
-   * Explicit test-only flag to permit past expiration injection in tests.
-   */
-  _allowExpiredForTesting?: boolean;
 }
 
 export interface SessionLifecycleOptions {
@@ -74,12 +65,11 @@ export function validateSessionTtl(ttlMs: unknown): number {
 
 /**
  * Validates and enforces that an expiration date does not exceed the approved
- * 8-hour maximum lifetime from the reference time.
+ * 8-hour maximum lifetime from the current server time and is not in the past.
  */
 export function validateSessionExpiresAt(
   expiresAt: unknown,
-  referenceNowMs: number,
-  allowPast = false
+  referenceNowMs: number = Date.now()
 ): Date {
   if (!(expiresAt instanceof Date) || isNaN(expiresAt.getTime())) {
     throw new Error('Invalid expiration date');
@@ -88,7 +78,7 @@ export function validateSessionExpiresAt(
   if (expiryMs > referenceNowMs + MAX_SESSION_TTL_MS) {
     throw new Error(`Session expiration cannot exceed 8 hours (${MAX_SESSION_TTL_MS} ms)`);
   }
-  if (expiryMs <= referenceNowMs && !allowPast) {
+  if (expiryMs <= referenceNowMs) {
     throw new Error('Session expiration cannot be in the past');
   }
   return expiresAt;
@@ -142,7 +132,6 @@ interface ResolvedDatabaseClient {
 export class SessionService {
   private db?: any;
   private defaultTtlMs: number;
-  private readonly clock: () => number;
 
   constructor(options?: SessionServiceOptions | DatabaseClient | any) {
     if (options && typeof options === 'object') {
@@ -152,11 +141,6 @@ export class SessionService {
         this.db = options.db;
       }
     }
-
-    this.clock =
-      options && typeof options === 'object' && typeof (options as any)._clock === 'function'
-        ? (options as any)._clock
-        : () => Date.now();
 
     if (options && typeof options === 'object' && 'ttlMs' in options && options.ttlMs !== undefined) {
       this.defaultTtlMs = validateSessionTtl(options.ttlMs);
@@ -225,13 +209,6 @@ export class SessionService {
   }
 
   /**
-   * Resolves current timestamp using configured clock.
-   */
-  private now(): number {
-    return this.clock();
-  }
-
-  /**
    * Creates a new session for the given user:
    * - Validates user ID and lifetime options (strictly bounded by 8-hour max policy).
    * - Generates a raw opaque 32-byte Base64URL token.
@@ -246,13 +223,11 @@ export class SessionService {
     let userId: string;
     let ttlMs = this.defaultTtlMs;
     let expiresAt: Date | undefined;
-    let allowExpired = false;
 
     if (typeof userIdOrOptions === 'string') {
       userId = userIdOrOptions;
       if (options?.ttlMs !== undefined) ttlMs = validateSessionTtl(options.ttlMs);
       if (options?.expiresAt !== undefined) expiresAt = options.expiresAt;
-      if (options?._allowExpiredForTesting) allowExpired = true;
     } else if (userIdOrOptions && typeof userIdOrOptions === 'object') {
       userId = userIdOrOptions.userId ?? '';
       if (userIdOrOptions.ttlMs !== undefined) {
@@ -266,10 +241,6 @@ export class SessionService {
       } else if (options?.expiresAt !== undefined) {
         expiresAt = options.expiresAt;
       }
-
-      if (userIdOrOptions._allowExpiredForTesting || options?._allowExpiredForTesting) {
-        allowExpired = true;
-      }
     } else {
       throw new Error('User ID must be a non-empty string');
     }
@@ -278,10 +249,10 @@ export class SessionService {
       throw new Error('User ID must be a non-empty string');
     }
 
-    const currentNowMs = this.now();
+    const currentNowMs = Date.now();
     let finalExpiresAt: Date;
     if (expiresAt !== undefined) {
-      finalExpiresAt = validateSessionExpiresAt(expiresAt, currentNowMs, allowExpired);
+      finalExpiresAt = validateSessionExpiresAt(expiresAt, currentNowMs);
     } else {
       finalExpiresAt = new Date(currentNowMs + ttlMs);
     }
@@ -413,7 +384,7 @@ export class SessionService {
       const expiresAtDate = row.expires_at instanceof Date ? row.expires_at : new Date(row.expires_at);
       const expiresAtTime = expiresAtDate.getTime();
 
-      if (isNaN(expiresAtTime) || expiresAtTime <= this.now()) {
+      if (isNaN(expiresAtTime) || expiresAtTime <= Date.now()) {
         // Expired session: strictly reject
         return null;
       }
@@ -421,7 +392,7 @@ export class SessionService {
       // If rolling expiration requested, extend the session
       if (options?.rolling) {
         const ttlMs = options.ttlMs !== undefined ? validateSessionTtl(options.ttlMs) : this.defaultTtlMs;
-        const newExpiresAt = new Date(this.now() + ttlMs);
+        const newExpiresAt = new Date(Date.now() + ttlMs);
 
         let updatedRow: any = null;
         if (kind === 'kysely') {
@@ -429,7 +400,7 @@ export class SessionService {
             .updateTable('sessions')
             .set({ expires_at: newExpiresAt })
             .where('id', '=', digest)
-            .where('expires_at', '>', new Date(this.now())) // atomic check: only update if currently unexpired
+            .where('expires_at', '>', new Date()) // atomic check: only update if currently unexpired
             .returning(['id', 'user_id', 'expires_at', 'created_at'])
             .executeTakeFirst();
         } else {
@@ -497,7 +468,7 @@ export class SessionService {
     const { client, kind } = this.getDatabaseClient();
 
     const digest = hashToken(rawToken);
-    const newExpiresAt = new Date(this.now() + ttlMs);
+    const newExpiresAt = new Date(Date.now() + ttlMs);
 
     try {
       let updatedRow: any = null;
@@ -507,7 +478,7 @@ export class SessionService {
           .updateTable('sessions')
           .set({ expires_at: newExpiresAt })
           .where('id', '=', digest)
-          .where('expires_at', '>', new Date(this.now())) // MUST NOT revive expired sessions
+          .where('expires_at', '>', new Date()) // MUST NOT revive expired sessions
           .returning(['id', 'user_id', 'expires_at', 'created_at'])
           .executeTakeFirst();
       } else {
@@ -579,7 +550,7 @@ export class SessionService {
       }
 
       const expiresAtDate = row.expires_at instanceof Date ? row.expires_at : new Date(row.expires_at);
-      if (isNaN(expiresAtDate.getTime()) || expiresAtDate.getTime() <= this.now()) {
+      if (isNaN(expiresAtDate.getTime()) || expiresAtDate.getTime() <= Date.now()) {
         return { valid: false, reason: 'EXPIRED' };
       }
 

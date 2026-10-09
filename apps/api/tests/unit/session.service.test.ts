@@ -842,25 +842,15 @@ describe('SessionService Unit Tests (T019)', () => {
       expect(mockDb.query).not.toHaveBeenCalled();
     });
 
-    it('rejects createSession with past expiresAt unless explicit testing flag is set', async () => {
+    it('unconditionally rejects createSession with past expiresAt', async () => {
       const mockDb = { query: vi.fn() };
       const service = new SessionService({ db: mockDb });
       const inPast = new Date(Date.now() - 5000);
 
-      // Without _allowExpiredForTesting: must reject
       await expect(service.createSession('user-1', { expiresAt: inPast })).rejects.toThrow(
         'Session expiration cannot be in the past'
       );
-
-      // With _allowExpiredForTesting: allowed for testing expired state
-      mockDb.query.mockResolvedValueOnce({
-        rows: [{ id: 'digest-1', user_id: 'user-1', expires_at: inPast, created_at: inPast }],
-      });
-      const result = await service.createSession('user-1', {
-        expiresAt: inPast,
-        _allowExpiredForTesting: true,
-      });
-      expect(result.session.expires_at).toEqual(inPast);
+      expect(mockDb.query).not.toHaveBeenCalled();
     });
 
     it('rejects createSession with invalid Date objects or non-date values', async () => {
@@ -904,30 +894,84 @@ describe('SessionService Unit Tests (T019)', () => {
       expect(mockDb.query).not.toHaveBeenCalled();
     });
 
-    it('supports isolated test clock manipulation while preserving 8-hour policy from reference clock', async () => {
-      let mockClockTime = 1_700_000_000_000;
-      const mockClock = () => mockClockTime;
+    it('supports time-dependent verification via Vitest fake timers without production clock overrides', async () => {
+      const initialTime = 1_700_000_000_000;
+      vi.useFakeTimers();
+      vi.setSystemTime(initialTime);
 
+      try {
+        const mockDb = {
+          query: vi.fn().mockImplementation(async (_sql: string, params: any[]) => {
+            const [id, userId, expiresAt] = params;
+            return {
+              rows: [{ id, user_id: userId, expires_at: expiresAt, created_at: new Date(initialTime) }],
+            };
+          }),
+        };
+
+        const service = new SessionService({ db: mockDb });
+        const created = await service.createSession('user-fake-timer');
+
+        // Expiry must be exactly initialTime + 8 hours
+        expect(created.session.expires_at.getTime()).toBe(initialTime + EIGHT_HOURS_MS);
+
+        // Advance fake system time by 8 hours + 1 ms
+        vi.setSystemTime(initialTime + EIGHT_HOURS_MS + 1);
+
+        // Database returns original expires_at
+        mockDb.query.mockResolvedValueOnce({
+          rows: [
+            {
+              id: created.session.id,
+              user_id: 'user-fake-timer',
+              expires_at: created.session.expires_at,
+              created_at: new Date(initialTime),
+            },
+          ],
+        });
+
+        // Lookup under advanced fake timer strictly rejects expired session
+        expect(await service.lookupSession(created.token)).toBeNull();
+
+        // Refresh under advanced fake timer strictly cannot revive expired session
+        mockDb.query.mockResolvedValueOnce({ rows: [], rowCount: 0 });
+        expect(await service.refreshSession(created.token)).toBeNull();
+      } finally {
+        vi.useRealTimers();
+      }
+    });
+
+    it('proves that no supported production option can bypass the 8-hour maximum lifetime or revive expired sessions', async () => {
       const mockDb = {
-        query: vi.fn().mockImplementation(async (_sql: string, params: any[]) => {
-          const [id, userId, expiresAt] = params;
-          return {
-            rows: [{ id, user_id: userId, expires_at: expiresAt, created_at: new Date(mockClockTime) }],
-          };
-        }),
+        query: vi.fn().mockResolvedValue({ rows: [], rowCount: 0 }),
       };
+      const service = new SessionService({ db: mockDb });
+      const rawToken = generateSessionToken();
 
-      const service = new SessionService({ db: mockDb, _clock: mockClock });
-      const created = await service.createSession('user-clock-1');
+      // No constructor override > 8 hours
+      expect(() => new SessionService({ ttlMs: 24 * 3600 * 1000 })).toThrow('Session TTL cannot exceed 8 hours');
 
-      // Expiry must be exactly mockClockTime + 8 hours
-      expect(created.session.expires_at.getTime()).toBe(mockClockTime + EIGHT_HOURS_MS);
-
-      // Attempting to exceed 8 hours from reference clock must still be rejected
-      const tooFar = new Date(mockClockTime + TWENTY_FOUR_HOURS_MS);
-      await expect(service.createSession('user-clock-1', { expiresAt: tooFar })).rejects.toThrow(
-        'Session expiration cannot exceed 8 hours'
+      // No createSession option > 8 hours
+      await expect(service.createSession('user-1', { ttlMs: 24 * 3600 * 1000 })).rejects.toThrow(
+        'Session TTL cannot exceed 8 hours'
       );
+      await expect(
+        service.createSession('user-1', { expiresAt: new Date(Date.now() + 24 * 3600 * 1000) })
+      ).rejects.toThrow('Session expiration cannot exceed 8 hours');
+
+      // No refreshSession option > 8 hours
+      await expect(service.refreshSession(rawToken, { ttlMs: 24 * 3600 * 1000 })).rejects.toThrow(
+        'Session TTL cannot exceed 8 hours'
+      );
+
+      // No validateSession option > 8 hours
+      await expect(service.validateSession(rawToken, { ttlMs: 24 * 3600 * 1000 })).rejects.toThrow(
+        'Session TTL cannot exceed 8 hours'
+      );
+
+      // Expired sessions strictly return null and cannot be revived
+      expect(await service.refreshSession(rawToken)).toBeNull();
+      expect(await service.touchSession(rawToken)).toBeNull();
     });
   });
 });
