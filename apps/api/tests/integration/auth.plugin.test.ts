@@ -242,12 +242,12 @@ describe('Fastify Auth Plugin PostgreSQL Integration Tests (T020)', () => {
     await app.register(errorHandlerPlugin);
     await app.register(authPlugin, { databaseUrl, secure: true });
 
-    app.post('/login-test', async (_req, reply) => {
+    app.post('/login-test', { config: { public: true } }, async (_req, reply) => {
       reply.setSessionCookie('sample_raw_token_value_here');
       return { ok: true };
     });
 
-    app.post('/logout-test', async (_req, reply) => {
+    app.post('/logout-test', { config: { public: true } }, async (_req, reply) => {
       reply.clearSessionCookie();
       return { ok: true };
     });

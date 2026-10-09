@@ -1,6 +1,5 @@
-import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
+import { describe, it, expect, vi, afterEach } from 'vitest';
 import Fastify, { type FastifyInstance } from 'fastify';
-import fastifyCookie from '@fastify/cookie';
 import { errorHandlerPlugin } from '../../src/plugins/error-handler.ts';
 import {
   authPlugin,
@@ -9,6 +8,7 @@ import {
   setSessionCookie,
   clearSessionCookie,
   getSessionCookie,
+  DEFAULT_SESSION_TTL_SECONDS,
 } from '../../src/plugins/auth.ts';
 import {
   generateSessionToken,
@@ -86,7 +86,7 @@ describe('Fastify Auth Plugin Unit Tests (T020)', () => {
       expect(app.sessionService).toBeDefined();
       expect(app.userService).toBeDefined();
 
-      app.get('/test-decorators', async (request, reply) => {
+      app.get('/test-decorators', { config: { public: true } }, async (request, reply) => {
         return {
           hasUser: request.user !== undefined,
           hasSession: request.session !== undefined,
@@ -133,7 +133,7 @@ describe('Fastify Auth Plugin Unit Tests (T020)', () => {
       await app.register(async (childScope) => {
         expect(typeof childScope.authenticate).toBe('function');
         expect(typeof childScope.setSessionCookie).toBe('function');
-        childScope.get('/child-route', async () => ({ child: true }));
+        childScope.get('/child-route', { config: { public: true } }, async () => ({ child: true }));
       });
 
       await app.ready();
@@ -523,7 +523,7 @@ describe('Fastify Auth Plugin Unit Tests (T020)', () => {
         userService: userService as any,
       });
 
-      app.get('/set-cookie', async (_req, reply) => {
+      app.get('/set-cookie', { config: { public: true } }, async (_req, reply) => {
         app.setSessionCookie(reply, 'sample_token_value_for_cookie');
         return { ok: true };
       });
@@ -567,7 +567,7 @@ describe('Fastify Auth Plugin Unit Tests (T020)', () => {
     });
   });
 
-  describe('12. Safe Session Cookie Clearing', () => {
+  describe('12. Safe Session Cookie Clearing and Matching Attributes', () => {
     it('sets deletion attributes (Max-Age=0, Expires in past, Path=/, HttpOnly, SameSite=Lax)', async () => {
       const app = Fastify();
       await app.register(errorHandlerPlugin);
@@ -578,7 +578,7 @@ describe('Fastify Auth Plugin Unit Tests (T020)', () => {
         userService: userService as any,
       });
 
-      app.post('/clear', async (_req, reply) => {
+      app.post('/clear', { config: { public: true } }, async (_req, reply) => {
         app.clearSessionCookie(reply);
         return { cleared: true };
       });
@@ -604,6 +604,37 @@ describe('Fastify Auth Plugin Unit Tests (T020)', () => {
       expect(cookieHeader).toMatch(/HttpOnly/i);
       // Verify SameSite=Lax
       expect(cookieHeader).toMatch(/SameSite=Lax/i);
+
+      await app.close();
+    });
+
+    it('preserves domain attribute when clearing session cookie with domain option', async () => {
+      const app = Fastify();
+      await app.register(errorHandlerPlugin);
+      const { sessionService, userService } = createMockServices();
+
+      await app.register(authPlugin, {
+        sessionService: sessionService as any,
+        userService: userService as any,
+      });
+
+      app.post('/clear-domain', { config: { public: true } }, async (_req, reply) => {
+        app.clearSessionCookie(reply, { domain: 'example.com' });
+        return { cleared: true };
+      });
+
+      await app.ready();
+
+      const response = await app.inject({
+        method: 'POST',
+        url: '/clear-domain',
+      });
+
+      expect(response.statusCode).toBe(200);
+      const cookieHeader = response.headers['set-cookie'] as string;
+      expect(cookieHeader).toMatch(/Domain=example\.com/i);
+      expect(cookieHeader).toMatch(/Max-Age=0/i);
+      expect(cookieHeader).toMatch(/Path=\//i);
 
       await app.close();
     });
@@ -728,8 +759,8 @@ describe('Fastify Auth Plugin Unit Tests (T020)', () => {
     });
   });
 
-  describe('16. Declarative and Encapsulated Protected Routes', () => {
-    it('enforces authentication on routes configured with config: { auth: true }', async () => {
+  describe('16. Fail-Closed Global Route Authentication (Finding 2)', () => {
+    it('fails closed on unmarked routes by default when request is unauthenticated', async () => {
       const app = Fastify();
       await app.register(errorHandlerPlugin);
       const { sessionService, userService } = createMockServices();
@@ -739,30 +770,25 @@ describe('Fastify Auth Plugin Unit Tests (T020)', () => {
         userService: userService as any,
       });
 
-      app.get('/declarative-protected', { config: { auth: true } }, async () => ({ secret: 42 }));
-      app.get('/declarative-public', { config: { public: true } }, async () => ({ public: true }));
+      // Route defined without any auth config or preHandler
+      app.get('/unmarked-secret-route', async () => ({ secret: 'top-secret-data' }));
 
       await app.ready();
 
-      // Protected route without cookie fails closed
-      const resProtected = await app.inject({
+      const res = await app.inject({
         method: 'GET',
-        url: '/declarative-protected',
+        url: '/unmarked-secret-route',
       });
-      expect(resProtected.statusCode).toBe(401);
 
-      // Public route succeeds without credentials
-      const resPublic = await app.inject({
-        method: 'GET',
-        url: '/declarative-public',
-      });
-      expect(resPublic.statusCode).toBe(200);
-      expect(resPublic.json()).toEqual({ public: true });
+      expect(res.statusCode).toBe(401);
+      const body = res.json();
+      expect(body.error).toBeDefined();
+      expect(body.error.code).toBe('UNAUTHORIZED');
 
       await app.close();
     });
 
-    it('enforces protectAll mode by default unless route has config: { public: true }', async () => {
+    it('fails closed on unmarked routes inside child Fastify plugins', async () => {
       const app = Fastify();
       await app.register(errorHandlerPlugin);
       const { sessionService, userService } = createMockServices();
@@ -770,19 +796,101 @@ describe('Fastify Auth Plugin Unit Tests (T020)', () => {
       await app.register(authPlugin, {
         sessionService: sessionService as any,
         userService: userService as any,
-        protectAll: true,
       });
 
-      app.get('/unmarked-route', async () => ({ unmarked: true }));
-      app.get('/explicit-public', { config: { public: true } }, async () => ({ public: true }));
+      await app.register(async (child) => {
+        child.get('/child-unmarked', async () => ({ childData: true }));
+      }, { prefix: '/v1' });
 
       await app.ready();
 
-      const resUnmarked = await app.inject({ method: 'GET', url: '/unmarked-route' });
-      expect(resUnmarked.statusCode).toBe(401);
+      const res = await app.inject({
+        method: 'GET',
+        url: '/v1/child-unmarked',
+      });
 
-      const resPublic = await app.inject({ method: 'GET', url: '/explicit-public' });
-      expect(resPublic.statusCode).toBe(200);
+      expect(res.statusCode).toBe(401);
+      expect(res.json().error.code).toBe('UNAUTHORIZED');
+
+      await app.close();
+    });
+
+    it('permits unauthenticated access to explicit public routes declared via config', async () => {
+      const app = Fastify();
+      await app.register(errorHandlerPlugin);
+      const { sessionService, userService } = createMockServices();
+
+      await app.register(authPlugin, {
+        sessionService: sessionService as any,
+        userService: userService as any,
+      });
+
+      app.get('/explicit-public', { config: { public: true } }, async () => ({ isPublic: true }));
+      app.get('/explicit-is-public', { config: { isPublic: true } }, async () => ({ isPublic: true }));
+
+      await app.ready();
+
+      const res1 = await app.inject({ method: 'GET', url: '/explicit-public' });
+      expect(res1.statusCode).toBe(200);
+      expect(res1.json()).toEqual({ isPublic: true });
+
+      const res2 = await app.inject({ method: 'GET', url: '/explicit-is-public' });
+      expect(res2.statusCode).toBe(200);
+      expect(res2.json()).toEqual({ isPublic: true });
+
+      await app.close();
+    });
+
+    it('fails closed when public and protected declarations conflict', async () => {
+      const app = Fastify();
+      await app.register(errorHandlerPlugin);
+      const { sessionService, userService } = createMockServices();
+
+      await app.register(authPlugin, {
+        sessionService: sessionService as any,
+        userService: userService as any,
+      });
+
+      // Conflicting declarations: both public: true and auth: true
+      app.get('/conflicting-route', { config: { public: true, auth: true } }, async () => ({ ok: true }));
+      app.get('/conflicting-route-2', { config: { isPublic: true, requireAuth: true } }, async () => ({ ok: true }));
+
+      await app.ready();
+
+      const res1 = await app.inject({ method: 'GET', url: '/conflicting-route' });
+      expect(res1.statusCode).toBe(401);
+      expect(res1.json().error.code).toBe('UNAUTHORIZED');
+
+      const res2 = await app.inject({ method: 'GET', url: '/conflicting-route-2' });
+      expect(res2.statusCode).toBe(401);
+      expect(res2.json().error.code).toBe('UNAUTHORIZED');
+
+      await app.close();
+    });
+
+    it('preserves unauthenticated access to explicit public bootstrap routes', async () => {
+      const app = Fastify();
+      await app.register(errorHandlerPlugin);
+      const { sessionService, userService } = createMockServices();
+
+      await app.register(authPlugin, {
+        sessionService: sessionService as any,
+        userService: userService as any,
+      });
+
+      // Bootstrap routes defined without config
+      app.get('/test-csrf-token', async () => ({ csrfToken: 'genuine-csrf-token' }));
+      app.post('/auth/login', async () => ({ loginSuccess: true }));
+
+      await app.ready();
+
+      const csrfRes = await app.inject({ method: 'GET', url: '/test-csrf-token' });
+      expect(csrfRes.statusCode).toBe(200);
+      expect(csrfRes.json()).toEqual({ csrfToken: 'genuine-csrf-token' });
+
+      const loginRes = await app.inject({ method: 'POST', url: '/auth/login' });
+      expect(loginRes.statusCode).toBe(200);
+      expect(loginRes.json()).toEqual({ loginSuccess: true });
 
       await app.close();
     });
@@ -817,11 +925,10 @@ describe('Fastify Auth Plugin Unit Tests (T020)', () => {
         userService: userService as any,
       });
 
-      // Calling authenticate twice via config AND preHandler
+      // PreHandler and global hook both run
       app.get(
         '/double-auth',
         {
-          config: { auth: true },
           preHandler: [app.authenticate],
         },
         async (request) => ({ ok: true, user: request.user })
@@ -839,6 +946,164 @@ describe('Fastify Auth Plugin Unit Tests (T020)', () => {
       // Database verification only performed once!
       expect(sessionService.validateSession).toHaveBeenCalledTimes(1);
       expect(userService.findById).toHaveBeenCalledTimes(1);
+
+      await app.close();
+    });
+  });
+
+  describe('17. Cookie Policy Override Protection Regression Tests (Finding 3)', () => {
+    it('rigidly enforces HttpOnly: true even if caller passes httpOnly: false', async () => {
+      const app = Fastify();
+      await app.register(errorHandlerPlugin);
+      const { sessionService, userService } = createMockServices();
+
+      await app.register(authPlugin, {
+        sessionService: sessionService as any,
+        userService: userService as any,
+      });
+
+      app.post('/weaken-httponly', { config: { public: true } }, async (_req, reply) => {
+        // Attempt to weaken httpOnly
+        app.setSessionCookie(reply, 'sample_token', { httpOnly: false } as any);
+        return { ok: true };
+      });
+
+      await app.ready();
+
+      const res = await app.inject({ method: 'POST', url: '/weaken-httponly' });
+      expect(res.statusCode).toBe(200);
+      const cookieHeader = res.headers['set-cookie'] as string;
+      expect(cookieHeader).toMatch(/;\s*HttpOnly/i);
+
+      await app.close();
+    });
+
+    it('rigidly enforces SameSite=Lax even if caller passes sameSite: "none"', async () => {
+      const app = Fastify();
+      await app.register(errorHandlerPlugin);
+      const { sessionService, userService } = createMockServices();
+
+      await app.register(authPlugin, {
+        sessionService: sessionService as any,
+        userService: userService as any,
+      });
+
+      app.post('/weaken-samesite', { config: { public: true } }, async (_req, reply) => {
+        // Attempt to weaken SameSite
+        app.setSessionCookie(reply, 'sample_token', { sameSite: 'none' } as any);
+        return { ok: true };
+      });
+
+      await app.ready();
+
+      const res = await app.inject({ method: 'POST', url: '/weaken-samesite' });
+      expect(res.statusCode).toBe(200);
+      const cookieHeader = res.headers['set-cookie'] as string;
+      expect(cookieHeader).toMatch(/;\s*SameSite=Lax/i);
+      expect(cookieHeader).not.toMatch(/;\s*SameSite=none/i);
+
+      await app.close();
+    });
+
+    it('rigidly enforces Path=/ even if caller passes path: "/custom"', async () => {
+      const app = Fastify();
+      await app.register(errorHandlerPlugin);
+      const { sessionService, userService } = createMockServices();
+
+      await app.register(authPlugin, {
+        sessionService: sessionService as any,
+        userService: userService as any,
+      });
+
+      app.post('/weaken-path', { config: { public: true } }, async (_req, reply) => {
+        // Attempt to alter Path
+        app.setSessionCookie(reply, 'sample_token', { path: '/custom' } as any);
+        return { ok: true };
+      });
+
+      await app.ready();
+
+      const res = await app.inject({ method: 'POST', url: '/weaken-path' });
+      expect(res.statusCode).toBe(200);
+      const cookieHeader = res.headers['set-cookie'] as string;
+      expect(cookieHeader).toMatch(/;\s*Path=\//i);
+      expect(cookieHeader).not.toMatch(/;\s*Path=\/custom/i);
+
+      await app.close();
+    });
+
+    it('rejects requested maxAge exceeding the 8-hour maximum policy', async () => {
+      const app = Fastify();
+      await app.register(errorHandlerPlugin);
+      const { sessionService, userService } = createMockServices();
+
+      await app.register(authPlugin, {
+        sessionService: sessionService as any,
+        userService: userService as any,
+      });
+
+      app.post('/exceed-max-age', { config: { public: true } }, async (_req, reply) => {
+        // 9 hours in seconds: 32400 > 28800
+        app.setSessionCookie(reply, 'sample_token', { maxAge: 32400 });
+        return { ok: true };
+      });
+
+      await app.ready();
+
+      const res = await app.inject({ method: 'POST', url: '/exceed-max-age' });
+      expect(res.statusCode).toBe(500);
+      expect(res.json().error.code).toBe('INTERNAL_SERVER_ERROR');
+
+      await app.close();
+    });
+
+    it('rejects requested expires date exceeding the 8-hour maximum policy', async () => {
+      const app = Fastify();
+      await app.register(errorHandlerPlugin);
+      const { sessionService, userService } = createMockServices();
+
+      await app.register(authPlugin, {
+        sessionService: sessionService as any,
+        userService: userService as any,
+      });
+
+      app.post('/exceed-expires', { config: { public: true } }, async (_req, reply) => {
+        // 10 hours in future
+        const futureDate = new Date(Date.now() + 10 * 60 * 60 * 1000);
+        app.setSessionCookie(reply, 'sample_token', { expires: futureDate });
+        return { ok: true };
+      });
+
+      await app.ready();
+
+      const res = await app.inject({ method: 'POST', url: '/exceed-expires' });
+      expect(res.statusCode).toBe(500);
+
+      await app.close();
+    });
+
+    it('accepts valid maxAge and expires within 8-hour policy', async () => {
+      const app = Fastify();
+      await app.register(errorHandlerPlugin);
+      const { sessionService, userService } = createMockServices();
+
+      await app.register(authPlugin, {
+        sessionService: sessionService as any,
+        userService: userService as any,
+      });
+
+      app.post('/valid-lifetime', { config: { public: true } }, async (_req, reply) => {
+        // 4 hours in seconds: 14400 <= 28800
+        app.setSessionCookie(reply, 'sample_token', { maxAge: 14400 });
+        return { ok: true };
+      });
+
+      await app.ready();
+
+      const res = await app.inject({ method: 'POST', url: '/valid-lifetime' });
+      expect(res.statusCode).toBe(200);
+      const cookieHeader = res.headers['set-cookie'] as string;
+      expect(cookieHeader).toMatch(/Max-Age=14400/i);
 
       await app.close();
     });

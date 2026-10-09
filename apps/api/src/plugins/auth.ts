@@ -23,14 +23,21 @@ import {
 export const DEFAULT_COOKIE_NAME = 'session';
 export const DEFAULT_SESSION_TTL_SECONDS = 8 * 60 * 60; // 28,800 seconds (8 hours)
 
+export const DEFAULT_PUBLIC_BOOTSTRAP_ROUTES: readonly string[] = [
+  '/test-csrf-token',
+  '/auth/login',
+];
+
 export interface SessionCookieOptions {
   cookieName?: string;
   secure?: boolean;
-  path?: string;
-  sameSite?: 'lax' | 'strict' | 'none';
   maxAge?: number; // in seconds
   expires?: Date;
   domain?: string;
+  // Disallowed overrides typed as unknown to gracefully handle caller attempts and ignore/reject them
+  httpOnly?: unknown;
+  sameSite?: unknown;
+  path?: unknown;
 }
 
 export interface AuthPluginOptions {
@@ -41,7 +48,7 @@ export interface AuthPluginOptions {
   cookieName?: string;
   secure?: boolean;
   sessionTtlMs?: number;
-  protectAll?: boolean;
+  publicRoutes?: (string | RegExp)[];
   rolling?: boolean;
 }
 
@@ -103,8 +110,10 @@ export function getSessionCookie(
 }
 
 /**
- * Sets a secure session cookie on the reply following strict security policies:
+ * Sets a secure session cookie on the reply following strictly enforced security policies:
  * HttpOnly: true, SameSite: 'lax', Path: '/', Secure: true (in production).
+ * Callers CANNOT weaken HttpOnly, SameSite, or Path invariants.
+ * Lifetime overrides exceeding the 8-hour maximum policy are rejected.
  */
 export function setSessionCookie(
   reply: FastifyReply,
@@ -113,14 +122,43 @@ export function setSessionCookie(
 ): FastifyReply {
   const isSecure = resolveCookieSecure(options?.secure);
   const cookieName = options?.cookieName ?? DEFAULT_COOKIE_NAME;
-  const path = options?.path ?? '/';
-  const sameSite = options?.sameSite ?? 'lax';
-  const maxAge = options?.maxAge ?? DEFAULT_SESSION_TTL_SECONDS;
-  const expires = options?.expires ?? new Date(Date.now() + maxAge * 1000);
+
+  // Rigidly enforce security invariants: callers CANNOT override HttpOnly, SameSite, or Path
+  const httpOnly = true;
+  const sameSite = 'lax' as const;
+  const path = '/';
+
+  // Validate lifetime overrides: cannot exceed 8 hours
+  let maxAge = DEFAULT_SESSION_TTL_SECONDS;
+  if (options?.maxAge !== undefined) {
+    if (typeof options.maxAge !== 'number' || !Number.isFinite(options.maxAge) || options.maxAge <= 0) {
+      throw new Error('Cookie maxAge must be a positive number');
+    }
+    if (options.maxAge > DEFAULT_SESSION_TTL_SECONDS) {
+      throw new Error(`Cookie maxAge cannot exceed 8 hours (${DEFAULT_SESSION_TTL_SECONDS} seconds)`);
+    }
+    maxAge = Math.floor(options.maxAge);
+  }
+
+  let expires: Date = new Date(Date.now() + maxAge * 1000);
+  if (options?.expires !== undefined) {
+    if (!(options.expires instanceof Date) || isNaN(options.expires.getTime())) {
+      throw new Error('Invalid cookie expiration date');
+    }
+    const now = Date.now();
+    const maxExpiryMs = now + DEFAULT_SESSION_TTL_SECONDS * 1000;
+    if (options.expires.getTime() <= now) {
+      throw new Error('Cookie expiration cannot be in the past');
+    }
+    if (options.expires.getTime() > maxExpiryMs) {
+      throw new Error(`Cookie expiration cannot exceed 8 hours (${DEFAULT_SESSION_TTL_SECONDS} seconds)`);
+    }
+    expires = options.expires;
+  }
 
   return reply.setCookie(cookieName, rawToken, {
     path,
-    httpOnly: true,
+    httpOnly,
     sameSite,
     secure: isSecure,
     maxAge,
@@ -131,7 +169,7 @@ export function setSessionCookie(
 
 /**
  * Explicitly clears the session cookie by instructing the browser to delete it immediately,
- * preserving security attributes (HttpOnly, SameSite, Path, Secure).
+ * rigidly preserving matching security attributes (HttpOnly: true, SameSite: Lax, Path: /, Secure).
  */
 export function clearSessionCookie(
   reply: FastifyReply,
@@ -139,18 +177,68 @@ export function clearSessionCookie(
 ): FastifyReply {
   const isSecure = resolveCookieSecure(options?.secure);
   const cookieName = options?.cookieName ?? DEFAULT_COOKIE_NAME;
-  const path = options?.path ?? '/';
-  const sameSite = options?.sameSite ?? 'lax';
+
+  // Rigidly retain matching security invariants and path on deletion
+  const httpOnly = true;
+  const sameSite = 'lax' as const;
+  const path = '/';
 
   return reply.setCookie(cookieName, '', {
     path,
-    httpOnly: true,
+    httpOnly,
     sameSite,
     secure: isSecure,
     maxAge: 0,
     expires: new Date(0),
     ...(options?.domain ? { domain: options.domain } : {}),
   });
+}
+
+/**
+ * Determines whether a given request is explicitly declared as a public route.
+ * Fails closed by default on all unmarked routes and on conflicting public/protected declarations.
+ */
+export function isRouteExplicitlyPublic(
+  request: FastifyRequest,
+  publicRoutes: readonly (string | RegExp)[]
+): boolean {
+  const config = request.routeOptions?.config as Record<string, any> | undefined;
+
+  const isPublicDeclared = Boolean(config?.public === true || config?.isPublic === true);
+  const isProtectedDeclared = Boolean(
+    config?.auth === true ||
+    config?.requireAuth === true ||
+    config?.protected === true
+  );
+
+  // 1. Conflict detection: if public and protected declarations conflict -> FAIL CLOSED
+  if (isPublicDeclared && isProtectedDeclared) {
+    return false;
+  }
+
+  // 2. Explicit route-level declaration
+  if (isPublicDeclared) {
+    return true;
+  }
+
+  // 3. Explicitly configured or bootstrap public routes
+  const rawUrl = request.url ? request.url.split('?')[0] : '';
+  const routerPath = request.routeOptions?.url ?? rawUrl;
+
+  for (const pattern of publicRoutes) {
+    if (typeof pattern === 'string') {
+      if (rawUrl === pattern || routerPath === pattern) {
+        return true;
+      }
+    } else if (pattern instanceof RegExp) {
+      if (pattern.test(rawUrl) || pattern.test(routerPath)) {
+        return true;
+      }
+    }
+  }
+
+  // Default: NOT public (fails closed by default)
+  return false;
 }
 
 declare module 'fastify' {
@@ -233,6 +321,10 @@ export const authPlugin: FastifyPluginAsync<AuthPluginOptions> = async (
     ? Math.floor(options.sessionTtlMs / 1000)
     : DEFAULT_SESSION_TTL_SECONDS;
   const rolling = options.rolling ?? true;
+
+  const allowedPublicRoutes: readonly (string | RegExp)[] = options.publicRoutes
+    ? [...DEFAULT_PUBLIC_BOOTSTRAP_ROUTES, ...options.publicRoutes]
+    : DEFAULT_PUBLIC_BOOTSTRAP_ROUTES;
 
   const boundSetSessionCookie = (
     reply: FastifyReply,
@@ -382,20 +474,16 @@ export const authPlugin: FastifyPluginAsync<AuthPluginOptions> = async (
     });
   }
 
-  // 8. Enforce protected route hook
+  // 8. Fail-closed global route authentication hook
+  // Unmarked routes in the application scope require authentication by default.
+  // Unauthenticated access is permitted ONLY through explicit public declarations.
   fastify.addHook('preHandler', async (request: FastifyRequest, reply: FastifyReply) => {
-    const config = request.routeOptions?.config as
-      | { auth?: boolean; requireAuth?: boolean; public?: boolean; isPublic?: boolean }
-      | undefined;
-
-    // Explicit public routes bypass authentication
-    if (config?.public === true || config?.isPublic === true) {
+    if (isRouteExplicitlyPublic(request, allowedPublicRoutes)) {
       return;
     }
 
-    if (options.protectAll || config?.auth === true || config?.requireAuth === true) {
-      await authenticate(request, reply);
-    }
+    // Fail closed by default on all other routes
+    await authenticate(request, reply);
   });
 };
 
