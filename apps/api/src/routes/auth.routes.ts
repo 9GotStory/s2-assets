@@ -49,13 +49,28 @@ export const authRoutes: FastifyPluginAsync<AuthRoutesOptions> = async (
     throw new Error('Auth routes require Fastify CSRF Plugin (T021) to be registered.');
   }
 
-  // 2. Resolve services: reuse Fastify instance decorators where provided, then options, then database fallback
-  let internalPool: pg.Pool | null = null;
-  let userService: UserService | undefined =
-    options.userService ?? fastify.userService;
-  let sessionService: SessionService | undefined =
-    options.sessionService ?? fastify.sessionService;
+  // 2. Resolve authoritative services established by T020 (Finding 2)
+  // Prioritize authoritative Fastify decorator instances.
+  let userService: UserService | undefined = fastify.userService;
+  let sessionService: SessionService | undefined = fastify.sessionService;
 
+  // If explicit injected services are provided, require strict identity equality against authoritative instances
+  if (options.userService) {
+    if (userService && options.userService !== userService) {
+      throw new Error('Injected userService does not match authoritative Fastify userService instance.');
+    }
+    userService = options.userService;
+  }
+
+  if (options.sessionService) {
+    if (sessionService && options.sessionService !== sessionService) {
+      throw new Error('Injected sessionService does not match authoritative Fastify sessionService instance.');
+    }
+    sessionService = options.sessionService;
+  }
+
+  // Do not construct an unnecessary second DB pool if authoritative services exist
+  let internalPool: pg.Pool | null = null;
   if (!userService || !sessionService) {
     let dbClient = options.db ?? (fastify as any).pg?.pool ?? (fastify as any).pg;
     if (!dbClient) {
@@ -235,7 +250,7 @@ export const authRoutes: FastifyPluginAsync<AuthRoutesOptions> = async (
         throw new AuthenticationError(401, 'UNAUTHORIZED', 'Authentication required');
       }
 
-      // Generate genuine CSRF token via official T021 integration (Finding 2)
+      // Generate genuine CSRF token via official T021 integration
       // Treat missing or malfunctioning CSRF token generation as a fail-closed error
       let csrfToken: string | undefined;
       try {
@@ -250,8 +265,10 @@ export const authRoutes: FastifyPluginAsync<AuthRoutesOptions> = async (
         if (typeof csrfToken !== 'string' || csrfToken.trim().length === 0) {
           throw new Error('Generated CSRF token is invalid or empty.');
         }
-      } catch (err: any) {
-        request.log?.error?.(err, 'Failed to generate CSRF token in session-check');
+      } catch {
+        // Finding 1: Do NOT log raw error object, message, stack, or secrets.
+        // Log a generic, safe diagnostic message only.
+        request.log?.error?.('CSRF token generation failed during session check');
         throw new AuthenticationError(500, 'INTERNAL_SERVER_ERROR', 'An unexpected internal server error occurred.');
       }
 

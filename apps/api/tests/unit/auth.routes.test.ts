@@ -509,7 +509,7 @@ describe('Focused Auth Routes Unit Tests (T022)', () => {
   });
 
   // =========================================================================
-  // 3. GET /auth/session-check (Finding 2)
+  // 3. GET /auth/session-check (Finding 1 & 2)
   // =========================================================================
   describe('GET /auth/session-check', () => {
     it('returns sanitized user information and genuine CSRF token for active authenticated session', async () => {
@@ -556,19 +556,25 @@ describe('Focused Auth Routes Unit Tests (T022)', () => {
       }
     });
 
-    it('fails closed with HTTP 500 when CSRF token generation decorator throws an exception (Finding 2)', async () => {
+    it('fails closed and logs a safe generic diagnostic without leaking sensitive error messages or secrets (Finding 1)', async () => {
       const app = Fastify();
       await app.register(errorHandlerPlugin);
       await app.register(fastifyCookie, { secret: TEST_SECRET });
+
+      // Spy on request.log.error to ensure no raw error objects or secrets leak to logs
+      const logErrorSpy = vi.fn();
+      app.addHook('onRequest', async (req) => {
+        req.log.error = logErrorSpy;
+      });
 
       // Register mock csrf plugin with skip-override where generateCsrf throws with sensitive secret string
       const mockCsrf = async (instance: FastifyInstance) => {
         instance.decorate('csrfProtection', () => {});
         instance.decorate('generateCsrf', () => {
-          throw new Error('Secret key failure: internal_super_secret_token_key');
+          throw new Error('Secret key failure: internal_super_secret_token_key_12345');
         });
         instance.decorateReply('generateCsrf', function () {
-          throw new Error('Secret key failure: internal_super_secret_token_key');
+          throw new Error('Secret key failure: internal_super_secret_token_key_12345');
         });
       };
       (mockCsrf as any)[Symbol.for('skip-override')] = true;
@@ -598,8 +604,19 @@ describe('Focused Auth Routes Unit Tests (T022)', () => {
         expect(body.error).toBeDefined();
         expect(body.error.code).toBe('INTERNAL_SERVER_ERROR');
         expect(body.error.message).toBe('An unexpected internal server error occurred.');
-        // Sensitive secret must NOT be leaked
-        expect(JSON.stringify(body)).not.toContain('internal_super_secret_token_key');
+        // Sensitive secret must NOT be leaked in response body
+        expect(JSON.stringify(body)).not.toContain('internal_super_secret_token_key_12345');
+
+        // Finding 1: Ensure logger output is safe and generic
+        expect(logErrorSpy).toHaveBeenCalled();
+        expect(logErrorSpy).toHaveBeenCalledWith('CSRF token generation failed during session check');
+        // Ensure no call passed the secret, raw Error object, or stack trace
+        for (const callArgs of logErrorSpy.mock.calls) {
+          const serialized = JSON.stringify(callArgs);
+          expect(serialized).not.toContain('internal_super_secret_token_key_12345');
+          expect(serialized).not.toContain('Secret key failure');
+          expect(serialized).not.toContain('stack');
+        }
       } finally {
         await app.close();
       }
@@ -649,9 +666,9 @@ describe('Focused Auth Routes Unit Tests (T022)', () => {
   });
 
   // =========================================================================
-  // 4. Fastify registration and dependency injection (Finding 1)
+  // 4. Fastify registration and dependency injection (Finding 1 & 2)
   // =========================================================================
-  describe('Fastify Registration and Security Plugin Validation (Finding 1)', () => {
+  describe('Fastify Registration and Security Plugin Validation (Finding 1 & 2)', () => {
     it('fails closed during registration when T020 Auth Plugin is missing', async () => {
       const app = Fastify();
       await app.register(errorHandlerPlugin);
@@ -733,7 +750,7 @@ describe('Focused Auth Routes Unit Tests (T022)', () => {
       }
     });
 
-    it('reuses services provided directly via plugin options with security plugins registered', async () => {
+    it('accepts injected services when they match the authoritative Fastify decorator instances (Finding 2)', async () => {
       const app = Fastify();
       await app.register(errorHandlerPlugin);
       await app.register(fastifyCookie, { secret: TEST_SECRET });
@@ -745,18 +762,11 @@ describe('Focused Auth Routes Unit Tests (T022)', () => {
         sessionService: mockSession as any,
       });
 
-      const customUser = {
-        verifyCredentials: vi.fn(async () => ({ valid: true, user: { id: 'custom-1', username: 'custom_user', is_active: true } })),
-        sanitizeUser: vi.fn((u) => u),
-      };
-      const customSession = {
-        createSession: vi.fn(async () => ({ token: generateSessionToken(), rawToken: generateSessionToken() })),
-      };
-
+      // Pass the exact same authoritative service instances via options
       await app.register(authRoutes, {
         prefix: '/auth',
-        userService: customUser as any,
-        sessionService: customSession as any,
+        userService: mockUser as any,
+        sessionService: mockSession as any,
       });
       await app.ready();
 
@@ -768,8 +778,97 @@ describe('Focused Auth Routes Unit Tests (T022)', () => {
         });
 
         expect(response.statusCode).toBe(200);
-        expect(customUser.verifyCredentials).toHaveBeenCalled();
-        expect(customSession.createSession).toHaveBeenCalled();
+        expect(mockUser.verifyCredentials).toHaveBeenCalled();
+        expect(mockSession.createSession).toHaveBeenCalled();
+      } finally {
+        await app.close();
+      }
+    });
+
+    it('fails closed when injected userService does not match authoritative Fastify userService instance (Finding 2)', async () => {
+      const app = Fastify();
+      await app.register(errorHandlerPlugin);
+      await app.register(fastifyCookie, { secret: TEST_SECRET });
+      await app.register(csrfPlugin, { cookieSecret: TEST_SECRET });
+
+      const { userService: authoritativeUser, sessionService } = createMockServices();
+      await app.register(authPlugin, {
+        userService: authoritativeUser as any,
+        sessionService: sessionService as any,
+      });
+
+      // Injected userService differs from authoritative Fastify decorator
+      const conflictingUser = {
+        verifyCredentials: vi.fn(),
+        findById: vi.fn(),
+        sanitizeUser: vi.fn(),
+      };
+
+      await expect(
+        app.register(authRoutes, {
+          prefix: '/auth',
+          userService: conflictingUser as any,
+        })
+      ).rejects.toThrow(/Injected userService does not match authoritative Fastify userService instance/);
+    });
+
+    it('fails closed when injected sessionService does not match authoritative Fastify sessionService instance (Finding 2)', async () => {
+      const app = Fastify();
+      await app.register(errorHandlerPlugin);
+      await app.register(fastifyCookie, { secret: TEST_SECRET });
+      await app.register(csrfPlugin, { cookieSecret: TEST_SECRET });
+
+      const { userService, sessionService: authoritativeSession } = createMockServices();
+      await app.register(authPlugin, {
+        userService: userService as any,
+        sessionService: authoritativeSession as any,
+      });
+
+      // Injected sessionService differs from authoritative Fastify decorator
+      const conflictingSession = {
+        createSession: vi.fn(),
+        revokeSession: vi.fn(),
+        validateSession: vi.fn(),
+      };
+
+      await expect(
+        app.register(authRoutes, {
+          prefix: '/auth',
+          sessionService: conflictingSession as any,
+        })
+      ).rejects.toThrow(/Injected sessionService does not match authoritative Fastify sessionService instance/);
+    });
+
+    it('does not construct an unnecessary second DB pool when authoritative services exist (Finding 2)', async () => {
+      const app = Fastify();
+      await app.register(errorHandlerPlugin);
+      await app.register(fastifyCookie, { secret: TEST_SECRET });
+      await app.register(csrfPlugin, { cookieSecret: TEST_SECRET });
+
+      const { userService, sessionService } = createMockServices();
+      await app.register(authPlugin, {
+        userService: userService as any,
+        sessionService: sessionService as any,
+      });
+
+      // Pass an invalid fake connection string that would throw if pg.Pool were constructed
+      // T016 integration registration syntax: { prefix: '/auth', databaseUrl: '...' }
+      await app.register(authRoutes, {
+        prefix: '/auth',
+        databaseUrl: 'postgresql://invalid-host-should-never-be-connected:9999/fake',
+      });
+      await app.ready();
+
+      try {
+        const response = await app.inject({
+          method: 'POST',
+          url: '/auth/login',
+          payload: { username: 'alice', password: 'ValidPassword123!' },
+        });
+
+        // Reuses authoritative services without touching fake databaseUrl
+        expect(response.statusCode).toBe(200);
+        expect(userService.verifyCredentials).toHaveBeenCalled();
       } finally {
         await app.close();
       }
