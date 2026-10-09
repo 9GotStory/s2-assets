@@ -10,6 +10,7 @@ import fastifyCsrfProtection from '@fastify/csrf-protection';
 export const DEFAULT_CSRF_COOKIE_NAME = '_csrf';
 export const SAFE_HTTP_METHODS: ReadonlySet<string> = new Set(['GET', 'HEAD', 'OPTIONS']);
 export const UNSAFE_HTTP_METHODS: ReadonlySet<string> = new Set(['POST', 'PUT', 'PATCH', 'DELETE']);
+export const MIN_COOKIE_SECRET_BYTES = 32;
 
 export class CsrfError extends Error {
   statusCode: number;
@@ -70,6 +71,16 @@ export function resolveCookieSigned(optionsSigned?: boolean): boolean {
     return true;
   }
   return optionsSigned ?? false;
+}
+
+/**
+ * Validates whether a provided signing secret meets the minimum length requirement.
+ * Enforces at least 32 bytes of secret material.
+ */
+export function isValidSigningSecret(secret: unknown): secret is string {
+  if (typeof secret !== 'string') return false;
+  const trimmed = secret.trim();
+  return Buffer.byteLength(trimmed, 'utf8') >= MIN_COOKIE_SECRET_BYTES;
 }
 
 /**
@@ -185,7 +196,7 @@ export function isBootstrapLoginRoute(request: FastifyRequest): boolean {
     return false;
   }
 
-  // Explicit route config protection takes precedence -> fail closed (Finding 3)
+  // Explicit route config protection takes precedence -> fail closed
   const config = request.routeOptions?.config as Record<string, any> | undefined;
   if (
     config?.csrf === true ||
@@ -220,7 +231,7 @@ export function isRouteCsrfExempt(
 ): boolean {
   const config = request.routeOptions?.config as Record<string, any> | undefined;
 
-  // 1. Explicit protection declarations ALWAYS take precedence -> FAIL CLOSED (Finding 3)
+  // 1. Explicit protection declarations ALWAYS take precedence -> FAIL CLOSED
   if (
     config?.csrf === true ||
     config?.requireCsrf === true ||
@@ -268,7 +279,7 @@ export function isRouteCsrfExempt(
  * Enforces rigid cookie attributes preventing callers from weakening httpOnly, sameSite, path, or secure in production.
  */
 export function sanitizeCallerCookieOptions(
-  opts?: CsrfCookieOptions & { userInfo?: string },
+  opts?: Record<string, any>,
   defaultSecure: boolean = false,
   defaultDomain?: string,
   defaultSigned: boolean = false
@@ -313,47 +324,64 @@ export const csrfPlugin: FastifyPluginAsync<CsrfPluginOptions> = async (
     options.domain && isValidCookieDomain(options.domain) ? options.domain.trim() : undefined;
   const exemptRoutes = options.exemptRoutes ?? [];
 
-  // Finding 2 — Cookie tossing resistance:
-  // When signing is required (production or signed: true), verify trusted configuration is present.
-  const trustedSecret =
+  // Finding 1 — Signing Secret Strength & Configuration Distinction:
+  const isCookiePluginRegistered = Boolean(
+    fastify.parseCookie ||
+    fastify.hasRequestDecorator('cookies')
+  );
+
+  const hasExternalSigner = Boolean(
+    fastify.hasDecorator('unsignCookie') ||
+    typeof (fastify as any).unsignCookie === 'function'
+  );
+
+  const localSecret =
     options.cookieSecret ??
     options.secret ??
     process.env.COOKIE_SECRET ??
     process.env.CSRF_SECRET;
 
-  const hasConfiguredSigner = Boolean(
-    fastify.hasDecorator('unsignCookie') ||
-    typeof (fastify as any).unsignCookie === 'function'
-  );
+  // Validate locally configured secret if provided
+  if (localSecret !== undefined) {
+    if (typeof localSecret !== 'string') {
+      throw new Error('Supplied cookie signing secret must be a string.');
+    }
+    const byteLen = Buffer.byteLength(localSecret.trim(), 'utf8');
+    if (byteLen < MIN_COOKIE_SECRET_BYTES) {
+      throw new Error(
+        `Supplied cookie signing secret is insufficient: must be at least ${MIN_COOKIE_SECRET_BYTES} bytes (got ${byteLen} bytes).`
+      );
+    }
+  }
 
   if (isSigned) {
-    if (!hasConfiguredSigner) {
-      if (!fastify.parseCookie && !fastify.hasRequestDecorator('cookies')) {
-        if (!trustedSecret || typeof trustedSecret !== 'string' || trustedSecret.trim().length === 0) {
-          throw new Error(
-            'CSRF cookie signing is required (in production or when signed: true) but no valid cookie signing secret is configured. ' +
-            'Provide a trusted secret via options (secret or cookieSecret) or register @fastify/cookie with secret.'
-          );
-        }
-      } else {
+    if (isCookiePluginRegistered) {
+      if (!hasExternalSigner) {
         throw new Error(
-          'CSRF cookie signing is required but @fastify/cookie was already registered without a signing secret. ' +
-          'Register @fastify/cookie with a secret to resist cookie tossing.'
+          'CSRF cookie signing is required (in production or when signed: true) but @fastify/cookie was externally registered without a signing secret. ' +
+          `Ensure @fastify/cookie is registered with a secret of at least ${MIN_COOKIE_SECRET_BYTES} bytes.`
         );
       }
-    } else if (trustedSecret !== undefined && (typeof trustedSecret !== 'string' || trustedSecret.trim().length === 0)) {
-      throw new Error('Invalid empty cookie signing secret provided.');
+    } else {
+      if (!localSecret || !isValidSigningSecret(localSecret)) {
+        throw new Error(
+          'CSRF cookie signing is required (in production or when signed: true) but no valid cookie signing secret is configured. ' +
+          `Provide a secret of at least ${MIN_COOKIE_SECRET_BYTES} bytes via options (secret or cookieSecret) or environment (COOKIE_SECRET or CSRF_SECRET).`
+        );
+      }
     }
   }
 
   // 1. Ensure @fastify/cookie is registered
-  if (!fastify.parseCookie && !fastify.hasRequestDecorator('cookies')) {
-    await fastify.register(fastifyCookie, {
-      secret: trustedSecret && trustedSecret.trim().length > 0 ? trustedSecret.trim() : undefined,
-    });
+  if (!isCookiePluginRegistered) {
+    const cookieRegOpts: Record<string, unknown> = {};
+    if (localSecret && isValidSigningSecret(localSecret)) {
+      cookieRegOpts.secret = localSecret.trim();
+    }
+    await fastify.register(fastifyCookie, cookieRegOpts);
   }
 
-  // 2. Register official @fastify/csrf-protection plugin (Finding 1)
+  // 2. Register official @fastify/csrf-protection plugin (Finding 1 & 2)
   const resolvedCookieOpts: Record<string, unknown> = {
     path: '/',
     httpOnly: true,
@@ -376,36 +404,22 @@ export const csrfPlugin: FastifyPluginAsync<CsrfPluginOptions> = async (
 
   await fastify.register(fastifyCsrfProtection, csrfProtOptions as any);
 
-  // 3. Wrap reply.generateCsrf on Reply prototype to enforce rigid cookie security attributes
-  const replySym = Object.getOwnPropertySymbols(fastify).find(
-    (s) => s.description === 'fastify.Reply'
-  );
-  const ReplyClass = replySym ? (fastify as any)[replySym] : undefined;
-  if (ReplyClass?.prototype?.generateCsrf) {
-    const originalGenerateCsrf = ReplyClass.prototype.generateCsrf;
-    ReplyClass.prototype.generateCsrf = function (
-      this: FastifyReply,
-      opts?: CsrfCookieOptions & { userInfo?: string }
-    ) {
-      const sanitized = sanitizeCallerCookieOptions(opts, pluginSecure, pluginDomain, isSigned);
-      return originalGenerateCsrf.call(this, sanitized);
-    };
-  }
-
-  // Also hook onRequest to ensure instance/route-level replies enforce rigid cookie attributes
-  const kCsrfWrapped = Symbol.for('fastify.csrf.generateCsrfWrapped');
+  // 3. Enforce rigid cookie security attributes via supported Fastify public hook (Finding 2)
   fastify.addHook('onRequest', async (_request: FastifyRequest, reply: FastifyReply) => {
-    if (typeof reply.generateCsrf === 'function' && !(reply.generateCsrf as any)[kCsrfWrapped]) {
-      const orig = reply.generateCsrf;
-      const wrapped = function (
-        this: FastifyReply,
-        opts?: CsrfCookieOptions & { userInfo?: string }
-      ) {
-        const sanitized = sanitizeCallerCookieOptions(opts, pluginSecure, pluginDomain, isSigned);
-        return orig.call(this, sanitized as any);
+    const originalSetCookie = reply.setCookie;
+    if (typeof originalSetCookie === 'function') {
+      reply.setCookie = function (name: string, value: string, cookieOptions?: any) {
+        if (name === cookieKey) {
+          const sanitized = sanitizeCallerCookieOptions(
+            cookieOptions,
+            pluginSecure,
+            pluginDomain,
+            isSigned
+          );
+          return originalSetCookie.call(this, name, value, sanitized);
+        }
+        return originalSetCookie.call(this, name, value, cookieOptions);
       };
-      (wrapped as any)[kCsrfWrapped] = true;
-      (reply as any).generateCsrf = wrapped;
     }
   });
 
@@ -419,19 +433,7 @@ export const csrfPlugin: FastifyPluginAsync<CsrfPluginOptions> = async (
     });
   }
 
-  // 5. Wrap fastify.csrfProtection to handle both callback and hook invocations safely
-  const officialCsrfProtection = fastify.csrfProtection;
-  (fastify as any).csrfProtection = function (
-    this: FastifyInstance,
-    req: FastifyRequest,
-    reply: FastifyReply,
-    next?: (err?: Error) => void
-  ) {
-    const nextFn = typeof next === 'function' ? next : () => {};
-    return officialCsrfProtection.call(this, req, reply, nextFn);
-  };
-
-  // 6. Map CSRF errors to standard HTTP 403 CSRF_TOKEN_INVALID envelope
+  // 5. Map CSRF errors to standard HTTP 403 CSRF_TOKEN_INVALID envelope
   fastify.addHook('onError', async (_request: FastifyRequest, _reply: FastifyReply, error: any) => {
     if (
       error?.code === 'FST_CSRF_MISSING_SECRET' ||
@@ -444,7 +446,7 @@ export const csrfPlugin: FastifyPluginAsync<CsrfPluginOptions> = async (
     }
   });
 
-  // 7. Global fail-closed preHandler hook across all routes
+  // 6. Global fail-closed preHandler hook across all routes
   fastify.addHook('preHandler', (request: FastifyRequest, reply: FastifyReply, done: (err?: Error) => void) => {
     // Safe read-only HTTP methods (GET, HEAD, OPTIONS) are exempt unless explicitly configured
     if (isSafeMethod(request.method || '')) {
@@ -459,7 +461,7 @@ export const csrfPlugin: FastifyPluginAsync<CsrfPluginOptions> = async (
       return done();
     }
 
-    // Delegate to official CSRF protection
+    // Delegate to official CSRF protection decorator directly
     fastify.csrfProtection(request, reply, done);
   });
 };

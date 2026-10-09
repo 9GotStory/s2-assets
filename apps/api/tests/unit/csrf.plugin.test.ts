@@ -6,6 +6,8 @@ import {
   csrfPlugin,
   CsrfError,
   DEFAULT_CSRF_COOKIE_NAME,
+  MIN_COOKIE_SECRET_BYTES,
+  isValidSigningSecret,
   resolveCookieSecure,
   isValidCookieDomain,
   isSafeMethod,
@@ -847,6 +849,50 @@ describe('CSRF Protection Plugin (T021)', () => {
       await appWithEmptySecret.close();
     });
 
+    it('fails closed during plugin registration when supplied secret is less than 32 bytes (short secret rejected)', async () => {
+      const appWithShortSecret = Fastify();
+      await appWithShortSecret.register(errorHandlerPlugin);
+
+      // Test short secrets of varying lengths below 32 bytes
+      for (const shortKey of ['1', 'short-secret', 'sixteen-byte-key', 'twenty-byte-key-test!', 'thirty-one-byte-secret-key-1234']) {
+        await expect(
+          appWithShortSecret.register(csrfPlugin, { signed: true, secret: shortKey })
+        ).rejects.toThrow(/at least 32 bytes/i);
+      }
+
+      await appWithShortSecret.close();
+    });
+
+    it('clearly distinguishes locally configured signing secret from externally registered cookie signer', async () => {
+      const appWithExternalSigner = Fastify();
+      await appWithExternalSigner.register(errorHandlerPlugin);
+      // Pre-register cookie plugin with a strong external secret (32+ bytes)
+      await appWithExternalSigner.register(fastifyCookie, { secret: 'externally-configured-secret-key-1234567890' });
+      // Register csrfPlugin without supplying local secret: should recognize and trust external signer
+      await appWithExternalSigner.register(csrfPlugin, { signed: true });
+
+      appWithExternalSigner.get('/token', async (req, reply) => ({ token: reply.generateCsrf() }));
+      appWithExternalSigner.post('/action', async () => ({ ok: true }));
+      await appWithExternalSigner.ready();
+
+      const tokenRes = await appWithExternalSigner.inject({ method: 'GET', url: '/token' });
+      expect(tokenRes.statusCode).toBe(200);
+      const token = tokenRes.json().token;
+      const cookieHeader = tokenRes.headers['set-cookie']?.toString().split(';')[0]!;
+
+      // Verify the cookie was signed using external signer
+      expect(cookieHeader).toContain('.');
+
+      const postRes = await appWithExternalSigner.inject({
+        method: 'POST',
+        url: '/action',
+        headers: { cookie: cookieHeader, 'x-csrf-token': token },
+      });
+      expect(postRes.statusCode).toBe(200);
+
+      await appWithExternalSigner.close();
+    });
+
     it('fails closed during plugin registration if @fastify/cookie was pre-registered without secret but signed: true is enabled', async () => {
       const appPreRegistered = Fastify();
       await appPreRegistered.register(errorHandlerPlugin);
@@ -1039,6 +1085,173 @@ describe('CSRF Protection Plugin (T021)', () => {
       expect(bodyText).not.toContain('stack');
       expect(bodyText).not.toContain('SELECT');
       expect(bodyText).not.toContain('node_modules');
+    });
+  });
+
+  // =========================================================================
+  // 18. Supported Fastify APIs and Mutation Avoidance (Finding 2)
+  // =========================================================================
+  describe('18. Supported Fastify APIs and Mutation Avoidance (Finding 2)', () => {
+    it('preserves the official fastify.csrfProtection decorator and uses it in route hooks', async () => {
+      const testApp = Fastify();
+      await testApp.register(errorHandlerPlugin);
+      await testApp.register(csrfPlugin);
+
+      expect(testApp.hasDecorator('csrfProtection')).toBe(true);
+      expect(typeof testApp.csrfProtection).toBe('function');
+
+      // Test explicit route preHandler using the official decorator
+      testApp.get('/token', async (req, reply) => ({ token: reply.generateCsrf() }));
+      testApp.post('/protected-route', { preHandler: testApp.csrfProtection }, async () => ({ protected: true }));
+      await testApp.ready();
+
+      // Rejected without CSRF
+      const rejectRes = await testApp.inject({ method: 'POST', url: '/protected-route' });
+      expect(rejectRes.statusCode).toBe(403);
+      expect(rejectRes.json().error.code).toBe('CSRF_TOKEN_INVALID');
+
+      // Accepted with valid CSRF
+      const tokenRes = await testApp.inject({ method: 'GET', url: '/token' });
+      const cookie = tokenRes.headers['set-cookie']?.toString().split(';')[0]!;
+      const token = tokenRes.json().token;
+
+      const acceptRes = await testApp.inject({
+        method: 'POST',
+        url: '/protected-route',
+        headers: { cookie, 'x-csrf-token': token },
+      });
+      expect(acceptRes.statusCode).toBe(200);
+      expect(acceptRes.json()).toEqual({ protected: true });
+
+      await testApp.close();
+    });
+
+    it('enforces rigid cookie attributes across nested plugin scopes and route prefixes', async () => {
+      const parentApp = Fastify();
+      await parentApp.register(errorHandlerPlugin);
+      await parentApp.register(csrfPlugin);
+
+      // Register nested child plugin with route prefix
+      await parentApp.register(
+        async (childInstance) => {
+          childInstance.get('/child-token', async (req, reply) => {
+            // Attempt to weaken cookie options in child scope
+            return {
+              token: reply.generateCsrf({
+                httpOnly: false,
+                sameSite: 'none',
+                path: '/nested-only',
+              } as any),
+            };
+          });
+
+          childInstance.post('/child-action', async () => ({ childOk: true }));
+        },
+        { prefix: '/v1/nested' }
+      );
+
+      await parentApp.ready();
+
+      // Verify rigid attributes on child route token generation
+      const tokenRes = await parentApp.inject({ method: 'GET', url: '/v1/nested/child-token' });
+      expect(tokenRes.statusCode).toBe(200);
+
+      const parsed = parseCookieHeader(tokenRes.headers['set-cookie']);
+      expect(parsed.name).toBe(DEFAULT_CSRF_COOKIE_NAME);
+      expect(parsed.httponly).toBe(true);
+      expect(parsed.samesite?.toString().toLowerCase()).toBe('lax');
+      expect(parsed.path).toBe('/');
+
+      // Verify CSRF protection applies in nested route
+      const childReject = await parentApp.inject({ method: 'POST', url: '/v1/nested/child-action' });
+      expect(childReject.statusCode).toBe(403);
+      expect(childReject.json().error.code).toBe('CSRF_TOKEN_INVALID');
+
+      const cookie = tokenRes.headers['set-cookie']?.toString().split(';')[0]!;
+      const token = tokenRes.json().token;
+
+      const childAccept = await parentApp.inject({
+        method: 'POST',
+        url: '/v1/nested/child-action',
+        headers: { cookie, 'x-csrf-token': token },
+      });
+      expect(childAccept.statusCode).toBe(200);
+      expect(childAccept.json()).toEqual({ childOk: true });
+
+      await parentApp.close();
+    });
+
+    it('maintains strict isolation across separate Fastify instances without cross-contamination', async () => {
+      const appA = Fastify();
+      await appA.register(errorHandlerPlugin);
+      await appA.register(csrfPlugin, { signed: true, secret: 'instance-a-signing-secret-key-12345678' });
+      appA.get('/token-a', async (req, reply) => ({ token: reply.generateCsrf() }));
+      appA.post('/action-a', async () => ({ fromA: true }));
+      await appA.ready();
+
+      const appB = Fastify();
+      await appB.register(errorHandlerPlugin);
+      await appB.register(csrfPlugin, { signed: true, secret: 'instance-b-signing-secret-key-87654321' });
+      appB.get('/token-b', async (req, reply) => ({ token: reply.generateCsrf() }));
+      appB.post('/action-b', async () => ({ fromB: true }));
+      await appB.ready();
+
+      const tokenResA = await appA.inject({ method: 'GET', url: '/token-a' });
+      const cookieA = tokenResA.headers['set-cookie']?.toString().split(';')[0]!;
+      const tokenA = tokenResA.json().token;
+
+      const tokenResB = await appB.inject({ method: 'GET', url: '/token-b' });
+      const cookieB = tokenResB.headers['set-cookie']?.toString().split(';')[0]!;
+      const tokenB = tokenResB.json().token;
+
+      // Both instances work independently
+      const okA = await appA.inject({
+        method: 'POST',
+        url: '/action-a',
+        headers: { cookie: cookieA, 'x-csrf-token': tokenA },
+      });
+      expect(okA.statusCode).toBe(200);
+
+      const okB = await appB.inject({
+        method: 'POST',
+        url: '/action-b',
+        headers: { cookie: cookieB, 'x-csrf-token': tokenB },
+      });
+      expect(okB.statusCode).toBe(200);
+
+      // Cross-instance token replay fails (token A on app B)
+      const badCross = await appB.inject({
+        method: 'POST',
+        url: '/action-b',
+        headers: { cookie: cookieA, 'x-csrf-token': tokenA },
+      });
+      expect(badCross.statusCode).toBe(403);
+      expect(badCross.json().error.code).toBe('CSRF_TOKEN_INVALID');
+
+      await appA.close();
+      await appB.close();
+    });
+
+    it('preserves official reply.generateCsrf() behavior and compatibility', async () => {
+      const app = Fastify();
+      await app.register(errorHandlerPlugin);
+      await app.register(csrfPlugin);
+
+      app.get('/gen', async (req, reply) => {
+        expect(typeof reply.generateCsrf).toBe('function');
+        const token = reply.generateCsrf();
+        expect(typeof token).toBe('string');
+        expect(token.length).toBeGreaterThan(10);
+        return { token };
+      });
+      await app.ready();
+
+      const res = await app.inject({ method: 'GET', url: '/gen' });
+      expect(res.statusCode).toBe(200);
+      expect(typeof res.json().token).toBe('string');
+      expect(res.headers['set-cookie']).toBeDefined();
+
+      await app.close();
     });
   });
 });
