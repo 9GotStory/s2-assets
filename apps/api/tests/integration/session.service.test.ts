@@ -296,4 +296,36 @@ describe('SessionService Real PostgreSQL Integration Tests (T019)', () => {
       }
     });
   });
+
+  describe('Real PostgreSQL Policy Enforcement & Error Sanitization (REWORK 1)', () => {
+    it('prevents arbitrary lifetime extensions exceeding 8 hours without touching PostgreSQL', async () => {
+      const service = new SessionService({ db: pool });
+      const twentyFourHours = 24 * 60 * 60 * 1000;
+
+      await expect(service.createSession(testUserId, { ttlMs: twentyFourHours })).rejects.toThrow(
+        'Session TTL cannot exceed 8 hours'
+      );
+
+      // Verify no session was created in PostgreSQL
+      const dbRes = await pool.query('SELECT * FROM sessions WHERE user_id = $1', [testUserId]);
+      expect(dbRes.rows).toHaveLength(0);
+    });
+
+    it('sanitizes real PostgreSQL constraint or syntax errors without disclosing database internals', async () => {
+      const service = new SessionService({ db: pool });
+      // Non-existent foreign key user_id triggers a real foreign key violation in PostgreSQL
+      const nonexistentUserId = crypto.randomUUID();
+
+      await expect(service.createSession(nonexistentUserId)).rejects.toThrow('Failed to create session');
+
+      try {
+        await service.createSession(nonexistentUserId);
+      } catch (err: any) {
+        expect(err.message).toBe('Failed to create session');
+        expect(err.message).not.toContain('foreign key');
+        expect(err.message).not.toContain('sessions_user_id_fkey');
+        expect(err.message).not.toContain('violates');
+      }
+    });
+  });
 });

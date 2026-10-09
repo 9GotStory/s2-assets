@@ -20,10 +20,31 @@ export interface DatabaseClient {
 export interface SessionServiceOptions {
   db?: DatabaseClient | any;
   ttlMs?: number;
+  /**
+   * Internal clock provider for test-time clock isolation.
+   * Defaults to Date.now in production.
+   */
+  _clock?: () => number;
+}
+
+export interface CreateSessionOptions {
+  userId?: string;
+  ttlMs?: number;
+  expiresAt?: Date;
+  /**
+   * Explicit test-only flag to permit past expiration injection in tests.
+   */
+  _allowExpiredForTesting?: boolean;
+}
+
+export interface SessionLifecycleOptions {
+  rolling?: boolean;
+  ttlMs?: number;
 }
 
 export const SESSION_TTL_HOURS = 8;
 export const SESSION_TTL_MS = SESSION_TTL_HOURS * 60 * 60 * 1000; // 28,800,000 ms (8 hours)
+export const MAX_SESSION_TTL_MS = SESSION_TTL_MS;
 export const RAW_TOKEN_BYTES = 32;
 
 /**
@@ -36,6 +57,42 @@ export const BASE64URL_TOKEN_REGEX = /^[A-Za-z0-9_-]{43}$/;
  * SHA-256 hex digest pattern: 64 hexadecimal characters.
  */
 export const SHA256_HEX_REGEX = /^[0-9a-f]{64}$/;
+
+/**
+ * Validates and enforces that a given session TTL is a finite, positive number
+ * that does not exceed the approved 8-hour maximum policy (28,800,000 ms).
+ */
+export function validateSessionTtl(ttlMs: unknown): number {
+  if (typeof ttlMs !== 'number' || !Number.isFinite(ttlMs) || ttlMs <= 0) {
+    throw new Error('Session TTL must be a positive number');
+  }
+  if (ttlMs > MAX_SESSION_TTL_MS) {
+    throw new Error(`Session TTL cannot exceed 8 hours (${MAX_SESSION_TTL_MS} ms)`);
+  }
+  return ttlMs;
+}
+
+/**
+ * Validates and enforces that an expiration date does not exceed the approved
+ * 8-hour maximum lifetime from the reference time.
+ */
+export function validateSessionExpiresAt(
+  expiresAt: unknown,
+  referenceNowMs: number,
+  allowPast = false
+): Date {
+  if (!(expiresAt instanceof Date) || isNaN(expiresAt.getTime())) {
+    throw new Error('Invalid expiration date');
+  }
+  const expiryMs = expiresAt.getTime();
+  if (expiryMs > referenceNowMs + MAX_SESSION_TTL_MS) {
+    throw new Error(`Session expiration cannot exceed 8 hours (${MAX_SESSION_TTL_MS} ms)`);
+  }
+  if (expiryMs <= referenceNowMs && !allowPast) {
+    throw new Error('Session expiration cannot be in the past');
+  }
+  return expiresAt;
+}
 
 /**
  * Generates a cryptographically secure, opaque 32-byte session token using Base64URL encoding.
@@ -71,6 +128,13 @@ export function hashToken(rawToken: string): string {
 export const deriveDigest = hashToken;
 export const digestToken = hashToken;
 
+type DatabaseKind = 'pg' | 'kysely';
+
+interface ResolvedDatabaseClient {
+  client: any;
+  kind: DatabaseKind;
+}
+
 /**
  * Service managing secure session lifecycle, SHA-256 digest persistence,
  * server-enforced rolling 8-hour expiration, and immediate revocation.
@@ -78,6 +142,7 @@ export const digestToken = hashToken;
 export class SessionService {
   private db?: any;
   private defaultTtlMs: number;
+  private readonly clock: () => number;
 
   constructor(options?: SessionServiceOptions | DatabaseClient | any) {
     if (options && typeof options === 'object') {
@@ -87,10 +152,17 @@ export class SessionService {
         this.db = options.db;
       }
     }
-    this.defaultTtlMs =
-      options && typeof options === 'object' && typeof (options as any).ttlMs === 'number'
-        ? (options as any).ttlMs
-        : SESSION_TTL_MS;
+
+    this.clock =
+      options && typeof options === 'object' && typeof (options as any)._clock === 'function'
+        ? (options as any)._clock
+        : () => Date.now();
+
+    if (options && typeof options === 'object' && 'ttlMs' in options && options.ttlMs !== undefined) {
+      this.defaultTtlMs = validateSessionTtl(options.ttlMs);
+    } else {
+      this.defaultTtlMs = SESSION_TTL_MS;
+    }
   }
 
   static generateToken = generateSessionToken;
@@ -102,6 +174,7 @@ export class SessionService {
   static digestToken = digestToken;
   static SESSION_TTL_MS = SESSION_TTL_MS;
   static SESSION_TTL_HOURS = SESSION_TTL_HOURS;
+  static MAX_SESSION_TTL_MS = MAX_SESSION_TTL_MS;
   static RAW_TOKEN_BYTES = RAW_TOKEN_BYTES;
 
   generateToken(): string {
@@ -125,30 +198,78 @@ export class SessionService {
   }
 
   /**
+   * Pre-flight evaluation of database configuration.
+   * Evaluates client existence and interface capability BEFORE attempting
+   * database operations, preventing catch-block string matching.
+   */
+  private getDatabaseClient(): ResolvedDatabaseClient {
+    const client = this.db;
+    if (!client) {
+      throw new Error('Database client is not configured');
+    }
+
+    if (typeof client.query === 'function') {
+      return { client, kind: 'pg' };
+    }
+
+    if (
+      typeof client.selectFrom === 'function' ||
+      typeof client.insertInto === 'function' ||
+      typeof client.updateTable === 'function' ||
+      typeof client.deleteFrom === 'function'
+    ) {
+      return { client, kind: 'kysely' };
+    }
+
+    throw new Error('Unsupported database client interface');
+  }
+
+  /**
+   * Resolves current timestamp using configured clock.
+   */
+  private now(): number {
+    return this.clock();
+  }
+
+  /**
    * Creates a new session for the given user:
+   * - Validates user ID and lifetime options (strictly bounded by 8-hour max policy).
    * - Generates a raw opaque 32-byte Base64URL token.
    * - Derives the SHA-256 digest.
    * - Persists ONLY the digest in sessions.id with user_id and expires_at.
    * - Returns the raw token only to the caller (never persisted).
    */
   async createSession(
-    userIdOrOptions: string | { userId: string; ttlMs?: number; expiresAt?: Date },
-    options?: { ttlMs?: number; expiresAt?: Date }
+    userIdOrOptions: string | CreateSessionOptions,
+    options?: CreateSessionOptions
   ): Promise<SessionResult> {
     let userId: string;
     let ttlMs = this.defaultTtlMs;
     let expiresAt: Date | undefined;
+    let allowExpired = false;
 
     if (typeof userIdOrOptions === 'string') {
       userId = userIdOrOptions;
-      if (options?.ttlMs !== undefined) ttlMs = options.ttlMs;
+      if (options?.ttlMs !== undefined) ttlMs = validateSessionTtl(options.ttlMs);
       if (options?.expiresAt !== undefined) expiresAt = options.expiresAt;
+      if (options?._allowExpiredForTesting) allowExpired = true;
     } else if (userIdOrOptions && typeof userIdOrOptions === 'object') {
-      userId = userIdOrOptions.userId;
-      if (userIdOrOptions.ttlMs !== undefined) ttlMs = userIdOrOptions.ttlMs;
-      else if (options?.ttlMs !== undefined) ttlMs = options.ttlMs;
-      if (userIdOrOptions.expiresAt !== undefined) expiresAt = userIdOrOptions.expiresAt;
-      else if (options?.expiresAt !== undefined) expiresAt = options.expiresAt;
+      userId = userIdOrOptions.userId ?? '';
+      if (userIdOrOptions.ttlMs !== undefined) {
+        ttlMs = validateSessionTtl(userIdOrOptions.ttlMs);
+      } else if (options?.ttlMs !== undefined) {
+        ttlMs = validateSessionTtl(options.ttlMs);
+      }
+
+      if (userIdOrOptions.expiresAt !== undefined) {
+        expiresAt = userIdOrOptions.expiresAt;
+      } else if (options?.expiresAt !== undefined) {
+        expiresAt = options.expiresAt;
+      }
+
+      if (userIdOrOptions._allowExpiredForTesting || options?._allowExpiredForTesting) {
+        allowExpired = true;
+      }
     } else {
       throw new Error('User ID must be a non-empty string');
     }
@@ -157,17 +278,22 @@ export class SessionService {
       throw new Error('User ID must be a non-empty string');
     }
 
-    const client = this.db;
-    if (!client) {
-      throw new Error('Database client is not configured');
+    const currentNowMs = this.now();
+    let finalExpiresAt: Date;
+    if (expiresAt !== undefined) {
+      finalExpiresAt = validateSessionExpiresAt(expiresAt, currentNowMs, allowExpired);
+    } else {
+      finalExpiresAt = new Date(currentNowMs + ttlMs);
     }
+
+    // Verify DB client existence before try/catch
+    const { client, kind } = this.getDatabaseClient();
 
     const rawToken = generateSessionToken();
     const digest = hashToken(rawToken);
-    const finalExpiresAt = expiresAt ?? new Date(Date.now() + ttlMs);
 
     try {
-      if (typeof client.insertInto === 'function') {
+      if (kind === 'kysely') {
         const row = await client
           .insertInto('sessions')
           .values({
@@ -190,35 +316,26 @@ export class SessionService {
         };
       }
 
-      if (typeof client.query === 'function') {
-        const result = await client.query(
-          `INSERT INTO sessions (id, user_id, expires_at, created_at)
-           VALUES ($1, $2, $3, NOW())
-           RETURNING id, user_id, expires_at, created_at`,
-          [digest, userId, finalExpiresAt]
-        );
-        const row = result.rows[0];
-        return {
-          token: rawToken,
-          rawToken,
-          session: {
-            id: row.id,
-            user_id: row.user_id,
-            expires_at: row.expires_at instanceof Date ? row.expires_at : new Date(row.expires_at),
-            created_at: row.created_at instanceof Date ? row.created_at : new Date(row.created_at),
-          },
-        };
-      }
-
-      throw new Error('Unsupported database client interface');
-    } catch (err: any) {
-      if (
-        err.message &&
-        (err.message.includes('Database client is not configured') ||
-          err.message.includes('Unsupported database client interface'))
-      ) {
-        throw err;
-      }
+      // kind === 'pg'
+      const result = await client.query(
+        `INSERT INTO sessions (id, user_id, expires_at, created_at)
+         VALUES ($1, $2, $3, NOW())
+         RETURNING id, user_id, expires_at, created_at`,
+        [digest, userId, finalExpiresAt]
+      );
+      const row = result.rows[0];
+      return {
+        token: rawToken,
+        rawToken,
+        session: {
+          id: row.id,
+          user_id: row.user_id,
+          expires_at: row.expires_at instanceof Date ? row.expires_at : new Date(row.expires_at),
+          created_at: row.created_at instanceof Date ? row.created_at : new Date(row.created_at),
+        },
+      };
+    } catch {
+      // Unconditionally sanitize database errors without string matching
       throw new Error('Failed to create session');
     }
   }
@@ -230,7 +347,7 @@ export class SessionService {
    */
   async lookupSession(
     rawToken: string,
-    options?: { rolling?: boolean; ttlMs?: number }
+    options?: SessionLifecycleOptions
   ): Promise<Session | null> {
     if (!isValidRawToken(rawToken)) {
       return null;
@@ -259,34 +376,34 @@ export class SessionService {
    */
   async lookupByDigest(
     digest: string,
-    options?: { rolling?: boolean; ttlMs?: number }
+    options?: SessionLifecycleOptions
   ): Promise<Session | null> {
     if (!digest || typeof digest !== 'string' || !SHA256_HEX_REGEX.test(digest)) {
       return null;
     }
 
-    const client = this.db;
-    if (!client) {
-      throw new Error('Database client is not configured');
+    if (options?.ttlMs !== undefined) {
+      validateSessionTtl(options.ttlMs);
     }
+
+    // Verify DB client existence before try/catch
+    const { client, kind } = this.getDatabaseClient();
 
     try {
       let row: any = null;
 
-      if (typeof client.selectFrom === 'function') {
+      if (kind === 'kysely') {
         row = await client
           .selectFrom('sessions')
           .selectAll()
           .where('id', '=', digest)
           .executeTakeFirst();
-      } else if (typeof client.query === 'function') {
+      } else {
         const result = await client.query(
           'SELECT id, user_id, expires_at, created_at FROM sessions WHERE id = $1 LIMIT 1',
           [digest]
         );
         row = result.rows[0] ?? null;
-      } else {
-        throw new Error('Unsupported database client interface');
       }
 
       if (!row) {
@@ -296,26 +413,26 @@ export class SessionService {
       const expiresAtDate = row.expires_at instanceof Date ? row.expires_at : new Date(row.expires_at);
       const expiresAtTime = expiresAtDate.getTime();
 
-      if (isNaN(expiresAtTime) || expiresAtTime <= Date.now()) {
+      if (isNaN(expiresAtTime) || expiresAtTime <= this.now()) {
         // Expired session: strictly reject
         return null;
       }
 
       // If rolling expiration requested, extend the session
       if (options?.rolling) {
-        const ttlMs = options.ttlMs ?? this.defaultTtlMs;
-        const newExpiresAt = new Date(Date.now() + ttlMs);
+        const ttlMs = options.ttlMs !== undefined ? validateSessionTtl(options.ttlMs) : this.defaultTtlMs;
+        const newExpiresAt = new Date(this.now() + ttlMs);
 
         let updatedRow: any = null;
-        if (typeof client.updateTable === 'function') {
+        if (kind === 'kysely') {
           updatedRow = await client
             .updateTable('sessions')
             .set({ expires_at: newExpiresAt })
             .where('id', '=', digest)
-            .where('expires_at', '>', new Date()) // atomic invariant: never revive expired sessions
+            .where('expires_at', '>', new Date(this.now())) // atomic check: only update if currently unexpired
             .returning(['id', 'user_id', 'expires_at', 'created_at'])
             .executeTakeFirst();
-        } else if (typeof client.query === 'function') {
+        } else {
           const updateResult = await client.query(
             `UPDATE sessions
              SET expires_at = $1
@@ -340,14 +457,8 @@ export class SessionService {
         expires_at: row.expires_at instanceof Date ? row.expires_at : new Date(row.expires_at),
         created_at: row.created_at instanceof Date ? row.created_at : new Date(row.created_at),
       };
-    } catch (err: any) {
-      if (
-        err.message &&
-        (err.message.includes('Database client is not configured') ||
-          err.message.includes('Unsupported database client interface'))
-      ) {
-        throw err;
-      }
+    } catch {
+      // Unconditionally sanitize database errors without string matching
       throw new Error('Failed to lookup session');
     }
   }
@@ -359,8 +470,11 @@ export class SessionService {
    */
   async validateSession(
     rawToken: string,
-    options?: { rolling?: boolean; ttlMs?: number }
+    options?: SessionLifecycleOptions
   ): Promise<Session | null> {
+    if (options?.ttlMs !== undefined) {
+      validateSessionTtl(options.ttlMs);
+    }
     const rolling = options?.rolling ?? true;
     return this.lookupSession(rawToken, { ...options, rolling });
   }
@@ -377,27 +491,26 @@ export class SessionService {
       return null;
     }
 
-    const digest = hashToken(rawToken);
-    const client = this.db;
-    if (!client) {
-      throw new Error('Database client is not configured');
-    }
+    const ttlMs = options?.ttlMs !== undefined ? validateSessionTtl(options.ttlMs) : this.defaultTtlMs;
 
-    const ttlMs = options?.ttlMs ?? this.defaultTtlMs;
-    const newExpiresAt = new Date(Date.now() + ttlMs);
+    // Verify DB client existence before try/catch
+    const { client, kind } = this.getDatabaseClient();
+
+    const digest = hashToken(rawToken);
+    const newExpiresAt = new Date(this.now() + ttlMs);
 
     try {
       let updatedRow: any = null;
 
-      if (typeof client.updateTable === 'function') {
+      if (kind === 'kysely') {
         updatedRow = await client
           .updateTable('sessions')
           .set({ expires_at: newExpiresAt })
           .where('id', '=', digest)
-          .where('expires_at', '>', new Date()) // MUST NOT revive expired sessions
+          .where('expires_at', '>', new Date(this.now())) // MUST NOT revive expired sessions
           .returning(['id', 'user_id', 'expires_at', 'created_at'])
           .executeTakeFirst();
-      } else if (typeof client.query === 'function') {
+      } else {
         const updateResult = await client.query(
           `UPDATE sessions
            SET expires_at = $1
@@ -406,8 +519,6 @@ export class SessionService {
           [newExpiresAt, digest]
         );
         updatedRow = updateResult.rows[0] ?? null;
-      } else {
-        throw new Error('Unsupported database client interface');
       }
 
       if (!updatedRow) {
@@ -420,14 +531,8 @@ export class SessionService {
         expires_at: updatedRow.expires_at instanceof Date ? updatedRow.expires_at : new Date(updatedRow.expires_at),
         created_at: updatedRow.created_at instanceof Date ? updatedRow.created_at : new Date(updatedRow.created_at),
       };
-    } catch (err: any) {
-      if (
-        err.message &&
-        (err.message.includes('Database client is not configured') ||
-          err.message.includes('Unsupported database client interface'))
-      ) {
-        throw err;
-      }
+    } catch {
+      // Unconditionally sanitize database errors without string matching
       throw new Error('Failed to refresh session');
     }
   }
@@ -448,21 +553,20 @@ export class SessionService {
       return { valid: false, reason: 'MALFORMED' };
     }
 
+    // Verify DB client existence before try/catch
+    const { client, kind } = this.getDatabaseClient();
+
     const digest = hashToken(rawToken);
-    const client = this.db;
-    if (!client) {
-      throw new Error('Database client is not configured');
-    }
 
     try {
       let row: any = null;
-      if (typeof client.selectFrom === 'function') {
+      if (kind === 'kysely') {
         row = await client
           .selectFrom('sessions')
           .selectAll()
           .where('id', '=', digest)
           .executeTakeFirst();
-      } else if (typeof client.query === 'function') {
+      } else {
         const result = await client.query(
           'SELECT id, user_id, expires_at, created_at FROM sessions WHERE id = $1 LIMIT 1',
           [digest]
@@ -475,7 +579,7 @@ export class SessionService {
       }
 
       const expiresAtDate = row.expires_at instanceof Date ? row.expires_at : new Date(row.expires_at);
-      if (isNaN(expiresAtDate.getTime()) || expiresAtDate.getTime() <= Date.now()) {
+      if (isNaN(expiresAtDate.getTime()) || expiresAtDate.getTime() <= this.now()) {
         return { valid: false, reason: 'EXPIRED' };
       }
 
@@ -488,14 +592,8 @@ export class SessionService {
           created_at: row.created_at instanceof Date ? row.created_at : new Date(row.created_at),
         },
       };
-    } catch (err: any) {
-      if (
-        err.message &&
-        (err.message.includes('Database client is not configured') ||
-          err.message.includes('Unsupported database client interface'))
-      ) {
-        throw err;
-      }
+    } catch {
+      // Unconditionally sanitize database errors without string matching
       throw new Error('Failed to verify session');
     }
   }
@@ -522,13 +620,11 @@ export class SessionService {
       return false;
     }
 
-    const client = this.db;
-    if (!client) {
-      throw new Error('Database client is not configured');
-    }
+    // Verify DB client existence before try/catch
+    const { client, kind } = this.getDatabaseClient();
 
     try {
-      if (typeof client.deleteFrom === 'function') {
+      if (kind === 'kysely') {
         const result = await client
           .deleteFrom('sessions')
           .where('id', '=', digest)
@@ -536,20 +632,10 @@ export class SessionService {
         return Number(result.numDeletedRows ?? 0) > 0;
       }
 
-      if (typeof client.query === 'function') {
-        const result = await client.query('DELETE FROM sessions WHERE id = $1', [digest]);
-        return (result.rowCount ?? 0) > 0;
-      }
-
-      throw new Error('Unsupported database client interface');
-    } catch (err: any) {
-      if (
-        err.message &&
-        (err.message.includes('Database client is not configured') ||
-          err.message.includes('Unsupported database client interface'))
-      ) {
-        throw err;
-      }
+      const result = await client.query('DELETE FROM sessions WHERE id = $1', [digest]);
+      return (result.rowCount ?? 0) > 0;
+    } catch {
+      // Unconditionally sanitize database errors without string matching
       throw new Error('Failed to revoke session');
     }
   }
@@ -562,13 +648,11 @@ export class SessionService {
       return 0;
     }
 
-    const client = this.db;
-    if (!client) {
-      throw new Error('Database client is not configured');
-    }
+    // Verify DB client existence before try/catch
+    const { client, kind } = this.getDatabaseClient();
 
     try {
-      if (typeof client.deleteFrom === 'function') {
+      if (kind === 'kysely') {
         const result = await client
           .deleteFrom('sessions')
           .where('user_id', '=', userId)
@@ -576,20 +660,10 @@ export class SessionService {
         return Number(result.numDeletedRows ?? 0);
       }
 
-      if (typeof client.query === 'function') {
-        const result = await client.query('DELETE FROM sessions WHERE user_id = $1', [userId]);
-        return result.rowCount ?? 0;
-      }
-
-      throw new Error('Unsupported database client interface');
-    } catch (err: any) {
-      if (
-        err.message &&
-        (err.message.includes('Database client is not configured') ||
-          err.message.includes('Unsupported database client interface'))
-      ) {
-        throw err;
-      }
+      const result = await client.query('DELETE FROM sessions WHERE user_id = $1', [userId]);
+      return result.rowCount ?? 0;
+    } catch {
+      // Unconditionally sanitize database errors without string matching
       throw new Error('Failed to revoke user sessions');
     }
   }

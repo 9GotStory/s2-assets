@@ -644,4 +644,290 @@ describe('SessionService Unit Tests (T019)', () => {
       expect(mockKysely.destroy).not.toHaveBeenCalled();
     });
   });
+
+  describe('Finding 1 Regressions: Unconditionally Sanitized Database Errors', () => {
+    const sensitiveErrorPhrases = [
+      'Database client is not configured: host=10.0.1.5 user=postgres password=SuperSecretPassword987! port=5432 ssl=require',
+      'Unsupported database client interface: connectionString="postgres://admin:MasterKey456@db.internal:5432/secrets"',
+      'Query failed; Database client is not configured correctly on replica pool: auth_token=BearerXYZ123',
+    ];
+
+    it('does not leak sensitive details when database error contains previously allowed phrases during createSession', async () => {
+      for (const sensitiveMsg of sensitiveErrorPhrases) {
+        const mockDb = {
+          query: vi.fn().mockRejectedValue(new Error(sensitiveMsg)),
+        };
+
+        const service = new SessionService({ db: mockDb });
+
+        await expect(service.createSession('user-reg-1')).rejects.toThrow('Failed to create session');
+
+        try {
+          await service.createSession('user-reg-1');
+        } catch (err: any) {
+          expect(err.message).toBe('Failed to create session');
+          expect(err.message).not.toContain('SuperSecretPassword987!');
+          expect(err.message).not.toContain('MasterKey456');
+          expect(err.message).not.toContain('BearerXYZ123');
+          expect(err.message).not.toContain('10.0.1.5');
+        }
+      }
+    });
+
+    it('does not leak sensitive details when database error contains previously allowed phrases during lookupSession', async () => {
+      const rawToken = generateSessionToken();
+      for (const sensitiveMsg of sensitiveErrorPhrases) {
+        const mockDb = {
+          query: vi.fn().mockRejectedValue(new Error(sensitiveMsg)),
+        };
+
+        const service = new SessionService({ db: mockDb });
+
+        await expect(service.lookupSession(rawToken)).rejects.toThrow('Failed to lookup session');
+
+        try {
+          await service.lookupSession(rawToken);
+        } catch (err: any) {
+          expect(err.message).toBe('Failed to lookup session');
+          expect(err.message).not.toContain('SuperSecretPassword987!');
+          expect(err.message).not.toContain('MasterKey456');
+        }
+      }
+    });
+
+    it('does not leak sensitive details when database error contains previously allowed phrases during refreshSession', async () => {
+      const rawToken = generateSessionToken();
+      for (const sensitiveMsg of sensitiveErrorPhrases) {
+        const mockDb = {
+          query: vi.fn().mockRejectedValue(new Error(sensitiveMsg)),
+        };
+
+        const service = new SessionService({ db: mockDb });
+
+        await expect(service.refreshSession(rawToken)).rejects.toThrow('Failed to refresh session');
+
+        try {
+          await service.refreshSession(rawToken);
+        } catch (err: any) {
+          expect(err.message).toBe('Failed to refresh session');
+          expect(err.message).not.toContain('SuperSecretPassword987!');
+          expect(err.message).not.toContain('MasterKey456');
+        }
+      }
+    });
+
+    it('does not leak sensitive details when database error contains previously allowed phrases during revokeSession', async () => {
+      const rawToken = generateSessionToken();
+      for (const sensitiveMsg of sensitiveErrorPhrases) {
+        const mockDb = {
+          query: vi.fn().mockRejectedValue(new Error(sensitiveMsg)),
+        };
+
+        const service = new SessionService({ db: mockDb });
+
+        await expect(service.revokeSession(rawToken)).rejects.toThrow('Failed to revoke session');
+
+        try {
+          await service.revokeSession(rawToken);
+        } catch (err: any) {
+          expect(err.message).toBe('Failed to revoke session');
+          expect(err.message).not.toContain('SuperSecretPassword987!');
+          expect(err.message).not.toContain('MasterKey456');
+        }
+      }
+    });
+
+    it('does not leak sensitive details when database error contains previously allowed phrases during verifySession', async () => {
+      const rawToken = generateSessionToken();
+      for (const sensitiveMsg of sensitiveErrorPhrases) {
+        const mockDb = {
+          query: vi.fn().mockRejectedValue(new Error(sensitiveMsg)),
+        };
+
+        const service = new SessionService({ db: mockDb });
+
+        await expect(service.verifySession(rawToken)).rejects.toThrow('Failed to verify session');
+
+        try {
+          await service.verifySession(rawToken);
+        } catch (err: any) {
+          expect(err.message).toBe('Failed to verify session');
+          expect(err.message).not.toContain('SuperSecretPassword987!');
+          expect(err.message).not.toContain('MasterKey456');
+        }
+      }
+    });
+
+    it('validates database client configuration prior to executing database operations', async () => {
+      const noDbService = new SessionService();
+      await expect(noDbService.createSession('user-1')).rejects.toThrow('Database client is not configured');
+
+      const rawToken = generateSessionToken();
+      await expect(noDbService.lookupSession(rawToken)).rejects.toThrow('Database client is not configured');
+      await expect(noDbService.refreshSession(rawToken)).rejects.toThrow('Database client is not configured');
+      await expect(noDbService.revokeSession(rawToken)).rejects.toThrow('Database client is not configured');
+      await expect(noDbService.verifySession(rawToken)).rejects.toThrow('Database client is not configured');
+
+      const unsupportedDbService = new SessionService({ db: { invalidMethod: () => {} } });
+      await expect(unsupportedDbService.createSession('user-1')).rejects.toThrow('Unsupported database client interface');
+      await expect(unsupportedDbService.lookupSession(rawToken)).rejects.toThrow('Unsupported database client interface');
+    });
+  });
+
+  describe('Finding 2 Regressions: Strict 8-Hour Maximum Lifetime Policy', () => {
+    const TWENTY_FOUR_HOURS_MS = 24 * 60 * 60 * 1000;
+    const NINE_HOURS_MS = 9 * 60 * 60 * 1000;
+    const EIGHT_HOURS_MS = 8 * 60 * 60 * 1000;
+
+    it('rejects construction with ttlMs exceeding 8 hours (e.g. 24 hours)', () => {
+      expect(() => new SessionService({ ttlMs: TWENTY_FOUR_HOURS_MS })).toThrow(
+        'Session TTL cannot exceed 8 hours'
+      );
+      expect(() => new SessionService({ ttlMs: NINE_HOURS_MS })).toThrow(
+        'Session TTL cannot exceed 8 hours'
+      );
+    });
+
+    it('rejects construction with negative, zero, or non-finite ttlMs', () => {
+      expect(() => new SessionService({ ttlMs: -1000 })).toThrow('Session TTL must be a positive number');
+      expect(() => new SessionService({ ttlMs: 0 })).toThrow('Session TTL must be a positive number');
+      expect(() => new SessionService({ ttlMs: NaN })).toThrow('Session TTL must be a positive number');
+      expect(() => new SessionService({ ttlMs: Infinity })).toThrow('Session TTL must be a positive number');
+      expect(() => new SessionService({ ttlMs: 'invalid' as any })).toThrow('Session TTL must be a positive number');
+    });
+
+    it('rejects createSession with ttlMs exceeding 8 hours', async () => {
+      const mockDb = { query: vi.fn() };
+      const service = new SessionService({ db: mockDb });
+
+      await expect(service.createSession('user-1', { ttlMs: TWENTY_FOUR_HOURS_MS })).rejects.toThrow(
+        'Session TTL cannot exceed 8 hours'
+      );
+      await expect(service.createSession({ userId: 'user-1', ttlMs: TWENTY_FOUR_HOURS_MS })).rejects.toThrow(
+        'Session TTL cannot exceed 8 hours'
+      );
+      expect(mockDb.query).not.toHaveBeenCalled();
+    });
+
+    it('rejects createSession with negative, zero, or non-numeric ttlMs', async () => {
+      const mockDb = { query: vi.fn() };
+      const service = new SessionService({ db: mockDb });
+
+      await expect(service.createSession('user-1', { ttlMs: -5000 })).rejects.toThrow(
+        'Session TTL must be a positive number'
+      );
+      await expect(service.createSession({ userId: 'user-1', ttlMs: 0 })).rejects.toThrow(
+        'Session TTL must be a positive number'
+      );
+      await expect(service.createSession({ userId: 'user-1', ttlMs: NaN })).rejects.toThrow(
+        'Session TTL must be a positive number'
+      );
+      await expect(service.createSession({ userId: 'user-1', ttlMs: '8hours' as any })).rejects.toThrow(
+        'Session TTL must be a positive number'
+      );
+      expect(mockDb.query).not.toHaveBeenCalled();
+    });
+
+    it('rejects createSession with expiresAt exceeding 8 hours from creation time', async () => {
+      const mockDb = { query: vi.fn() };
+      const service = new SessionService({ db: mockDb });
+      const tooFarInFuture = new Date(Date.now() + TWENTY_FOUR_HOURS_MS);
+
+      await expect(service.createSession('user-1', { expiresAt: tooFarInFuture })).rejects.toThrow(
+        'Session expiration cannot exceed 8 hours'
+      );
+      await expect(service.createSession({ userId: 'user-1', expiresAt: tooFarInFuture })).rejects.toThrow(
+        'Session expiration cannot exceed 8 hours'
+      );
+      expect(mockDb.query).not.toHaveBeenCalled();
+    });
+
+    it('rejects createSession with past expiresAt unless explicit testing flag is set', async () => {
+      const mockDb = { query: vi.fn() };
+      const service = new SessionService({ db: mockDb });
+      const inPast = new Date(Date.now() - 5000);
+
+      // Without _allowExpiredForTesting: must reject
+      await expect(service.createSession('user-1', { expiresAt: inPast })).rejects.toThrow(
+        'Session expiration cannot be in the past'
+      );
+
+      // With _allowExpiredForTesting: allowed for testing expired state
+      mockDb.query.mockResolvedValueOnce({
+        rows: [{ id: 'digest-1', user_id: 'user-1', expires_at: inPast, created_at: inPast }],
+      });
+      const result = await service.createSession('user-1', {
+        expiresAt: inPast,
+        _allowExpiredForTesting: true,
+      });
+      expect(result.session.expires_at).toEqual(inPast);
+    });
+
+    it('rejects createSession with invalid Date objects or non-date values', async () => {
+      const mockDb = { query: vi.fn() };
+      const service = new SessionService({ db: mockDb });
+
+      await expect(service.createSession('user-1', { expiresAt: new Date('invalid') })).rejects.toThrow(
+        'Invalid expiration date'
+      );
+      await expect(service.createSession('user-1', { expiresAt: '2026-10-09' as any })).rejects.toThrow(
+        'Invalid expiration date'
+      );
+      expect(mockDb.query).not.toHaveBeenCalled();
+    });
+
+    it('rejects refreshSession and touchSession with ttlMs exceeding 8 hours', async () => {
+      const mockDb = { query: vi.fn() };
+      const service = new SessionService({ db: mockDb });
+      const rawToken = generateSessionToken();
+
+      await expect(service.refreshSession(rawToken, { ttlMs: TWENTY_FOUR_HOURS_MS })).rejects.toThrow(
+        'Session TTL cannot exceed 8 hours'
+      );
+      await expect(service.touchSession(rawToken, { ttlMs: TWENTY_FOUR_HOURS_MS })).rejects.toThrow(
+        'Session TTL cannot exceed 8 hours'
+      );
+      expect(mockDb.query).not.toHaveBeenCalled();
+    });
+
+    it('rejects validateSession and lookupSession with ttlMs exceeding 8 hours', async () => {
+      const mockDb = { query: vi.fn() };
+      const service = new SessionService({ db: mockDb });
+      const rawToken = generateSessionToken();
+
+      await expect(service.validateSession(rawToken, { ttlMs: TWENTY_FOUR_HOURS_MS })).rejects.toThrow(
+        'Session TTL cannot exceed 8 hours'
+      );
+      await expect(service.lookupSession(rawToken, { ttlMs: TWENTY_FOUR_HOURS_MS })).rejects.toThrow(
+        'Session TTL cannot exceed 8 hours'
+      );
+      expect(mockDb.query).not.toHaveBeenCalled();
+    });
+
+    it('supports isolated test clock manipulation while preserving 8-hour policy from reference clock', async () => {
+      let mockClockTime = 1_700_000_000_000;
+      const mockClock = () => mockClockTime;
+
+      const mockDb = {
+        query: vi.fn().mockImplementation(async (_sql: string, params: any[]) => {
+          const [id, userId, expiresAt] = params;
+          return {
+            rows: [{ id, user_id: userId, expires_at: expiresAt, created_at: new Date(mockClockTime) }],
+          };
+        }),
+      };
+
+      const service = new SessionService({ db: mockDb, _clock: mockClock });
+      const created = await service.createSession('user-clock-1');
+
+      // Expiry must be exactly mockClockTime + 8 hours
+      expect(created.session.expires_at.getTime()).toBe(mockClockTime + EIGHT_HOURS_MS);
+
+      // Attempting to exceed 8 hours from reference clock must still be rejected
+      const tooFar = new Date(mockClockTime + TWENTY_FOUR_HOURS_MS);
+      await expect(service.createSession('user-clock-1', { expiresAt: tooFar })).rejects.toThrow(
+        'Session expiration cannot exceed 8 hours'
+      );
+    });
+  });
 });
