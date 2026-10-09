@@ -8,6 +8,8 @@ import { authRoutes } from '../../src/routes/auth.routes.ts';
 import type { SafeUser, User } from '../../src/services/user.service.ts';
 import { generateSessionToken, type Session } from '../../src/services/session.service.ts';
 
+const TEST_SECRET = 'test-secret-at-least-32-bytes-long-secret-key!!';
+
 function createMockServices(overrides: {
   verifyCredentialsResult?: { valid: boolean; user?: SafeUser; reason?: 'INVALID_CREDENTIALS' | 'USER_DISABLED' };
   createSessionResult?: { token: string; rawToken: string; session: Session };
@@ -111,29 +113,59 @@ function createMockServices(overrides: {
   return { userService, sessionService, dummyUser, dummySession, dummyToken };
 }
 
+async function fetchCsrfCredentials(
+  app: FastifyInstance,
+  cookieHeader?: string
+): Promise<{ csrfToken: string; cookieHeader?: string }> {
+  const response = await app.inject({
+    method: 'GET',
+    url: '/test-csrf-token',
+    headers: cookieHeader ? { cookie: cookieHeader } : {},
+  });
+
+  const body = response.json();
+  const csrfToken = body?.csrfToken;
+  const setCookie = response.headers['set-cookie'];
+  const newCookieHeader = setCookie
+    ? Array.isArray(setCookie)
+      ? setCookie.map((c: string) => c.split(';')[0]).join('; ')
+      : setCookie.split(';')[0]
+    : undefined;
+
+  return {
+    csrfToken,
+    cookieHeader: newCookieHeader,
+  };
+}
+
 async function setupRouteTestApp(options: {
   userService?: any;
   sessionService?: any;
   secure?: boolean;
-  withCsrf?: boolean;
   prefix?: string;
 } = {}): Promise<FastifyInstance> {
   const app = Fastify();
   await app.register(errorHandlerPlugin);
   await app.register(fastifyCookie, {
-    secret: 'test-secret-at-least-32-bytes-long-secret-key!!',
+    secret: TEST_SECRET,
+  });
+
+  await app.register(csrfPlugin, {
+    cookieSecret: TEST_SECRET,
+    secure: options.secure,
+  });
+
+  app.get('/test-csrf-token', async (_request, reply) => {
+    if (typeof (reply as any).generateCsrf === 'function') {
+      const token = (reply as any).generateCsrf();
+      return { csrfToken: token };
+    }
+    return { csrfToken: undefined };
   });
 
   const { userService, sessionService } = createMockServices();
   const uService = options.userService ?? userService;
   const sService = options.sessionService ?? sessionService;
-
-  if (options.withCsrf) {
-    await app.register(csrfPlugin, {
-      cookieSecret: 'test-secret-at-least-32-bytes-long-secret-key!!',
-      secure: options.secure,
-    });
-  }
 
   await app.register(authPlugin, {
     userService: uService,
@@ -187,7 +219,7 @@ describe('Focused Auth Routes Unit Tests (T022)', () => {
       }
     });
 
-    it('sets secure session cookie on successful login', async () => {
+    it('sets secure session cookie on successful login via T020 decorator', async () => {
       const app = await setupRouteTestApp();
       try {
         const response = await app.inject({
@@ -385,11 +417,16 @@ describe('Focused Auth Routes Unit Tests (T022)', () => {
       const { userService, sessionService, dummyToken } = createMockServices();
       const app = await setupRouteTestApp({ userService, sessionService });
       try {
+        const { csrfToken, cookieHeader: csrfCookie } = await fetchCsrfCredentials(app, `session=${dummyToken}`);
+        const cookies = [`session=${dummyToken}`];
+        if (csrfCookie) cookies.push(csrfCookie);
+
         const response = await app.inject({
           method: 'POST',
           url: '/auth/logout',
           headers: {
-            cookie: `session=${dummyToken}`,
+            cookie: cookies.join('; '),
+            'x-csrf-token': csrfToken,
           },
         });
 
@@ -413,11 +450,16 @@ describe('Focused Auth Routes Unit Tests (T022)', () => {
       const { userService, sessionService, dummyToken } = createMockServices({ revokeSessionResult: false });
       const app = await setupRouteTestApp({ userService, sessionService });
       try {
+        const { csrfToken, cookieHeader: csrfCookie } = await fetchCsrfCredentials(app, `session=${dummyToken}`);
+        const cookies = [`session=${dummyToken}`];
+        if (csrfCookie) cookies.push(csrfCookie);
+
         const response = await app.inject({
           method: 'POST',
           url: '/auth/logout',
           headers: {
-            cookie: `session=${dummyToken}`,
+            cookie: cookies.join('; '),
+            'x-csrf-token': csrfToken,
           },
         });
 
@@ -430,12 +472,32 @@ describe('Focused Auth Routes Unit Tests (T022)', () => {
       }
     });
 
-    it('rejects unauthenticated logout attempt with HTTP 401 UNAUTHORIZED', async () => {
+    it('rejects unauthenticated logout attempt missing CSRF with HTTP 403 CSRF_TOKEN_INVALID', async () => {
       const app = await setupRouteTestApp();
       try {
         const response = await app.inject({
           method: 'POST',
           url: '/auth/logout',
+        });
+
+        expect(response.statusCode).toBe(403);
+        expect(response.json().error.code).toBe('CSRF_TOKEN_INVALID');
+      } finally {
+        await app.close();
+      }
+    });
+
+    it('rejects unauthenticated logout attempt with valid CSRF token with HTTP 401 UNAUTHORIZED', async () => {
+      const app = await setupRouteTestApp();
+      try {
+        const { csrfToken, cookieHeader: csrfCookie } = await fetchCsrfCredentials(app);
+        const response = await app.inject({
+          method: 'POST',
+          url: '/auth/logout',
+          headers: {
+            ...(csrfCookie ? { cookie: csrfCookie } : {}),
+            'x-csrf-token': csrfToken,
+          },
         });
 
         expect(response.statusCode).toBe(401);
@@ -447,10 +509,10 @@ describe('Focused Auth Routes Unit Tests (T022)', () => {
   });
 
   // =========================================================================
-  // 3. GET /auth/session-check
+  // 3. GET /auth/session-check (Finding 2)
   // =========================================================================
   describe('GET /auth/session-check', () => {
-    it('returns sanitized user information for active authenticated session', async () => {
+    it('returns sanitized user information and genuine CSRF token for active authenticated session', async () => {
       const { userService, sessionService, dummyToken } = createMockServices();
       const app = await setupRouteTestApp({ userService, sessionService });
       try {
@@ -468,6 +530,12 @@ describe('Focused Auth Routes Unit Tests (T022)', () => {
         expect(body.user.username).toBe('alice');
         expect(body.user.id).toBe('user-uuid-1234');
         expect(body.user.password_hash).toBeUndefined();
+
+        // Finding 2: Genuine CSRF token must be provided
+        expect(body.csrfToken).toBeDefined();
+        expect(typeof body.csrfToken).toBe('string');
+        expect(body.csrfToken.length).toBeGreaterThan(0);
+        expect(response.headers['x-csrf-token']).toBe(body.csrfToken);
       } finally {
         await app.close();
       }
@@ -487,22 +555,166 @@ describe('Focused Auth Routes Unit Tests (T022)', () => {
         await app.close();
       }
     });
+
+    it('fails closed with HTTP 500 when CSRF token generation decorator throws an exception (Finding 2)', async () => {
+      const app = Fastify();
+      await app.register(errorHandlerPlugin);
+      await app.register(fastifyCookie, { secret: TEST_SECRET });
+
+      // Register mock csrf plugin with skip-override where generateCsrf throws with sensitive secret string
+      const mockCsrf = async (instance: FastifyInstance) => {
+        instance.decorate('csrfProtection', () => {});
+        instance.decorate('generateCsrf', () => {
+          throw new Error('Secret key failure: internal_super_secret_token_key');
+        });
+        instance.decorateReply('generateCsrf', function () {
+          throw new Error('Secret key failure: internal_super_secret_token_key');
+        });
+      };
+      (mockCsrf as any)[Symbol.for('skip-override')] = true;
+      await app.register(mockCsrf);
+
+      const { userService, sessionService, dummyToken } = createMockServices();
+      await app.register(authPlugin, {
+        userService: userService as any,
+        sessionService: sessionService as any,
+      });
+
+      await app.register(authRoutes, { prefix: '/auth' });
+      await app.ready();
+
+      try {
+        const response = await app.inject({
+          method: 'GET',
+          url: '/auth/session-check',
+          headers: {
+            cookie: `session=${dummyToken}`,
+          },
+        });
+
+        // Fail-closed requirement: must NOT return HTTP 200 without token
+        expect(response.statusCode).toBe(500);
+        const body = response.json();
+        expect(body.error).toBeDefined();
+        expect(body.error.code).toBe('INTERNAL_SERVER_ERROR');
+        expect(body.error.message).toBe('An unexpected internal server error occurred.');
+        // Sensitive secret must NOT be leaked
+        expect(JSON.stringify(body)).not.toContain('internal_super_secret_token_key');
+      } finally {
+        await app.close();
+      }
+    });
+
+    it('fails closed with HTTP 500 when CSRF generator produces an empty token (Finding 2)', async () => {
+      const app = Fastify();
+      await app.register(errorHandlerPlugin);
+      await app.register(fastifyCookie, { secret: TEST_SECRET });
+
+      const mockCsrf = async (instance: FastifyInstance) => {
+        instance.decorate('csrfProtection', () => {});
+        instance.decorate('generateCsrf', () => '');
+        instance.decorateReply('generateCsrf', function () {
+          return '';
+        });
+      };
+      (mockCsrf as any)[Symbol.for('skip-override')] = true;
+      await app.register(mockCsrf);
+
+      const { userService, sessionService, dummyToken } = createMockServices();
+      await app.register(authPlugin, {
+        userService: userService as any,
+        sessionService: sessionService as any,
+      });
+
+      await app.register(authRoutes, { prefix: '/auth' });
+      await app.ready();
+
+      try {
+        const response = await app.inject({
+          method: 'GET',
+          url: '/auth/session-check',
+          headers: {
+            cookie: `session=${dummyToken}`,
+          },
+        });
+
+        expect(response.statusCode).toBe(500);
+        const body = response.json();
+        expect(body.error).toBeDefined();
+        expect(body.error.code).toBe('INTERNAL_SERVER_ERROR');
+      } finally {
+        await app.close();
+      }
+    });
   });
 
   // =========================================================================
-  // 4. Fastify registration and dependency injection
+  // 4. Fastify registration and dependency injection (Finding 1)
   // =========================================================================
-  describe('Fastify Registration and Dependency Injection', () => {
-    it('works when mounted without prefix, defaulting to /auth routes', async () => {
+  describe('Fastify Registration and Security Plugin Validation (Finding 1)', () => {
+    it('fails closed during registration when T020 Auth Plugin is missing', async () => {
       const app = Fastify();
       await app.register(errorHandlerPlugin);
-      await app.register(fastifyCookie);
+      await app.register(fastifyCookie, { secret: TEST_SECRET });
+      await app.register(csrfPlugin, { cookieSecret: TEST_SECRET });
+
+      const { userService, sessionService } = createMockServices();
+      await expect(
+        app.register(authRoutes, {
+          prefix: '/auth',
+          userService: userService as any,
+          sessionService: sessionService as any,
+        })
+      ).rejects.toThrow(/Auth routes require Fastify Auth Plugin \(T020\) to be registered/);
+    });
+
+    it('fails closed during registration when T021 CSRF Plugin is missing', async () => {
+      const app = Fastify();
+      await app.register(errorHandlerPlugin);
+      await app.register(fastifyCookie, { secret: TEST_SECRET });
 
       const { userService, sessionService } = createMockServices();
       await app.register(authPlugin, {
         userService: userService as any,
         sessionService: sessionService as any,
       });
+
+      await expect(
+        app.register(authRoutes, {
+          prefix: '/auth',
+          userService: userService as any,
+          sessionService: sessionService as any,
+        })
+      ).rejects.toThrow(/Auth routes require Fastify CSRF Plugin \(T021\) to be registered/);
+    });
+
+    it('fails closed during registration when both security plugins are missing', async () => {
+      const app = Fastify();
+      await app.register(errorHandlerPlugin);
+      await app.register(fastifyCookie);
+
+      const { userService, sessionService } = createMockServices();
+      await expect(
+        app.register(authRoutes, {
+          prefix: '/auth',
+          userService: userService as any,
+          sessionService: sessionService as any,
+        })
+      ).rejects.toThrow(/Auth routes require Fastify Auth Plugin \(T020\) to be registered/);
+    });
+
+    it('works when mounted without prefix, defaulting to /auth routes', async () => {
+      const app = Fastify();
+      await app.register(errorHandlerPlugin);
+      await app.register(fastifyCookie, { secret: TEST_SECRET });
+      await app.register(csrfPlugin, { cookieSecret: TEST_SECRET });
+
+      const { userService, sessionService } = createMockServices();
+      await app.register(authPlugin, {
+        userService: userService as any,
+        sessionService: sessionService as any,
+      });
+
       // Register without prefix option
       await app.register(authRoutes);
       await app.ready();
@@ -521,16 +733,30 @@ describe('Focused Auth Routes Unit Tests (T022)', () => {
       }
     });
 
-    it('reuses services provided directly via plugin options', async () => {
+    it('reuses services provided directly via plugin options with security plugins registered', async () => {
       const app = Fastify();
       await app.register(errorHandlerPlugin);
-      await app.register(fastifyCookie);
+      await app.register(fastifyCookie, { secret: TEST_SECRET });
+      await app.register(csrfPlugin, { cookieSecret: TEST_SECRET });
 
-      const { userService, sessionService } = createMockServices();
+      const { userService: mockUser, sessionService: mockSession } = createMockServices();
+      await app.register(authPlugin, {
+        userService: mockUser as any,
+        sessionService: mockSession as any,
+      });
+
+      const customUser = {
+        verifyCredentials: vi.fn(async () => ({ valid: true, user: { id: 'custom-1', username: 'custom_user', is_active: true } })),
+        sanitizeUser: vi.fn((u) => u),
+      };
+      const customSession = {
+        createSession: vi.fn(async () => ({ token: generateSessionToken(), rawToken: generateSessionToken() })),
+      };
+
       await app.register(authRoutes, {
         prefix: '/auth',
-        userService: userService as any,
-        sessionService: sessionService as any,
+        userService: customUser as any,
+        sessionService: customSession as any,
       });
       await app.ready();
 
@@ -542,16 +768,29 @@ describe('Focused Auth Routes Unit Tests (T022)', () => {
         });
 
         expect(response.statusCode).toBe(200);
-        expect(userService.verifyCredentials).toHaveBeenCalled();
-        expect(sessionService.createSession).toHaveBeenCalled();
+        expect(customUser.verifyCredentials).toHaveBeenCalled();
+        expect(customSession.createSession).toHaveBeenCalled();
       } finally {
         await app.close();
       }
     });
 
-    it('fails closed when required services cannot be resolved', async () => {
+    it('fails closed when required services cannot be resolved despite plugins being present', async () => {
       const app = Fastify();
       await app.register(errorHandlerPlugin);
+      await app.register(fastifyCookie, { secret: TEST_SECRET });
+      await app.register(csrfPlugin, { cookieSecret: TEST_SECRET });
+
+      // Mock authPlugin decorations without userService or sessionService
+      const mockAuth = async (instance: FastifyInstance) => {
+        instance.decorate('authenticate', async () => {});
+        instance.decorate('setSessionCookie', ((reply: any) => reply) as any);
+        instance.decorate('clearSessionCookie', ((reply: any) => reply) as any);
+        instance.decorateReply('setSessionCookie', function (this: any) { return this; });
+        instance.decorateReply('clearSessionCookie', function (this: any) { return this; });
+      };
+      (mockAuth as any)[Symbol.for('skip-override')] = true;
+      await app.register(mockAuth);
 
       await expect(app.register(authRoutes, { prefix: '/auth' })).rejects.toThrow(
         /Auth routes require UserService and SessionService/

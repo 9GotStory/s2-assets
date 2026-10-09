@@ -13,11 +13,7 @@ import {
   SessionService,
   type Session,
 } from '../services/session.service.ts';
-import {
-  AuthenticationError,
-  setSessionCookie,
-  clearSessionCookie,
-} from '../plugins/auth.ts';
+import { AuthenticationError } from '../plugins/auth.ts';
 
 export interface AuthRoutesOptions {
   databaseUrl?: string;
@@ -31,12 +27,34 @@ export const authRoutes: FastifyPluginAsync<AuthRoutesOptions> = async (
   fastify: FastifyInstance,
   options: AuthRoutesOptions = {}
 ): Promise<void> => {
-  // Resolve services: reuse Fastify instance decorators where provided, then options, then database fallback
+  // 1. Validate required security plugins are registered (Finding 1)
+  // Auth routes strictly depend on T020 Auth Plugin and T021 CSRF Plugin.
+  // Partial or standalone initialization without security enforcement is rejected (fails closed).
+  const hasAuthPlugin = Boolean(
+    (fastify.hasDecorator('authenticate') || typeof (fastify as any).authenticate === 'function') &&
+    (fastify.hasDecorator('setSessionCookie') || fastify.hasReplyDecorator('setSessionCookie')) &&
+    (fastify.hasDecorator('clearSessionCookie') || fastify.hasReplyDecorator('clearSessionCookie'))
+  );
+
+  if (!hasAuthPlugin) {
+    throw new Error('Auth routes require Fastify Auth Plugin (T020) to be registered.');
+  }
+
+  const hasCsrfPlugin = Boolean(
+    (fastify.hasDecorator('csrfProtection') || typeof (fastify as any).csrfProtection === 'function') &&
+    (fastify.hasDecorator('generateCsrf') || fastify.hasReplyDecorator('generateCsrf'))
+  );
+
+  if (!hasCsrfPlugin) {
+    throw new Error('Auth routes require Fastify CSRF Plugin (T021) to be registered.');
+  }
+
+  // 2. Resolve services: reuse Fastify instance decorators where provided, then options, then database fallback
   let internalPool: pg.Pool | null = null;
   let userService: UserService | undefined =
-    fastify.userService ?? options.userService;
+    options.userService ?? fastify.userService;
   let sessionService: SessionService | undefined =
-    fastify.sessionService ?? options.sessionService;
+    options.sessionService ?? fastify.sessionService;
 
   if (!userService || !sessionService) {
     let dbClient = options.db ?? (fastify as any).pg?.pool ?? (fastify as any).pg;
@@ -58,7 +76,7 @@ export const authRoutes: FastifyPluginAsync<AuthRoutesOptions> = async (
     }
   }
 
-  // Close internal database pool only if created by this plugin
+  // Close internal database pool only if created by this plugin (preserve externally owned connections)
   if (internalPool) {
     fastify.addHook('onClose', async () => {
       await internalPool?.end();
@@ -126,13 +144,13 @@ export const authRoutes: FastifyPluginAsync<AuthRoutesOptions> = async (
         throw new AuthenticationError(500, 'DATABASE_ERROR', 'An unexpected internal server error occurred.');
       }
 
-      // Set secure session cookie using Fastify helper / decorator
+      // Set secure session cookie strictly using the official T020 decorator
       if (typeof reply.setSessionCookie === 'function') {
         reply.setSessionCookie(sessionResult.token);
       } else if (typeof (fastify as any).setSessionCookie === 'function') {
         (fastify as any).setSessionCookie(reply, sessionResult.token);
       } else {
-        setSessionCookie(reply, sessionResult.token, { secure: options.secure });
+        throw new AuthenticationError(500, 'INTERNAL_SERVER_ERROR', 'Session cookie decorator is not available.');
       }
 
       return reply.status(200).send({
@@ -184,13 +202,13 @@ export const authRoutes: FastifyPluginAsync<AuthRoutesOptions> = async (
         throw new AuthenticationError(500, 'DATABASE_ERROR', 'An unexpected internal server error occurred.');
       }
 
-      // Explicitly return a clearing session cookie
+      // Explicitly return a clearing session cookie strictly using the official T020 decorator
       if (typeof reply.clearSessionCookie === 'function') {
         reply.clearSessionCookie();
       } else if (typeof (fastify as any).clearSessionCookie === 'function') {
         (fastify as any).clearSessionCookie(reply);
       } else {
-        clearSessionCookie(reply, { secure: options.secure });
+        throw new AuthenticationError(500, 'INTERNAL_SERVER_ERROR', 'Session cookie decorator is not available.');
       }
 
       return reply.status(200).send({ success: true });
@@ -217,25 +235,31 @@ export const authRoutes: FastifyPluginAsync<AuthRoutesOptions> = async (
         throw new AuthenticationError(401, 'UNAUTHORIZED', 'Authentication required');
       }
 
-      // Generate CSRF token if available to supply client for subsequent state-changing requests
+      // Generate genuine CSRF token via official T021 integration (Finding 2)
+      // Treat missing or malfunctioning CSRF token generation as a fail-closed error
       let csrfToken: string | undefined;
       try {
-        if (typeof (reply as any).generateCsrf === 'function') {
-          csrfToken = (reply as any).generateCsrf();
+        if (typeof reply.generateCsrf === 'function') {
+          csrfToken = reply.generateCsrf();
         } else if (typeof (fastify as any).generateCsrf === 'function') {
           csrfToken = (fastify as any).generateCsrf(reply);
+        } else {
+          throw new Error('CSRF token generation decorator is not available.');
         }
-      } catch {
-        // Non-fatal if CSRF protection is not registered
+
+        if (typeof csrfToken !== 'string' || csrfToken.trim().length === 0) {
+          throw new Error('Generated CSRF token is invalid or empty.');
+        }
+      } catch (err: any) {
+        request.log?.error?.(err, 'Failed to generate CSRF token in session-check');
+        throw new AuthenticationError(500, 'INTERNAL_SERVER_ERROR', 'An unexpected internal server error occurred.');
       }
 
-      if (csrfToken) {
-        reply.header('x-csrf-token', csrfToken);
-      }
+      reply.header('x-csrf-token', csrfToken);
 
       return reply.status(200).send({
         user: request.user,
-        ...(csrfToken ? { csrfToken } : {}),
+        csrfToken,
       });
     }
   );
