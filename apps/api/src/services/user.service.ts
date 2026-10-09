@@ -1,8 +1,5 @@
 import * as crypto from 'node:crypto';
 import * as argon2 from 'argon2';
-import pg from 'pg';
-
-const { Pool } = pg;
 
 export interface User {
   id: string;
@@ -21,7 +18,6 @@ export interface DatabaseClient {
 
 export interface UserServiceOptions {
   db?: DatabaseClient | any;
-  databaseUrl?: string;
 }
 
 /**
@@ -111,21 +107,13 @@ export async function verifyPassword(
  */
 export class UserService {
   private db?: any;
-  private pool?: pg.Pool;
 
-  constructor(options?: UserServiceOptions | DatabaseClient | string) {
-    if (typeof options === 'string') {
-      this.pool = new Pool({ connectionString: options });
-    } else if (options && typeof options === 'object') {
+  constructor(options?: UserServiceOptions | DatabaseClient | any) {
+    if (options && typeof options === 'object') {
       if ('query' in options || 'selectFrom' in options) {
         this.db = options;
-      } else {
-        if (options.db) {
-          this.db = options.db;
-        }
-        if (options.databaseUrl) {
-          this.pool = new Pool({ connectionString: options.databaseUrl });
-        }
+      } else if ('db' in options && options.db) {
+        this.db = options.db;
       }
     }
   }
@@ -164,7 +152,7 @@ export class UserService {
       return null;
     }
 
-    const client = this.db ?? this.pool;
+    const client = this.db;
     if (!client) {
       throw new Error('Database client is not configured');
     }
@@ -194,7 +182,7 @@ export class UserService {
       return null;
     }
 
-    const client = this.db ?? this.pool;
+    const client = this.db;
     if (!client) {
       throw new Error('Database client is not configured');
     }
@@ -236,7 +224,7 @@ export class UserService {
     const passwordHash = await this.hashPassword(password);
     const id = params.id || crypto.randomUUID();
 
-    const client = this.db ?? this.pool;
+    const client = this.db;
     if (!client) {
       throw new Error('Database client is not configured');
     }
@@ -306,8 +294,10 @@ export class UserService {
   }
 
   async close(): Promise<void> {
-    if (this.pool) {
-      await this.pool.end();
+    if (typeof this.db?.end === 'function') {
+      await this.db.end();
+    } else if (typeof this.db?.destroy === 'function') {
+      await this.db.destroy();
     }
   }
 }
