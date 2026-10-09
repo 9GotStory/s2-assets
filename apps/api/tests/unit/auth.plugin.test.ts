@@ -1108,4 +1108,264 @@ describe('Fastify Auth Plugin Unit Tests (T020)', () => {
       await app.close();
     });
   });
+
+  describe('18. Bootstrap Allowlist Fail-Closed Enforcement Regression Tests (Bounded Rework 2)', () => {
+    it('requires authentication when auth: true is declared on /auth/login', async () => {
+      const app = Fastify();
+      await app.register(errorHandlerPlugin);
+      const { sessionService, userService } = createMockServices();
+
+      await app.register(authPlugin, {
+        sessionService: sessionService as any,
+        userService: userService as any,
+      });
+
+      app.post('/auth/login', { config: { auth: true } }, async () => ({ loginSuccess: true }));
+
+      await app.ready();
+
+      const res = await app.inject({ method: 'POST', url: '/auth/login' });
+      expect(res.statusCode).toBe(401);
+      expect(res.json().error.code).toBe('UNAUTHORIZED');
+
+      await app.close();
+    });
+
+    it('requires authentication when requireAuth: true is declared on a configured public route', async () => {
+      const app = Fastify();
+      await app.register(errorHandlerPlugin);
+      const { sessionService, userService } = createMockServices();
+
+      await app.register(authPlugin, {
+        sessionService: sessionService as any,
+        userService: userService as any,
+        publicRoutes: ['/public/info', /^\/public\/.*/],
+      });
+
+      app.get('/public/info', { config: { requireAuth: true } }, async () => ({ info: true }));
+      app.get('/public/nested-docs', { config: { requireAuth: true } }, async () => ({ docs: true }));
+
+      await app.ready();
+
+      const res1 = await app.inject({ method: 'GET', url: '/public/info' });
+      expect(res1.statusCode).toBe(401);
+      expect(res1.json().error.code).toBe('UNAUTHORIZED');
+
+      const res2 = await app.inject({ method: 'GET', url: '/public/nested-docs' });
+      expect(res2.statusCode).toBe(401);
+      expect(res2.json().error.code).toBe('UNAUTHORIZED');
+
+      await app.close();
+    });
+
+    it('requires authentication when protected: true is declared on a bootstrap route', async () => {
+      const app = Fastify();
+      await app.register(errorHandlerPlugin);
+      const { sessionService, userService } = createMockServices();
+
+      await app.register(authPlugin, {
+        sessionService: sessionService as any,
+        userService: userService as any,
+      });
+
+      app.post('/auth/login', { config: { protected: true } }, async () => ({ loginSuccess: true }));
+      app.get('/test-csrf-token', { config: { protected: true } }, async () => ({ csrf: true }));
+
+      await app.ready();
+
+      const res1 = await app.inject({ method: 'POST', url: '/auth/login' });
+      expect(res1.statusCode).toBe(401);
+      expect(res1.json().error.code).toBe('UNAUTHORIZED');
+
+      const res2 = await app.inject({ method: 'GET', url: '/test-csrf-token' });
+      expect(res2.statusCode).toBe(401);
+      expect(res2.json().error.code).toBe('UNAUTHORIZED');
+
+      await app.close();
+    });
+
+    it('preserves unauthenticated access to explicit public bootstrap routes and restricts HTTP methods', async () => {
+      const app = Fastify();
+      await app.register(errorHandlerPlugin);
+      const { sessionService, userService } = createMockServices();
+
+      await app.register(authPlugin, {
+        sessionService: sessionService as any,
+        userService: userService as any,
+      });
+
+      app.post('/auth/login', async () => ({ loginSuccess: true }));
+      app.get('/auth/login', async () => ({ loginGet: true }));
+      app.get('/test-csrf-token', async () => ({ csrfToken: 'valid-test-csrf-token' }));
+      app.post('/test-csrf-token', async () => ({ csrfPost: true }));
+
+      await app.ready();
+
+      // Intended method: POST /auth/login is public
+      const loginRes = await app.inject({ method: 'POST', url: '/auth/login' });
+      expect(loginRes.statusCode).toBe(200);
+      expect(loginRes.json()).toEqual({ loginSuccess: true });
+
+      // Unintended method: GET /auth/login fails closed
+      const getLoginRes = await app.inject({ method: 'GET', url: '/auth/login' });
+      expect(getLoginRes.statusCode).toBe(401);
+      expect(getLoginRes.json().error.code).toBe('UNAUTHORIZED');
+
+      // Intended method: GET /test-csrf-token is public in test environment
+      const csrfRes = await app.inject({ method: 'GET', url: '/test-csrf-token' });
+      expect(csrfRes.statusCode).toBe(200);
+      expect(csrfRes.json()).toEqual({ csrfToken: 'valid-test-csrf-token' });
+
+      // Unintended method: POST /test-csrf-token fails closed
+      const postCsrfRes = await app.inject({ method: 'POST', url: '/test-csrf-token' });
+      expect(postCsrfRes.statusCode).toBe(401);
+      expect(postCsrfRes.json().error.code).toBe('UNAUTHORIZED');
+
+      await app.close();
+    });
+
+    it('/test-csrf-token is not automatically public in production', async () => {
+      const prevEnv = process.env.NODE_ENV;
+      process.env.NODE_ENV = 'production';
+
+      try {
+        // App 1: Production without testing option -> /test-csrf-token is NOT public
+        const appProd = Fastify();
+        await appProd.register(errorHandlerPlugin);
+        const { sessionService, userService } = createMockServices();
+
+        await appProd.register(authPlugin, {
+          sessionService: sessionService as any,
+          userService: userService as any,
+        });
+
+        appProd.get('/test-csrf-token', async () => ({ csrfToken: 'prod-token' }));
+        appProd.post('/auth/login', async () => ({ loginSuccess: true }));
+
+        await appProd.ready();
+
+        const csrfRes = await appProd.inject({ method: 'GET', url: '/test-csrf-token' });
+        expect(csrfRes.statusCode).toBe(401);
+        expect(csrfRes.json().error.code).toBe('UNAUTHORIZED');
+
+        // Legitimate login POST /auth/login is still public in production
+        const loginRes = await appProd.inject({ method: 'POST', url: '/auth/login' });
+        expect(loginRes.statusCode).toBe(200);
+        expect(loginRes.json()).toEqual({ loginSuccess: true });
+
+        await appProd.close();
+
+        // App 2: Production with explicit allowTestCsrfRoute testing configuration -> permitted
+        const appProdWithTestingOpt = Fastify();
+        await appProdWithTestingOpt.register(errorHandlerPlugin);
+        await appProdWithTestingOpt.register(authPlugin, {
+          sessionService: sessionService as any,
+          userService: userService as any,
+          allowTestCsrfRoute: true,
+        });
+
+        appProdWithTestingOpt.get('/test-csrf-token', async () => ({ csrfToken: 'prod-opt-token' }));
+        await appProdWithTestingOpt.ready();
+
+        const optCsrfRes = await appProdWithTestingOpt.inject({ method: 'GET', url: '/test-csrf-token' });
+        expect(optCsrfRes.statusCode).toBe(200);
+        expect(optCsrfRes.json()).toEqual({ csrfToken: 'prod-opt-token' });
+
+        await appProdWithTestingOpt.close();
+
+        // App 3: Production with explicit route declaration (config.public: true) -> permitted
+        const appProdWithRouteDecl = Fastify();
+        await appProdWithRouteDecl.register(errorHandlerPlugin);
+        await appProdWithRouteDecl.register(authPlugin, {
+          sessionService: sessionService as any,
+          userService: userService as any,
+        });
+
+        appProdWithRouteDecl.get(
+          '/test-csrf-token',
+          { config: { public: true } },
+          async () => ({ csrfToken: 'prod-decl-token' })
+        );
+        await appProdWithRouteDecl.ready();
+
+        const declCsrfRes = await appProdWithRouteDecl.inject({ method: 'GET', url: '/test-csrf-token' });
+        expect(declCsrfRes.statusCode).toBe(200);
+        expect(declCsrfRes.json()).toEqual({ csrfToken: 'prod-decl-token' });
+
+        await appProdWithRouteDecl.close();
+      } finally {
+        process.env.NODE_ENV = prevEnv;
+      }
+    });
+
+    it('ensures public-route regex patterns cannot override explicit protected declarations', async () => {
+      const app = Fastify();
+      await app.register(errorHandlerPlugin);
+      const { sessionService, userService } = createMockServices();
+
+      await app.register(authPlugin, {
+        sessionService: sessionService as any,
+        userService: userService as any,
+        publicRoutes: [/^\/api\/public\/.*/],
+      });
+
+      // Matches regex, but explicitly protected
+      app.get('/api/public/secret-key', { config: { auth: true } }, async () => ({ secret: true }));
+      app.get('/api/public/admin-status', { config: { protected: true } }, async () => ({ admin: true }));
+      // Matches regex, unmarked -> public
+      app.get('/api/public/open-status', async () => ({ open: true }));
+
+      await app.ready();
+
+      const res1 = await app.inject({ method: 'GET', url: '/api/public/secret-key' });
+      expect(res1.statusCode).toBe(401);
+      expect(res1.json().error.code).toBe('UNAUTHORIZED');
+
+      const res2 = await app.inject({ method: 'GET', url: '/api/public/admin-status' });
+      expect(res2.statusCode).toBe(401);
+      expect(res2.json().error.code).toBe('UNAUTHORIZED');
+
+      const res3 = await app.inject({ method: 'GET', url: '/api/public/open-status' });
+      expect(res3.statusCode).toBe(200);
+      expect(res3.json()).toEqual({ open: true });
+
+      await app.close();
+    });
+
+    it('keeps unmarked and nested routes protected by default', async () => {
+      const app = Fastify();
+      await app.register(errorHandlerPlugin);
+      const { sessionService, userService } = createMockServices();
+
+      await app.register(authPlugin, {
+        sessionService: sessionService as any,
+        userService: userService as any,
+      });
+
+      // Partial bootstrap prefix match must NOT bypass auth
+      app.post('/auth/login/admin-override', async () => ({ bypass: true }));
+      app.get('/test-csrf-token/leak', async () => ({ leak: true }));
+
+      // Nested plugin
+      await app.register(async (childScope) => {
+        childScope.get('/child/protected-by-default', async () => ({ child: true }));
+      });
+
+      await app.ready();
+
+      const res1 = await app.inject({ method: 'POST', url: '/auth/login/admin-override' });
+      expect(res1.statusCode).toBe(401);
+      expect(res1.json().error.code).toBe('UNAUTHORIZED');
+
+      const res2 = await app.inject({ method: 'GET', url: '/test-csrf-token/leak' });
+      expect(res2.statusCode).toBe(401);
+      expect(res2.json().error.code).toBe('UNAUTHORIZED');
+
+      const res3 = await app.inject({ method: 'GET', url: '/child/protected-by-default' });
+      expect(res3.statusCode).toBe(401);
+      expect(res3.json().error.code).toBe('UNAUTHORIZED');
+
+      await app.close();
+    });
+  });
 });

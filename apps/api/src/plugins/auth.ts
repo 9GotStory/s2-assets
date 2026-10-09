@@ -23,10 +23,27 @@ import {
 export const DEFAULT_COOKIE_NAME = 'session';
 export const DEFAULT_SESSION_TTL_SECONDS = 8 * 60 * 60; // 28,800 seconds (8 hours)
 
+export type PublicRouteRule =
+  | string
+  | RegExp
+  | {
+      url: string | RegExp;
+      methods?: readonly string[] | string;
+    };
+
 export const DEFAULT_PUBLIC_BOOTSTRAP_ROUTES: readonly string[] = [
-  '/test-csrf-token',
   '/auth/login',
 ];
+
+export const BOOTSTRAP_LOGIN_RULE: PublicRouteRule = {
+  url: '/auth/login',
+  methods: ['POST'],
+};
+
+export const TEST_CSRF_BOOTSTRAP_RULE: PublicRouteRule = {
+  url: '/test-csrf-token',
+  methods: ['GET', 'HEAD'],
+};
 
 export interface SessionCookieOptions {
   cookieName?: string;
@@ -48,7 +65,8 @@ export interface AuthPluginOptions {
   cookieName?: string;
   secure?: boolean;
   sessionTtlMs?: number;
-  publicRoutes?: (string | RegExp)[];
+  publicRoutes?: (string | RegExp | PublicRouteRule)[];
+  allowTestCsrfRoute?: boolean;
   rolling?: boolean;
 }
 
@@ -194,44 +212,96 @@ export function clearSessionCookie(
   });
 }
 
+export function normalizeRoutePath(path: string): string {
+  const stripped = path.split('?')[0].trim();
+  if (!stripped || stripped === '/') {
+    return '/';
+  }
+  return stripped.replace(/\/+$/, '') || '/';
+}
+
+function matchesUrlRule(pattern: string | RegExp, rawUrl: string, routerPath: string): boolean {
+  if (typeof pattern === 'string') {
+    const normalizedPattern = normalizeRoutePath(pattern);
+    return rawUrl === normalizedPattern || routerPath === normalizedPattern;
+  }
+  if (pattern instanceof RegExp) {
+    return pattern.test(rawUrl) || pattern.test(routerPath);
+  }
+  return false;
+}
+
+function matchesMethodRule(
+  methods: readonly string[] | string | undefined,
+  requestMethod: string
+): boolean {
+  if (!methods) {
+    return true;
+  }
+  if (Array.isArray(methods)) {
+    return methods.map((m) => m.toUpperCase()).includes(requestMethod);
+  }
+  if (typeof methods === 'string') {
+    return methods.toUpperCase() === requestMethod;
+  }
+  return false;
+}
+
 /**
  * Determines whether a given request is explicitly declared as a public route.
- * Fails closed by default on all unmarked routes and on conflicting public/protected declarations.
+ * Explicit protected declarations (auth: true, requireAuth: true, protected: true)
+ * ALWAYS take precedence over public-route allowlists, bootstrap exceptions, and regex patterns.
+ * Fails closed by default on all unmarked routes.
  */
 export function isRouteExplicitlyPublic(
   request: FastifyRequest,
-  publicRoutes: readonly (string | RegExp)[]
+  publicRoutes: readonly PublicRouteRule[]
 ): boolean {
   const config = request.routeOptions?.config as Record<string, any> | undefined;
 
-  const isPublicDeclared = Boolean(config?.public === true || config?.isPublic === true);
+  // 1. Explicit protected declarations ALWAYS take precedence over any public allowlists or patterns -> FAIL CLOSED
   const isProtectedDeclared = Boolean(
     config?.auth === true ||
     config?.requireAuth === true ||
     config?.protected === true
   );
 
-  // 1. Conflict detection: if public and protected declarations conflict -> FAIL CLOSED
-  if (isPublicDeclared && isProtectedDeclared) {
+  if (isProtectedDeclared) {
+    return false;
+  }
+
+  // Explicit non-public declarations fail closed
+  if (config?.public === false || config?.isPublic === false) {
     return false;
   }
 
   // 2. Explicit route-level declaration
+  const isPublicDeclared = Boolean(
+    config?.public === true ||
+    config?.isPublic === true
+  );
+
   if (isPublicDeclared) {
     return true;
   }
 
-  // 3. Explicitly configured or bootstrap public routes
-  const rawUrl = request.url ? request.url.split('?')[0] : '';
-  const routerPath = request.routeOptions?.url ?? rawUrl;
+  // 3. Match against configured public routes and bootstrap allowlist
+  const rawUrl = request.url ? normalizeRoutePath(request.url) : '';
+  const routerPath = request.routeOptions?.url
+    ? normalizeRoutePath(request.routeOptions.url)
+    : rawUrl;
+  const requestMethod = (request.method || '').toUpperCase();
 
-  for (const pattern of publicRoutes) {
-    if (typeof pattern === 'string') {
-      if (rawUrl === pattern || routerPath === pattern) {
+  for (const rule of publicRoutes) {
+    if (typeof rule === 'string' || rule instanceof RegExp) {
+      if (matchesUrlRule(rule, rawUrl, routerPath)) {
         return true;
       }
-    } else if (pattern instanceof RegExp) {
-      if (pattern.test(rawUrl) || pattern.test(routerPath)) {
+    } else if (typeof rule === 'object' && rule !== null && 'url' in rule) {
+      if (
+        matchesUrlRule(rule.url, rawUrl, routerPath) &&
+        matchesMethodRule(rule.methods, requestMethod)
+      ) {
         return true;
       }
     }
@@ -322,9 +392,19 @@ export const authPlugin: FastifyPluginAsync<AuthPluginOptions> = async (
     : DEFAULT_SESSION_TTL_SECONDS;
   const rolling = options.rolling ?? true;
 
-  const allowedPublicRoutes: readonly (string | RegExp)[] = options.publicRoutes
-    ? [...DEFAULT_PUBLIC_BOOTSTRAP_ROUTES, ...options.publicRoutes]
-    : DEFAULT_PUBLIC_BOOTSTRAP_ROUTES;
+  const isProduction = process.env.NODE_ENV === 'production';
+  const allowTestCsrf =
+    options.allowTestCsrfRoute === true ||
+    (!isProduction && options.allowTestCsrfRoute !== false);
+
+  const bootstrapRules: PublicRouteRule[] = [BOOTSTRAP_LOGIN_RULE];
+  if (allowTestCsrf) {
+    bootstrapRules.push(TEST_CSRF_BOOTSTRAP_RULE);
+  }
+
+  const allowedPublicRoutes: readonly PublicRouteRule[] = options.publicRoutes
+    ? [...bootstrapRules, ...options.publicRoutes]
+    : bootstrapRules;
 
   const boundSetSessionCookie = (
     reply: FastifyReply,
