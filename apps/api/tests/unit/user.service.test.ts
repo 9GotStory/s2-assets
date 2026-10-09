@@ -391,5 +391,19 @@ describe('UserService Unit Tests (T018)', () => {
       const failed = await service.authenticate('alice', 'wrong');
       expect(failed).toBeNull();
     });
+
+    it('does not invoke end or destroy on injected database client during close', async () => {
+      const mockDb = {
+        query: vi.fn(),
+        end: vi.fn(),
+        destroy: vi.fn(),
+      };
+
+      const service = new UserService({ db: mockDb });
+      await service.close();
+
+      expect(mockDb.end).not.toHaveBeenCalled();
+      expect(mockDb.destroy).not.toHaveBeenCalled();
+    });
   });
 });

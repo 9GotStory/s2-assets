@@ -293,12 +293,13 @@ export class UserService {
     return result.valid && result.user ? result.user : null;
   }
 
+  /**
+   * Backward-compatible cleanup no-op.
+   * Injected database clients are externally owned by the composition root
+   * and must never be closed or destroyed by UserService.
+   */
   async close(): Promise<void> {
-    if (typeof this.db?.end === 'function') {
-      await this.db.end();
-    } else if (typeof this.db?.destroy === 'function') {
-      await this.db.destroy();
-    }
+    // No-op: UserService does not own externally injected database connections
   }
 }
 
