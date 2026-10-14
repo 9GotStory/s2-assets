@@ -1,5 +1,7 @@
 # Quickstart: Application Foundation
 
+> **Status note (2026-10-14 — proposed reconciliation, not yet implemented):** This document describes the intended end-to-end behavior. On canonical HEAD `a7cc7188b5cc10d7e33e69529e8be3b757509537`, API/Web application entrypoints and service start commands are not present. Consequently the Compose `up` and `curl` examples below do **not** yet prove a runnable app stack; workspace scripts and the browser command may also be unavailable. **Do not treat this Quickstart as verified or claim browser E2E PASS.** Proposed T041–T044 will implement and then validate the missing bootstrap, update exact commands, and unblock T033. T039 will independently validate the complete Quickstart. No Production changes are authorized by this note.
+
 This guide validates the Rootless Podman development workflow natively without host Node.js or PostgreSQL dependencies (other than Podman).
 
 ## Prerequisites
@@ -18,6 +20,8 @@ fi
 ```
 
 ## 2. Start the Environment
+
+**Prerequisite gate:** Run this step only after T041–T043 create and independently verify real start commands. Until then, Compose may create containers without a running API or Web application. T044 must prove the start process with task-owned resources.
 Boot the stack using the Compose Spec file. (Note: PostgreSQL is private to the container network and NOT exposed to the host LAN).
 ```bash
 podman compose -f deploy/podman/compose.yaml up -d
@@ -33,6 +37,8 @@ curl http://localhost:3000/ready
 ```
 
 ## 4. Run Verifications & Tests
+
+**Prerequisite gate:** The workspace/package scripts listed below are target verification commands, not evidence that those scripts currently exist. T041–T044 must reconcile the executable scripts and verify them before T033/T039 acceptance. Browser tests require a real service, explicit E2E base URL, isolated credentials, and the disposable pinned Playwright image.
 Execute all application tasks inside the container context:
 ```bash
 # Workspace Lint & Typecheck

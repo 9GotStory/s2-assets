@@ -82,7 +82,18 @@
 ### Implementation for User Story 4
 - [ ] T031 [P] [US4] Implement minimum web UI for login, protected dashboard, and CSRF token handling in `apps/web/src/pages/Login.tsx` and `apps/web/src/pages/Dashboard.tsx`.
 - [ ] T032 [P] [US4] Configure Playwright 1.63.0 E2E test setup in `apps/web/playwright.config.ts`.
-- [ ] T033 [US4] Implement minimum authentication/session Playwright E2E test in `apps/web/tests/e2e/auth.spec.ts` executing inside an isolated Playwright container boundary (`mcr.microsoft.com/playwright:v1.63.0-noble`).
+#### Gap-reconciliation prerequisites (proposed 2026-10-14; require Human Gate)
+
+**Why added:** The accepted US4/SC-002 requires *running* API and Web services. T001–T032 produced primitives, React pages and Playwright configuration but did not include application entrypoints or executable startup. Preserve original task IDs; use T041–T044 as bounded addenda before returning to T033.
+
+- [ ] **T041 [US4] — API startup/bootstrap.** Create minimum Fastify composition in `apps/api/src/app.ts` and runtime entrypoint in `apps/api/src/server.ts`; register accepted config, logging/error, auth, CSRF, authorization and actual `/auth/*`, `/system/*`, `/health`, `/ready` routes in safe order. Add only necessary `apps/api/package.json` dev/start scripts and focused app-wiring verification. Fail closed, no silent DB migration, no additional auth framework, no Asset/Material workflow.
+- [ ] **T042 [P] [US4] — Web SPA bootstrap.** Create minimal Vite/React HTML entrypoint, React root, login/dashboard routing and the necessary TypeScript/Vite configuration in `apps/web/`; update only required web dependencies/scripts and frozen `pnpm-lock.yaml`. Reuse T031 pages and existing auth contract; resolve `/auth/*` same-origin connectivity for development without changing backend security or selecting a production reverse proxy.
+- [ ] **T043 [US4] — Rootless development startup wiring.** Make existing `deploy/podman/compose.yaml`, `scripts/dev.sh` and package scripts actually boot PostgreSQL, API and Web using selected Node/pnpm baselines. Keep PostgreSQL network private, use development-only loopback exposure for host ports, preserve volume ownership and unrelated Fedora workloads, support explicit migrations and graceful teardown; no auto migration or production deployment.
+- [ ] **T044 [US4] — Runnable stack smoke/preflight.** Prove development API and Web start on Rootless Podman; explicitly migrate an isolated development/test database, verify health/readiness/authentication/session/CSRF/logout via real HTTP and a safely provisioned disposable test identity. Record precise commands/evidence and test-owned cleanup. Do not claim Browser E2E PASS here; T033 owns the actual Chromium flow.
+ 
+**Dependency gate:** T041 + T042 → T043 → T044 → T033 → T039. Do not implement T041–T044 before documentation approval and bounded Human Gate.
+
+- [ ] T033 [US4] Implement minimum authentication/session Playwright E2E test in `apps/web/tests/e2e/auth.spec.ts` executing inside an isolated Playwright container boundary (`mcr.microsoft.com/playwright:v1.63.0-noble`). **Blocked until T041–T044 demonstrate runnable real development services; no fabricated E2E PASS.**
 
 ---
 
@@ -105,7 +116,7 @@
 - **FR-003**: T029
 - **FR-004**: T010, T011, T012, T013
 - **FR-012**: T028, T030
-- **FR-005**: T005, T006, T036, T037
+- **FR-005**: T005, T006, T041–T044 (runnable development stack), T036, T037 (separately gated release artifacts)
 - **FR-006**: T009, T027, T038
 - **FR-007/SC-005**: T040 explicit final boundary verification
 - **FR-008**: Verified through explicit constraint mappings in T008 and T027
@@ -113,7 +124,7 @@
 - **FR-010**: T027 native Kysely transaction verification
 - **FR-011**: T014, T015
 - **SC-001**: T023, T026
-- **SC-002**: T005, T006, T039
+- **SC-002**: T005, T006, T041–T044 (bootstrap reconciliation), T033 (browser proof), T039 (full workspace)
 - **SC-003**: T027, T038
 - **SC-004**: T029
 - **Production Migration Responsibility**: T037
