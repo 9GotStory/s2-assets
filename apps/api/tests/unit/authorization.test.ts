@@ -644,4 +644,224 @@ describe('Authorization Middleware Unit Tests (T025 - US2)', () => {
       expect(err.message).toBe('Permission denied');
     });
   });
+
+  // =========================================================================
+  // REWORK 1: Strict Boolean Authorization Invariants
+  // =========================================================================
+  describe('REWORK 1: Strict Boolean Authorization Invariants', () => {
+    it('1. Boolean true permits access', async () => {
+      const mockService = {
+        hasCapability: vi.fn().mockResolvedValue(true),
+      };
+
+      const app = await createTestApp({
+        capabilityService: mockService as any,
+        decorateServerService: true,
+        user: { id: validUserId, is_active: true },
+        session: { user_id: validUserId },
+      });
+
+      const response = await app.inject({ method: 'GET', url: '/protected' });
+      expect(response.statusCode).toBe(200);
+      expect(response.json()).toEqual({ status: 'ok', data: 'protected-system-payload' });
+      await app.close();
+    });
+
+    it('2. Boolean false denies with 403', async () => {
+      const mockService = {
+        hasCapability: vi.fn().mockResolvedValue(false),
+      };
+
+      const app = await createTestApp({
+        capabilityService: mockService as any,
+        decorateServerService: true,
+        user: { id: validUserId, is_active: true },
+        session: { user_id: validUserId },
+      });
+
+      const response = await app.inject({ method: 'GET', url: '/protected' });
+      expect(response.statusCode).toBe(403);
+      const body = response.json();
+      expect(body.error).toHaveProperty('code', 'FORBIDDEN');
+      expect(body.error).toHaveProperty('message', 'Permission denied');
+      await app.close();
+    });
+
+    it('3. The string "true" denies with 403', async () => {
+      const mockService = {
+        hasCapability: vi.fn().mockResolvedValue('true' as any),
+      };
+
+      const app = await createTestApp({
+        capabilityService: mockService as any,
+        decorateServerService: true,
+        user: { id: validUserId, is_active: true },
+        session: { user_id: validUserId },
+      });
+
+      const response = await app.inject({ method: 'GET', url: '/protected' });
+      expect(response.statusCode).toBe(403);
+      const body = response.json();
+      expect(body.error).toHaveProperty('code', 'FORBIDDEN');
+      expect(body.error).toHaveProperty('message', 'Permission denied');
+      await app.close();
+    });
+
+    it('4. The string "false" denies with 403', async () => {
+      const mockService = {
+        hasCapability: vi.fn().mockResolvedValue('false' as any),
+      };
+
+      const app = await createTestApp({
+        capabilityService: mockService as any,
+        decorateServerService: true,
+        user: { id: validUserId, is_active: true },
+        session: { user_id: validUserId },
+      });
+
+      const response = await app.inject({ method: 'GET', url: '/protected' });
+      expect(response.statusCode).toBe(403);
+      const body = response.json();
+      expect(body.error).toHaveProperty('code', 'FORBIDDEN');
+      expect(body.error).toHaveProperty('message', 'Permission denied');
+      await app.close();
+    });
+
+    it('5. An unexpected object denies with 403', async () => {
+      const mockService = {
+        hasCapability: vi.fn().mockResolvedValue({ authorized: true, role: 'ADMIN' } as any),
+      };
+
+      const app = await createTestApp({
+        capabilityService: mockService as any,
+        decorateServerService: true,
+        user: { id: validUserId, is_active: true },
+        session: { user_id: validUserId },
+      });
+
+      const response = await app.inject({ method: 'GET', url: '/protected' });
+      expect(response.statusCode).toBe(403);
+      const body = response.json();
+      expect(body.error).toHaveProperty('code', 'FORBIDDEN');
+      expect(body.error).toHaveProperty('message', 'Permission denied');
+      await app.close();
+    });
+
+    it('6. undefined and null deny with 403', async () => {
+      // 6a: undefined
+      const mockUndefined = {
+        hasCapability: vi.fn().mockResolvedValue(undefined as any),
+      };
+      const appUndefined = await createTestApp({
+        capabilityService: mockUndefined as any,
+        decorateServerService: true,
+        user: { id: validUserId, is_active: true },
+        session: { user_id: validUserId },
+      });
+      const resUndef = await appUndefined.inject({ method: 'GET', url: '/protected' });
+      expect(resUndef.statusCode).toBe(403);
+      expect(resUndef.json().error).toHaveProperty('code', 'FORBIDDEN');
+      await appUndefined.close();
+
+      // 6b: null
+      const mockNull = {
+        hasCapability: vi.fn().mockResolvedValue(null as any),
+      };
+      const appNull = await createTestApp({
+        capabilityService: mockNull as any,
+        decorateServerService: true,
+        user: { id: validUserId, is_active: true },
+        session: { user_id: validUserId },
+      });
+      const resNull = await appNull.inject({ method: 'GET', url: '/protected' });
+      expect(resNull.statusCode).toBe(403);
+      expect(resNull.json().error).toHaveProperty('code', 'FORBIDDEN');
+      await appNull.close();
+
+      // 6c: number 1 (truthy primitive)
+      const mockNumber = {
+        hasCapability: vi.fn().mockResolvedValue(1 as any),
+      };
+      const appNumber = await createTestApp({
+        capabilityService: mockNumber as any,
+        decorateServerService: true,
+        user: { id: validUserId, is_active: true },
+        session: { user_id: validUserId },
+      });
+      const resNum = await appNumber.inject({ method: 'GET', url: '/protected' });
+      expect(resNum.statusCode).toBe(403);
+      expect(resNum.json().error).toHaveProperty('code', 'FORBIDDEN');
+      await appNumber.close();
+    });
+
+    it('7. A thrown dependency error remains fail-closed (sanitized 500, with no leakage)', async () => {
+      const mockService = {
+        hasCapability: vi.fn().mockRejectedValue(
+          new Error('FATAL pg connection reset: table "user_roles" credential leak')
+        ),
+      };
+
+      const app = await createTestApp({
+        capabilityService: mockService as any,
+        decorateServerService: true,
+        user: { id: validUserId, is_active: true },
+        session: { user_id: validUserId },
+      });
+
+      const response = await app.inject({ method: 'GET', url: '/protected' });
+      expect(response.statusCode).toBe(500);
+
+      // Verify zero leakage in response body
+      const rawBody = response.body;
+      expect(rawBody).not.toContain('user_roles');
+      expect(rawBody).not.toContain('credential leak');
+      expect(rawBody).not.toContain('FATAL');
+      expect(rawBody).not.toContain('stack');
+
+      const body = response.json();
+      expect(body).toEqual({
+        error: {
+          code: 'INTERNAL_SERVER_ERROR',
+          message: 'An unexpected internal server error occurred.',
+          request_id: expect.any(String),
+          details: {},
+        },
+      });
+      await app.close();
+    });
+
+    it('8. Does not record capability in per-request authorized set unless strictly true', async () => {
+      let callCount = 0;
+      const mockService = {
+        hasCapability: vi.fn().mockImplementation(async () => {
+          callCount++;
+          // First check returns truthy string "true", second returns boolean true
+          return callCount === 1 ? ('true' as any) : true;
+        }),
+      };
+
+      const app = Fastify();
+      await app.register(errorHandlerPlugin);
+      app.decorate('capabilityService', mockService as any);
+
+      app.addHook('preHandler', async (request) => {
+        (request as any).user = { id: validUserId, is_active: true };
+        (request as any).session = { user_id: validUserId };
+      });
+
+      const check = requireCapability('system:maintain');
+      app.get('/test-set', { preHandler: [check] }, async () => ({ ok: true }));
+      await app.ready();
+
+      // Request 1: returns truthy string "true" -> denied 403, must NOT be saved in set
+      const res1 = await app.inject({ method: 'GET', url: '/test-set' });
+      expect(res1.statusCode).toBe(403);
+
+      // Request 2: new request -> re-evaluates and returns boolean true -> 200
+      const res2 = await app.inject({ method: 'GET', url: '/test-set' });
+      expect(res2.statusCode).toBe(200);
+
+      await app.close();
+    });
+  });
 });

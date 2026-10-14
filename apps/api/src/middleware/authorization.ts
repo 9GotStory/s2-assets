@@ -37,6 +37,7 @@
  *    ```
  *
  * 3. Fail-Closed Invariants:
+ *    - Strict boolean success: requires `hasCap === true` as the sole authorization success condition. All non-true results (false, undefined, null, strings, numbers, objects) fail closed with HTTP 403 FORBIDDEN.
  *    - If CapabilityService is missing or not registered: throws HTTP 500 INTERNAL_SERVER_ERROR.
  *    - If authentication context (T020 request.session / request.user) is missing or mismatched: throws HTTP 401 UNAUTHORIZED.
  *    - If user does not possess the required capability: throws HTTP 403 FORBIDDEN.
@@ -170,7 +171,7 @@ export function requireCapability(
 
     // 5. Authoritative Server-Side PostgreSQL Capability Evaluation
     const userId = session.user_id;
-    let hasCap = false;
+    let hasCap: unknown = false;
 
     try {
       hasCap = await capabilityService.hasCapability(userId, requiredCapability);
@@ -183,11 +184,13 @@ export function requireCapability(
       );
     }
 
-    if (!hasCap) {
+    // Require hasCap === true as the only authorization success condition (REWORK 1).
+    // Deny all other results (false, undefined, null, strings, numbers, objects) with HTTP 403.
+    if (hasCap !== true) {
       throw new AuthorizationError(403, 'FORBIDDEN', 'Permission denied');
     }
 
-    // Record verified capability for this request instance only (no cross-request caching)
+    // Record verified capability for this request instance only when strictly true (no cross-request caching)
     authorizedCaps.add(requiredCapability);
   };
 }
