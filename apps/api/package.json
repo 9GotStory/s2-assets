@@ -3,6 +3,11 @@
   "private": true,
   "type": "module",
   "scripts": {
+    "dev": "node --watch src/server.ts",
+    "start:dev": "node src/server.ts",
+    "typecheck": "tsc --noEmit",
+    "build": "tsc -p tsconfig.build.json",
+    "start": "node dist/server.js",
     "test": "vitest run"
   },
   "dependencies": {

@@ -165,19 +165,6 @@ async function setupTestApp(options: { databaseUrl: string; secure?: boolean }):
     }
   }
 
-  // Test-only harness route to obtain a genuine CSRF token from the registered CSRF protection plugin
-  app.get('/test-csrf-token', async (request, reply) => {
-    if (typeof (reply as any).generateCsrf === 'function') {
-      const token = (reply as any).generateCsrf();
-      return { csrfToken: token };
-    }
-    if (typeof (app as any).csrfProtection === 'function') {
-      const token = (app as any).csrfProtection(request, reply);
-      return { csrfToken: token };
-    }
-    return { csrfToken: undefined };
-  });
-
   // 4. Try to register auth plugin
   try {
     const authMod = await import('../../src/plugins/auth.ts' as string);
@@ -376,19 +363,19 @@ function assertClearingSessionCookie(cookieHeader: string | undefined): void {
   expect(parsed.sameSite?.toLowerCase()).toBe('lax');
 }
 
-// Helper to obtain a genuine CSRF token via the test harness route without any dummy fallback
+// Helper to obtain a genuine CSRF token via the authenticated /auth/session-check route without any dummy fallback
 async function fetchGenuineCsrfToken(
   app: FastifyInstance,
   cookieHeader?: string
 ): Promise<{ csrfToken: string; cookieHeader?: string }> {
   const response = await app.inject({
     method: 'GET',
-    url: '/test-csrf-token',
+    url: '/auth/session-check',
     headers: cookieHeader ? { cookie: cookieHeader } : {},
   });
 
   const body = response.json();
-  const csrfToken = body?.csrfToken;
+  const csrfToken = body?.csrfToken || response.headers['x-csrf-token'];
   if (!csrfToken || typeof csrfToken !== 'string') {
     throw new Error(
       'Genuine CSRF token could not be obtained: CSRF protection plugin is not initialized or failed to generate token'
