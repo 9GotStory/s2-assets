@@ -447,7 +447,216 @@ with open(target_file, "w", encoding="utf-8") as f:
 
     exit $RUN_EXIT
     ;;
+  http-smoke)
+    SCRIPT_DIR=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
+    REPO_ROOT=$(cd "${SCRIPT_DIR}/.." && pwd)
+    COMPOSE_FILE="${REPO_ROOT}/deploy/podman/compose.yaml"
+
+    if [ ! -f "$COMPOSE_FILE" ]; then
+      _fail "ERROR: Compose file not found at ${COMPOSE_FILE}"
+    fi
+
+    _validate_foundation_env_file
+    _validate_fixture_database_url
+
+    ENV_DIR=$(dirname "$FOUNDATION_ENV_FILE")
+    STATE_FILE="${ENV_DIR}/fixture-state-${FOUNDATION_TEST_RUN_ID}.json"
+    if [ -n "${FOUNDATION_FIXTURE_STATE_FILE:-}" ]; then
+      STATE_FILE="${FOUNDATION_FIXTURE_STATE_FILE}"
+    fi
+    CANONICAL_STATE_FILE=$(realpath "$STATE_FILE" 2>/dev/null || readlink -f "$STATE_FILE" 2>/dev/null || echo "$STATE_FILE")
+    LEXICAL_STATE_FILE=$(realpath -s "$STATE_FILE" 2>/dev/null || echo "$STATE_FILE")
+    case "$STATE_FILE" in
+      "${REPO_ROOT}"/*|"${REPO_ROOT}")
+        _fail "ERROR: Fixture state file must reside outside repository checkout: ${STATE_FILE}"
+        ;;
+    esac
+    case "$LEXICAL_STATE_FILE" in
+      "${CANONICAL_REPO_ROOT}"/*|"${CANONICAL_REPO_ROOT}"|"${REPO_ROOT}"/*|"${REPO_ROOT}")
+        _fail "ERROR: Fixture state file must reside outside repository checkout: ${STATE_FILE}"
+        ;;
+    esac
+    case "$CANONICAL_STATE_FILE" in
+      "${CANONICAL_REPO_ROOT}"/*|"${CANONICAL_REPO_ROOT}"|"${REPO_ROOT}"/*|"${REPO_ROOT}")
+        _fail "ERROR: Fixture state file must reside outside repository checkout: ${STATE_FILE}"
+        ;;
+    esac
+    RUNNER_CONFIG_FILE="${ENV_DIR}/.smoke-runner-${FOUNDATION_TEST_RUN_ID}.json"
+
+    (
+      umask 077
+      python3 -c '
+import json, os, sys
+keys = [
+    "NODE_ENV",
+    "FOUNDATION_TEST_RUN_ID",
+    "FOUNDATION_TEST_USERNAME",
+    "FOUNDATION_TEST_PASSWORD",
+    "FOUNDATION_TEST_DATABASE_URL",
+    "FOUNDATION_FIXTURE_STATE_FILE",
+    "POSTGRES_DB",
+    "POSTGRES_USER",
+    "POSTGRES_PASSWORD",
+    "COOKIE_SECRET",
+    "COMPOSE_PROJECT_NAME",
+    "API_HOST_PORT",
+    "WEB_HOST_PORT"
+]
+data = {k: os.environ.get(k, "") for k in keys}
+target_file = sys.argv[1]
+with open(target_file, "w", encoding="utf-8") as f:
+    json.dump(data, f, ensure_ascii=False)
+' "$RUNNER_CONFIG_FILE"
+      chmod 600 "$RUNNER_CONFIG_FILE"
+    )
+
+    PG_INTERRUPTED=0
+    FIRST_FAILURE_EXIT=0
+
+    _clean_smoke_resources() {
+      local trap_exit=$?
+      if [ "$PG_INTERRUPTED" -eq 1 ]; then
+        echo "PostgreSQL service is currently interrupted; restoring..." >&2
+        podman compose --env-file "$FOUNDATION_ENV_FILE" -p "$COMPOSE_PROJECT_NAME" -f "$COMPOSE_FILE" start postgres >/dev/null 2>&1 || true
+        for attempt in {1..30}; do
+          if podman compose --env-file "$FOUNDATION_ENV_FILE" -p "$COMPOSE_PROJECT_NAME" -f "$COMPOSE_FILE" exec -T postgres pg_isready -U "$POSTGRES_USER" -d "$POSTGRES_DB" >/dev/null 2>&1; then
+            break
+          fi
+          sleep 1
+        done
+        PG_INTERRUPTED=0
+      fi
+      rm -f "$RUNNER_CONFIG_FILE" 2>/dev/null || true
+      if [ "$FIRST_FAILURE_EXIT" -ne 0 ]; then
+        exit "$FIRST_FAILURE_EXIT"
+      fi
+      exit "$trap_exit"
+    }
+    trap _clean_smoke_resources EXIT INT TERM
+
+    # Phase 1: Pre-outage smoke (A1, A2, B1, B2, B3, C1, C2)
+    echo "Running HTTP smoke Phase 1 (Pre-outage baseline: Cases A1, A2, B1, B2, B3, C1, C2)..."
+    set +e
+    podman compose --env-file "$FOUNDATION_ENV_FILE" \
+      -p "$COMPOSE_PROJECT_NAME" \
+      -f "$COMPOSE_FILE" \
+      run --rm --no-deps -T \
+      -v "${ENV_DIR}:${ENV_DIR}:z" \
+      -e NODE_ENV=test \
+      -e HTTP_API_URL="http://api:3000" \
+      -e HTTP_WEB_URL="http://web:5173" \
+      -e FOUNDATION_SMOKE_PHASE="pre-outage" \
+      -e FOUNDATION_TEST_RUN_ID="${FOUNDATION_TEST_RUN_ID}" \
+      -e FOUNDATION_FIXTURE_CONFIG_FILE="${RUNNER_CONFIG_FILE}" \
+      -e FOUNDATION_FIXTURE_STATE_FILE="${STATE_FILE}" \
+      api pnpm --filter api test:http
+    PHASE1_EXIT=$?
+    set -e
+
+    if [ "$PHASE1_EXIT" -ne 0 ]; then
+      FIRST_FAILURE_EXIT=$PHASE1_EXIT
+      echo "ERROR: HTTP smoke Phase 1 failed with exit code ${PHASE1_EXIT}" >&2
+      exit "$PHASE1_EXIT"
+    fi
+
+    # Support optional skip of interruption if explicitly requested via environment
+    if [ "${FOUNDATION_SMOKE_SKIP_INTERRUPTION:-0}" = "1" ]; then
+      echo "Skipping database interruption phases as requested by FOUNDATION_SMOKE_SKIP_INTERRUPTION=1."
+      rm -f "$RUNNER_CONFIG_FILE" 2>/dev/null || true
+      trap - EXIT INT TERM
+      exit 0
+    fi
+
+    # Phase 2: Database outage (Case D1)
+    echo "Interrupting PostgreSQL service for project ${COMPOSE_PROJECT_NAME}..."
+    podman compose --env-file "$FOUNDATION_ENV_FILE" -p "$COMPOSE_PROJECT_NAME" -f "$COMPOSE_FILE" stop postgres
+    PG_INTERRUPTED=1
+
+    # Deliberate failure simulation for Case E testing if requested
+    if [ "${FOUNDATION_SMOKE_SIMULATE_FAIL:-}" = "outage" ]; then
+      FIRST_FAILURE_EXIT=42
+      echo "Simulating deliberate failure in outage phase (exit code 42) for Case E lifecycle verification..." >&2
+      exit 42
+    fi
+
+    echo "Running HTTP smoke Phase 2 (Database outage assertions: Case D1)..."
+    set +e
+    podman compose --env-file "$FOUNDATION_ENV_FILE" \
+      -p "$COMPOSE_PROJECT_NAME" \
+      -f "$COMPOSE_FILE" \
+      run --rm --no-deps -T \
+      -v "${ENV_DIR}:${ENV_DIR}:z" \
+      -e NODE_ENV=test \
+      -e HTTP_API_URL="http://api:3000" \
+      -e HTTP_WEB_URL="http://web:5173" \
+      -e FOUNDATION_SMOKE_PHASE="outage" \
+      -e FOUNDATION_TEST_RUN_ID="${FOUNDATION_TEST_RUN_ID}" \
+      -e FOUNDATION_FIXTURE_CONFIG_FILE="${RUNNER_CONFIG_FILE}" \
+      -e FOUNDATION_FIXTURE_STATE_FILE="${STATE_FILE}" \
+      api pnpm --filter api test:http
+    PHASE2_EXIT=$?
+    set -e
+
+    if [ "$PHASE2_EXIT" -ne 0 ]; then
+      FIRST_FAILURE_EXIT=$PHASE2_EXIT
+      echo "ERROR: HTTP smoke Phase 2 failed with exit code ${PHASE2_EXIT}" >&2
+      exit "$PHASE2_EXIT"
+    fi
+
+    # Phase 3: Database recovery (Case D2)
+    echo "Restoring PostgreSQL service for project ${COMPOSE_PROJECT_NAME}..."
+    podman compose --env-file "$FOUNDATION_ENV_FILE" -p "$COMPOSE_PROJECT_NAME" -f "$COMPOSE_FILE" start postgres
+    RECOVERED=0
+    for attempt in {1..30}; do
+      if podman compose --env-file "$FOUNDATION_ENV_FILE" -p "$COMPOSE_PROJECT_NAME" -f "$COMPOSE_FILE" exec -T postgres pg_isready -U "$POSTGRES_USER" -d "$POSTGRES_DB" >/dev/null 2>&1; then
+        echo "PostgreSQL service is ready (attempt ${attempt})."
+        RECOVERED=1
+        break
+      fi
+      sleep 1
+    done
+    if [ "$RECOVERED" -eq 0 ]; then
+      _fail "ERROR: Timed out waiting for PostgreSQL service to become ready after restart"
+    fi
+    PG_INTERRUPTED=0
+
+    # Deliberate failure simulation for Case E testing if requested
+    if [ "${FOUNDATION_SMOKE_SIMULATE_FAIL:-}" = "recovery" ]; then
+      FIRST_FAILURE_EXIT=43
+      echo "Simulating deliberate failure in recovery phase (exit code 43) for Case E lifecycle verification..." >&2
+      exit 43
+    fi
+
+    echo "Running HTTP smoke Phase 3 (Database recovery assertions: Case D2)..."
+    set +e
+    podman compose --env-file "$FOUNDATION_ENV_FILE" \
+      -p "$COMPOSE_PROJECT_NAME" \
+      -f "$COMPOSE_FILE" \
+      run --rm --no-deps -T \
+      -v "${ENV_DIR}:${ENV_DIR}:z" \
+      -e NODE_ENV=test \
+      -e HTTP_API_URL="http://api:3000" \
+      -e HTTP_WEB_URL="http://web:5173" \
+      -e FOUNDATION_SMOKE_PHASE="recovery" \
+      -e FOUNDATION_TEST_RUN_ID="${FOUNDATION_TEST_RUN_ID}" \
+      -e FOUNDATION_FIXTURE_CONFIG_FILE="${RUNNER_CONFIG_FILE}" \
+      -e FOUNDATION_FIXTURE_STATE_FILE="${STATE_FILE}" \
+      api pnpm --filter api test:http
+    PHASE3_EXIT=$?
+    set -e
+
+    if [ "$PHASE3_EXIT" -ne 0 ]; then
+      FIRST_FAILURE_EXIT=$PHASE3_EXIT
+      echo "ERROR: HTTP smoke Phase 3 failed with exit code ${PHASE3_EXIT}" >&2
+      exit "$PHASE3_EXIT"
+    fi
+
+    rm -f "$RUNNER_CONFIG_FILE" 2>/dev/null || true
+    trap - EXIT INT TERM
+    echo "HTTP smoke verification completed successfully."
+    exit 0
+    ;;
   *)
-    _fail "ERROR: Unknown action '$ACTION'. Authorized actions: none (provider preflight), 'prepare', or 'test-identity'."
+    _fail "ERROR: Unknown action '$ACTION'. Authorized actions: none (provider preflight), 'prepare', 'test-identity', or 'http-smoke'."
     ;;
 esac

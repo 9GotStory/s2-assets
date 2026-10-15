@@ -1,6 +1,6 @@
 # Quickstart: Application Foundation
 
-**Status: T044 development migration and test identity lifecycle verified.** T041 API bootstrap, T042 Web SPA bootstrap, T043 container-only toolchain, and T044 explicit migration and disposable test identity lifecycle (`scripts/dev.sh test-identity setup|cleanup` and `apps/api/tests/fixtures/identity.ts`) are implemented and verified. Subsequent steps—HTTP smoke verification (T045) and browser execution (T033/T046)—remain separately gated and require their authorized implementations before execution.
+**Status: T045 real listening HTTP smoke and recovery verified.** T041 API bootstrap, T042 Web SPA bootstrap, T043 container-only toolchain, T044 explicit migration and disposable test identity lifecycle, and T045 real HTTP smoke and database outage/recovery verification (`scripts/dev.sh http-smoke` and `apps/api/tests/http/foundation.test.ts`) are implemented and verified. Subsequent step—browser execution (T033/T046)—remains separately gated and requires authorized implementation before execution.
 
 This guide covers an isolated Rootless Podman development/test stack. Git, Spec Kit and agents remain on the Fedora host. Node, pnpm, PostgreSQL and browser execution remain in containers. [Plan](./plan.md) defines the command/lifecycle contract; [research](./research.md) records decisions. The unchanged [data model](./data-model.md) and [API error contract](./contracts/api-error.md) remain authoritative.
 
@@ -94,7 +94,7 @@ curl --fail --silent --show-error --retry 30 --retry-connrefused \
 bash scripts/dev.sh http-smoke
 ```
 
-Both API probes return HTTP 200 with `{"status":"ok"}`. The planned smoke action executes `pnpm --filter api test:http` inside a container against `http://api:3000` and `http://web:5173`. It verifies actual entrypoint/configuration failure, route registration, unauthenticated/capability denial and immediate revocation, valid login/session, CSRF rejection and valid logout followed by session rejection, safe errors, and database interruption/recovery in this dedicated stack. It restores an interrupted test-owned dependency even after failure. It keeps credentials/cookies/CSRF material out of stdout and records non-secret results and exact commands.
+Both API probes return HTTP 200 with `{"status":"ok"}`. The verified smoke action executes `pnpm --filter api test:http` inside a container against `http://api:3000` and `http://web:5173`. It verifies actual entrypoint/configuration failure, route registration, unauthenticated/capability denial and immediate revocation, valid login/session, CSRF rejection and valid logout followed by session rejection, safe errors, and database interruption/recovery in this dedicated stack. It restores an interrupted test-owned dependency even after failure. It keeps credentials/cookies/CSRF material out of stdout and records non-secret results and exact commands.
 
 Open `http://127.0.0.1:<WEB_HOST_PORT>/login` on the host for manual inspection. Existing relative `/auth/*` requests travel through the development-only Vite proxy to `http://api:3000`; `/system/*` is proxied unchanged too. Direct `/dashboard` navigation/reload loads the SPA and performs the accepted session check. No browser receives server-only database configuration.
 

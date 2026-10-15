@@ -9,6 +9,7 @@
     "build": "tsc -p tsconfig.build.json",
     "start": "node dist/server.js",
     "test": "vitest run",
+    "test:http": "vitest run tests/http",
     "test:identity": "node tests/fixtures/identity.ts",
     "test:identity:setup": "node tests/fixtures/identity.ts setup",
     "test:identity:cleanup": "node tests/fixtures/identity.ts cleanup"
