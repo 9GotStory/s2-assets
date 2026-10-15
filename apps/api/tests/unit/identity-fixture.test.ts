@@ -92,12 +92,38 @@ describe('Identity Fixture Unit Tests (T044 - US4)', () => {
           return { rows: [], rowCount: 0 };
         }
 
+        if (trimmed.includes('set_config')) {
+          return { rows: [{ set_config: params[1] }], rowCount: 1 };
+        }
+
+        if (trimmed.startsWith('SHOW lock_timeout')) {
+          return { rows: [{ lock_timeout: '5s' }], rowCount: 1 };
+        }
+
+        if (trimmed.startsWith('SHOW statement_timeout')) {
+          return { rows: [{ statement_timeout: '10s' }], rowCount: 1 };
+        }
+
         if (trimmed.includes('pg_try_advisory_lock')) {
           return { rows: [{ locked: true }], rowCount: 1 };
         }
 
         if (trimmed.includes('pg_advisory_unlock')) {
           return { rows: [{ pg_advisory_unlock: true }], rowCount: 1 };
+        }
+
+        // Check ownership against users table
+        if (trimmed.startsWith('SELECT id, username FROM users WHERE id = ANY($1')) {
+          const ids: string[] = params[0] || [];
+          const matched = users.filter((u) => ids.includes(u.id)).map((u) => ({ id: u.id, username: u.username }));
+          return { rows: matched, rowCount: matched.length };
+        }
+
+        // Check ownership against sessions table
+        if (trimmed.startsWith('SELECT id, user_id FROM sessions WHERE id = ANY($1')) {
+          const ids: string[] = params[0] || [];
+          const matched = sessions.filter((s) => ids.includes(s.id)).map((s) => ({ id: s.id, user_id: s.user_id }));
+          return { rows: matched, rowCount: matched.length };
         }
 
         // 1. Conflict check: SELECT id, username FROM users WHERE username = $1 OR username = $2
@@ -167,8 +193,14 @@ describe('Identity Fixture Unit Tests (T044 - US4)', () => {
         // 8. Cleanup queries
         if (trimmed.startsWith('DELETE FROM sessions WHERE id = ANY($1')) {
           const ids: string[] = params[0] || [];
+          const userIds: string[] | undefined = params[1];
           const before = sessions.length;
-          const filtered = sessions.filter((s) => !ids.includes(s.id));
+          const filtered = sessions.filter((s) => {
+            if (userIds) {
+              return !(ids.includes(s.id) && userIds.includes(s.user_id));
+            }
+            return !ids.includes(s.id);
+          });
           const removed = before - filtered.length;
           sessions.length = 0;
           sessions.push(...filtered);
@@ -1441,6 +1473,250 @@ describe('Identity Fixture Unit Tests (T044 - US4)', () => {
             `127.0.0.1:5432/${expectedDbName}`
           )
         ).rejects.toThrow(/Insecure permissions on state file/);
+      });
+    });
+
+    describe('9. Round 4 Regressions & Robustness Invariants (P1 & P2)', () => {
+      describe('9.1 Ownership-Safe Cleanup & Invariant Consistency (P1)', () => {
+        it('rejects state file when a grant belongs to an unowned user ID', async () => {
+          const badState: TestIdentityState = {
+            runId: testRunId,
+            database: expectedDbName,
+            targetEndpoint: `127.0.0.1:5432/${expectedDbName}`,
+            status: 'active',
+            maintainer: { id: 'm1', username: 'm_user', role: 'SYSTEM_MAINTAINER' },
+            standard: { id: 's1', username: 's_user', role: null },
+            createdUserIds: ['m1', 's1'],
+            createdRoleIds: [],
+            createdGrants: [{ userId: 'unrelated_outsider_id', roleId: 'SYSTEM_MAINTAINER' }],
+            createdSessionIds: [],
+            createdAt: new Date().toISOString(),
+          };
+          await writeStateFileAtomic(tempStateFile, badState);
+
+          await expect(
+            readAndValidateStateFile(
+              tempStateFile,
+              testRunId,
+              expectedDbName,
+              `127.0.0.1:5432/${expectedDbName}`
+            )
+          ).rejects.toThrow(/grant user "unrelated_outsider_id" does not belong to run-owned identities/);
+        });
+
+        it('rejects state file when createdUserIds contains an unowned ID not matching maintainer or standard', async () => {
+          const badState: TestIdentityState = {
+            runId: testRunId,
+            database: expectedDbName,
+            targetEndpoint: `127.0.0.1:5432/${expectedDbName}`,
+            status: 'active',
+            maintainer: { id: 'm1', username: 'm_user', role: 'SYSTEM_MAINTAINER' },
+            standard: { id: 's1', username: 's_user', role: null },
+            createdUserIds: ['m1', 's1', 'unrelated_extra_user'],
+            createdRoleIds: [],
+            createdGrants: [],
+            createdSessionIds: [],
+            createdAt: new Date().toISOString(),
+          };
+          await writeStateFileAtomic(tempStateFile, badState);
+
+          await expect(
+            readAndValidateStateFile(
+              tempStateFile,
+              testRunId,
+              expectedDbName,
+              `127.0.0.1:5432/${expectedDbName}`
+            )
+          ).rejects.toThrow(/createdUserIds contains unowned user ID "unrelated_extra_user"/);
+        });
+
+        it('fails cleanup and rolls back if an existing session in DB belongs to an unowned identity', async () => {
+          const mockDb = createMockDb();
+          const validState: TestIdentityState = {
+            runId: testRunId,
+            database: expectedDbName,
+            targetEndpoint: `127.0.0.1:5432/${expectedDbName}`,
+            status: 'active',
+            maintainer: { id: 'm1', username: 'm_user', role: 'SYSTEM_MAINTAINER' },
+            standard: { id: 's1', username: 's_user', role: null },
+            createdUserIds: ['m1', 's1'],
+            createdRoleIds: [],
+            createdGrants: [{ userId: 'm1', roleId: 'SYSTEM_MAINTAINER' }],
+            createdSessionIds: ['outsider_session_1'],
+            createdAt: new Date().toISOString(),
+          };
+          await writeStateFileAtomic(tempStateFile, validState);
+
+          // Add users to mockDb
+          mockDb.users.push(
+            { id: 'm1', username: 'm_user', password_hash: 'h', is_active: true, created_at: new Date(), updated_at: new Date() },
+            { id: 's1', username: 's_user', password_hash: 'h', is_active: true, created_at: new Date(), updated_at: new Date() },
+            { id: 'outsider_id', username: 'outsider', password_hash: 'h', is_active: true, created_at: new Date(), updated_at: new Date() }
+          );
+          // Outsider has a session
+          mockDb.sessions.push({
+            id: 'outsider_session_1',
+            user_id: 'outsider_id',
+            expires_at: new Date(Date.now() + 3600000),
+            created_at: new Date(),
+          });
+
+          await expect(
+            cleanupTestIdentities({
+              nodeEnv: 'test',
+              databaseUrl: validDbUrl,
+              expectedDb: expectedDbName,
+              runId: testRunId,
+              stateFile: tempStateFile,
+              db: mockDb,
+            })
+          ).rejects.toThrow(/Inconsistent session ownership: session "outsider_session_1" belongs to user "outsider_id"/);
+
+          // Outsider's session and user must remain completely intact
+          expect(mockDb.sessions.length).toBe(1);
+          expect(mockDb.sessions[0].id).toBe('outsider_session_1');
+          expect(mockDb.users.length).toBe(3);
+        });
+
+        it('fails cleanup and rolls back if database user username does not match recorded fixture identity', async () => {
+          const mockDb = createMockDb();
+          const validState: TestIdentityState = {
+            runId: testRunId,
+            database: expectedDbName,
+            targetEndpoint: `127.0.0.1:5432/${expectedDbName}`,
+            status: 'active',
+            maintainer: { id: 'm1', username: 'm_user', role: 'SYSTEM_MAINTAINER' },
+            standard: { id: 's1', username: 's_user', role: null },
+            createdUserIds: ['m1', 's1'],
+            createdRoleIds: [],
+            createdGrants: [],
+            createdSessionIds: [],
+            createdAt: new Date().toISOString(),
+          };
+          await writeStateFileAtomic(tempStateFile, validState);
+
+          // Mock DB has a user with id m1, but DIFFERENT username (e.g. hijacked ID)
+          mockDb.users.push(
+            { id: 'm1', username: 'different_user_name', password_hash: 'h', is_active: true, created_at: new Date(), updated_at: new Date() },
+            { id: 's1', username: 's_user', password_hash: 'h', is_active: true, created_at: new Date(), updated_at: new Date() }
+          );
+
+          await expect(
+            cleanupTestIdentities({
+              nodeEnv: 'test',
+              databaseUrl: validDbUrl,
+              expectedDb: expectedDbName,
+              runId: testRunId,
+              stateFile: tempStateFile,
+              db: mockDb,
+            })
+          ).rejects.toThrow(/Database ownership mismatch: user "m1" has username "different_user_name", expected "m_user"/);
+
+          // Verify no users were deleted
+          expect(mockDb.users.length).toBe(2);
+        });
+      });
+
+      describe('9.2 Bounded Lock and Statement Timeouts (P2)', () => {
+        it('configures lock_timeout and statement_timeout on cleanup transaction', async () => {
+          const mockDb = createMockDb();
+          const validState: TestIdentityState = {
+            runId: testRunId,
+            database: expectedDbName,
+            targetEndpoint: `127.0.0.1:5432/${expectedDbName}`,
+            status: 'active',
+            maintainer: { id: 'm1', username: 'm_user', role: 'SYSTEM_MAINTAINER' },
+            standard: { id: 's1', username: 's_user', role: null },
+            createdUserIds: ['m1', 's1'],
+            createdRoleIds: [],
+            createdGrants: [],
+            createdSessionIds: [],
+            createdAt: new Date().toISOString(),
+          };
+          await writeStateFileAtomic(tempStateFile, validState);
+
+          mockDb.users.push(
+            { id: 'm1', username: 'm_user', password_hash: 'h', is_active: true, created_at: new Date(), updated_at: new Date() },
+            { id: 's1', username: 's_user', password_hash: 'h', is_active: true, created_at: new Date(), updated_at: new Date() }
+          );
+
+          await cleanupTestIdentities({
+            nodeEnv: 'test',
+            databaseUrl: validDbUrl,
+            expectedDb: expectedDbName,
+            runId: testRunId,
+            stateFile: tempStateFile,
+            db: mockDb,
+            lockTimeoutMs: 3000,
+            statementTimeoutMs: 6000,
+          });
+
+          // Verify set_config was called for lock_timeout and statement_timeout
+          const setConfigCalls = mockDb.query.mock.calls.filter((c: any) =>
+            typeof c[0] === 'string' && c[0].includes('set_config')
+          );
+          expect(setConfigCalls.length).toBeGreaterThanOrEqual(2);
+          expect(setConfigCalls.some((c: any) => c[1]?.[0] === '3000ms')).toBe(true);
+          expect(setConfigCalls.some((c: any) => c[1]?.[0] === '6000ms')).toBe(true);
+        });
+
+        it('fails closed and preserves state file when LOCK TABLE times out', async () => {
+          const mockDb = createMockDb();
+          const validState: TestIdentityState = {
+            runId: testRunId,
+            database: expectedDbName,
+            targetEndpoint: `127.0.0.1:5432/${expectedDbName}`,
+            status: 'active',
+            maintainer: { id: 'm1', username: 'm_user', role: 'SYSTEM_MAINTAINER' },
+            standard: { id: 's1', username: 's_user', role: null },
+            createdUserIds: ['m1', 's1'],
+            createdRoleIds: ['SYSTEM_MAINTAINER'],
+            createdGrants: [],
+            createdSessionIds: [],
+            createdAt: new Date().toISOString(),
+          };
+          await writeStateFileAtomic(tempStateFile, validState);
+
+          mockDb.users.push(
+            { id: 'm1', username: 'm_user', password_hash: 'h', is_active: true, created_at: new Date(), updated_at: new Date() },
+            { id: 's1', username: 's_user', password_hash: 'h', is_active: true, created_at: new Date(), updated_at: new Date() }
+          );
+          mockDb.roles.push({ id: 'SYSTEM_MAINTAINER', description: 'desc' });
+
+          // Override mockDb.query to simulate lock timeout on LOCK TABLE
+          const originalQuery = mockDb.query;
+          mockDb.query = vi.fn(async (sql: string, params: any[]) => {
+            if (sql.includes('LOCK TABLE')) {
+              const err = new Error('canceling statement due to lock timeout');
+              (err as any).code = '55P03';
+              throw err;
+            }
+            return originalQuery(sql, params);
+          });
+
+          await expect(
+            cleanupTestIdentities({
+              nodeEnv: 'test',
+              databaseUrl: validDbUrl,
+              expectedDb: expectedDbName,
+              runId: testRunId,
+              stateFile: tempStateFile,
+              db: mockDb,
+            })
+          ).rejects.toThrow(/canceling statement due to lock timeout/);
+
+          // State file must be preserved intact for safe recovery
+          const stateExists = await fs.stat(tempStateFile).then(() => true, () => false);
+          expect(stateExists).toBe(true);
+          const raw = await fs.readFile(tempStateFile, 'utf-8');
+          expect(JSON.parse(raw).runId).toBe(testRunId);
+
+          // Rollback occurred
+          const rollbackCalls = mockDb.query.mock.calls.filter((c: any) =>
+            typeof c[0] === 'string' && c[0].includes('ROLLBACK')
+          );
+          expect(rollbackCalls.length).toBeGreaterThanOrEqual(1);
+        });
       });
     });
   });

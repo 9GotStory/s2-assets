@@ -53,6 +53,8 @@ export interface IdentityCleanupOptions {
   nodeEnv?: string;
   expectedDb?: string;
   db?: any;
+  lockTimeoutMs?: number;
+  statementTimeoutMs?: number;
 }
 
 export interface IdentityCleanupResult {
@@ -472,9 +474,98 @@ export async function readAndValidateStateFile(
     throw new Error('Corrupted fixture state file: missing ownership arrays. Failing closed.');
   }
 
+  const userIdsSet = new Set<string>();
   for (const uid of state.createdUserIds) {
     if (typeof uid !== 'string' || uid.trim().length === 0) {
       throw new Error('Corrupted fixture state file: invalid user ID in createdUserIds. Failing closed.');
+    }
+    if (userIdsSet.has(uid)) {
+      throw new Error(`Corrupted fixture state file: duplicate user ID "${uid}" in createdUserIds. Failing closed.`);
+    }
+    userIdsSet.add(uid);
+  }
+
+  // Validate maintainer identity record consistency
+  if (state.maintainer) {
+    if (typeof state.maintainer !== 'object' || state.maintainer === null) {
+      throw new Error('Corrupted fixture state file: maintainer must be an object. Failing closed.');
+    }
+    if (typeof state.maintainer.username !== 'string' || state.maintainer.username.trim().length === 0) {
+      throw new Error('Corrupted fixture state file: missing maintainer username. Failing closed.');
+    }
+    if (typeof state.maintainer.id !== 'string') {
+      throw new Error('Corrupted fixture state file: invalid maintainer id. Failing closed.');
+    }
+    if (state.maintainer.id.length > 0 && !userIdsSet.has(state.maintainer.id)) {
+      throw new Error(
+        `Inconsistent ownership state: maintainer ID "${state.maintainer.id}" not found in createdUserIds. Failing closed.`
+      );
+    }
+  }
+
+  // Validate standard identity record consistency
+  if (state.standard) {
+    if (typeof state.standard !== 'object' || state.standard === null) {
+      throw new Error('Corrupted fixture state file: standard must be an object. Failing closed.');
+    }
+    if (typeof state.standard.username !== 'string' || state.standard.username.trim().length === 0) {
+      throw new Error('Corrupted fixture state file: missing standard username. Failing closed.');
+    }
+    if (typeof state.standard.id !== 'string') {
+      throw new Error('Corrupted fixture state file: invalid standard id. Failing closed.');
+    }
+    if (state.standard.id.length > 0 && !userIdsSet.has(state.standard.id)) {
+      throw new Error(
+        `Inconsistent ownership state: standard ID "${state.standard.id}" not found in createdUserIds. Failing closed.`
+      );
+    }
+  }
+
+  // All createdUserIds must belong to maintainer or standard (if populated)
+  for (const uid of state.createdUserIds) {
+    const isMaintainer = state.maintainer?.id === uid;
+    const isStandard = state.standard?.id === uid;
+    if ((state.maintainer?.id || state.standard?.id) && !isMaintainer && !isStandard) {
+      throw new Error(
+        `Inconsistent ownership state: createdUserIds contains unowned user ID "${uid}". Failing closed.`
+      );
+    }
+  }
+
+  // Validate grant ownership invariants: all grant user IDs must belong to run-owned identities
+  for (const g of state.createdGrants) {
+    if (typeof g !== 'object' || g === null) {
+      throw new Error('Corrupted fixture state file: invalid grant entry. Failing closed.');
+    }
+    if (typeof g.userId !== 'string' || g.userId.trim().length === 0) {
+      throw new Error('Corrupted fixture state file: invalid userId in grant. Failing closed.');
+    }
+    if (typeof g.roleId !== 'string' || g.roleId.trim().length === 0) {
+      throw new Error('Corrupted fixture state file: invalid roleId in grant. Failing closed.');
+    }
+    if (!userIdsSet.has(g.userId)) {
+      throw new Error(
+        `Inconsistent ownership state: grant user "${g.userId}" does not belong to run-owned identities. Failing closed.`
+      );
+    }
+  }
+
+  // Validate tracked sessions if present
+  if (state.createdSessionIds !== undefined) {
+    if (!Array.isArray(state.createdSessionIds)) {
+      throw new Error('Corrupted fixture state file: createdSessionIds must be an array. Failing closed.');
+    }
+    for (const sid of state.createdSessionIds) {
+      if (typeof sid !== 'string' || sid.trim().length === 0) {
+        throw new Error('Corrupted fixture state file: invalid session ID in createdSessionIds. Failing closed.');
+      }
+    }
+  }
+
+  // Validate createdRoleIds
+  for (const rid of state.createdRoleIds) {
+    if (typeof rid !== 'string' || rid.trim().length === 0) {
+      throw new Error('Corrupted fixture state file: invalid role ID in createdRoleIds. Failing closed.');
     }
   }
 
@@ -922,11 +1013,65 @@ export async function cleanupTestIdentities(
     await client.query('BEGIN');
     inTransaction = true;
 
-    // 1. Delete sessions for created users or explicitly tracked sessions
+    // Apply bounded PostgreSQL lock and statement timeouts within the cleanup transaction (P2)
+    const lockTimeoutMs =
+      options.lockTimeoutMs ?? parseInt(process.env.FOUNDATION_LOCK_TIMEOUT_MS || '5000', 10);
+    const statementTimeoutMs =
+      options.statementTimeoutMs ??
+      parseInt(process.env.FOUNDATION_STATEMENT_TIMEOUT_MS || '10000', 10);
+
+    await client.query("SELECT set_config('lock_timeout', $1::text, true)", [`${lockTimeoutMs}ms`]);
+    await client.query("SELECT set_config('statement_timeout', $1::text, true)", [`${statementTimeoutMs}ms`]);
+
+    // Establish identity ownership against actual selected database (P1)
+    if (state.createdUserIds && state.createdUserIds.length > 0) {
+      const userRowsRes = await client.query(
+        'SELECT id, username FROM users WHERE id = ANY($1::uuid[])',
+        [state.createdUserIds]
+      );
+      const foundUserRows: Array<{ id: string; username: string }> = userRowsRes.rows || [];
+      for (const row of foundUserRows) {
+        let expectedUsername: string | undefined;
+        if (state.maintainer && state.maintainer.id === row.id) {
+          expectedUsername = state.maintainer.username;
+        } else if (state.standard && state.standard.id === row.id) {
+          expectedUsername = state.standard.username;
+        }
+        if (expectedUsername && row.username !== expectedUsername) {
+          throw new Error(
+            `Database ownership mismatch: user "${row.id}" has username "${row.username}", expected "${expectedUsername}". Failing closed.`
+          );
+        }
+      }
+    }
+
+    // Verify that all existing tracked sessions belong exclusively to run-owned identities (P1)
     if (state.createdSessionIds && state.createdSessionIds.length > 0) {
-      const sRes = await client.query('DELETE FROM sessions WHERE id = ANY($1)', [
-        state.createdSessionIds,
-      ]);
+      const sessionRowsRes = await client.query(
+        'SELECT id, user_id FROM sessions WHERE id = ANY($1)',
+        [state.createdSessionIds]
+      );
+      const foundSessions: Array<{ id: string; user_id: string }> = sessionRowsRes.rows || [];
+      for (const s of foundSessions) {
+        if (!state.createdUserIds.includes(s.user_id)) {
+          throw new Error(
+            `Inconsistent session ownership: session "${s.id}" belongs to user "${s.user_id}" which is not an owned identity. Failing closed.`
+          );
+        }
+      }
+    }
+
+    // 1. Delete sessions for created users or explicitly tracked sessions, with ownership restrictions enforced in query (P1)
+    if (
+      state.createdSessionIds &&
+      state.createdSessionIds.length > 0 &&
+      state.createdUserIds &&
+      state.createdUserIds.length > 0
+    ) {
+      const sRes = await client.query(
+        'DELETE FROM sessions WHERE id = ANY($1) AND user_id = ANY($2::uuid[])',
+        [state.createdSessionIds, state.createdUserIds]
+      );
       sessionsRemoved += sRes.rowCount ?? 0;
     }
     if (state.createdUserIds && state.createdUserIds.length > 0) {
@@ -936,14 +1081,21 @@ export async function cleanupTestIdentities(
       sessionsRemoved += sRes.rowCount ?? 0;
     }
 
-    // 2. Delete composite grants
-    if (state.createdGrants && state.createdGrants.length > 0) {
+    // 2. Delete composite grants (strictly restricted to run-owned identities in query) (P1)
+    if (
+      state.createdGrants &&
+      state.createdGrants.length > 0 &&
+      state.createdUserIds &&
+      state.createdUserIds.length > 0
+    ) {
       for (const g of state.createdGrants) {
-        const gRes = await client.query(
-          'DELETE FROM user_roles WHERE user_id = $1 AND role_id = $2',
-          [g.userId, g.roleId]
-        );
-        grantsRemoved += gRes.rowCount ?? 0;
+        if (state.createdUserIds.includes(g.userId)) {
+          const gRes = await client.query(
+            'DELETE FROM user_roles WHERE user_id = $1 AND role_id = $2 AND user_id = ANY($3::uuid[])',
+            [g.userId, g.roleId, state.createdUserIds]
+          );
+          grantsRemoved += gRes.rowCount ?? 0;
+        }
       }
     }
 
@@ -969,6 +1121,7 @@ export async function cleanupTestIdentities(
     }
 
     await client.query('COMMIT');
+    inTransaction = false;
 
     // 5. Remove state file only after successful commit
     try {
