@@ -82,7 +82,8 @@ describe('Identity Fixture Unit Tests (T044 - US4)', () => {
           trimmed.startsWith('BEGIN') ||
           trimmed.startsWith('COMMIT') ||
           trimmed.startsWith('ROLLBACK') ||
-          trimmed.startsWith('LOCK TABLE')
+          trimmed.startsWith('LOCK TABLE') ||
+          trimmed.includes('pg_advisory_xact_lock')
         ) {
           return { rows: [], rowCount: 0 };
         }
@@ -742,7 +743,10 @@ describe('Identity Fixture Unit Tests (T044 - US4)', () => {
         createdAt: new Date().toISOString(),
       };
 
-      await fs.writeFile(tempStateFile, JSON.stringify(state, null, 2), 'utf-8');
+      await fs.writeFile(tempStateFile, JSON.stringify(state, null, 2), {
+        mode: 0o600,
+        encoding: 'utf-8',
+      });
       const mockDb = createMockDbWithFixture(state);
 
       const cleanupRes = await cleanupTestIdentities({
@@ -785,7 +789,10 @@ describe('Identity Fixture Unit Tests (T044 - US4)', () => {
         createdAt: new Date().toISOString(),
       };
 
-      await fs.writeFile(tempStateFile, JSON.stringify(state, null, 2), 'utf-8');
+      await fs.writeFile(tempStateFile, JSON.stringify(state, null, 2), {
+        mode: 0o600,
+        encoding: 'utf-8',
+      });
       const mockDb = createMockDbWithFixture(state);
 
       // Unrelated user ALSO holds SYSTEM_MAINTAINER grant
@@ -879,7 +886,10 @@ describe('Identity Fixture Unit Tests (T044 - US4)', () => {
         createdAt: new Date().toISOString(),
       };
 
-      await fs.writeFile(tempStateFile, JSON.stringify(state, null, 2), 'utf-8');
+      await fs.writeFile(tempStateFile, JSON.stringify(state, null, 2), {
+        mode: 0o600,
+        encoding: 'utf-8',
+      });
 
       const mockDb = createMockDb();
       await expect(
@@ -909,7 +919,10 @@ describe('Identity Fixture Unit Tests (T044 - US4)', () => {
         createdAt: new Date().toISOString(),
       };
 
-      await fs.writeFile(tempStateFile, JSON.stringify(state, null, 2), 'utf-8');
+      await fs.writeFile(tempStateFile, JSON.stringify(state, null, 2), {
+        mode: 0o600,
+        encoding: 'utf-8',
+      });
 
       const mockDb = createMockDb();
       await expect(
@@ -925,7 +938,10 @@ describe('Identity Fixture Unit Tests (T044 - US4)', () => {
     });
 
     it('fails closed on corrupted state file JSON', async () => {
-      await fs.writeFile(tempStateFile, 'NOT_VALID_JSON{{{', 'utf-8');
+      await fs.writeFile(tempStateFile, 'NOT_VALID_JSON{{{', {
+        mode: 0o600,
+        encoding: 'utf-8',
+      });
 
       const mockDb = createMockDb();
       await expect(
@@ -1054,6 +1070,222 @@ describe('Identity Fixture Unit Tests (T044 - US4)', () => {
       expect(process.env.EXPORT_KEY_1).toBe('value_1');
       expect(process.env.EXPORT_KEY_2).toBe('value_2');
       expect(process.env.PLAIN_KEY).toBe('plain_value');
+    });
+  });
+
+  describe('8. Round 2 Regressions & Robustness Invariants', () => {
+    describe('8.1 Effective Endpoint & Driver Parsing (Finding 3)', () => {
+      it('rejects duplicate ?host= override when any parameter names a production host', () => {
+        const url = 'postgresql://u:p@localhost:5432/s2_foundation_test?host=postgres&host=production.invalid';
+        expect(() => validateTargetDatabase(url, 's2_foundation_test')).toThrow(
+          /Production database target is prohibited/
+        );
+      });
+
+      it('rejects URL-encoded production host in ?host= query parameter', () => {
+        const url = 'postgresql://u:p@localhost:5432/s2_foundation_test?host=prod%2Einternal';
+        expect(() => validateTargetDatabase(url, 's2_foundation_test')).toThrow(
+          /Production database target is prohibited/
+        );
+      });
+
+      it('binds exact effective port from ?port= override matching pg driver semantics', () => {
+        const url = 'postgresql://u:p@localhost:5432/s2_foundation_test?port=15432';
+        const res = validateTargetDatabase(url, 's2_foundation_test');
+        expect(res.targetEndpoint).toBe('localhost:15432/s2_foundation_test');
+      });
+
+      it('takes last port parameter when duplicate ?port= overrides are present', () => {
+        const url = 'postgresql://u:p@localhost:5432/s2_foundation_test?port=1111&port=2222';
+        const res = validateTargetDatabase(url, 's2_foundation_test');
+        expect(res.targetEndpoint).toBe('localhost:2222/s2_foundation_test');
+      });
+    });
+
+    describe('8.2 Ownership State Permissions & Integrity (Finding 5)', () => {
+      it('rejects cleanup when state file has insecure mode 0644', async () => {
+        const state: TestIdentityState = {
+          runId: testRunId,
+          database: expectedDbName,
+          targetEndpoint: `127.0.0.1:5432/${expectedDbName}`,
+          status: 'active',
+          maintainer: { id: 'u1', username: 'm', role: 'SYSTEM_MAINTAINER' },
+          standard: { id: 'u2', username: 's', role: null },
+          createdUserIds: ['u1', 'u2'],
+          createdRoleIds: [],
+          createdGrants: [],
+          createdSessionIds: [],
+          createdAt: new Date().toISOString(),
+        };
+
+        await fs.writeFile(tempStateFile, JSON.stringify(state, null, 2), {
+          mode: 0o644,
+          encoding: 'utf-8',
+        });
+        await fs.chmod(tempStateFile, 0o644);
+
+        const mockDb = createMockDb();
+        await expect(
+          cleanupTestIdentities({
+            nodeEnv: 'test',
+            databaseUrl: validDbUrl,
+            expectedDb: expectedDbName,
+            runId: testRunId,
+            stateFile: tempStateFile,
+            db: mockDb,
+          })
+        ).rejects.toThrow(/Insecure permissions on state file/);
+      });
+
+      it('rejects cleanup when targetEndpoint is missing from state record', async () => {
+        const state: any = {
+          runId: testRunId,
+          database: expectedDbName,
+          status: 'active',
+          maintainer: { id: 'u1', username: 'm', role: 'SYSTEM_MAINTAINER' },
+          standard: { id: 'u2', username: 's', role: null },
+          createdUserIds: ['u1', 'u2'],
+          createdRoleIds: [],
+          createdGrants: [],
+          createdSessionIds: [],
+          createdAt: new Date().toISOString(),
+        };
+
+        await fs.writeFile(tempStateFile, JSON.stringify(state, null, 2), {
+          mode: 0o600,
+          encoding: 'utf-8',
+        });
+
+        const mockDb = createMockDb();
+        await expect(
+          cleanupTestIdentities({
+            nodeEnv: 'test',
+            databaseUrl: validDbUrl,
+            expectedDb: expectedDbName,
+            runId: testRunId,
+            stateFile: tempStateFile,
+            db: mockDb,
+          })
+        ).rejects.toThrow(/missing targetEndpoint/);
+      });
+
+      it('rejects cleanup when targetEndpoint mismatches expected connection endpoint', async () => {
+        const state: TestIdentityState = {
+          runId: testRunId,
+          database: expectedDbName,
+          targetEndpoint: `otherhost:9999/${expectedDbName}`,
+          status: 'active',
+          maintainer: { id: 'u1', username: 'm', role: 'SYSTEM_MAINTAINER' },
+          standard: { id: 'u2', username: 's', role: null },
+          createdUserIds: ['u1', 'u2'],
+          createdRoleIds: [],
+          createdGrants: [],
+          createdSessionIds: [],
+          createdAt: new Date().toISOString(),
+        };
+
+        await fs.writeFile(tempStateFile, JSON.stringify(state, null, 2), {
+          mode: 0o600,
+          encoding: 'utf-8',
+        });
+
+        const mockDb = createMockDb();
+        await expect(
+          cleanupTestIdentities({
+            nodeEnv: 'test',
+            databaseUrl: validDbUrl,
+            expectedDb: expectedDbName,
+            runId: testRunId,
+            stateFile: tempStateFile,
+            db: mockDb,
+          })
+        ).rejects.toThrow(/State file target mismatch/);
+      });
+    });
+
+    describe('8.3 Advisory Lock Serialization (Finding 1)', () => {
+      it('acquires transaction advisory lock keyed by run ID during setup and cleanup', async () => {
+        const mockDb = createMockDb();
+        const state = await setupTestIdentities({
+          nodeEnv: 'test',
+          databaseUrl: validDbUrl,
+          expectedDb: expectedDbName,
+          runId: testRunId,
+          baseUsername: testBaseUsername,
+          password: testPassword,
+          stateFile: tempStateFile,
+          db: mockDb,
+        });
+
+        expect(state.status).toBe('active');
+        expect(mockDb.query).toHaveBeenCalledWith(
+          expect.stringContaining('SELECT pg_advisory_xact_lock'),
+          [testRunId]
+        );
+
+        await cleanupTestIdentities({
+          nodeEnv: 'test',
+          databaseUrl: validDbUrl,
+          expectedDb: expectedDbName,
+          runId: testRunId,
+          stateFile: tempStateFile,
+          db: mockDb,
+        });
+
+        expect(mockDb.query).toHaveBeenCalledWith(
+          expect.stringContaining('SELECT pg_advisory_xact_lock'),
+          [testRunId]
+        );
+      });
+    });
+
+    describe('8.4 Uncertain Commit Outcome & Recovery (Finding 2)', () => {
+      it('preserves state file with status uncertain on commit failure and permits recovery via cleanup', async () => {
+        const mockDb = createMockDb();
+        const originalQuery = mockDb.query;
+        // Intercept COMMIT and raise a simulated network error
+        mockDb.query = vi.fn(async (sql: string, params: any[] = []) => {
+          if (sql.trim().startsWith('COMMIT')) {
+            throw new Error('Simulated lost-acknowledgement network drop at COMMIT');
+          }
+          return originalQuery(sql, params);
+        });
+
+        await expect(
+          setupTestIdentities({
+            nodeEnv: 'test',
+            databaseUrl: validDbUrl,
+            expectedDb: expectedDbName,
+            runId: testRunId,
+            baseUsername: testBaseUsername,
+            password: testPassword,
+            stateFile: tempStateFile,
+            db: mockDb,
+          })
+        ).rejects.toThrow(/Simulated lost-acknowledgement network drop at COMMIT/);
+
+        // State file is preserved with status 'uncertain'
+        expect(fsSync.existsSync(tempStateFile)).toBe(true);
+        const raw = await fs.readFile(tempStateFile, 'utf-8');
+        const uncertainState = JSON.parse(raw);
+        expect(uncertainState.status).toBe('uncertain');
+        expect(uncertainState.createdUserIds.length).toBe(2);
+
+        // Subsequent cleanup recovers and deletes the uncertain state
+        mockDb.query = originalQuery;
+        const cleanupRes = await cleanupTestIdentities({
+          nodeEnv: 'test',
+          databaseUrl: validDbUrl,
+          expectedDb: expectedDbName,
+          runId: testRunId,
+          stateFile: tempStateFile,
+          db: mockDb,
+        });
+
+        expect(cleanupRes.cleaned).toBe(true);
+        expect(cleanupRes.usersRemoved).toBe(2);
+        expect(fsSync.existsSync(tempStateFile)).toBe(false);
+      });
     });
   });
 });

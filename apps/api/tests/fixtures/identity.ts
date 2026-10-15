@@ -22,8 +22,8 @@ export interface TestIdentityGrant {
 export interface TestIdentityState {
   runId: string;
   database: string;
-  targetEndpoint?: string;
-  status: 'active' | 'partial' | 'initializing';
+  targetEndpoint: string;
+  status: 'active' | 'initializing' | 'uncertain';
   maintainer: TestIdentityUser;
   standard: TestIdentityUser;
   createdUserIds: string[];
@@ -31,6 +31,7 @@ export interface TestIdentityState {
   createdGrants: TestIdentityGrant[];
   createdSessionIds: string[];
   createdAt: string;
+  error?: string;
 }
 
 export interface IdentitySetupOptions {
@@ -151,31 +152,52 @@ export function validateTargetDatabase(
     throw new Error('Invalid database protocol: expected postgresql:');
   }
 
-  const queryHost = parsedUrl.searchParams.get('host');
-  const effectiveHost = (queryHost || parsedUrl.hostname).toLowerCase();
-  const urlHostname = parsedUrl.hostname.toLowerCase();
+  const isProdHost = (host: string): boolean => {
+    const h = decodeURIComponent(host || '').toLowerCase();
+    return (
+      h.includes('prod') ||
+      h.includes('production') ||
+      h.includes('s2.internal') ||
+      h.includes('aws') ||
+      h.includes('rds') ||
+      h.includes('azure') ||
+      h.includes('cloudsql')
+    );
+  };
 
-  const isProdHost = (host: string): boolean =>
-    host.includes('prod') ||
-    host.includes('production') ||
-    host.includes('s2.internal') ||
-    host.includes('aws') ||
-    host.includes('rds') ||
-    host.includes('azure') ||
-    host.includes('cloudsql');
+  // Inspect all host candidates in URL and query parameters (raw and decoded)
+  const hostCandidates = [
+    parsedUrl.hostname,
+    ...parsedUrl.searchParams.getAll('host'),
+  ].filter(Boolean);
 
-  if (isProdHost(urlHostname) || isProdHost(effectiveHost)) {
-    throw new Error(`Production database target is prohibited (host: ${effectiveHost || urlHostname})`);
+  for (const candidate of hostCandidates) {
+    if (isProdHost(candidate)) {
+      throw new Error(`Production database target is prohibited (host: ${candidate})`);
+    }
+  }
+
+  let effectiveHost: string;
+  let effectivePort: string;
+  let dbName: string;
+
+  try {
+    const dummyClient: any = new pg.Client({ connectionString: databaseUrl });
+    effectiveHost = String(dummyClient.connectionParameters?.host || '').toLowerCase();
+    effectivePort = String(dummyClient.connectionParameters?.port || '5432');
+    dbName = String(dummyClient.connectionParameters?.database || '');
+  } catch {
+    throw new Error('Failed to parse database connection parameters using pg driver');
   }
 
   if (!effectiveHost || effectiveHost.trim().length === 0) {
     throw new Error('Database URL host is required');
   }
 
-  const queryPort = parsedUrl.searchParams.get('port');
-  const effectivePort = parsedUrl.port || queryPort || '5432';
+  if (isProdHost(effectiveHost)) {
+    throw new Error(`Production database target is prohibited (host: ${effectiveHost})`);
+  }
 
-  const dbName = parsedUrl.pathname.replace(/^\//, '');
   if (!dbName || dbName.trim().length === 0) {
     throw new Error('Database name is required in database URL');
   }
@@ -346,7 +368,14 @@ export async function setupTestIdentities(
   await reservationHandle.close();
 
   const pool = options.db ?? new Pool({ connectionString: databaseUrl });
-  const client = typeof pool.connect === 'function' ? await pool.connect() : pool;
+  let client: any;
+  if ((pool as any)._connected || (pool as any)._connecting) {
+    client = pool;
+  } else if (typeof pool.connect === 'function') {
+    client = await pool.connect();
+  } else {
+    client = pool;
+  }
 
   const createdUserIds: string[] = [];
   const createdRoleIds: string[] = [];
@@ -354,10 +383,15 @@ export async function setupTestIdentities(
   const createdSessionIds: string[] = [];
 
   let inTransaction = false;
+  let commitAttempted = false;
+  let committed = false;
+  let maintainer: any = null;
+  let standard: any = null;
 
   try {
     await client.query('BEGIN');
     inTransaction = true;
+    await client.query("SELECT pg_advisory_xact_lock(hashtext('s2_foundation_fixture:' || $1))", [runId]);
 
     // 1. Conflict check: verify that target usernames do not already exist
     const existingRes = await client.query(
@@ -383,7 +417,7 @@ export async function setupTestIdentities(
 
     // 3. Create maintainer user using UserService (Argon2id)
     const userService = new UserService({ db: client });
-    const maintainer = await userService.createUser({
+    maintainer = await userService.createUser({
       username: maintainerUsername,
       password,
     });
@@ -397,7 +431,7 @@ export async function setupTestIdentities(
     createdGrants.push({ userId: maintainer.id, roleId: 'SYSTEM_MAINTAINER' });
 
     // 5. Create standard user (without system:maintain)
-    const standard = await userService.createUser({
+    standard = await userService.createUser({
       username: standardUsername,
       password,
     });
@@ -425,12 +459,12 @@ export async function setupTestIdentities(
       throw new Error('Standard identity unexpectedly possessed system:maintain capability');
     }
 
-    // 7. Write active state record to reserved state file
-    const activeState: TestIdentityState = {
+    // 7. Write pre-commit state with tracked IDs while status remains initializing
+    const preCommitState: TestIdentityState = {
       runId,
       database: dbName,
       targetEndpoint,
-      status: 'active',
+      status: 'initializing',
       maintainer: {
         id: maintainer.id,
         username: maintainerUsername,
@@ -448,34 +482,87 @@ export async function setupTestIdentities(
       createdAt: new Date().toISOString(),
     };
 
+    await fs.writeFile(stateFile, JSON.stringify(preCommitState, null, 2), {
+      mode: 0o600,
+      encoding: 'utf-8',
+    });
+
+    // 8. Commit database transaction
+    commitAttempted = true;
+    await client.query('COMMIT');
+    committed = true;
+    inTransaction = false;
+
+    // 9. Update state record to active only after commit succeeds
+    const activeState: TestIdentityState = {
+      ...preCommitState,
+      status: 'active',
+    };
+
     await fs.writeFile(stateFile, JSON.stringify(activeState, null, 2), {
       mode: 0o600,
       encoding: 'utf-8',
     });
 
-    // 8. Commit database transaction only after state is successfully persisted
-    await client.query('COMMIT');
-    inTransaction = false;
-
     return activeState;
   } catch (err: any) {
     const primaryError = err;
-    if (inTransaction) {
+    let rollbackSucceeded = false;
+    if (inTransaction && !committed) {
       try {
         await client.query('ROLLBACK');
+        rollbackSucceeded = true;
       } catch {
-        // Rollback failure preserved
+        rollbackSucceeded = false;
       }
     }
-    // Clean up reservation file since transaction was rolled back and no rows exist
-    try {
-      await fs.unlink(stateFile);
-    } catch {
-      // Do not mask primary failure
+
+    if (!commitAttempted && rollbackSucceeded) {
+      // Definite rollback: commit was never attempted and rollback succeeded cleanly.
+      // No rows exist in the database, so safe to unlink reservation file.
+      try {
+        await fs.unlink(stateFile);
+      } catch {
+        // Do not mask primary failure
+      }
+    } else {
+      // Uncertain outcome: commit was attempted or rollback failed.
+      // Rows may exist in the database! Preserve state file with status "uncertain"
+      // and record tracked IDs so cleanup can recover and delete any committed rows.
+      try {
+        const uncertainState: TestIdentityState = {
+          runId,
+          database: dbName,
+          targetEndpoint,
+          status: 'uncertain',
+          maintainer: {
+            id: maintainer?.id || '',
+            username: maintainerUsername,
+            role: 'SYSTEM_MAINTAINER',
+          },
+          standard: {
+            id: standard?.id || '',
+            username: standardUsername,
+            role: null,
+          },
+          createdUserIds: [...createdUserIds],
+          createdRoleIds: [...createdRoleIds],
+          createdGrants: [...createdGrants],
+          createdSessionIds: [...createdSessionIds],
+          createdAt: new Date().toISOString(),
+          error: primaryError?.message || 'Uncertain commit/rollback outcome',
+        };
+        await fs.writeFile(stateFile, JSON.stringify(uncertainState, null, 2), {
+          mode: 0o600,
+          encoding: 'utf-8',
+        });
+      } catch {
+        // Do not mask primary failure
+      }
     }
     throw primaryError;
   } finally {
-    if (typeof client.release === 'function') {
+    if (typeof client.release === 'function' && client !== options.db) {
       client.release();
     }
     if (!options.db) {
@@ -550,6 +637,14 @@ export async function cleanupTestIdentities(
     throw new Error(`State file path is a directory (EISDIR): "${stateFile}". Failing closed.`);
   }
 
+  // Validate state file mode (must be 0600 or 0400, reject 0644 or other permissive modes)
+  const fileMode = st.mode & 0o777;
+  if ((fileMode & 0o077) !== 0) {
+    throw new Error(
+      `Insecure permissions on state file "${stateFile}": mode must be 0600 or 0400 (got 0${fileMode.toString(8)}). Failing closed.`
+    );
+  }
+
   let state: TestIdentityState;
   try {
     const raw = await fs.readFile(stateFile, 'utf-8');
@@ -571,18 +666,33 @@ export async function cleanupTestIdentities(
     );
   }
 
-  if (state.targetEndpoint && state.targetEndpoint !== targetEndpoint) {
+  if (!state.targetEndpoint || typeof state.targetEndpoint !== 'string' || state.targetEndpoint.trim().length === 0) {
+    throw new Error('Corrupted or incomplete fixture state file: missing targetEndpoint. Failing closed.');
+  }
+
+  if (state.targetEndpoint !== targetEndpoint) {
     throw new Error(
       `State file target mismatch: expected "${targetEndpoint}", got "${state.targetEndpoint}". Failing closed.`
     );
   }
 
-  if (!Array.isArray(state.createdUserIds) || !Array.isArray(state.createdGrants)) {
+  if (!['active', 'initializing', 'uncertain'].includes(state.status)) {
+    throw new Error(`Invalid fixture state status: "${state.status}". Failing closed.`);
+  }
+
+  if (!Array.isArray(state.createdUserIds) || !Array.isArray(state.createdGrants) || !Array.isArray(state.createdRoleIds)) {
     throw new Error('Corrupted fixture state file: missing ownership arrays. Failing closed.');
   }
 
   const pool = options.db ?? new Pool({ connectionString: databaseUrl });
-  const client = typeof pool.connect === 'function' ? await pool.connect() : pool;
+  let client: any;
+  if ((pool as any)._connected || (pool as any)._connecting) {
+    client = pool;
+  } else if (typeof pool.connect === 'function') {
+    client = await pool.connect();
+  } else {
+    client = pool;
+  }
 
   let sessionsRemoved = 0;
   let grantsRemoved = 0;
@@ -591,6 +701,30 @@ export async function cleanupTestIdentities(
 
   try {
     await client.query('BEGIN');
+
+    // Serialize with in-flight setup for the same runId across complete database/state lifecycle
+    await client.query("SELECT pg_advisory_xact_lock(hashtext('s2_foundation_fixture:' || $1))", [runId]);
+
+    // Re-check state file in case in-flight setup committed or rolled back while cleanup waited for lock
+    if (fsSync.existsSync(stateFile)) {
+      try {
+        const rawAfterLock = await fs.readFile(stateFile, 'utf-8');
+        state = JSON.parse(rawAfterLock);
+      } catch {}
+    } else {
+      // Setup rolled back and cleaned up state file
+      await client.query('COMMIT');
+      return {
+        cleaned: false,
+        runId,
+        database: dbName,
+        usersRemoved: 0,
+        grantsRemoved: 0,
+        rolesRemoved: 0,
+        sessionsRemoved: 0,
+        reason: 'NO_STATE_FILE',
+      };
+    }
 
     // 1. Delete sessions for created users or explicitly tracked sessions
     if (state.createdSessionIds && state.createdSessionIds.length > 0) {
@@ -664,7 +798,7 @@ export async function cleanupTestIdentities(
     }
     throw err;
   } finally {
-    if (typeof client.release === 'function') {
+    if (typeof client.release === 'function' && client !== options.db) {
       client.release();
     }
     if (!options.db) {

@@ -213,45 +213,77 @@ _validate_foundation_env_file() {
   if [ "$TEST_PW_TRIMMED" = "password" ] || [ "$TEST_PW_TRIMMED" = "test" ] || [ "$TEST_PW_TRIMMED" = "admin" ] || [ "$TEST_PW_TRIMMED" = "s2_password" ]; then
     _fail "ERROR: FOUNDATION_TEST_PASSWORD cannot use default or trivial passwords"
   fi
+}
 
+_validate_fixture_database_url() {
   if [ -z "${FOUNDATION_TEST_DATABASE_URL:-}" ]; then
     _fail "ERROR: FOUNDATION_TEST_DATABASE_URL is required in ${FOUNDATION_ENV_FILE}"
   fi
   case "$FOUNDATION_TEST_DATABASE_URL" in
     *$'\n'*|*$'\r'*) _fail "ERROR: FOUNDATION_TEST_DATABASE_URL cannot contain line breaks" ;;
   esac
-  if [[ ! "$FOUNDATION_TEST_DATABASE_URL" =~ ^postgres(ql)?:// ]]; then
-    _fail "ERROR: FOUNDATION_TEST_DATABASE_URL must be a valid PostgreSQL connection URL"
-  fi
 
-  DB_URL_HOST=$(echo "$FOUNDATION_TEST_DATABASE_URL" | sed -E 's|^[^:]+://([^@]+@)?([^:/]+).*|\2|')
-  DB_QUERY_HOST=$(echo "$FOUNDATION_TEST_DATABASE_URL" | sed -n -E 's|.*\?.*host=([^&]+).*|\1|p')
-  DB_EFFECTIVE_HOST="${DB_QUERY_HOST:-$DB_URL_HOST}"
-  DB_EFFECTIVE_HOST_LOWER=$(echo "$DB_EFFECTIVE_HOST" | tr '[:upper:]' '[:lower:]')
+  local VALIDATION_EXIT=0
+  python3 -c '
+import os, sys, re
+from urllib.parse import urlparse, parse_qs, unquote
 
-  if [ -z "$DB_EFFECTIVE_HOST_LOWER" ]; then
-    _fail "ERROR: FOUNDATION_TEST_DATABASE_URL host cannot be empty"
-  fi
-  if [[ "$DB_EFFECTIVE_HOST_LOWER" == *"prod"* ]] || \
-     [[ "$DB_EFFECTIVE_HOST_LOWER" == *"production"* ]] || \
-     [[ "$DB_EFFECTIVE_HOST_LOWER" == *"s2.internal"* ]] || \
-     [[ "$DB_EFFECTIVE_HOST_LOWER" == *"aws"* ]] || \
-     [[ "$DB_EFFECTIVE_HOST_LOWER" == *"rds"* ]] || \
-     [[ "$DB_EFFECTIVE_HOST_LOWER" == *"azure"* ]] || \
-     [[ "$DB_EFFECTIVE_HOST_LOWER" == *"cloudsql"* ]]; then
-    _fail "ERROR: Production database target is prohibited (host: ${DB_EFFECTIVE_HOST})"
-  fi
+url = os.environ.get("FOUNDATION_TEST_DATABASE_URL", "")
+if not url.startswith("postgresql://") and not url.startswith("postgres://"):
+    sys.exit(10)
 
-  DB_URL_PATH=$(echo "$FOUNDATION_TEST_DATABASE_URL" | sed -E 's|^[^:]+://[^/]+/([^?]+).*|\1|')
-  if [[ ! "$DB_URL_PATH" =~ ^s2_foundation_[a-zA-Z0-9_]+$ ]]; then
-    _fail "ERROR: FOUNDATION_TEST_DATABASE_URL database name must begin with 's2_foundation_' and contain only alphanumeric/underscore characters (got '${DB_URL_PATH}')"
-  fi
-  if [ "$DB_URL_PATH" = "s2_assets" ] || [ "$DB_URL_PATH" = "s2_foundation_s2_assets" ] || [ "$DB_URL_PATH" = "postgres" ] || [ "$DB_URL_PATH" = "default" ]; then
-    _fail "ERROR: FOUNDATION_TEST_DATABASE_URL cannot use default or shared database name '${DB_URL_PATH}'"
-  fi
-  if [ "$DB_URL_PATH" != "$POSTGRES_DB" ]; then
-    _fail "ERROR: FOUNDATION_TEST_DATABASE_URL database target '${DB_URL_PATH}' does not match POSTGRES_DB '${POSTGRES_DB}'"
-  fi
+try:
+    p = urlparse(url)
+except Exception:
+    sys.exit(10)
+
+qs = parse_qs(p.query)
+
+all_hosts = []
+if p.hostname:
+    all_hosts.append(p.hostname)
+if "host" in qs:
+    all_hosts.extend(qs["host"])
+
+def is_prod(h):
+    h_lower = unquote(h or "").lower()
+    return any(s in h_lower for s in ["prod", "production", "s2.internal", "aws", "rds", "azure", "cloudsql"])
+
+for h in all_hosts:
+    if is_prod(h):
+        sys.exit(20)
+
+effective_host = (qs.get("host", [p.hostname])[-1] or "").lower()
+if not effective_host or is_prod(effective_host):
+    sys.exit(20)
+
+path = p.path.lstrip("/")
+if not path:
+    sys.exit(30)
+
+if not re.match(r"^s2_foundation_[a-zA-Z0-9_]+$", path):
+    sys.exit(31)
+
+if path in ["s2_assets", "s2_foundation_s2_assets", "postgres", "default"]:
+    sys.exit(32)
+
+expected_db = os.environ.get("POSTGRES_DB", "")
+if path != expected_db:
+    sys.exit(33)
+
+sys.exit(0)
+' || VALIDATION_EXIT=$?
+
+  case "$VALIDATION_EXIT" in
+    0) ;;
+    10) _fail "ERROR: FOUNDATION_TEST_DATABASE_URL must be a valid PostgreSQL connection URL" ;;
+    20) _fail "ERROR: Production database target is prohibited in FOUNDATION_TEST_DATABASE_URL" ;;
+    30) _fail "ERROR: FOUNDATION_TEST_DATABASE_URL database name is missing" ;;
+    31) _fail "ERROR: FOUNDATION_TEST_DATABASE_URL database name must begin with 's2_foundation_' and contain only alphanumeric/underscore characters" ;;
+    32) _fail "ERROR: FOUNDATION_TEST_DATABASE_URL cannot use default or shared database name" ;;
+    33) _fail "ERROR: FOUNDATION_TEST_DATABASE_URL database target does not match POSTGRES_DB '${POSTGRES_DB}'" ;;
+    *) _fail "ERROR: FOUNDATION_TEST_DATABASE_URL validation failed (code ${VALIDATION_EXIT})" ;;
+  esac
 }
 
 ACTION="$1"
@@ -309,6 +341,7 @@ case "$ACTION" in
     fi
 
     _validate_foundation_env_file
+    _validate_fixture_database_url
 
     ENV_DIR=$(dirname "$FOUNDATION_ENV_FILE")
     STATE_FILE="${ENV_DIR}/fixture-state-${FOUNDATION_TEST_RUN_ID}.json"
