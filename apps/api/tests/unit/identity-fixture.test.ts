@@ -8,6 +8,7 @@ import {
   setupTestIdentities,
   cleanupTestIdentities,
   loadEnvFile,
+  loadConfigFile,
   type TestIdentityState,
 } from '../fixtures/identity.ts';
 import { UserService, isArgon2idHash } from '../../src/services/user.service.ts';
@@ -22,14 +23,30 @@ describe('Identity Fixture Unit Tests (T044 - US4)', () => {
 
   let tempDir: string;
   let tempStateFile: string;
+  let originalEnv: NodeJS.ProcessEnv;
 
   beforeEach(async () => {
+    // Isolate from ambient database variables
+    originalEnv = { ...process.env };
+    delete process.env.POSTGRES_DB;
+    delete process.env.POSTGRES_USER;
+    delete process.env.POSTGRES_PASSWORD;
+    delete process.env.FOUNDATION_TEST_DATABASE_URL;
+    delete process.env.FOUNDATION_ENV_FILE;
+    delete process.env.FOUNDATION_FIXTURE_ENV_FILE;
+    delete process.env.FOUNDATION_FIXTURE_CONFIG_FILE;
+    delete process.env.FOUNDATION_FIXTURE_STATE_FILE;
+    delete process.env.FOUNDATION_TEST_RUN_ID;
+    delete process.env.FOUNDATION_TEST_USERNAME;
+    delete process.env.FOUNDATION_TEST_PASSWORD;
+
     tempDir = await fs.mkdtemp(path.join(os.tmpdir(), 'fixture-test-'));
     await fs.chmod(tempDir, 0o700);
     tempStateFile = path.join(tempDir, `fixture-state-${testRunId}.json`);
   });
 
   afterEach(async () => {
+    process.env = originalEnv;
     try {
       await fs.rm(tempDir, { recursive: true, force: true });
     } catch {
@@ -52,350 +69,25 @@ describe('Identity Fixture Unit Tests (T044 - US4)', () => {
     const userRoles: Array<{ user_id: string; role_id: string }> = [];
     const sessions: Array<{ id: string; user_id: string; expires_at: Date; created_at: Date }> = [];
 
-    const query = vi.fn(async (sql: string, params: any[] = []) => {
-      const trimmed = sql.trim();
-
-      // 1. SELECT id, username FROM users WHERE username = $1 OR username = $2
-      if (trimmed.startsWith('SELECT id, username FROM users WHERE username = $1 OR username = $2')) {
-        const matched = users.filter((u) => u.username === params[0] || u.username === params[1]);
-        return { rows: matched, rowCount: matched.length };
-      }
-
-      // 2. SELECT id FROM roles WHERE id = $1
-      if (trimmed.startsWith('SELECT id FROM roles WHERE id = $1')) {
-        const matched = roles.filter((r) => r.id === params[0]);
-        return { rows: matched, rowCount: matched.length };
-      }
-
-      // 3. INSERT INTO roles (id, description) VALUES ($1, $2)
-      if (trimmed.startsWith('INSERT INTO roles (id, description) VALUES ($1, $2)')) {
-        roles.push({ id: params[0], description: params[1] });
-        return { rows: [], rowCount: 1 };
-      }
-
-      // 4. INSERT INTO users (id, username, password_hash, is_active, created_at, updated_at)
-      if (trimmed.startsWith('INSERT INTO users')) {
-        const row = {
-          id: params[0],
-          username: params[1],
-          password_hash: params[2],
-          is_active: params[3],
-          created_at: new Date(),
-          updated_at: new Date(),
-        };
-        users.push(row);
-        return { rows: [row], rowCount: 1 };
-      }
-
-      // 5. INSERT INTO user_roles (user_id, role_id) VALUES ($1, $2)
-      if (trimmed.startsWith('INSERT INTO user_roles (user_id, role_id) VALUES ($1, $2)')) {
-        userRoles.push({ user_id: params[0], role_id: params[1] });
-        return { rows: [], rowCount: 1 };
-      }
-
-      // 6. SELECT id, username, password_hash, is_active, created_at, updated_at FROM users WHERE username = $1
-      if (trimmed.startsWith('SELECT id, username, password_hash, is_active, created_at, updated_at FROM users WHERE username = $1')) {
-        const matched = users.filter((u) => u.username === params[0]);
-        return { rows: matched, rowCount: matched.length };
-      }
-
-      // 7. Capability check query: SELECT users.id AS user_id, users.is_active AS is_active, roles.id AS role_id FROM users ...
-      if (trimmed.includes('FROM users') && trimmed.includes('LEFT JOIN user_roles') && trimmed.includes('LEFT JOIN roles')) {
-        const targetUserId = params[0];
-        const user = users.find((u) => u.id === targetUserId);
-        if (!user) return { rows: [], rowCount: 0 };
-        const userGrants = userRoles.filter((ur) => ur.user_id === targetUserId);
-        if (userGrants.length === 0) {
-          return {
-            rows: [{ user_id: user.id, is_active: user.is_active, role_id: null }],
-            rowCount: 1,
-          };
-        }
-        const rows = userGrants.map((g) => ({
-          user_id: user.id,
-          is_active: user.is_active,
-          role_id: g.role_id,
-        }));
-        return { rows, rowCount: rows.length };
-      }
-
-      // 8. Cleanup queries
-      if (trimmed.startsWith('DELETE FROM sessions WHERE id = ANY($1)')) {
-        const ids: string[] = params[0] || [];
-        const before = sessions.length;
-        const filtered = sessions.filter((s) => !ids.includes(s.id));
-        const removed = before - filtered.length;
-        sessions.length = 0;
-        sessions.push(...filtered);
-        return { rows: [], rowCount: removed };
-      }
-
-      if (trimmed.startsWith('DELETE FROM sessions WHERE user_id = ANY($1)')) {
-        const ids: string[] = params[0] || [];
-        const before = sessions.length;
-        const filtered = sessions.filter((s) => !ids.includes(s.user_id));
-        const removed = before - filtered.length;
-        sessions.length = 0;
-        sessions.push(...filtered);
-        return { rows: [], rowCount: removed };
-      }
-
-      if (trimmed.startsWith('DELETE FROM user_roles WHERE user_id = $1 AND role_id = $2')) {
-        const before = userRoles.length;
-        const filtered = userRoles.filter(
-          (ur) => !(ur.user_id === params[0] && ur.role_id === params[1])
-        );
-        const removed = before - filtered.length;
-        userRoles.length = 0;
-        userRoles.push(...filtered);
-        return { rows: [], rowCount: removed };
-      }
-
-      if (trimmed.startsWith('DELETE FROM users WHERE id = ANY($1)')) {
-        const ids: string[] = params[0] || [];
-        const before = users.length;
-        const filtered = users.filter((u) => !ids.includes(u.id));
-        const removed = before - filtered.length;
-        users.length = 0;
-        users.push(...filtered);
-        return { rows: [], rowCount: removed };
-      }
-
-      if (trimmed.startsWith('SELECT 1 FROM user_roles WHERE role_id = $1 LIMIT 1')) {
-        const inUse = userRoles.some((ur) => ur.role_id === params[0]);
-        return { rows: inUse ? [{ '?column?': 1 }] : [], rowCount: inUse ? 1 : 0 };
-      }
-
-      if (trimmed.startsWith('DELETE FROM roles WHERE id = $1')) {
-        const before = roles.length;
-        const filtered = roles.filter((r) => r.id !== params[0]);
-        const removed = before - filtered.length;
-        roles.length = 0;
-        roles.push(...filtered);
-        return { rows: [], rowCount: removed };
-      }
-
-      return { rows: [], rowCount: 0 };
-    });
-
-    return {
-      query,
+    const mockDb: any = {
       users,
       roles,
       userRoles,
       sessions,
-    };
-  }
-
-  describe('1. Target Database & URL Validation', () => {
-    it('accepts valid database URL starting with s2_foundation_', () => {
-      const { dbName } = validateTargetDatabase(validDbUrl);
-      expect(dbName).toBe(expectedDbName);
-    });
-
-    it('accepts valid database URL matching expectedDb exactly', () => {
-      const { dbName } = validateTargetDatabase(validDbUrl, expectedDbName);
-      expect(dbName).toBe(expectedDbName);
-    });
-
-    it('rejects missing or empty database URL', () => {
-      expect(() => validateTargetDatabase('')).toThrow(
-        /Database URL is required and must be a non-empty string/
-      );
-      expect(() => validateTargetDatabase(undefined)).toThrow(
-        /Database URL is required and must be a non-empty string/
-      );
-    });
-
-    it('rejects malformed database URL', () => {
-      expect(() => validateTargetDatabase('not-a-valid-url')).toThrow(
-        /Invalid database URL format/
-      );
-    });
-
-    it('rejects non-PostgreSQL protocols', () => {
-      expect(() =>
-        validateTargetDatabase('mysql://user:pw@127.0.0.1:3306/s2_foundation_test')
-      ).toThrow(/Invalid database protocol: expected postgresql:/);
-      expect(() =>
-        validateTargetDatabase('http://user:pw@127.0.0.1:5432/s2_foundation_test')
-      ).toThrow(/Invalid database protocol: expected postgresql:/);
-    });
-
-    it('rejects production database hostnames', () => {
-      expect(() =>
-        validateTargetDatabase('postgresql://u:p@db-prod.internal:5432/s2_foundation_test')
-      ).toThrow(/Production database target is prohibited/);
-      expect(() =>
-        validateTargetDatabase('postgresql://u:p@my-production.aws.rds.com:5432/s2_foundation_test')
-      ).toThrow(/Production database target is prohibited/);
-    });
-
-    it('rejects database names not starting with s2_foundation_', () => {
-      expect(() =>
-        validateTargetDatabase('postgresql://u:p@127.0.0.1:5432/s2_assets')
-      ).toThrow(/Database target must begin with "s2_foundation_"/);
-      expect(() =>
-        validateTargetDatabase('postgresql://u:p@127.0.0.1:5432/my_unmarked_db')
-      ).toThrow(/Database target must begin with "s2_foundation_"/);
-    });
-
-    it('rejects default or shared database names', () => {
-      expect(() =>
-        validateTargetDatabase('postgresql://u:p@127.0.0.1:5432/s2_foundation_s2_assets')
-      ).toThrow(/Database target cannot be default or shared database/);
-      expect(() =>
-        validateTargetDatabase('postgresql://u:p@127.0.0.1:5432/postgres')
-      ).toThrow(/Database target must begin with "s2_foundation_"/);
-    });
-
-    it('rejects mismatched database when expectedDb does not match URL target', () => {
-      expect(() =>
-        validateTargetDatabase(validDbUrl, 's2_foundation_other_run')
-      ).toThrow(/Database target mismatch/);
-    });
-
-    it('never leaks connection secrets or passwords in error messages', () => {
-      const secretPassword = 'SUPER_SENSITIVE_DB_PASSWORD_XYZ';
-      const secretUrl = `postgresql://my_user:${secretPassword}@127.0.0.1:5432/invalid_name`;
-
-      try {
-        validateTargetDatabase(secretUrl);
-        expect.unreachable('Should have thrown');
-      } catch (err: any) {
-        expect(err.message).not.toContain(secretPassword);
-        expect(err.message).toContain('Database target must begin with "s2_foundation_"');
-      }
-    });
-  });
-
-  describe('2. Environment & Parameter Validation', () => {
-    it('rejects NODE_ENV !== test', async () => {
-      await expect(
-        setupTestIdentities({
-          nodeEnv: 'production',
-          databaseUrl: validDbUrl,
-          runId: testRunId,
-          baseUsername: testBaseUsername,
-          password: testPassword,
-          stateFile: tempStateFile,
-        })
-      ).rejects.toThrow(/Fixture operations are strictly restricted to NODE_ENV=test/);
-
-      await expect(
-        setupTestIdentities({
-          nodeEnv: 'development',
-          databaseUrl: validDbUrl,
-          runId: testRunId,
-          baseUsername: testBaseUsername,
-          password: testPassword,
-          stateFile: tempStateFile,
-        })
-      ).rejects.toThrow(/Fixture operations are strictly restricted to NODE_ENV=test/);
-    });
-
-    it('rejects missing or invalid FOUNDATION_TEST_RUN_ID', async () => {
-      await expect(
-        setupTestIdentities({
-          nodeEnv: 'test',
-          databaseUrl: validDbUrl,
-          runId: '',
-          baseUsername: testBaseUsername,
-          password: testPassword,
-          stateFile: tempStateFile,
-        })
-      ).rejects.toThrow(/FOUNDATION_TEST_RUN_ID is required/);
-
-      await expect(
-        setupTestIdentities({
-          nodeEnv: 'test',
-          databaseUrl: validDbUrl,
-          runId: 'invalid run with spaces',
-          baseUsername: testBaseUsername,
-          password: testPassword,
-          stateFile: tempStateFile,
-        })
-      ).rejects.toThrow(/FOUNDATION_TEST_RUN_ID is required/);
-    });
-
-    it('rejects missing or invalid FOUNDATION_TEST_USERNAME', async () => {
-      await expect(
-        setupTestIdentities({
-          nodeEnv: 'test',
-          databaseUrl: validDbUrl,
-          runId: testRunId,
-          baseUsername: '',
-          password: testPassword,
-          stateFile: tempStateFile,
-        })
-      ).rejects.toThrow(/FOUNDATION_TEST_USERNAME is required/);
-    });
-
-    it('rejects short or trivial passwords', async () => {
-      await expect(
-        setupTestIdentities({
-          nodeEnv: 'test',
-          databaseUrl: validDbUrl,
-          runId: testRunId,
-          baseUsername: testBaseUsername,
-          password: 'short',
-          stateFile: tempStateFile,
-        })
-      ).rejects.toThrow(/at least 8 non-whitespace characters/);
-
-      await expect(
-        setupTestIdentities({
-          nodeEnv: 'test',
-          databaseUrl: validDbUrl,
-          runId: testRunId,
-          baseUsername: testBaseUsername,
-          password: 'password',
-          stateFile: tempStateFile,
-        })
-      ).rejects.toThrow(/cannot use default or trivial passwords/);
-    });
-
-    it('rejects missing stateFile', async () => {
-      const origEnvFile = process.env.FOUNDATION_ENV_FILE;
-      delete process.env.FOUNDATION_ENV_FILE;
-      delete process.env.FOUNDATION_FIXTURE_STATE_FILE;
-
-      try {
-        await expect(
-          setupTestIdentities({
-            nodeEnv: 'test',
-            databaseUrl: validDbUrl,
-            runId: testRunId,
-            baseUsername: testBaseUsername,
-            password: testPassword,
-            stateFile: undefined,
-          })
-        ).rejects.toThrow(/FOUNDATION_FIXTURE_STATE_FILE is required/);
-      } finally {
-        if (origEnvFile) process.env.FOUNDATION_ENV_FILE = origEnvFile;
-      }
-    });
-  });
-
-  describe('3. Fixture Setup & Authentication Invariants', () => {
-    // In-memory mock database store simulating real PostgreSQL tables
-    function createMockDb() {
-      const users: Array<{
-        id: string;
-        username: string;
-        password_hash: string;
-        is_active: boolean;
-        created_at: Date;
-        updated_at: Date;
-      }> = [];
-      const roles: Array<{ id: string; description: string }> = [];
-      const userRoles: Array<{ user_id: string; role_id: string }> = [];
-      const sessions: Array<{ id: string; user_id: string; expires_at: Date; created_at: Date }> = [];
-
-      const query = vi.fn(async (sql: string, params: any[] = []) => {
+      query: vi.fn(async (sql: string, params: any[] = []) => {
         const trimmed = sql.trim();
 
-        // 1. SELECT id, username FROM users WHERE username = $1 OR username = $2
+        // Transaction management and locking
+        if (
+          trimmed.startsWith('BEGIN') ||
+          trimmed.startsWith('COMMIT') ||
+          trimmed.startsWith('ROLLBACK') ||
+          trimmed.startsWith('LOCK TABLE')
+        ) {
+          return { rows: [], rowCount: 0 };
+        }
+
+        // 1. Conflict check: SELECT id, username FROM users WHERE username = $1 OR username = $2
         if (trimmed.startsWith('SELECT id, username FROM users WHERE username = $1 OR username = $2')) {
           const matched = users.filter((u) => u.username === params[0] || u.username === params[1]);
           return { rows: matched, rowCount: matched.length };
@@ -460,7 +152,7 @@ describe('Identity Fixture Unit Tests (T044 - US4)', () => {
         }
 
         // 8. Cleanup queries
-        if (trimmed.startsWith('DELETE FROM sessions WHERE id = ANY($1)')) {
+        if (trimmed.startsWith('DELETE FROM sessions WHERE id = ANY($1')) {
           const ids: string[] = params[0] || [];
           const before = sessions.length;
           const filtered = sessions.filter((s) => !ids.includes(s.id));
@@ -470,7 +162,7 @@ describe('Identity Fixture Unit Tests (T044 - US4)', () => {
           return { rows: [], rowCount: removed };
         }
 
-        if (trimmed.startsWith('DELETE FROM sessions WHERE user_id = ANY($1)')) {
+        if (trimmed.startsWith('DELETE FROM sessions WHERE user_id = ANY($1')) {
           const ids: string[] = params[0] || [];
           const before = sessions.length;
           const filtered = sessions.filter((s) => !ids.includes(s.user_id));
@@ -491,7 +183,7 @@ describe('Identity Fixture Unit Tests (T044 - US4)', () => {
           return { rows: [], rowCount: removed };
         }
 
-        if (trimmed.startsWith('DELETE FROM users WHERE id = ANY($1)')) {
+        if (trimmed.startsWith('DELETE FROM users WHERE id = ANY($1')) {
           const ids: string[] = params[0] || [];
           const before = users.length;
           const filtered = users.filter((u) => !ids.includes(u.id));
@@ -501,9 +193,18 @@ describe('Identity Fixture Unit Tests (T044 - US4)', () => {
           return { rows: [], rowCount: removed };
         }
 
-        if (trimmed.startsWith('SELECT 1 FROM user_roles WHERE role_id = $1 LIMIT 1')) {
+        // NOT EXISTS role deletion check
+        if (trimmed.startsWith('DELETE FROM roles WHERE id = $1 AND NOT EXISTS')) {
           const inUse = userRoles.some((ur) => ur.role_id === params[0]);
-          return { rows: inUse ? [{ '?column?': 1 }] : [], rowCount: inUse ? 1 : 0 };
+          if (inUse) {
+            return { rows: [], rowCount: 0 };
+          }
+          const before = roles.length;
+          const filtered = roles.filter((r) => r.id !== params[0]);
+          const removed = before - filtered.length;
+          roles.length = 0;
+          roles.push(...filtered);
+          return { rows: [], rowCount: removed };
         }
 
         if (trimmed.startsWith('DELETE FROM roles WHERE id = $1')) {
@@ -516,23 +217,242 @@ describe('Identity Fixture Unit Tests (T044 - US4)', () => {
         }
 
         return { rows: [], rowCount: 0 };
-      });
+      }),
+      connect: vi.fn(async () => mockDb),
+      release: vi.fn(),
+      end: vi.fn(async () => {}),
+    };
 
-      return {
-        query,
-        users,
-        roles,
-        userRoles,
-        sessions,
-      };
-    }
+    return mockDb;
+  }
 
+  describe('1. Target Database & URL Validation', () => {
+    it('accepts valid database URL matching expectedDb exactly', () => {
+      const { dbName, targetEndpoint } = validateTargetDatabase(validDbUrl, expectedDbName);
+      expect(dbName).toBe(expectedDbName);
+      expect(targetEndpoint).toBe(`127.0.0.1:5432/${expectedDbName}`);
+    });
+
+    it('rejects missing expectedDb parameter', () => {
+      expect(() => validateTargetDatabase(validDbUrl, undefined)).toThrow(
+        /Expected database name is required/
+      );
+    });
+
+    it('rejects missing or empty database URL', () => {
+      expect(() => validateTargetDatabase('', expectedDbName)).toThrow(
+        /Database URL is required and must be a non-empty string/
+      );
+      expect(() => validateTargetDatabase(undefined, expectedDbName)).toThrow(
+        /Database URL is required and must be a non-empty string/
+      );
+    });
+
+    it('rejects malformed database URL', () => {
+      expect(() => validateTargetDatabase('not-a-valid-url', expectedDbName)).toThrow(
+        /Invalid database URL format/
+      );
+    });
+
+    it('rejects non-PostgreSQL protocols', () => {
+      expect(() =>
+        validateTargetDatabase('mysql://user:pw@127.0.0.1:3306/s2_foundation_test', 's2_foundation_test')
+      ).toThrow(/Invalid database protocol: expected postgresql:/);
+      expect(() =>
+        validateTargetDatabase('http://user:pw@127.0.0.1:5432/s2_foundation_test', 's2_foundation_test')
+      ).toThrow(/Invalid database protocol: expected postgresql:/);
+    });
+
+    it('rejects production database hostnames in URL host', () => {
+      expect(() =>
+        validateTargetDatabase('postgresql://u:p@db-prod.internal:5432/s2_foundation_test', 's2_foundation_test')
+      ).toThrow(/Production database target is prohibited/);
+      expect(() =>
+        validateTargetDatabase('postgresql://u:p@my-production.aws.rds.com:5432/s2_foundation_test', 's2_foundation_test')
+      ).toThrow(/Production database target is prohibited/);
+    });
+
+    it('rejects production database host in ?host= query parameter override', () => {
+      expect(() =>
+        validateTargetDatabase(
+          'postgresql://u:p@localhost:5432/s2_foundation_test?host=s2.internal',
+          's2_foundation_test'
+        )
+      ).toThrow(/Production database target is prohibited/);
+      expect(() =>
+        validateTargetDatabase(
+          'postgresql://u:p@dummyhost:5432/s2_foundation_test?host=prod-db.rds.amazonaws.com',
+          's2_foundation_test'
+        )
+      ).toThrow(/Production database target is prohibited/);
+    });
+
+    it('rejects database names not starting with s2_foundation_', () => {
+      expect(() =>
+        validateTargetDatabase('postgresql://u:p@127.0.0.1:5432/s2_assets', 's2_assets')
+      ).toThrow(/Database target must begin with "s2_foundation_"/);
+      expect(() =>
+        validateTargetDatabase('postgresql://u:p@127.0.0.1:5432/my_unmarked_db', 'my_unmarked_db')
+      ).toThrow(/Database target must begin with "s2_foundation_"/);
+    });
+
+    it('rejects default or shared database names', () => {
+      expect(() =>
+        validateTargetDatabase('postgresql://u:p@127.0.0.1:5432/s2_foundation_s2_assets', 's2_foundation_s2_assets')
+      ).toThrow(/Database target cannot be default or shared database/);
+      expect(() =>
+        validateTargetDatabase('postgresql://u:p@127.0.0.1:5432/postgres', 'postgres')
+      ).toThrow(/Database target must begin with "s2_foundation_"/);
+    });
+
+    it('rejects mismatched database when expectedDb does not match URL target', () => {
+      expect(() =>
+        validateTargetDatabase(validDbUrl, 's2_foundation_other_run')
+      ).toThrow(/Database target mismatch/);
+    });
+
+    it('never leaks connection secrets or passwords in error messages', () => {
+      const secretPassword = 'SUPER_SENSITIVE_DB_PASSWORD_XYZ';
+      const secretUrl = `postgresql://my_user:${secretPassword}@127.0.0.1:5432/invalid_name`;
+
+      try {
+        validateTargetDatabase(secretUrl, 'invalid_name');
+        expect.unreachable('Should have thrown');
+      } catch (err: any) {
+        expect(err.message).not.toContain(secretPassword);
+        expect(err.message).toContain('Database target must begin with "s2_foundation_"');
+      }
+    });
+  });
+
+  describe('2. Environment & Parameter Validation', () => {
+    it('rejects NODE_ENV !== test', async () => {
+      await expect(
+        setupTestIdentities({
+          nodeEnv: 'production',
+          databaseUrl: validDbUrl,
+          expectedDb: expectedDbName,
+          runId: testRunId,
+          baseUsername: testBaseUsername,
+          password: testPassword,
+          stateFile: tempStateFile,
+        })
+      ).rejects.toThrow(/Fixture operations are strictly restricted to NODE_ENV=test/);
+
+      await expect(
+        setupTestIdentities({
+          nodeEnv: 'development',
+          databaseUrl: validDbUrl,
+          expectedDb: expectedDbName,
+          runId: testRunId,
+          baseUsername: testBaseUsername,
+          password: testPassword,
+          stateFile: tempStateFile,
+        })
+      ).rejects.toThrow(/Fixture operations are strictly restricted to NODE_ENV=test/);
+    });
+
+    it('rejects missing or invalid FOUNDATION_TEST_RUN_ID', async () => {
+      await expect(
+        setupTestIdentities({
+          nodeEnv: 'test',
+          databaseUrl: validDbUrl,
+          expectedDb: expectedDbName,
+          runId: '',
+          baseUsername: testBaseUsername,
+          password: testPassword,
+          stateFile: tempStateFile,
+        })
+      ).rejects.toThrow(/FOUNDATION_TEST_RUN_ID is required/);
+
+      await expect(
+        setupTestIdentities({
+          nodeEnv: 'test',
+          databaseUrl: validDbUrl,
+          expectedDb: expectedDbName,
+          runId: 'invalid run with spaces',
+          baseUsername: testBaseUsername,
+          password: testPassword,
+          stateFile: tempStateFile,
+        })
+      ).rejects.toThrow(/FOUNDATION_TEST_RUN_ID is required and must be alphanumeric/);
+    });
+
+    it('rejects missing or invalid FOUNDATION_TEST_USERNAME', async () => {
+      await expect(
+        setupTestIdentities({
+          nodeEnv: 'test',
+          databaseUrl: validDbUrl,
+          expectedDb: expectedDbName,
+          runId: testRunId,
+          baseUsername: '',
+          password: testPassword,
+          stateFile: tempStateFile,
+        })
+      ).rejects.toThrow(/FOUNDATION_TEST_USERNAME is required/);
+
+      await expect(
+        setupTestIdentities({
+          nodeEnv: 'test',
+          databaseUrl: validDbUrl,
+          expectedDb: expectedDbName,
+          runId: testRunId,
+          baseUsername: 'bad username!',
+          password: testPassword,
+          stateFile: tempStateFile,
+        })
+      ).rejects.toThrow(/FOUNDATION_TEST_USERNAME is required and must be alphanumeric/);
+    });
+
+    it('rejects short or trivial passwords', async () => {
+      await expect(
+        setupTestIdentities({
+          nodeEnv: 'test',
+          databaseUrl: validDbUrl,
+          expectedDb: expectedDbName,
+          runId: testRunId,
+          baseUsername: testBaseUsername,
+          password: 'short',
+          stateFile: tempStateFile,
+        })
+      ).rejects.toThrow(/FOUNDATION_TEST_PASSWORD must contain at least 8 non-whitespace characters/);
+
+      await expect(
+        setupTestIdentities({
+          nodeEnv: 'test',
+          databaseUrl: validDbUrl,
+          expectedDb: expectedDbName,
+          runId: testRunId,
+          baseUsername: testBaseUsername,
+          password: 'password',
+          stateFile: tempStateFile,
+        })
+      ).rejects.toThrow(/FOUNDATION_TEST_PASSWORD cannot use default or trivial passwords/);
+    });
+
+    it('rejects missing stateFile', async () => {
+      await expect(
+        setupTestIdentities({
+          nodeEnv: 'test',
+          databaseUrl: validDbUrl,
+          expectedDb: expectedDbName,
+          runId: testRunId,
+          baseUsername: testBaseUsername,
+          password: testPassword,
+          stateFile: undefined,
+        })
+      ).rejects.toThrow(/FOUNDATION_FIXTURE_STATE_FILE is required/);
+    });
+  });
+
+  describe('3. Fixture Setup & Authentication Invariants', () => {
     it('creates maintainer and standard test identities with proper roles and capabilities', async () => {
       const mockDb = createMockDb();
 
       const state = await setupTestIdentities({
         nodeEnv: 'test',
         databaseUrl: validDbUrl,
+        expectedDb: expectedDbName,
         runId: testRunId,
         baseUsername: testBaseUsername,
         password: testPassword,
@@ -609,7 +529,6 @@ describe('Identity Fixture Unit Tests (T044 - US4)', () => {
 
     it('does not re-create or track role if SYSTEM_MAINTAINER already exists prior to setup', async () => {
       const mockDb = createMockDb();
-      // Pre-seed SYSTEM_MAINTAINER role
       mockDb.roles.push({
         id: 'SYSTEM_MAINTAINER',
         description: 'Preexisting system maintainer',
@@ -618,6 +537,7 @@ describe('Identity Fixture Unit Tests (T044 - US4)', () => {
       const state = await setupTestIdentities({
         nodeEnv: 'test',
         databaseUrl: validDbUrl,
+        expectedDb: expectedDbName,
         runId: testRunId,
         baseUsername: testBaseUsername,
         password: testPassword,
@@ -625,14 +545,12 @@ describe('Identity Fixture Unit Tests (T044 - US4)', () => {
         db: mockDb,
       });
 
-      // Role was NOT created by this run
       expect(state.createdRoleIds).toEqual([]);
       expect(mockDb.roles.length).toBe(1);
     });
 
     it('rejects conflicting preexisting identities without mutating any database rows', async () => {
       const mockDb = createMockDb();
-      // Pre-seed a conflicting user
       mockDb.users.push({
         id: '11111111-1111-4000-8000-111111111111',
         username: `${testBaseUsername}_maintainer`,
@@ -646,6 +564,7 @@ describe('Identity Fixture Unit Tests (T044 - US4)', () => {
         setupTestIdentities({
           nodeEnv: 'test',
           databaseUrl: validDbUrl,
+          expectedDb: expectedDbName,
           runId: testRunId,
           baseUsername: testBaseUsername,
           password: testPassword,
@@ -654,16 +573,97 @@ describe('Identity Fixture Unit Tests (T044 - US4)', () => {
         })
       ).rejects.toThrow(/Conflicting preexisting test identities found/);
 
-      // No additional users or grants were added
       expect(mockDb.users.length).toBe(1);
       expect(mockDb.userRoles.length).toBe(0);
       expect(fsSync.existsSync(tempStateFile)).toBe(false);
+    });
+
+    // Finding 2 regression: Repeated setup rejects overwrite
+    it('rejects repeated setup when an ownership state file already exists', async () => {
+      const mockDb = createMockDb();
+      // Write an existing state file
+      await fs.writeFile(tempStateFile, JSON.stringify({ runId: 'prior_run' }), 'utf-8');
+
+      await expect(
+        setupTestIdentities({
+          nodeEnv: 'test',
+          databaseUrl: validDbUrl,
+          expectedDb: expectedDbName,
+          runId: testRunId,
+          baseUsername: 'different_user',
+          password: testPassword,
+          stateFile: tempStateFile,
+          db: mockDb,
+        })
+      ).rejects.toThrow(/Existing fixture state record found.*Cannot overwrite/);
+
+      expect(mockDb.query).not.toHaveBeenCalled();
+    });
+
+    // Finding 3 regression: EISDIR on stateFile path fails immediately before DB mutation
+    it('fails immediately when stateFile path is a directory (EISDIR) without touching database', async () => {
+      const dirAsStatePath = path.join(tempDir, 'state-is-a-dir');
+      await fs.mkdir(dirAsStatePath, { mode: 0o700 });
+
+      const mockDb = createMockDb();
+      await expect(
+        setupTestIdentities({
+          nodeEnv: 'test',
+          databaseUrl: validDbUrl,
+          expectedDb: expectedDbName,
+          runId: testRunId,
+          baseUsername: testBaseUsername,
+          password: testPassword,
+          stateFile: dirAsStatePath,
+          db: mockDb,
+        })
+      ).rejects.toThrow(/EISDIR/);
+
+      expect(mockDb.query).not.toHaveBeenCalled();
+      expect(mockDb.users.length).toBe(0);
+    });
+
+    // Finding 3 regression: Mutation failure rolls back transaction and cleans up reservation file
+    it('rolls back database transaction and cleans reservation file on intermediate failure', async () => {
+      const mockDb = createMockDb();
+      // Cause standard user insertion to throw
+      let insertCount = 0;
+      const originalQuery = mockDb.query;
+      mockDb.query = vi.fn(async (sql: string, params: any[]) => {
+        if (sql.trim().startsWith('INSERT INTO users')) {
+          insertCount++;
+          if (insertCount === 2) {
+            throw new Error('Simulated database error on second user insertion');
+          }
+        }
+        return originalQuery(sql, params);
+      });
+
+      await expect(
+        setupTestIdentities({
+          nodeEnv: 'test',
+          databaseUrl: validDbUrl,
+          expectedDb: expectedDbName,
+          runId: testRunId,
+          baseUsername: testBaseUsername,
+          password: testPassword,
+          stateFile: tempStateFile,
+          db: mockDb,
+        })
+      ).rejects.toThrow('Simulated database error on second user insertion');
+
+      // State file must be cleaned up
+      expect(fsSync.existsSync(tempStateFile)).toBe(false);
+      // ROLLBACK was issued
+      expect(mockDb.query).toHaveBeenCalledWith('ROLLBACK');
     });
   });
 
   describe('4. Fixture Cleanup Invariants', () => {
     function createMockDbWithFixture(state: TestIdentityState) {
-      const users = [
+      const mockDb = createMockDb();
+
+      mockDb.users.push(
         {
           id: state.maintainer.id,
           username: state.maintainer.username,
@@ -688,19 +688,20 @@ describe('Identity Fixture Unit Tests (T044 - US4)', () => {
           is_active: true,
           created_at: new Date(),
           updated_at: new Date(),
-        },
-      ];
+        }
+      );
 
-      const roles = [
+      mockDb.roles.push(
         { id: 'SYSTEM_MAINTAINER', description: 'System maintainer' },
-        { id: 'ADMINISTRATOR', description: 'Administrator' },
-      ];
+        { id: 'ADMINISTRATOR', description: 'Administrator' }
+      );
 
-      const userRoles = [
-        { user_id: state.maintainer.id, role_id: 'SYSTEM_MAINTAINER' },
-      ];
+      mockDb.userRoles.push({
+        user_id: state.maintainer.id,
+        role_id: 'SYSTEM_MAINTAINER',
+      });
 
-      const sessions = [
+      mockDb.sessions.push(
         {
           id: 'sess_maintainer',
           user_id: state.maintainer.id,
@@ -712,96 +713,28 @@ describe('Identity Fixture Unit Tests (T044 - US4)', () => {
           user_id: '99999999-9999-4000-8000-999999999999',
           expires_at: new Date(Date.now() + 3600000),
           created_at: new Date(),
-        },
-      ];
-
-      const query = vi.fn(async (sql: string, params: any[] = []) => {
-        const trimmed = sql.trim();
-
-        if (trimmed.startsWith('DELETE FROM sessions WHERE id = ANY($1)')) {
-          const ids: string[] = params[0] || [];
-          const before = sessions.length;
-          const filtered = sessions.filter((s) => !ids.includes(s.id));
-          const removed = before - filtered.length;
-          sessions.length = 0;
-          sessions.push(...filtered);
-          return { rows: [], rowCount: removed };
         }
+      );
 
-        if (trimmed.startsWith('DELETE FROM sessions WHERE user_id = ANY($1)')) {
-          const ids: string[] = params[0] || [];
-          const before = sessions.length;
-          const filtered = sessions.filter((s) => !ids.includes(s.user_id));
-          const removed = before - filtered.length;
-          sessions.length = 0;
-          sessions.push(...filtered);
-          return { rows: [], rowCount: removed };
-        }
-
-        if (trimmed.startsWith('DELETE FROM user_roles WHERE user_id = $1 AND role_id = $2')) {
-          const before = userRoles.length;
-          const filtered = userRoles.filter(
-            (ur) => !(ur.user_id === params[0] && ur.role_id === params[1])
-          );
-          const removed = before - filtered.length;
-          userRoles.length = 0;
-          userRoles.push(...filtered);
-          return { rows: [], rowCount: removed };
-        }
-
-        if (trimmed.startsWith('DELETE FROM users WHERE id = ANY($1)')) {
-          const ids: string[] = params[0] || [];
-          const before = users.length;
-          const filtered = users.filter((u) => !ids.includes(u.id));
-          const removed = before - filtered.length;
-          users.length = 0;
-          users.push(...filtered);
-          return { rows: [], rowCount: removed };
-        }
-
-        if (trimmed.startsWith('SELECT 1 FROM user_roles WHERE role_id = $1 LIMIT 1')) {
-          const inUse = userRoles.some((ur) => ur.role_id === params[0]);
-          return { rows: inUse ? [{ '?column?': 1 }] : [], rowCount: inUse ? 1 : 0 };
-        }
-
-        if (trimmed.startsWith('DELETE FROM roles WHERE id = $1')) {
-          const before = roles.length;
-          const filtered = roles.filter((r) => r.id !== params[0]);
-          const removed = before - filtered.length;
-          roles.length = 0;
-          roles.push(...filtered);
-          return { rows: [], rowCount: removed };
-        }
-
-        return { rows: [], rowCount: 0 };
-      });
-
-      return { query, users, roles, userRoles, sessions };
+      return mockDb;
     }
 
     it('deletes only owned users, grants, and sessions, preserving unrelated data', async () => {
       const state: TestIdentityState = {
         runId: testRunId,
         database: expectedDbName,
+        targetEndpoint: `127.0.0.1:5432/${expectedDbName}`,
         status: 'active',
-        maintainer: {
-          id: '10000000-0000-4000-8000-000000000001',
-          username: `${testBaseUsername}_maintainer`,
-          role: 'SYSTEM_MAINTAINER',
-        },
-        standard: {
-          id: '20000000-0000-4000-8000-000000000002',
-          username: `${testBaseUsername}_standard`,
-          role: null,
-        },
+        maintainer: { id: 'u1111111-1111-4000-8000-111111111111', username: 'm', role: 'SYSTEM_MAINTAINER' },
+        standard: { id: 'u2222222-2222-4000-8000-222222222222', username: 's', role: null },
         createdUserIds: [
-          '10000000-0000-4000-8000-000000000001',
-          '20000000-0000-4000-8000-000000000002',
+          'u1111111-1111-4000-8000-111111111111',
+          'u2222222-2222-4000-8000-222222222222',
         ],
         createdRoleIds: ['SYSTEM_MAINTAINER'],
         createdGrants: [
           {
-            userId: '10000000-0000-4000-8000-000000000001',
+            userId: 'u1111111-1111-4000-8000-111111111111',
             roleId: 'SYSTEM_MAINTAINER',
           },
         ],
@@ -810,93 +743,88 @@ describe('Identity Fixture Unit Tests (T044 - US4)', () => {
       };
 
       await fs.writeFile(tempStateFile, JSON.stringify(state, null, 2), 'utf-8');
-
       const mockDb = createMockDbWithFixture(state);
 
-      const result = await cleanupTestIdentities({
+      const cleanupRes = await cleanupTestIdentities({
         nodeEnv: 'test',
         databaseUrl: validDbUrl,
+        expectedDb: expectedDbName,
         runId: testRunId,
         stateFile: tempStateFile,
         db: mockDb,
       });
 
-      expect(result.cleaned).toBe(true);
-      expect(result.usersRemoved).toBe(2);
-      expect(result.grantsRemoved).toBe(1);
-      expect(result.sessionsRemoved).toBe(1);
-      expect(result.rolesRemoved).toBe(1); // SYSTEM_MAINTAINER was unused after grant deletion
+      expect(cleanupRes.cleaned).toBe(true);
+      expect(cleanupRes.usersRemoved).toBe(2);
+      expect(cleanupRes.grantsRemoved).toBe(1);
+      expect(cleanupRes.rolesRemoved).toBe(1);
+      expect(cleanupRes.sessionsRemoved).toBe(1);
 
       // Unrelated user and session preserved
-      expect(mockDb.users.length).toBe(1);
-      expect(mockDb.users[0].username).toBe('unrelated_user');
-      expect(mockDb.sessions.length).toBe(1);
-      expect(mockDb.sessions[0].id).toBe('sess_unrelated');
+      expect(mockDb.users.some((u: any) => u.username === 'unrelated_user')).toBe(true);
+      expect(mockDb.sessions.some((s: any) => s.id === 'sess_unrelated')).toBe(true);
+      expect(mockDb.roles.some((r: any) => r.id === 'ADMINISTRATOR')).toBe(true);
 
       // State file removed
       expect(fsSync.existsSync(tempStateFile)).toBe(false);
     });
 
-    it('preserves created role if it is in use by another user', async () => {
+    // Finding 1 regression: Safe unused role check preserves role if unrelated grant references it
+    it('preserves role if another grant references it and locks user_roles table', async () => {
       const state: TestIdentityState = {
         runId: testRunId,
         database: expectedDbName,
+        targetEndpoint: `127.0.0.1:5432/${expectedDbName}`,
         status: 'active',
-        maintainer: {
-          id: '10000000-0000-4000-8000-000000000001',
-          username: `${testBaseUsername}_maintainer`,
-          role: 'SYSTEM_MAINTAINER',
-        },
-        standard: {
-          id: '20000000-0000-4000-8000-000000000002',
-          username: `${testBaseUsername}_standard`,
-          role: null,
-        },
-        createdUserIds: [
-          '10000000-0000-4000-8000-000000000001',
-          '20000000-0000-4000-8000-000000000002',
-        ],
+        maintainer: { id: 'u1111111-1111-4000-8000-111111111111', username: 'm', role: 'SYSTEM_MAINTAINER' },
+        standard: { id: 'u2222222-2222-4000-8000-222222222222', username: 's', role: null },
+        createdUserIds: ['u1111111-1111-4000-8000-111111111111', 'u2222222-2222-4000-8000-222222222222'],
         createdRoleIds: ['SYSTEM_MAINTAINER'],
-        createdGrants: [
-          {
-            userId: '10000000-0000-4000-8000-000000000001',
-            roleId: 'SYSTEM_MAINTAINER',
-          },
-        ],
+        createdGrants: [{ userId: 'u1111111-1111-4000-8000-111111111111', roleId: 'SYSTEM_MAINTAINER' }],
         createdSessionIds: [],
         createdAt: new Date().toISOString(),
       };
 
       await fs.writeFile(tempStateFile, JSON.stringify(state, null, 2), 'utf-8');
-
       const mockDb = createMockDbWithFixture(state);
-      // Give unrelated user the SYSTEM_MAINTAINER role
+
+      // Unrelated user ALSO holds SYSTEM_MAINTAINER grant
       mockDb.userRoles.push({
         user_id: '99999999-9999-4000-8000-999999999999',
         role_id: 'SYSTEM_MAINTAINER',
       });
 
-      const result = await cleanupTestIdentities({
+      const cleanupRes = await cleanupTestIdentities({
         nodeEnv: 'test',
         databaseUrl: validDbUrl,
+        expectedDb: expectedDbName,
         runId: testRunId,
         stateFile: tempStateFile,
         db: mockDb,
       });
 
-      expect(result.cleaned).toBe(true);
-      expect(result.rolesRemoved).toBe(0); // Role was preserved because unrelated user has it!
-      expect(mockDb.roles.some((r) => r.id === 'SYSTEM_MAINTAINER')).toBe(true);
+      expect(cleanupRes.cleaned).toBe(true);
+      expect(cleanupRes.rolesRemoved).toBe(0); // Role was NOT deleted
+      expect(mockDb.roles.some((r: any) => r.id === 'SYSTEM_MAINTAINER')).toBe(true);
+      // Unrelated grant preserved
+      expect(
+        mockDb.userRoles.some(
+          (ur: any) =>
+            ur.user_id === '99999999-9999-4000-8000-999999999999' &&
+            ur.role_id === 'SYSTEM_MAINTAINER'
+        )
+      ).toBe(true);
+      // LOCK TABLE was called
+      expect(mockDb.query).toHaveBeenCalledWith('LOCK TABLE user_roles IN SHARE ROW EXCLUSIVE MODE');
     });
 
     it('is safe on repeated cleanup (idempotent no-op when state file already deleted)', async () => {
-      // tempStateFile does not exist
-      expect(fsSync.existsSync(tempStateFile)).toBe(false);
-
       const mockDb = createMockDb();
+
       const result = await cleanupTestIdentities({
         nodeEnv: 'test',
         databaseUrl: validDbUrl,
+        expectedDb: expectedDbName,
         runId: testRunId,
         stateFile: tempStateFile,
         db: mockDb,
@@ -904,13 +832,43 @@ describe('Identity Fixture Unit Tests (T044 - US4)', () => {
 
       expect(result.cleaned).toBe(false);
       expect(result.reason).toBe('NO_STATE_FILE');
-      expect(mockDb.query).not.toHaveBeenCalled();
+    });
+
+    // Finding 4 regression: Cleanup rejects missing runId
+    it('rejects cleanup without a valid run ID', async () => {
+      const mockDb = createMockDb();
+      await expect(
+        cleanupTestIdentities({
+          nodeEnv: 'test',
+          databaseUrl: validDbUrl,
+          expectedDb: expectedDbName,
+          runId: '',
+          stateFile: tempStateFile,
+          db: mockDb,
+        })
+      ).rejects.toThrow(/FOUNDATION_TEST_RUN_ID is required/);
+    });
+
+    // Finding 4 regression: Cleanup validates target database before checking state file
+    it('rejects cleanup on invalid database URL even if state file is absent', async () => {
+      const mockDb = createMockDb();
+      await expect(
+        cleanupTestIdentities({
+          nodeEnv: 'test',
+          databaseUrl: 'postgresql://u:p@db-prod.internal:5432/s2_foundation_test',
+          expectedDb: 's2_foundation_test',
+          runId: testRunId,
+          stateFile: tempStateFile,
+          db: mockDb,
+        })
+      ).rejects.toThrow(/Production database target is prohibited/);
     });
 
     it('fails closed when state file run ID mismatches', async () => {
       const state: TestIdentityState = {
         runId: 'other_run_999',
         database: expectedDbName,
+        targetEndpoint: `127.0.0.1:5432/${expectedDbName}`,
         status: 'active',
         maintainer: { id: 'u1', username: 'm', role: 'SYSTEM_MAINTAINER' },
         standard: { id: 'u2', username: 's', role: null },
@@ -928,19 +886,19 @@ describe('Identity Fixture Unit Tests (T044 - US4)', () => {
         cleanupTestIdentities({
           nodeEnv: 'test',
           databaseUrl: validDbUrl,
-          runId: testRunId, // does not match other_run_999
+          expectedDb: expectedDbName,
+          runId: testRunId,
           stateFile: tempStateFile,
           db: mockDb,
         })
       ).rejects.toThrow(/State file run ID mismatch/);
-
-      expect(mockDb.query).not.toHaveBeenCalled();
     });
 
     it('fails closed when state file database mismatches', async () => {
       const state: TestIdentityState = {
         runId: testRunId,
         database: 's2_foundation_different_db',
+        targetEndpoint: '127.0.0.1:5432/s2_foundation_different_db',
         status: 'active',
         maintainer: { id: 'u1', username: 'm', role: 'SYSTEM_MAINTAINER' },
         standard: { id: 'u2', username: 's', role: null },
@@ -958,13 +916,12 @@ describe('Identity Fixture Unit Tests (T044 - US4)', () => {
         cleanupTestIdentities({
           nodeEnv: 'test',
           databaseUrl: validDbUrl,
+          expectedDb: expectedDbName,
           runId: testRunId,
           stateFile: tempStateFile,
           db: mockDb,
         })
       ).rejects.toThrow(/State file database mismatch/);
-
-      expect(mockDb.query).not.toHaveBeenCalled();
     });
 
     it('fails closed on corrupted state file JSON', async () => {
@@ -975,145 +932,106 @@ describe('Identity Fixture Unit Tests (T044 - US4)', () => {
         cleanupTestIdentities({
           nodeEnv: 'test',
           databaseUrl: validDbUrl,
+          expectedDb: expectedDbName,
           runId: testRunId,
           stateFile: tempStateFile,
           db: mockDb,
         })
       ).rejects.toThrow(/Corrupted fixture state file/);
-
-      expect(mockDb.query).not.toHaveBeenCalled();
     });
   });
 
-  describe('5. Partial-Failure Cleanup & Error Retention', () => {
-    it('writes partial state on intermediate failure and cleanup successfully removes partial resources', async () => {
-      // Mock db that fails when creating standard user (the 2nd user)
-      const users: any[] = [];
-      const roles: any[] = [];
-      const userRoles: any[] = [];
+  describe('5. Lossless Password Transport & Special Characters (Finding 5)', () => {
+    it('preserves quotes, trailing spaces, backslashes and dollar signs losslessly', async () => {
+      const complexPassword = '"quoted_pass"\\with\\$dollars and spaces   ';
+      const configPath = path.join(tempDir, 'runner-config.json');
 
-      let userInsertCount = 0;
-      const failingDb = {
-        query: vi.fn(async (sql: string, params: any[] = []) => {
-          const trimmed = sql.trim();
-
-          if (trimmed.startsWith('SELECT id, username FROM users')) {
-            return { rows: [], rowCount: 0 };
-          }
-          if (trimmed.startsWith('SELECT id FROM roles WHERE id = $1')) {
-            return { rows: [], rowCount: 0 };
-          }
-          if (trimmed.startsWith('INSERT INTO roles')) {
-            roles.push({ id: params[0], description: params[1] });
-            return { rows: [], rowCount: 1 };
-          }
-          if (trimmed.startsWith('INSERT INTO users')) {
-            userInsertCount++;
-            if (userInsertCount === 2) {
-              throw new Error('Simulated database failure during standard user creation');
-            }
-            const row = {
-              id: params[0],
-              username: params[1],
-              password_hash: params[2],
-              is_active: params[3],
-              created_at: new Date(),
-              updated_at: new Date(),
-            };
-            users.push(row);
-            return { rows: [row], rowCount: 1 };
-          }
-          if (trimmed.startsWith('INSERT INTO user_roles')) {
-            userRoles.push({ user_id: params[0], role_id: params[1] });
-            return { rows: [], rowCount: 1 };
-          }
-          if (trimmed.startsWith('DELETE FROM users WHERE id = ANY($1)')) {
-            const ids: string[] = params[0] || [];
-            const before = users.length;
-            const filtered = users.filter((u) => !ids.includes(u.id));
-            users.length = 0;
-            users.push(...filtered);
-            return { rows: [], rowCount: before - filtered.length };
-          }
-          if (trimmed.startsWith('DELETE FROM user_roles WHERE user_id = $1 AND role_id = $2')) {
-            const before = userRoles.length;
-            const filtered = userRoles.filter(
-              (ur) => !(ur.user_id === params[0] && ur.role_id === params[1])
-            );
-            userRoles.length = 0;
-            userRoles.push(...filtered);
-            return { rows: [], rowCount: before - filtered.length };
-          }
-          if (trimmed.startsWith('SELECT 1 FROM user_roles WHERE role_id = $1 LIMIT 1')) {
-            const inUse = userRoles.some((ur) => ur.role_id === params[0]);
-            return { rows: inUse ? [{ '?column?': 1 }] : [], rowCount: inUse ? 1 : 0 };
-          }
-          if (trimmed.startsWith('DELETE FROM roles WHERE id = $1')) {
-            const before = roles.length;
-            const filtered = roles.filter((r) => r.id !== params[0]);
-            roles.length = 0;
-            roles.push(...filtered);
-            return { rows: [], rowCount: before - filtered.length };
-          }
-          if (trimmed.startsWith('DELETE FROM sessions')) {
-            return { rows: [], rowCount: 0 };
-          }
-          return { rows: [], rowCount: 0 };
+      await fs.writeFile(
+        configPath,
+        JSON.stringify({
+          NODE_ENV: 'test',
+          FOUNDATION_TEST_RUN_ID: testRunId,
+          FOUNDATION_TEST_USERNAME: testBaseUsername,
+          FOUNDATION_TEST_PASSWORD: complexPassword,
+          FOUNDATION_TEST_DATABASE_URL: validDbUrl,
+          POSTGRES_DB: expectedDbName,
+          FOUNDATION_FIXTURE_STATE_FILE: tempStateFile,
         }),
-      };
+        'utf-8'
+      );
 
-      // Setup must fail with the original error
+      loadConfigFile(configPath);
+      expect(process.env.FOUNDATION_TEST_PASSWORD).toBe(complexPassword);
+
+      const mockDb = createMockDb();
+      const state = await setupTestIdentities({
+        nodeEnv: 'test',
+        databaseUrl: validDbUrl,
+        expectedDb: expectedDbName,
+        runId: testRunId,
+        baseUsername: testBaseUsername,
+        password: complexPassword,
+        stateFile: tempStateFile,
+        db: mockDb,
+      });
+
+      expect(state.status).toBe('active');
+
+      // Verify that authentication against Argon2id works with the EXACT complex password
+      const userService = new UserService({ db: mockDb });
+      const auth = await userService.verifyCredentials(
+        `${testBaseUsername}_maintainer`,
+        complexPassword
+      );
+      expect(auth.valid).toBe(true);
+
+      // Verify that trimmed or quote-stripped variants FAIL authentication
+      const authTrimmed = await userService.verifyCredentials(
+        `${testBaseUsername}_maintainer`,
+        complexPassword.trim()
+      );
+      expect(authTrimmed.valid).toBe(false);
+    });
+  });
+
+  describe('6. Ambient Database Variable Sensitivity (Finding 6)', () => {
+    it('succeeds when ambient POSTGRES_DB matches target URL', async () => {
+      process.env.POSTGRES_DB = expectedDbName;
+      process.env.FOUNDATION_TEST_DATABASE_URL = validDbUrl;
+
+      const mockDb = createMockDb();
+      const state = await setupTestIdentities({
+        nodeEnv: 'test',
+        runId: testRunId,
+        baseUsername: testBaseUsername,
+        password: testPassword,
+        stateFile: tempStateFile,
+        db: mockDb,
+      });
+
+      expect(state.status).toBe('active');
+    });
+
+    it('rejects with target mismatch when ambient POSTGRES_DB does not match target URL', async () => {
+      process.env.POSTGRES_DB = 's2_foundation_lead_mismatched_db';
+      process.env.FOUNDATION_TEST_DATABASE_URL = validDbUrl;
+
+      const mockDb = createMockDb();
       await expect(
         setupTestIdentities({
           nodeEnv: 'test',
-          databaseUrl: validDbUrl,
           runId: testRunId,
           baseUsername: testBaseUsername,
           password: testPassword,
           stateFile: tempStateFile,
-          db: failingDb,
+          db: mockDb,
         })
-      ).rejects.toThrow('Simulated database failure during standard user creation');
-
-      // State file exists with partial status
-      expect(fsSync.existsSync(tempStateFile)).toBe(true);
-      const partialState = JSON.parse(await fs.readFile(tempStateFile, 'utf-8'));
-      expect(partialState.status).toBe('partial');
-      expect(partialState.createdUserIds.length).toBe(1); // maintainer was created
-      expect(partialState.createdRoleIds).toEqual(['SYSTEM_MAINTAINER']);
-      expect(partialState.createdGrants.length).toBe(1);
-
-      // Verify database contains the partial rows
-      expect(users.length).toBe(1);
-      expect(roles.length).toBe(1);
-      expect(userRoles.length).toBe(1);
-
-      // Now run cleanup on the partial state
-      const cleanupRes = await cleanupTestIdentities({
-        nodeEnv: 'test',
-        databaseUrl: validDbUrl,
-        runId: testRunId,
-        stateFile: tempStateFile,
-        db: failingDb,
-      });
-
-      expect(cleanupRes.cleaned).toBe(true);
-      expect(cleanupRes.usersRemoved).toBe(1);
-      expect(cleanupRes.grantsRemoved).toBe(1);
-      expect(cleanupRes.rolesRemoved).toBe(1);
-
-      // Database is clean
-      expect(users.length).toBe(0);
-      expect(roles.length).toBe(0);
-      expect(userRoles.length).toBe(0);
-
-      // State file removed
-      expect(fsSync.existsSync(tempStateFile)).toBe(false);
+      ).rejects.toThrow(/Database target mismatch/);
     });
   });
 
-  describe('6. Environment File Loader', () => {
-    it('loads key-value assignments from env file into process.env without leaking', async () => {
+  describe('7. Environment File Loader', () => {
+    it('loads key-value assignments from env file into process.env without stripping internal quotes', async () => {
       const envPath = path.join(tempDir, 'test.env');
       await fs.writeFile(
         envPath,

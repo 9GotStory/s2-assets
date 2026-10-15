@@ -213,6 +213,45 @@ _validate_foundation_env_file() {
   if [ "$TEST_PW_TRIMMED" = "password" ] || [ "$TEST_PW_TRIMMED" = "test" ] || [ "$TEST_PW_TRIMMED" = "admin" ] || [ "$TEST_PW_TRIMMED" = "s2_password" ]; then
     _fail "ERROR: FOUNDATION_TEST_PASSWORD cannot use default or trivial passwords"
   fi
+
+  if [ -z "${FOUNDATION_TEST_DATABASE_URL:-}" ]; then
+    _fail "ERROR: FOUNDATION_TEST_DATABASE_URL is required in ${FOUNDATION_ENV_FILE}"
+  fi
+  case "$FOUNDATION_TEST_DATABASE_URL" in
+    *$'\n'*|*$'\r'*) _fail "ERROR: FOUNDATION_TEST_DATABASE_URL cannot contain line breaks" ;;
+  esac
+  if [[ ! "$FOUNDATION_TEST_DATABASE_URL" =~ ^postgres(ql)?:// ]]; then
+    _fail "ERROR: FOUNDATION_TEST_DATABASE_URL must be a valid PostgreSQL connection URL"
+  fi
+
+  DB_URL_HOST=$(echo "$FOUNDATION_TEST_DATABASE_URL" | sed -E 's|^[^:]+://([^@]+@)?([^:/]+).*|\2|')
+  DB_QUERY_HOST=$(echo "$FOUNDATION_TEST_DATABASE_URL" | sed -n -E 's|.*\?.*host=([^&]+).*|\1|p')
+  DB_EFFECTIVE_HOST="${DB_QUERY_HOST:-$DB_URL_HOST}"
+  DB_EFFECTIVE_HOST_LOWER=$(echo "$DB_EFFECTIVE_HOST" | tr '[:upper:]' '[:lower:]')
+
+  if [ -z "$DB_EFFECTIVE_HOST_LOWER" ]; then
+    _fail "ERROR: FOUNDATION_TEST_DATABASE_URL host cannot be empty"
+  fi
+  if [[ "$DB_EFFECTIVE_HOST_LOWER" == *"prod"* ]] || \
+     [[ "$DB_EFFECTIVE_HOST_LOWER" == *"production"* ]] || \
+     [[ "$DB_EFFECTIVE_HOST_LOWER" == *"s2.internal"* ]] || \
+     [[ "$DB_EFFECTIVE_HOST_LOWER" == *"aws"* ]] || \
+     [[ "$DB_EFFECTIVE_HOST_LOWER" == *"rds"* ]] || \
+     [[ "$DB_EFFECTIVE_HOST_LOWER" == *"azure"* ]] || \
+     [[ "$DB_EFFECTIVE_HOST_LOWER" == *"cloudsql"* ]]; then
+    _fail "ERROR: Production database target is prohibited (host: ${DB_EFFECTIVE_HOST})"
+  fi
+
+  DB_URL_PATH=$(echo "$FOUNDATION_TEST_DATABASE_URL" | sed -E 's|^[^:]+://[^/]+/([^?]+).*|\1|')
+  if [[ ! "$DB_URL_PATH" =~ ^s2_foundation_[a-zA-Z0-9_]+$ ]]; then
+    _fail "ERROR: FOUNDATION_TEST_DATABASE_URL database name must begin with 's2_foundation_' and contain only alphanumeric/underscore characters (got '${DB_URL_PATH}')"
+  fi
+  if [ "$DB_URL_PATH" = "s2_assets" ] || [ "$DB_URL_PATH" = "s2_foundation_s2_assets" ] || [ "$DB_URL_PATH" = "postgres" ] || [ "$DB_URL_PATH" = "default" ]; then
+    _fail "ERROR: FOUNDATION_TEST_DATABASE_URL cannot use default or shared database name '${DB_URL_PATH}'"
+  fi
+  if [ "$DB_URL_PATH" != "$POSTGRES_DB" ]; then
+    _fail "ERROR: FOUNDATION_TEST_DATABASE_URL database target '${DB_URL_PATH}' does not match POSTGRES_DB '${POSTGRES_DB}'"
+  fi
 }
 
 ACTION="$1"
@@ -272,32 +311,38 @@ case "$ACTION" in
     _validate_foundation_env_file
 
     ENV_DIR=$(dirname "$FOUNDATION_ENV_FILE")
-    FOUNDATION_TEST_DATABASE_URL="postgresql://${POSTGRES_USER}:${POSTGRES_PASSWORD}@postgres:5432/${POSTGRES_DB}"
     STATE_FILE="${ENV_DIR}/fixture-state-${FOUNDATION_TEST_RUN_ID}.json"
-    RUNNER_ENV_FILE="${ENV_DIR}/.fixture-runner-${FOUNDATION_TEST_RUN_ID}.env"
+    RUNNER_CONFIG_FILE="${ENV_DIR}/.fixture-runner-${FOUNDATION_TEST_RUN_ID}.json"
 
     (
       umask 077
-      cat <<EOF > "$RUNNER_ENV_FILE"
-NODE_ENV=test
-FOUNDATION_TEST_RUN_ID=${FOUNDATION_TEST_RUN_ID}
-FOUNDATION_TEST_USERNAME=${FOUNDATION_TEST_USERNAME}
-FOUNDATION_TEST_PASSWORD=${FOUNDATION_TEST_PASSWORD}
-FOUNDATION_TEST_DATABASE_URL=${FOUNDATION_TEST_DATABASE_URL}
-FOUNDATION_FIXTURE_STATE_FILE=${STATE_FILE}
-POSTGRES_DB=${POSTGRES_DB}
-POSTGRES_USER=${POSTGRES_USER}
-POSTGRES_PASSWORD=${POSTGRES_PASSWORD}
-COOKIE_SECRET=${COOKIE_SECRET}
-COMPOSE_PROJECT_NAME=${COMPOSE_PROJECT_NAME}
-EOF
-      chmod 600 "$RUNNER_ENV_FILE"
+      python3 -c '
+import json, os, sys
+keys = [
+    "NODE_ENV",
+    "FOUNDATION_TEST_RUN_ID",
+    "FOUNDATION_TEST_USERNAME",
+    "FOUNDATION_TEST_PASSWORD",
+    "FOUNDATION_TEST_DATABASE_URL",
+    "FOUNDATION_FIXTURE_STATE_FILE",
+    "POSTGRES_DB",
+    "POSTGRES_USER",
+    "POSTGRES_PASSWORD",
+    "COOKIE_SECRET",
+    "COMPOSE_PROJECT_NAME"
+]
+data = {k: os.environ.get(k, "") for k in keys}
+target_file = sys.argv[1]
+with open(target_file, "w", encoding="utf-8") as f:
+    json.dump(data, f, ensure_ascii=False)
+' "$RUNNER_CONFIG_FILE"
+      chmod 600 "$RUNNER_CONFIG_FILE"
     )
 
-    _clean_runner_env() {
-      rm -f "$RUNNER_ENV_FILE"
+    _clean_runner_config() {
+      rm -f "$RUNNER_CONFIG_FILE"
     }
-    trap _clean_runner_env EXIT INT TERM
+    trap _clean_runner_config EXIT INT TERM
 
     set +e
     podman compose --env-file "$FOUNDATION_ENV_FILE" \
@@ -307,13 +352,13 @@ EOF
       -v "${ENV_DIR}:${ENV_DIR}:z" \
       -e NODE_ENV=test \
       -e FOUNDATION_TEST_RUN_ID="${FOUNDATION_TEST_RUN_ID}" \
-      -e FOUNDATION_FIXTURE_ENV_FILE="${RUNNER_ENV_FILE}" \
+      -e FOUNDATION_FIXTURE_CONFIG_FILE="${RUNNER_CONFIG_FILE}" \
       -e FOUNDATION_FIXTURE_STATE_FILE="${STATE_FILE}" \
       api pnpm --filter api test:identity "$SUB_ACTION"
     RUN_EXIT=$?
     set -e
 
-    _clean_runner_env
+    _clean_runner_config
     trap - EXIT INT TERM
 
     exit $RUN_EXIT

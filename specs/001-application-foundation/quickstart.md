@@ -20,6 +20,7 @@ Supply `FOUNDATION_ENV_FILE` as an absolute path to a trusted, private shell/env
 | `FOUNDATION_TEST_RUN_ID` | Unique marker recorded in private fixture ownership state |
 | `FOUNDATION_TEST_USERNAME` | Unique base name for this run's disposable identities |
 | `FOUNDATION_TEST_PASSWORD` | Fresh random test password (at least 8 non-whitespace characters); no production credential |
+| `FOUNDATION_TEST_DATABASE_URL` | Explicit connection URL matching the selected `s2_foundation_...` database |
 
 The planned helper validates permissions, required values and isolated target, and rejects missing/default credentials, non-hexadecimal secrets, or whitespace padding. Container configuration must explicitly consume these values. Do not enable shell tracing, commit this file, bake secrets into images or print expanded Compose configuration. Runtime-only fixture state/cookie material uses the same private directory.
 
