@@ -1245,20 +1245,8 @@ export async function cleanupTestIdentities(
       usersRemoved += uRes.rowCount ?? 0;
     }
 
-    // 4. Delete roles created by this run ONLY IF UNUSED by any user.
-    // Lock user_roles in SHARE ROW EXCLUSIVE MODE to prevent concurrent grant insertions from being cascade-deleted.
-    if (state.createdRoleIds && state.createdRoleIds.length > 0) {
-      await client.query('LOCK TABLE user_roles IN SHARE ROW EXCLUSIVE MODE');
-      for (const roleId of state.createdRoleIds) {
-        if (roleId === 'SYSTEM_MAINTAINER') {
-          const rRes = await client.query(
-            'DELETE FROM roles WHERE id = $1 AND NOT EXISTS (SELECT 1 FROM user_roles WHERE user_roles.role_id = roles.id)',
-            [roleId]
-          );
-          rolesRemoved += rRes.rowCount ?? 0;
-        }
-      }
-    }
+    // 4. Per Product Owner Round 6 decision: fixture cleanup never deletes the shared SYSTEM_MAINTAINER role,
+    // even when created during setup and unused. The role is intentionally preserved; rolesRemoved is 0.
 
     await client.query('COMMIT');
     inTransaction = false;

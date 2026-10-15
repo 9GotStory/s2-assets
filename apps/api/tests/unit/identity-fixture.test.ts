@@ -809,20 +809,21 @@ describe('Identity Fixture Unit Tests (T044 - US4)', () => {
       expect(cleanupRes.cleaned).toBe(true);
       expect(cleanupRes.usersRemoved).toBe(2);
       expect(cleanupRes.grantsRemoved).toBe(1);
-      expect(cleanupRes.rolesRemoved).toBe(1);
+      expect(cleanupRes.rolesRemoved).toBe(0); // Roles are preserved per PO Round 6 decision
       expect(cleanupRes.sessionsRemoved).toBe(1);
 
-      // Unrelated user and session preserved
+      // Unrelated user, session, and roles preserved
       expect(mockDb.users.some((u: any) => u.username === 'unrelated_user')).toBe(true);
       expect(mockDb.sessions.some((s: any) => s.id === 'sess_unrelated')).toBe(true);
       expect(mockDb.roles.some((r: any) => r.id === 'ADMINISTRATOR')).toBe(true);
+      expect(mockDb.roles.some((r: any) => r.id === 'SYSTEM_MAINTAINER')).toBe(true);
 
       // State file removed
       expect(fsSync.existsSync(tempStateFile)).toBe(false);
     });
 
     // Finding 1 regression: Safe unused role check preserves role if unrelated grant references it
-    it('preserves role if another grant references it and locks user_roles table', async () => {
+    it('preserves shared role when another grant references it', async () => {
       const state: TestIdentityState = {
         runId: testRunId,
         database: expectedDbName,
@@ -870,8 +871,6 @@ describe('Identity Fixture Unit Tests (T044 - US4)', () => {
             ur.role_id === 'SYSTEM_MAINTAINER'
         )
       ).toBe(true);
-      // LOCK TABLE was called
-      expect(mockDb.query).toHaveBeenCalledWith('LOCK TABLE user_roles IN SHARE ROW EXCLUSIVE MODE');
     });
 
     it('is safe on repeated cleanup (idempotent no-op when state file already deleted)', async () => {
@@ -1680,7 +1679,7 @@ describe('Identity Fixture Unit Tests (T044 - US4)', () => {
           expect(setConfigCalls.some((c: any) => c[1]?.[0] === '6000ms')).toBe(true);
         });
 
-        it('fails closed and preserves state file when LOCK TABLE times out', async () => {
+        it('fails closed and preserves state file when statement times out on lock contention', async () => {
           const mockDb = createMockDb();
           const validState: TestIdentityState = {
             runId: testRunId,
@@ -1691,7 +1690,7 @@ describe('Identity Fixture Unit Tests (T044 - US4)', () => {
             standard: { id: 's1', username: `${testBaseUsername}_standard`, role: null },
             createdUserIds: ['m1', 's1'],
             createdRoleIds: ['SYSTEM_MAINTAINER'],
-            createdGrants: [],
+            createdGrants: [{ userId: 'm1', roleId: 'SYSTEM_MAINTAINER' }],
             createdSessionIds: [],
             createdAt: new Date().toISOString(),
           };
@@ -1702,11 +1701,12 @@ describe('Identity Fixture Unit Tests (T044 - US4)', () => {
             { id: 's1', username: `${testBaseUsername}_standard`, password_hash: 'h', is_active: true, created_at: new Date(), updated_at: new Date() }
           );
           mockDb.roles.push({ id: 'SYSTEM_MAINTAINER', description: 'desc' });
+          mockDb.userRoles.push({ user_id: 'm1', role_id: 'SYSTEM_MAINTAINER' });
 
-          // Override mockDb.query to simulate lock timeout on LOCK TABLE
+          // Override mockDb.query to simulate lock timeout on grant/user deletion
           const originalQuery = mockDb.query;
           mockDb.query = vi.fn(async (sql: string, params: any[]) => {
-            if (sql.includes('LOCK TABLE')) {
+            if (sql.includes('DELETE FROM user_roles') || sql.includes('DELETE FROM users')) {
               const err = new Error('canceling statement due to lock timeout');
               (err as any).code = '55P03';
               throw err;
@@ -2124,13 +2124,14 @@ describe('Identity Fixture Unit Tests (T044 - US4)', () => {
           expect(res1.cleaned).toBe(true);
           expect(res1.usersRemoved).toBe(2);
           expect(res1.grantsRemoved).toBe(1);
-          expect(res1.rolesRemoved).toBe(1);
+          expect(res1.rolesRemoved).toBe(0); // Roles are preserved per PO Round 6 decision
           expect(res1.sessionsRemoved).toBe(1);
           expect(fsSync.existsSync(tempStateFile)).toBe(false);
 
-          // Unrelated user, role, and session survived
+          // Unrelated user, role, and session survived, and SYSTEM_MAINTAINER preserved
           expect(mockDb.users.some((u: any) => u.username === 'unrelated_user')).toBe(true);
           expect(mockDb.roles.some((r: any) => r.id === 'ADMINISTRATOR')).toBe(true);
+          expect(mockDb.roles.some((r: any) => r.id === 'SYSTEM_MAINTAINER')).toBe(true);
           expect(mockDb.sessions.some((s: any) => s.id === 'sess_unrelated')).toBe(true);
 
           // 2. Repeated cleanup
@@ -2279,7 +2280,7 @@ describe('Identity Fixture Unit Tests (T044 - US4)', () => {
             standard: { id: 's1', username: `${testBaseUsername}_standard`, role: null },
             createdUserIds: ['m1', 's1'],
             createdRoleIds: ['SYSTEM_MAINTAINER'],
-            createdGrants: [],
+            createdGrants: [{ userId: 'm1', roleId: 'SYSTEM_MAINTAINER' }],
             createdSessionIds: [],
             createdAt: new Date().toISOString(),
           };
@@ -2288,7 +2289,7 @@ describe('Identity Fixture Unit Tests (T044 - US4)', () => {
           const mockDb = createMockDbWithFixture(validState);
           const origQuery = mockDb.query;
           mockDb.query = vi.fn(async (sql: string, params: any[]) => {
-            if (sql.includes('LOCK TABLE')) {
+            if (sql.includes('DELETE FROM user_roles')) {
               const err = new Error('canceling statement due to lock timeout');
               (err as any).code = '55P03';
               throw err;
@@ -2377,6 +2378,137 @@ describe('Identity Fixture Unit Tests (T044 - US4)', () => {
 
           expect(retryRes.cleaned).toBe(true);
           expect(fsSync.existsSync(tempStateFile)).toBe(false);
+        });
+      });
+
+      describe('11. Round 6 Acceptance Cases (R1, R2, R3 — Role Preservation)', () => {
+        it('R1: preexisting role survives when state claims createdRoleIds: ["SYSTEM_MAINTAINER"]', async () => {
+          const state: TestIdentityState = {
+            runId: testRunId,
+            database: expectedDbName,
+            targetEndpoint: `127.0.0.1:5432/${expectedDbName}`,
+            status: 'active',
+            maintainer: { id: 'm1', username: `${testBaseUsername}_maintainer`, role: 'SYSTEM_MAINTAINER' },
+            standard: { id: 's1', username: `${testBaseUsername}_standard`, role: null },
+            createdUserIds: ['m1', 's1'],
+            createdRoleIds: ['SYSTEM_MAINTAINER'], // Mutable claim that run created the role
+            createdGrants: [{ userId: 'm1', roleId: 'SYSTEM_MAINTAINER' }],
+            createdSessionIds: ['sess_m1'],
+            createdAt: new Date().toISOString(),
+          };
+          await writeStateFileAtomic(tempStateFile, state);
+
+          const mockDb = createMockDbWithFixture(state);
+          // Outsider user has no grant on SYSTEM_MAINTAINER, so role is only referenced by fixture
+          const res = await cleanupTestIdentities({
+            nodeEnv: 'test',
+            databaseUrl: validDbUrl,
+            expectedDb: expectedDbName,
+            runId: testRunId,
+            baseUsername: testBaseUsername,
+            stateFile: tempStateFile,
+            db: mockDb,
+          });
+
+          expect(res.cleaned).toBe(true);
+          expect(res.usersRemoved).toBe(2);
+          expect(res.grantsRemoved).toBe(1);
+          expect(res.rolesRemoved).toBe(0); // Roles are NEVER deleted per Round 6 PO decision
+          expect(res.sessionsRemoved).toBe(1);
+
+          // SYSTEM_MAINTAINER role is preserved intact
+          expect(mockDb.roles.some((r: any) => r.id === 'SYSTEM_MAINTAINER')).toBe(true);
+          // Proven fixture users and grants removed
+          expect(mockDb.users.some((u: any) => u.id === 'm1' || u.id === 's1')).toBe(false);
+          expect(mockDb.userRoles.some((ur: any) => ur.user_id === 'm1')).toBe(false);
+        });
+
+        it('R2: role initially absent is preserved after cleanup even when completely unused', async () => {
+          // Setup state where role was created during the run
+          const state: TestIdentityState = {
+            runId: testRunId,
+            database: expectedDbName,
+            targetEndpoint: `127.0.0.1:5432/${expectedDbName}`,
+            status: 'active',
+            maintainer: { id: 'm2', username: `${testBaseUsername}_maintainer`, role: 'SYSTEM_MAINTAINER' },
+            standard: { id: 's2', username: `${testBaseUsername}_standard`, role: null },
+            createdUserIds: ['m2', 's2'],
+            createdRoleIds: ['SYSTEM_MAINTAINER'],
+            createdGrants: [{ userId: 'm2', roleId: 'SYSTEM_MAINTAINER' }],
+            createdSessionIds: [],
+            createdAt: new Date().toISOString(),
+          };
+          await writeStateFileAtomic(tempStateFile, state);
+
+          const mockDb = createMockDbWithFixture(state);
+
+          const res1 = await cleanupTestIdentities({
+            nodeEnv: 'test',
+            databaseUrl: validDbUrl,
+            expectedDb: expectedDbName,
+            runId: testRunId,
+            baseUsername: testBaseUsername,
+            stateFile: tempStateFile,
+            db: mockDb,
+          });
+
+          expect(res1.cleaned).toBe(true);
+          expect(res1.usersRemoved).toBe(2);
+          expect(res1.grantsRemoved).toBe(1);
+          expect(res1.rolesRemoved).toBe(0); // Never deleted
+          expect(mockDb.roles.some((r: any) => r.id === 'SYSTEM_MAINTAINER')).toBe(true);
+
+          // Verify zero remaining grants on SYSTEM_MAINTAINER
+          const remainingGrants = mockDb.userRoles.filter((ur: any) => ur.role_id === 'SYSTEM_MAINTAINER');
+          expect(remainingGrants.length).toBe(0);
+
+          // Safe repeated cleanup
+          const res2 = await cleanupTestIdentities({
+            nodeEnv: 'test',
+            databaseUrl: validDbUrl,
+            expectedDb: expectedDbName,
+            runId: testRunId,
+            baseUsername: testBaseUsername,
+            stateFile: tempStateFile,
+            db: mockDb,
+          });
+          expect(res2.cleaned).toBe(false);
+          expect(res2.reason).toBe('NO_STATE_FILE');
+        });
+
+        it('R3: preserves safeguards: rejects unauthorized role claims while retaining valid cleanup', async () => {
+          // Unauthorized role claim in createdRoleIds
+          const badState: TestIdentityState = {
+            runId: testRunId,
+            database: expectedDbName,
+            targetEndpoint: `127.0.0.1:5432/${expectedDbName}`,
+            status: 'active',
+            maintainer: { id: 'm3', username: `${testBaseUsername}_maintainer`, role: 'SYSTEM_MAINTAINER' },
+            standard: { id: 's3', username: `${testBaseUsername}_standard`, role: null },
+            createdUserIds: ['m3', 's3'],
+            createdRoleIds: ['UNAUTHORIZED_ROLE'],
+            createdGrants: [],
+            createdSessionIds: [],
+            createdAt: new Date().toISOString(),
+          };
+          await writeStateFileAtomic(tempStateFile, badState);
+
+          const mockDb = createMockDbWithFixture(badState);
+
+          await expect(
+            cleanupTestIdentities({
+              nodeEnv: 'test',
+              databaseUrl: validDbUrl,
+              expectedDb: expectedDbName,
+              runId: testRunId,
+              baseUsername: testBaseUsername,
+              stateFile: tempStateFile,
+              db: mockDb,
+            })
+          ).rejects.toThrow(/unprovable or unauthorized role/);
+
+          // State file preserved
+          expect(fsSync.existsSync(tempStateFile)).toBe(true);
         });
       });
     });
