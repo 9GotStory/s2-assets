@@ -49,6 +49,7 @@ export interface IdentitySetupOptions {
 export interface IdentityCleanupOptions {
   databaseUrl?: string;
   runId?: string;
+  baseUsername?: string;
   stateFile?: string;
   nodeEnv?: string;
   expectedDb?: string;
@@ -66,6 +67,53 @@ export interface IdentityCleanupResult {
   rolesRemoved: number;
   sessionsRemoved: number;
   reason?: string;
+}
+
+export const MIN_TIMEOUT_MS = 1;
+export const MAX_TIMEOUT_MS = 60000;
+export const DEFAULT_LOCK_TIMEOUT_MS = 5000;
+export const DEFAULT_STATEMENT_TIMEOUT_MS = 10000;
+
+/**
+ * Validates and resolves lock or statement timeout bounds strictly (1–60,000ms inclusive).
+ * Rejects zero, negative, floating-point, NaN, non-numeric, or permissive-coerced strings.
+ */
+export function parseTimeoutMs(
+  optionValue: unknown,
+  envValue: string | undefined,
+  defaultValue: number,
+  name: string
+): number {
+  if (optionValue !== undefined) {
+    if (typeof optionValue !== 'number' || !Number.isInteger(optionValue)) {
+      throw new Error(
+        `Invalid ${name}: must be an integer millisecond value between ${MIN_TIMEOUT_MS} and ${MAX_TIMEOUT_MS} (got ${typeof optionValue === 'string' ? `"${optionValue}"` : String(optionValue)}). Failing closed.`
+      );
+    }
+    if (optionValue < MIN_TIMEOUT_MS || optionValue > MAX_TIMEOUT_MS) {
+      throw new Error(
+        `Invalid ${name}: value ${optionValue}ms is out of supported range [${MIN_TIMEOUT_MS}, ${MAX_TIMEOUT_MS}]ms. Failing closed.`
+      );
+    }
+    return optionValue;
+  }
+
+  if (envValue !== undefined) {
+    if (!/^[1-9][0-9]*$/.test(envValue)) {
+      throw new Error(
+        `Invalid ${name} environment value "${envValue}": must be a positive integer millisecond string between ${MIN_TIMEOUT_MS} and ${MAX_TIMEOUT_MS}. Failing closed.`
+      );
+    }
+    const parsed = Number(envValue);
+    if (!Number.isSafeInteger(parsed) || parsed < MIN_TIMEOUT_MS || parsed > MAX_TIMEOUT_MS) {
+      throw new Error(
+        `Invalid ${name} environment value "${envValue}": value ${parsed}ms is out of supported range [${MIN_TIMEOUT_MS}, ${MAX_TIMEOUT_MS}]ms. Failing closed.`
+      );
+    }
+    return parsed;
+  }
+
+  return defaultValue;
 }
 
 /**
@@ -401,7 +449,8 @@ export async function readAndValidateStateFile(
   filePath: string,
   expectedRunId: string,
   expectedDb: string,
-  expectedEndpoint: string
+  expectedEndpoint: string,
+  expectedBaseUsername?: string
 ): Promise<TestIdentityState> {
   validateOutsideCheckout(filePath, 'State file');
 
@@ -485,54 +534,89 @@ export async function readAndValidateStateFile(
     userIdsSet.add(uid);
   }
 
-  // Validate maintainer identity record consistency
-  if (state.maintainer) {
-    if (typeof state.maintainer !== 'object' || state.maintainer === null) {
-      throw new Error('Corrupted fixture state file: maintainer must be an object. Failing closed.');
-    }
-    if (typeof state.maintainer.username !== 'string' || state.maintainer.username.trim().length === 0) {
-      throw new Error('Corrupted fixture state file: missing maintainer username. Failing closed.');
-    }
-    if (typeof state.maintainer.id !== 'string') {
-      throw new Error('Corrupted fixture state file: invalid maintainer id. Failing closed.');
-    }
-    if (state.maintainer.id.length > 0 && !userIdsSet.has(state.maintainer.id)) {
+  // P1: Both maintainer and standard identity descriptors are MANDATORY and must be valid objects (O1, O2)
+  if (!state.maintainer || typeof state.maintainer !== 'object') {
+    throw new Error('Corrupted fixture state file: missing or invalid maintainer descriptor. Failing closed.');
+  }
+  if (typeof state.maintainer.username !== 'string' || state.maintainer.username.trim().length === 0) {
+    throw new Error('Corrupted fixture state file: missing maintainer username. Failing closed.');
+  }
+  if (typeof state.maintainer.id !== 'string') {
+    throw new Error('Corrupted fixture state file: invalid maintainer id. Failing closed.');
+  }
+  if (state.maintainer.role !== 'SYSTEM_MAINTAINER') {
+    throw new Error('Corrupted fixture state file: maintainer role must be "SYSTEM_MAINTAINER". Failing closed.');
+  }
+
+  if (!state.standard || typeof state.standard !== 'object') {
+    throw new Error('Corrupted fixture state file: missing or invalid standard descriptor. Failing closed.');
+  }
+  if (typeof state.standard.username !== 'string' || state.standard.username.trim().length === 0) {
+    throw new Error('Corrupted fixture state file: missing standard username. Failing closed.');
+  }
+  if (typeof state.standard.id !== 'string') {
+    throw new Error('Corrupted fixture state file: invalid standard id. Failing closed.');
+  }
+  if (state.standard.role !== null) {
+    throw new Error('Corrupted fixture state file: standard role must be null. Failing closed.');
+  }
+
+  // Descriptors must represent distinct users if populated
+  if (state.maintainer.id.length > 0 && state.maintainer.id === state.standard.id) {
+    throw new Error('Inconsistent ownership state: maintainer and standard cannot share the same user ID. Failing closed.');
+  }
+
+  // Expected base username validation (O4)
+  if (expectedBaseUsername !== undefined) {
+    const expectedMaintainerUsername = `${expectedBaseUsername}_maintainer`;
+    const expectedStandardUsername = `${expectedBaseUsername}_standard`;
+    if (state.maintainer.username !== expectedMaintainerUsername) {
       throw new Error(
-        `Inconsistent ownership state: maintainer ID "${state.maintainer.id}" not found in createdUserIds. Failing closed.`
+        `State maintainer username mismatch: expected "${expectedMaintainerUsername}", got "${state.maintainer.username}". Failing closed.`
+      );
+    }
+    if (state.standard.username !== expectedStandardUsername) {
+      throw new Error(
+        `State standard username mismatch: expected "${expectedStandardUsername}", got "${state.standard.username}". Failing closed.`
       );
     }
   }
 
-  // Validate standard identity record consistency
-  if (state.standard) {
-    if (typeof state.standard !== 'object' || state.standard === null) {
-      throw new Error('Corrupted fixture state file: standard must be an object. Failing closed.');
+  // Status-specific descriptor ID invariants (O9)
+  if (state.status === 'active') {
+    if (state.maintainer.id.length === 0) {
+      throw new Error('Inconsistent ownership state: active state requires non-empty maintainer ID. Failing closed.');
     }
-    if (typeof state.standard.username !== 'string' || state.standard.username.trim().length === 0) {
-      throw new Error('Corrupted fixture state file: missing standard username. Failing closed.');
-    }
-    if (typeof state.standard.id !== 'string') {
-      throw new Error('Corrupted fixture state file: invalid standard id. Failing closed.');
-    }
-    if (state.standard.id.length > 0 && !userIdsSet.has(state.standard.id)) {
-      throw new Error(
-        `Inconsistent ownership state: standard ID "${state.standard.id}" not found in createdUserIds. Failing closed.`
-      );
+    if (state.standard.id.length === 0) {
+      throw new Error('Inconsistent ownership state: active state requires non-empty standard ID. Failing closed.');
     }
   }
 
-  // All createdUserIds must belong to maintainer or standard (if populated)
+  // Descriptor IDs (when non-empty) must be present in createdUserIds
+  if (state.maintainer.id.length > 0 && !userIdsSet.has(state.maintainer.id)) {
+    throw new Error(
+      `Inconsistent ownership state: maintainer ID "${state.maintainer.id}" not found in createdUserIds. Failing closed.`
+    );
+  }
+  if (state.standard.id.length > 0 && !userIdsSet.has(state.standard.id)) {
+    throw new Error(
+      `Inconsistent ownership state: standard ID "${state.standard.id}" not found in createdUserIds. Failing closed.`
+    );
+  }
+
+  // Both descriptors must explain every claimed created identity (O3)
   for (const uid of state.createdUserIds) {
-    const isMaintainer = state.maintainer?.id === uid;
-    const isStandard = state.standard?.id === uid;
-    if ((state.maintainer?.id || state.standard?.id) && !isMaintainer && !isStandard) {
+    const isMaintainer = state.maintainer.id.length > 0 && state.maintainer.id === uid;
+    const isStandard = state.standard.id.length > 0 && state.standard.id === uid;
+    if (!isMaintainer && !isStandard) {
       throw new Error(
         `Inconsistent ownership state: createdUserIds contains unowned user ID "${uid}". Failing closed.`
       );
     }
   }
 
-  // Validate grant ownership invariants: all grant user IDs must belong to run-owned identities
+  // Grants consistency (O3, O6): only maintainer grant to SYSTEM_MAINTAINER is authorized
+  const grantKeys = new Set<string>();
   for (const g of state.createdGrants) {
     if (typeof g !== 'object' || g === null) {
       throw new Error('Corrupted fixture state file: invalid grant entry. Failing closed.');
@@ -548,24 +632,52 @@ export async function readAndValidateStateFile(
         `Inconsistent ownership state: grant user "${g.userId}" does not belong to run-owned identities. Failing closed.`
       );
     }
+    if (state.maintainer.id.length === 0 || g.userId !== state.maintainer.id || g.roleId !== 'SYSTEM_MAINTAINER') {
+      throw new Error(
+        `Inconsistent grant ownership: grant for user "${g.userId}" with role "${g.roleId}" is not authorized for this fixture. Failing closed.`
+      );
+    }
+    const key = `${g.userId}:${g.roleId}`;
+    if (grantKeys.has(key)) {
+      throw new Error(`Corrupted fixture state file: duplicate grant "${key}". Failing closed.`);
+    }
+    grantKeys.add(key);
   }
 
-  // Validate tracked sessions if present
+  // Role consistency (O7): fixed-purpose fixture only ever creates SYSTEM_MAINTAINER
+  const roleIdsSet = new Set<string>();
+  for (const rid of state.createdRoleIds) {
+    if (typeof rid !== 'string' || rid.trim().length === 0) {
+      throw new Error('Corrupted fixture state file: invalid role ID in createdRoleIds. Failing closed.');
+    }
+    if (rid !== 'SYSTEM_MAINTAINER') {
+      throw new Error(
+        `Inconsistent role ownership: createdRoleIds contains unprovable or unauthorized role "${rid}". Failing closed.`
+      );
+    }
+    if (roleIdsSet.has(rid)) {
+      throw new Error(`Corrupted fixture state file: duplicate role ID "${rid}" in createdRoleIds. Failing closed.`);
+    }
+    roleIdsSet.add(rid);
+  }
+  if (state.createdRoleIds.length > 1) {
+    throw new Error('Inconsistent role ownership: fixture cannot create more than one role. Failing closed.');
+  }
+
+  // Validate tracked sessions if present (O6)
   if (state.createdSessionIds !== undefined) {
     if (!Array.isArray(state.createdSessionIds)) {
       throw new Error('Corrupted fixture state file: createdSessionIds must be an array. Failing closed.');
     }
+    const sessionIdsSet = new Set<string>();
     for (const sid of state.createdSessionIds) {
       if (typeof sid !== 'string' || sid.trim().length === 0) {
         throw new Error('Corrupted fixture state file: invalid session ID in createdSessionIds. Failing closed.');
       }
-    }
-  }
-
-  // Validate createdRoleIds
-  for (const rid of state.createdRoleIds) {
-    if (typeof rid !== 'string' || rid.trim().length === 0) {
-      throw new Error('Corrupted fixture state file: invalid role ID in createdRoleIds. Failing closed.');
+      if (sessionIdsSet.has(sid)) {
+        throw new Error(`Corrupted fixture state file: duplicate session ID "${sid}" in createdSessionIds. Failing closed.`);
+      }
+      sessionIdsSet.add(sid);
     }
   }
 
@@ -935,6 +1047,27 @@ export async function cleanupTestIdentities(
   // Target database validation MUST occur before state-file check
   const { dbName, targetEndpoint } = validateTargetDatabase(databaseUrl, expectedDb);
 
+  const baseUsername = options.baseUsername ?? process.env.FOUNDATION_TEST_USERNAME;
+  if (!baseUsername || typeof baseUsername !== 'string' || !/^[a-zA-Z0-9_-]+$/.test(baseUsername)) {
+    throw new Error(
+      'FOUNDATION_TEST_USERNAME or baseUsername is required and must be alphanumeric with hyphens or underscores'
+    );
+  }
+
+  // P2: Validate timeouts strictly before acquiring lock or opening connection
+  const lockTimeoutMs = parseTimeoutMs(
+    options.lockTimeoutMs,
+    process.env.FOUNDATION_LOCK_TIMEOUT_MS,
+    DEFAULT_LOCK_TIMEOUT_MS,
+    'lockTimeout'
+  );
+  const statementTimeoutMs = parseTimeoutMs(
+    options.statementTimeoutMs,
+    process.env.FOUNDATION_STATEMENT_TIMEOUT_MS,
+    DEFAULT_STATEMENT_TIMEOUT_MS,
+    'statementTimeout'
+  );
+
   let stateFile = options.stateFile ?? process.env.FOUNDATION_FIXTURE_STATE_FILE;
   if (!stateFile && process.env.FOUNDATION_ENV_FILE && runId) {
     stateFile = path.join(
@@ -983,8 +1116,14 @@ export async function cleanupTestIdentities(
       };
     }
 
-    // Thoroughly validate locked state file
-    const state = await readAndValidateStateFile(stateFile, runId, dbName, targetEndpoint);
+    // Thoroughly validate locked state file with expected base username (P1 / O4)
+    const state = await readAndValidateStateFile(
+      stateFile,
+      runId,
+      dbName,
+      targetEndpoint,
+      baseUsername
+    );
 
     // If empty initializing record without any created entities:
     if (
@@ -1014,16 +1153,14 @@ export async function cleanupTestIdentities(
     inTransaction = true;
 
     // Apply bounded PostgreSQL lock and statement timeouts within the cleanup transaction (P2)
-    const lockTimeoutMs =
-      options.lockTimeoutMs ?? parseInt(process.env.FOUNDATION_LOCK_TIMEOUT_MS || '5000', 10);
-    const statementTimeoutMs =
-      options.statementTimeoutMs ??
-      parseInt(process.env.FOUNDATION_STATEMENT_TIMEOUT_MS || '10000', 10);
-
     await client.query("SELECT set_config('lock_timeout', $1::text, true)", [`${lockTimeoutMs}ms`]);
     await client.query("SELECT set_config('statement_timeout', $1::text, true)", [`${statementTimeoutMs}ms`]);
 
-    // Establish identity ownership against actual selected database (P1)
+    // Establish identity ownership against actual selected database independently from mutable JSON (P1 / O4 / O5)
+    const expectedMaintainerUsername = `${baseUsername}_maintainer`;
+    const expectedStandardUsername = `${baseUsername}_standard`;
+    const provenOwnedUserIds: string[] = [];
+
     if (state.createdUserIds && state.createdUserIds.length > 0) {
       const userRowsRes = await client.query(
         'SELECT id, username FROM users WHERE id = ANY($1::uuid[])',
@@ -1032,20 +1169,21 @@ export async function cleanupTestIdentities(
       const foundUserRows: Array<{ id: string; username: string }> = userRowsRes.rows || [];
       for (const row of foundUserRows) {
         let expectedUsername: string | undefined;
-        if (state.maintainer && state.maintainer.id === row.id) {
-          expectedUsername = state.maintainer.username;
-        } else if (state.standard && state.standard.id === row.id) {
-          expectedUsername = state.standard.username;
+        if (state.maintainer.id === row.id) {
+          expectedUsername = expectedMaintainerUsername;
+        } else if (state.standard.id === row.id) {
+          expectedUsername = expectedStandardUsername;
         }
-        if (expectedUsername && row.username !== expectedUsername) {
+        if (!expectedUsername || row.username !== expectedUsername) {
           throw new Error(
             `Database ownership mismatch: user "${row.id}" has username "${row.username}", expected "${expectedUsername}". Failing closed.`
           );
         }
+        provenOwnedUserIds.push(row.id);
       }
     }
 
-    // Verify that all existing tracked sessions belong exclusively to run-owned identities (P1)
+    // Verify that all existing tracked sessions belong exclusively to run-owned identities (P1 / O6)
     if (state.createdSessionIds && state.createdSessionIds.length > 0) {
       const sessionRowsRes = await client.query(
         'SELECT id, user_id FROM sessions WHERE id = ANY($1)',
@@ -1112,11 +1250,13 @@ export async function cleanupTestIdentities(
     if (state.createdRoleIds && state.createdRoleIds.length > 0) {
       await client.query('LOCK TABLE user_roles IN SHARE ROW EXCLUSIVE MODE');
       for (const roleId of state.createdRoleIds) {
-        const rRes = await client.query(
-          'DELETE FROM roles WHERE id = $1 AND NOT EXISTS (SELECT 1 FROM user_roles WHERE user_roles.role_id = roles.id)',
-          [roleId]
-        );
-        rolesRemoved += rRes.rowCount ?? 0;
+        if (roleId === 'SYSTEM_MAINTAINER') {
+          const rRes = await client.query(
+            'DELETE FROM roles WHERE id = $1 AND NOT EXISTS (SELECT 1 FROM user_roles WHERE user_roles.role_id = roles.id)',
+            [roleId]
+          );
+          rolesRemoved += rRes.rowCount ?? 0;
+        }
       }
     }
 

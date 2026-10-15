@@ -13,6 +13,9 @@ import {
   validateOutsideCheckout,
   writeStateFileAtomic,
   readAndValidateStateFile,
+  parseTimeoutMs,
+  DEFAULT_LOCK_TIMEOUT_MS,
+  DEFAULT_STATEMENT_TIMEOUT_MS,
   type TestIdentityState,
 } from '../fixtures/identity.ts';
 import { UserService, isArgon2idHash } from '../../src/services/user.service.ts';
@@ -267,6 +270,65 @@ describe('Identity Fixture Unit Tests (T044 - US4)', () => {
       release: vi.fn(),
       end: vi.fn(async () => {}),
     };
+
+    return mockDb;
+  }
+
+  function createMockDbWithFixture(state: TestIdentityState) {
+    const mockDb = createMockDb();
+
+    mockDb.users.push(
+      {
+        id: state.maintainer.id,
+        username: state.maintainer.username,
+        password_hash: 'hash_m',
+        is_active: true,
+        created_at: new Date(),
+        updated_at: new Date(),
+      },
+      {
+        id: state.standard.id,
+        username: state.standard.username,
+        password_hash: 'hash_s',
+        is_active: true,
+        created_at: new Date(),
+        updated_at: new Date(),
+      },
+      // Unrelated user
+      {
+        id: '99999999-9999-4000-8000-999999999999',
+        username: 'unrelated_user',
+        password_hash: 'hash_unrelated',
+        is_active: true,
+        created_at: new Date(),
+        updated_at: new Date(),
+      }
+    );
+
+    mockDb.roles.push(
+      { id: 'SYSTEM_MAINTAINER', description: 'System maintainer' },
+      { id: 'ADMINISTRATOR', description: 'Administrator' }
+    );
+
+    mockDb.userRoles.push({
+      user_id: state.maintainer.id,
+      role_id: 'SYSTEM_MAINTAINER',
+    });
+
+    mockDb.sessions.push(
+      {
+        id: 'sess_maintainer',
+        user_id: state.maintainer.id,
+        expires_at: new Date(Date.now() + 3600000),
+        created_at: new Date(),
+      },
+      {
+        id: 'sess_unrelated',
+        user_id: '99999999-9999-4000-8000-999999999999',
+        expires_at: new Date(Date.now() + 3600000),
+        created_at: new Date(),
+      }
+    );
 
     return mockDb;
   }
@@ -705,73 +767,14 @@ describe('Identity Fixture Unit Tests (T044 - US4)', () => {
   });
 
   describe('4. Fixture Cleanup Invariants', () => {
-    function createMockDbWithFixture(state: TestIdentityState) {
-      const mockDb = createMockDb();
-
-      mockDb.users.push(
-        {
-          id: state.maintainer.id,
-          username: state.maintainer.username,
-          password_hash: 'hash_m',
-          is_active: true,
-          created_at: new Date(),
-          updated_at: new Date(),
-        },
-        {
-          id: state.standard.id,
-          username: state.standard.username,
-          password_hash: 'hash_s',
-          is_active: true,
-          created_at: new Date(),
-          updated_at: new Date(),
-        },
-        // Unrelated user
-        {
-          id: '99999999-9999-4000-8000-999999999999',
-          username: 'unrelated_user',
-          password_hash: 'hash_unrelated',
-          is_active: true,
-          created_at: new Date(),
-          updated_at: new Date(),
-        }
-      );
-
-      mockDb.roles.push(
-        { id: 'SYSTEM_MAINTAINER', description: 'System maintainer' },
-        { id: 'ADMINISTRATOR', description: 'Administrator' }
-      );
-
-      mockDb.userRoles.push({
-        user_id: state.maintainer.id,
-        role_id: 'SYSTEM_MAINTAINER',
-      });
-
-      mockDb.sessions.push(
-        {
-          id: 'sess_maintainer',
-          user_id: state.maintainer.id,
-          expires_at: new Date(Date.now() + 3600000),
-          created_at: new Date(),
-        },
-        {
-          id: 'sess_unrelated',
-          user_id: '99999999-9999-4000-8000-999999999999',
-          expires_at: new Date(Date.now() + 3600000),
-          created_at: new Date(),
-        }
-      );
-
-      return mockDb;
-    }
-
     it('deletes only owned users, grants, and sessions, preserving unrelated data', async () => {
       const state: TestIdentityState = {
         runId: testRunId,
         database: expectedDbName,
         targetEndpoint: `127.0.0.1:5432/${expectedDbName}`,
         status: 'active',
-        maintainer: { id: 'u1111111-1111-4000-8000-111111111111', username: 'm', role: 'SYSTEM_MAINTAINER' },
-        standard: { id: 'u2222222-2222-4000-8000-222222222222', username: 's', role: null },
+        maintainer: { id: 'u1111111-1111-4000-8000-111111111111', username: `${testBaseUsername}_maintainer`, role: 'SYSTEM_MAINTAINER' },
+        standard: { id: 'u2222222-2222-4000-8000-222222222222', username: `${testBaseUsername}_standard`, role: null },
         createdUserIds: [
           'u1111111-1111-4000-8000-111111111111',
           'u2222222-2222-4000-8000-222222222222',
@@ -798,6 +801,7 @@ describe('Identity Fixture Unit Tests (T044 - US4)', () => {
         databaseUrl: validDbUrl,
         expectedDb: expectedDbName,
         runId: testRunId,
+        baseUsername: testBaseUsername,
         stateFile: tempStateFile,
         db: mockDb,
       });
@@ -824,8 +828,8 @@ describe('Identity Fixture Unit Tests (T044 - US4)', () => {
         database: expectedDbName,
         targetEndpoint: `127.0.0.1:5432/${expectedDbName}`,
         status: 'active',
-        maintainer: { id: 'u1111111-1111-4000-8000-111111111111', username: 'm', role: 'SYSTEM_MAINTAINER' },
-        standard: { id: 'u2222222-2222-4000-8000-222222222222', username: 's', role: null },
+        maintainer: { id: 'u1111111-1111-4000-8000-111111111111', username: `${testBaseUsername}_maintainer`, role: 'SYSTEM_MAINTAINER' },
+        standard: { id: 'u2222222-2222-4000-8000-222222222222', username: `${testBaseUsername}_standard`, role: null },
         createdUserIds: ['u1111111-1111-4000-8000-111111111111', 'u2222222-2222-4000-8000-222222222222'],
         createdRoleIds: ['SYSTEM_MAINTAINER'],
         createdGrants: [{ userId: 'u1111111-1111-4000-8000-111111111111', roleId: 'SYSTEM_MAINTAINER' }],
@@ -850,6 +854,7 @@ describe('Identity Fixture Unit Tests (T044 - US4)', () => {
         databaseUrl: validDbUrl,
         expectedDb: expectedDbName,
         runId: testRunId,
+        baseUsername: testBaseUsername,
         stateFile: tempStateFile,
         db: mockDb,
       });
@@ -877,6 +882,7 @@ describe('Identity Fixture Unit Tests (T044 - US4)', () => {
         databaseUrl: validDbUrl,
         expectedDb: expectedDbName,
         runId: testRunId,
+        baseUsername: testBaseUsername,
         stateFile: tempStateFile,
         db: mockDb,
       });
@@ -894,6 +900,7 @@ describe('Identity Fixture Unit Tests (T044 - US4)', () => {
           databaseUrl: validDbUrl,
           expectedDb: expectedDbName,
           runId: '',
+          baseUsername: testBaseUsername,
           stateFile: tempStateFile,
           db: mockDb,
         })
@@ -909,6 +916,7 @@ describe('Identity Fixture Unit Tests (T044 - US4)', () => {
           databaseUrl: 'postgresql://u:p@db-prod.internal:5432/s2_foundation_test',
           expectedDb: 's2_foundation_test',
           runId: testRunId,
+          baseUsername: testBaseUsername,
           stateFile: tempStateFile,
           db: mockDb,
         })
@@ -921,8 +929,8 @@ describe('Identity Fixture Unit Tests (T044 - US4)', () => {
         database: expectedDbName,
         targetEndpoint: `127.0.0.1:5432/${expectedDbName}`,
         status: 'active',
-        maintainer: { id: 'u1', username: 'm', role: 'SYSTEM_MAINTAINER' },
-        standard: { id: 'u2', username: 's', role: null },
+        maintainer: { id: 'u1', username: `${testBaseUsername}_maintainer`, role: 'SYSTEM_MAINTAINER' },
+        standard: { id: 'u2', username: `${testBaseUsername}_standard`, role: null },
         createdUserIds: ['u1', 'u2'],
         createdRoleIds: [],
         createdGrants: [],
@@ -942,6 +950,7 @@ describe('Identity Fixture Unit Tests (T044 - US4)', () => {
           databaseUrl: validDbUrl,
           expectedDb: expectedDbName,
           runId: testRunId,
+          baseUsername: testBaseUsername,
           stateFile: tempStateFile,
           db: mockDb,
         })
@@ -954,8 +963,8 @@ describe('Identity Fixture Unit Tests (T044 - US4)', () => {
         database: 's2_foundation_different_db',
         targetEndpoint: '127.0.0.1:5432/s2_foundation_different_db',
         status: 'active',
-        maintainer: { id: 'u1', username: 'm', role: 'SYSTEM_MAINTAINER' },
-        standard: { id: 'u2', username: 's', role: null },
+        maintainer: { id: 'u1', username: `${testBaseUsername}_maintainer`, role: 'SYSTEM_MAINTAINER' },
+        standard: { id: 'u2', username: `${testBaseUsername}_standard`, role: null },
         createdUserIds: ['u1', 'u2'],
         createdRoleIds: [],
         createdGrants: [],
@@ -975,6 +984,7 @@ describe('Identity Fixture Unit Tests (T044 - US4)', () => {
           databaseUrl: validDbUrl,
           expectedDb: expectedDbName,
           runId: testRunId,
+          baseUsername: testBaseUsername,
           stateFile: tempStateFile,
           db: mockDb,
         })
@@ -994,6 +1004,7 @@ describe('Identity Fixture Unit Tests (T044 - US4)', () => {
           databaseUrl: validDbUrl,
           expectedDb: expectedDbName,
           runId: testRunId,
+          baseUsername: testBaseUsername,
           stateFile: tempStateFile,
           db: mockDb,
         })
@@ -1153,8 +1164,8 @@ describe('Identity Fixture Unit Tests (T044 - US4)', () => {
           database: expectedDbName,
           targetEndpoint: `127.0.0.1:5432/${expectedDbName}`,
           status: 'active',
-          maintainer: { id: 'u1', username: 'm', role: 'SYSTEM_MAINTAINER' },
-          standard: { id: 'u2', username: 's', role: null },
+          maintainer: { id: 'u1', username: `${testBaseUsername}_maintainer`, role: 'SYSTEM_MAINTAINER' },
+          standard: { id: 'u2', username: `${testBaseUsername}_standard`, role: null },
           createdUserIds: ['u1', 'u2'],
           createdRoleIds: [],
           createdGrants: [],
@@ -1175,6 +1186,7 @@ describe('Identity Fixture Unit Tests (T044 - US4)', () => {
             databaseUrl: validDbUrl,
             expectedDb: expectedDbName,
             runId: testRunId,
+            baseUsername: testBaseUsername,
             stateFile: tempStateFile,
             db: mockDb,
           })
@@ -1186,8 +1198,8 @@ describe('Identity Fixture Unit Tests (T044 - US4)', () => {
           runId: testRunId,
           database: expectedDbName,
           status: 'active',
-          maintainer: { id: 'u1', username: 'm', role: 'SYSTEM_MAINTAINER' },
-          standard: { id: 'u2', username: 's', role: null },
+          maintainer: { id: 'u1', username: `${testBaseUsername}_maintainer`, role: 'SYSTEM_MAINTAINER' },
+          standard: { id: 'u2', username: `${testBaseUsername}_standard`, role: null },
           createdUserIds: ['u1', 'u2'],
           createdRoleIds: [],
           createdGrants: [],
@@ -1207,6 +1219,7 @@ describe('Identity Fixture Unit Tests (T044 - US4)', () => {
             databaseUrl: validDbUrl,
             expectedDb: expectedDbName,
             runId: testRunId,
+            baseUsername: testBaseUsername,
             stateFile: tempStateFile,
             db: mockDb,
           })
@@ -1219,8 +1232,8 @@ describe('Identity Fixture Unit Tests (T044 - US4)', () => {
           database: expectedDbName,
           targetEndpoint: `otherhost:9999/${expectedDbName}`,
           status: 'active',
-          maintainer: { id: 'u1', username: 'm', role: 'SYSTEM_MAINTAINER' },
-          standard: { id: 'u2', username: 's', role: null },
+          maintainer: { id: 'u1', username: `${testBaseUsername}_maintainer`, role: 'SYSTEM_MAINTAINER' },
+          standard: { id: 'u2', username: `${testBaseUsername}_standard`, role: null },
           createdUserIds: ['u1', 'u2'],
           createdRoleIds: [],
           createdGrants: [],
@@ -1240,6 +1253,7 @@ describe('Identity Fixture Unit Tests (T044 - US4)', () => {
             databaseUrl: validDbUrl,
             expectedDb: expectedDbName,
             runId: testRunId,
+            baseUsername: testBaseUsername,
             stateFile: tempStateFile,
             db: mockDb,
           })
@@ -1276,6 +1290,7 @@ describe('Identity Fixture Unit Tests (T044 - US4)', () => {
           databaseUrl: validDbUrl,
           expectedDb: expectedDbName,
           runId: testRunId,
+          baseUsername: testBaseUsername,
           stateFile: tempStateFile,
           db: mockDb,
         });
@@ -1330,6 +1345,7 @@ describe('Identity Fixture Unit Tests (T044 - US4)', () => {
           databaseUrl: validDbUrl,
           expectedDb: expectedDbName,
           runId: testRunId,
+          baseUsername: testBaseUsername,
           stateFile: tempStateFile,
           db: mockDb,
         });
@@ -1371,6 +1387,7 @@ describe('Identity Fixture Unit Tests (T044 - US4)', () => {
             databaseUrl: validDbUrl,
             expectedDb: expectedDbName,
             runId: testRunId,
+            baseUsername: testBaseUsername,
             stateFile: insideCheckoutStateFile,
             db: mockDb,
           })
@@ -1537,8 +1554,8 @@ describe('Identity Fixture Unit Tests (T044 - US4)', () => {
             database: expectedDbName,
             targetEndpoint: `127.0.0.1:5432/${expectedDbName}`,
             status: 'active',
-            maintainer: { id: 'm1', username: 'm_user', role: 'SYSTEM_MAINTAINER' },
-            standard: { id: 's1', username: 's_user', role: null },
+            maintainer: { id: 'm1', username: `${testBaseUsername}_maintainer`, role: 'SYSTEM_MAINTAINER' },
+            standard: { id: 's1', username: `${testBaseUsername}_standard`, role: null },
             createdUserIds: ['m1', 's1'],
             createdRoleIds: [],
             createdGrants: [{ userId: 'm1', roleId: 'SYSTEM_MAINTAINER' }],
@@ -1549,8 +1566,8 @@ describe('Identity Fixture Unit Tests (T044 - US4)', () => {
 
           // Add users to mockDb
           mockDb.users.push(
-            { id: 'm1', username: 'm_user', password_hash: 'h', is_active: true, created_at: new Date(), updated_at: new Date() },
-            { id: 's1', username: 's_user', password_hash: 'h', is_active: true, created_at: new Date(), updated_at: new Date() },
+            { id: 'm1', username: `${testBaseUsername}_maintainer`, password_hash: 'h', is_active: true, created_at: new Date(), updated_at: new Date() },
+            { id: 's1', username: `${testBaseUsername}_standard`, password_hash: 'h', is_active: true, created_at: new Date(), updated_at: new Date() },
             { id: 'outsider_id', username: 'outsider', password_hash: 'h', is_active: true, created_at: new Date(), updated_at: new Date() }
           );
           // Outsider has a session
@@ -1567,6 +1584,7 @@ describe('Identity Fixture Unit Tests (T044 - US4)', () => {
               databaseUrl: validDbUrl,
               expectedDb: expectedDbName,
               runId: testRunId,
+              baseUsername: testBaseUsername,
               stateFile: tempStateFile,
               db: mockDb,
             })
@@ -1585,8 +1603,8 @@ describe('Identity Fixture Unit Tests (T044 - US4)', () => {
             database: expectedDbName,
             targetEndpoint: `127.0.0.1:5432/${expectedDbName}`,
             status: 'active',
-            maintainer: { id: 'm1', username: 'm_user', role: 'SYSTEM_MAINTAINER' },
-            standard: { id: 's1', username: 's_user', role: null },
+            maintainer: { id: 'm1', username: `${testBaseUsername}_maintainer`, role: 'SYSTEM_MAINTAINER' },
+            standard: { id: 's1', username: `${testBaseUsername}_standard`, role: null },
             createdUserIds: ['m1', 's1'],
             createdRoleIds: [],
             createdGrants: [],
@@ -1598,7 +1616,7 @@ describe('Identity Fixture Unit Tests (T044 - US4)', () => {
           // Mock DB has a user with id m1, but DIFFERENT username (e.g. hijacked ID)
           mockDb.users.push(
             { id: 'm1', username: 'different_user_name', password_hash: 'h', is_active: true, created_at: new Date(), updated_at: new Date() },
-            { id: 's1', username: 's_user', password_hash: 'h', is_active: true, created_at: new Date(), updated_at: new Date() }
+            { id: 's1', username: `${testBaseUsername}_standard`, password_hash: 'h', is_active: true, created_at: new Date(), updated_at: new Date() }
           );
 
           await expect(
@@ -1607,10 +1625,11 @@ describe('Identity Fixture Unit Tests (T044 - US4)', () => {
               databaseUrl: validDbUrl,
               expectedDb: expectedDbName,
               runId: testRunId,
+              baseUsername: testBaseUsername,
               stateFile: tempStateFile,
               db: mockDb,
             })
-          ).rejects.toThrow(/Database ownership mismatch: user "m1" has username "different_user_name", expected "m_user"/);
+          ).rejects.toThrow(new RegExp(`Database ownership mismatch: user "m1" has username "different_user_name", expected "${testBaseUsername}_maintainer"`));
 
           // Verify no users were deleted
           expect(mockDb.users.length).toBe(2);
@@ -1625,8 +1644,8 @@ describe('Identity Fixture Unit Tests (T044 - US4)', () => {
             database: expectedDbName,
             targetEndpoint: `127.0.0.1:5432/${expectedDbName}`,
             status: 'active',
-            maintainer: { id: 'm1', username: 'm_user', role: 'SYSTEM_MAINTAINER' },
-            standard: { id: 's1', username: 's_user', role: null },
+            maintainer: { id: 'm1', username: `${testBaseUsername}_maintainer`, role: 'SYSTEM_MAINTAINER' },
+            standard: { id: 's1', username: `${testBaseUsername}_standard`, role: null },
             createdUserIds: ['m1', 's1'],
             createdRoleIds: [],
             createdGrants: [],
@@ -1636,8 +1655,8 @@ describe('Identity Fixture Unit Tests (T044 - US4)', () => {
           await writeStateFileAtomic(tempStateFile, validState);
 
           mockDb.users.push(
-            { id: 'm1', username: 'm_user', password_hash: 'h', is_active: true, created_at: new Date(), updated_at: new Date() },
-            { id: 's1', username: 's_user', password_hash: 'h', is_active: true, created_at: new Date(), updated_at: new Date() }
+            { id: 'm1', username: `${testBaseUsername}_maintainer`, password_hash: 'h', is_active: true, created_at: new Date(), updated_at: new Date() },
+            { id: 's1', username: `${testBaseUsername}_standard`, password_hash: 'h', is_active: true, created_at: new Date(), updated_at: new Date() }
           );
 
           await cleanupTestIdentities({
@@ -1645,6 +1664,7 @@ describe('Identity Fixture Unit Tests (T044 - US4)', () => {
             databaseUrl: validDbUrl,
             expectedDb: expectedDbName,
             runId: testRunId,
+            baseUsername: testBaseUsername,
             stateFile: tempStateFile,
             db: mockDb,
             lockTimeoutMs: 3000,
@@ -1667,8 +1687,8 @@ describe('Identity Fixture Unit Tests (T044 - US4)', () => {
             database: expectedDbName,
             targetEndpoint: `127.0.0.1:5432/${expectedDbName}`,
             status: 'active',
-            maintainer: { id: 'm1', username: 'm_user', role: 'SYSTEM_MAINTAINER' },
-            standard: { id: 's1', username: 's_user', role: null },
+            maintainer: { id: 'm1', username: `${testBaseUsername}_maintainer`, role: 'SYSTEM_MAINTAINER' },
+            standard: { id: 's1', username: `${testBaseUsername}_standard`, role: null },
             createdUserIds: ['m1', 's1'],
             createdRoleIds: ['SYSTEM_MAINTAINER'],
             createdGrants: [],
@@ -1678,8 +1698,8 @@ describe('Identity Fixture Unit Tests (T044 - US4)', () => {
           await writeStateFileAtomic(tempStateFile, validState);
 
           mockDb.users.push(
-            { id: 'm1', username: 'm_user', password_hash: 'h', is_active: true, created_at: new Date(), updated_at: new Date() },
-            { id: 's1', username: 's_user', password_hash: 'h', is_active: true, created_at: new Date(), updated_at: new Date() }
+            { id: 'm1', username: `${testBaseUsername}_maintainer`, password_hash: 'h', is_active: true, created_at: new Date(), updated_at: new Date() },
+            { id: 's1', username: `${testBaseUsername}_standard`, password_hash: 'h', is_active: true, created_at: new Date(), updated_at: new Date() }
           );
           mockDb.roles.push({ id: 'SYSTEM_MAINTAINER', description: 'desc' });
 
@@ -1700,6 +1720,7 @@ describe('Identity Fixture Unit Tests (T044 - US4)', () => {
               databaseUrl: validDbUrl,
               expectedDb: expectedDbName,
               runId: testRunId,
+              baseUsername: testBaseUsername,
               stateFile: tempStateFile,
               db: mockDb,
             })
@@ -1716,6 +1737,646 @@ describe('Identity Fixture Unit Tests (T044 - US4)', () => {
             typeof c[0] === 'string' && c[0].includes('ROLLBACK')
           );
           expect(rollbackCalls.length).toBeGreaterThanOrEqual(1);
+        });
+      });
+    });
+
+    describe('10. Round 5 Acceptance Cases (O1–O10 & T1–T7)', () => {
+      describe('10.1 P1 Acceptance Cases (O1–O10)', () => {
+        it('O1: rejects unprovable ownership when descriptors are removed and createdUserIds targets outsider U', async () => {
+          const mockDb = createMockDb();
+          const outsiderId = '99999999-9999-4000-8000-999999999999';
+          mockDb.users.push({
+            id: outsiderId,
+            username: 'outsider_user',
+            password_hash: 'hash',
+            is_active: true,
+            created_at: new Date(),
+            updated_at: new Date(),
+          });
+          mockDb.roles.push({ id: 'UNRELATED_ROLE', description: 'unrelated role' });
+          mockDb.userRoles.push({ user_id: outsiderId, role_id: 'UNRELATED_ROLE' });
+          mockDb.sessions.push({
+            id: 'outsider_sess',
+            user_id: outsiderId,
+            expires_at: new Date(Date.now() + 3600000),
+            created_at: new Date(),
+          });
+
+          // State record with descriptors removed and createdUserIds set to outsider U
+          const bypassState: any = {
+            runId: testRunId,
+            database: expectedDbName,
+            targetEndpoint: `127.0.0.1:5432/${expectedDbName}`,
+            status: 'active',
+            createdUserIds: [outsiderId],
+            createdRoleIds: ['UNRELATED_ROLE'],
+            createdGrants: [{ userId: outsiderId, roleId: 'UNRELATED_ROLE' }],
+            createdSessionIds: ['outsider_sess'],
+            createdAt: new Date().toISOString(),
+          };
+          await fs.writeFile(tempStateFile, JSON.stringify(bypassState, null, 2), { mode: 0o600 });
+
+          // readAndValidateStateFile rejects
+          await expect(
+            readAndValidateStateFile(tempStateFile, testRunId, expectedDbName, `127.0.0.1:5432/${expectedDbName}`, testBaseUsername)
+          ).rejects.toThrow(/missing or invalid maintainer descriptor/);
+
+          // cleanupTestIdentities rejects before issuing any DELETE
+          await expect(
+            cleanupTestIdentities({
+              nodeEnv: 'test',
+              databaseUrl: validDbUrl,
+              expectedDb: expectedDbName,
+              runId: testRunId,
+              baseUsername: testBaseUsername,
+              stateFile: tempStateFile,
+              db: mockDb,
+            })
+          ).rejects.toThrow(/missing or invalid maintainer descriptor/);
+
+          // Verify no DELETE query was executed
+          const deleteCalls = mockDb.query.mock.calls.filter((c: any) =>
+            typeof c[0] === 'string' && c[0].trim().startsWith('DELETE')
+          );
+          expect(deleteCalls.length).toBe(0);
+
+          // U, its grant, session and role survive unchanged
+          expect(mockDb.users.some((u: any) => u.id === outsiderId)).toBe(true);
+          expect(mockDb.userRoles.some((ur: any) => ur.user_id === outsiderId)).toBe(true);
+          expect(mockDb.sessions.some((s: any) => s.id === 'outsider_sess')).toBe(true);
+          expect(mockDb.roles.some((r: any) => r.id === 'UNRELATED_ROLE')).toBe(true);
+        });
+
+        it('O2: rejects when maintainer or standard descriptor is missing, null, non-object, or incomplete', async () => {
+          const baseState = {
+            runId: testRunId,
+            database: expectedDbName,
+            targetEndpoint: `127.0.0.1:5432/${expectedDbName}`,
+            status: 'active',
+            maintainer: { id: 'm1', username: `${testBaseUsername}_maintainer`, role: 'SYSTEM_MAINTAINER' },
+            standard: { id: 's1', username: `${testBaseUsername}_standard`, role: null },
+            createdUserIds: ['m1', 's1'],
+            createdRoleIds: [],
+            createdGrants: [],
+            createdSessionIds: [],
+            createdAt: new Date().toISOString(),
+          };
+
+          // 1. Missing maintainer
+          const noMaintainer = { ...baseState };
+          delete (noMaintainer as any).maintainer;
+          await fs.writeFile(tempStateFile, JSON.stringify(noMaintainer, null, 2), { mode: 0o600 });
+          await expect(
+            readAndValidateStateFile(tempStateFile, testRunId, expectedDbName, `127.0.0.1:5432/${expectedDbName}`)
+          ).rejects.toThrow(/missing or invalid maintainer descriptor/);
+
+          // 2. Missing standard
+          const noStandard = { ...baseState };
+          delete (noStandard as any).standard;
+          await fs.writeFile(tempStateFile, JSON.stringify(noStandard, null, 2), { mode: 0o600 });
+          await expect(
+            readAndValidateStateFile(tempStateFile, testRunId, expectedDbName, `127.0.0.1:5432/${expectedDbName}`)
+          ).rejects.toThrow(/missing or invalid standard descriptor/);
+
+          // 3. Null descriptor
+          const nullMaintainer = { ...baseState, maintainer: null };
+          await fs.writeFile(tempStateFile, JSON.stringify(nullMaintainer, null, 2), { mode: 0o600 });
+          await expect(
+            readAndValidateStateFile(tempStateFile, testRunId, expectedDbName, `127.0.0.1:5432/${expectedDbName}`)
+          ).rejects.toThrow(/missing or invalid maintainer descriptor/);
+
+          // 4. Non-object descriptor
+          const nonObjStandard = { ...baseState, standard: 'not_an_object' };
+          await fs.writeFile(tempStateFile, JSON.stringify(nonObjStandard, null, 2), { mode: 0o600 });
+          await expect(
+            readAndValidateStateFile(tempStateFile, testRunId, expectedDbName, `127.0.0.1:5432/${expectedDbName}`)
+          ).rejects.toThrow(/missing or invalid standard descriptor/);
+
+          // 5. Missing required fields (empty username)
+          const emptyUser = { ...baseState, maintainer: { id: 'm1', username: '', role: 'SYSTEM_MAINTAINER' } };
+          await fs.writeFile(tempStateFile, JSON.stringify(emptyUser, null, 2), { mode: 0o600 });
+          await expect(
+            readAndValidateStateFile(tempStateFile, testRunId, expectedDbName, `127.0.0.1:5432/${expectedDbName}`)
+          ).rejects.toThrow(/missing maintainer username/);
+        });
+
+        it('O3: rejects extra created-user ID, duplicate IDs, descriptor ID absent from createdUserIds, or outsider grant', async () => {
+          const baseState = {
+            runId: testRunId,
+            database: expectedDbName,
+            targetEndpoint: `127.0.0.1:5432/${expectedDbName}`,
+            status: 'active',
+            maintainer: { id: 'm1', username: `${testBaseUsername}_maintainer`, role: 'SYSTEM_MAINTAINER' },
+            standard: { id: 's1', username: `${testBaseUsername}_standard`, role: null },
+            createdUserIds: ['m1', 's1'],
+            createdRoleIds: [],
+            createdGrants: [],
+            createdSessionIds: [],
+            createdAt: new Date().toISOString(),
+          };
+
+          // 1. Extra created-user ID
+          const extraUser = { ...baseState, createdUserIds: ['m1', 's1', 'extra_user'] };
+          await fs.writeFile(tempStateFile, JSON.stringify(extraUser, null, 2), { mode: 0o600 });
+          await expect(
+            readAndValidateStateFile(tempStateFile, testRunId, expectedDbName, `127.0.0.1:5432/${expectedDbName}`)
+          ).rejects.toThrow(/createdUserIds contains unowned user ID "extra_user"/);
+
+          // 2. Duplicate user IDs
+          const duplicateUser = { ...baseState, createdUserIds: ['m1', 's1', 'm1'] };
+          await fs.writeFile(tempStateFile, JSON.stringify(duplicateUser, null, 2), { mode: 0o600 });
+          await expect(
+            readAndValidateStateFile(tempStateFile, testRunId, expectedDbName, `127.0.0.1:5432/${expectedDbName}`)
+          ).rejects.toThrow(/duplicate user ID "m1" in createdUserIds/);
+
+          // 3. Descriptor ID absent from createdUserIds
+          const absentId = { ...baseState, createdUserIds: ['s1'] };
+          await fs.writeFile(tempStateFile, JSON.stringify(absentId, null, 2), { mode: 0o600 });
+          await expect(
+            readAndValidateStateFile(tempStateFile, testRunId, expectedDbName, `127.0.0.1:5432/${expectedDbName}`)
+          ).rejects.toThrow(/maintainer ID "m1" not found in createdUserIds/);
+
+          // 4. Grant user outside createdUserIds
+          const outsiderGrant = {
+            ...baseState,
+            createdGrants: [{ userId: 'outsider_id', roleId: 'SYSTEM_MAINTAINER' }],
+          };
+          await fs.writeFile(tempStateFile, JSON.stringify(outsiderGrant, null, 2), { mode: 0o600 });
+          await expect(
+            readAndValidateStateFile(tempStateFile, testRunId, expectedDbName, `127.0.0.1:5432/${expectedDbName}`)
+          ).rejects.toThrow(/grant user "outsider_id" does not belong to run-owned identities/);
+        });
+
+        it('O4: rejects missing/mismatched configured baseUsername or altered descriptor username', async () => {
+          const state: TestIdentityState = {
+            runId: testRunId,
+            database: expectedDbName,
+            targetEndpoint: `127.0.0.1:5432/${expectedDbName}`,
+            status: 'active',
+            maintainer: { id: 'm1', username: 'tampered_maintainer', role: 'SYSTEM_MAINTAINER' },
+            standard: { id: 's1', username: `${testBaseUsername}_standard`, role: null },
+            createdUserIds: ['m1', 's1'],
+            createdRoleIds: [],
+            createdGrants: [],
+            createdSessionIds: [],
+            createdAt: new Date().toISOString(),
+          };
+          await fs.writeFile(tempStateFile, JSON.stringify(state, null, 2), { mode: 0o600 });
+
+          // readAndValidateStateFile rejects tampered descriptor username against expectedBaseUsername
+          await expect(
+            readAndValidateStateFile(tempStateFile, testRunId, expectedDbName, `127.0.0.1:5432/${expectedDbName}`, testBaseUsername)
+          ).rejects.toThrow(/State maintainer username mismatch/);
+
+          // cleanupTestIdentities rejects missing baseUsername
+          const mockDb = createMockDb();
+          await expect(
+            cleanupTestIdentities({
+              nodeEnv: 'test',
+              databaseUrl: validDbUrl,
+              expectedDb: expectedDbName,
+              runId: testRunId,
+              stateFile: tempStateFile,
+              db: mockDb,
+            })
+          ).rejects.toThrow(/FOUNDATION_TEST_USERNAME or baseUsername is required/);
+        });
+
+        it('O5: rejects when DB username differs from expected name, but allows already-deleted rows for recovery', async () => {
+          const state: TestIdentityState = {
+            runId: testRunId,
+            database: expectedDbName,
+            targetEndpoint: `127.0.0.1:5432/${expectedDbName}`,
+            status: 'active',
+            maintainer: { id: 'm1', username: `${testBaseUsername}_maintainer`, role: 'SYSTEM_MAINTAINER' },
+            standard: { id: 's1', username: `${testBaseUsername}_standard`, role: null },
+            createdUserIds: ['m1', 's1'],
+            createdRoleIds: [],
+            createdGrants: [],
+            createdSessionIds: [],
+            createdAt: new Date().toISOString(),
+          };
+          await fs.writeFile(tempStateFile, JSON.stringify(state, null, 2), { mode: 0o600 });
+
+          // 1. Database row has unexpected username: MUST reject and preserve DB
+          const mockDbMismatch = createMockDb();
+          mockDbMismatch.users.push(
+            { id: 'm1', username: 'hijacked_name', password_hash: 'h', is_active: true, created_at: new Date(), updated_at: new Date() },
+            { id: 's1', username: `${testBaseUsername}_standard`, password_hash: 'h', is_active: true, created_at: new Date(), updated_at: new Date() }
+          );
+          await expect(
+            cleanupTestIdentities({
+              nodeEnv: 'test',
+              databaseUrl: validDbUrl,
+              expectedDb: expectedDbName,
+              runId: testRunId,
+              baseUsername: testBaseUsername,
+              stateFile: tempStateFile,
+              db: mockDbMismatch,
+            })
+          ).rejects.toThrow(/Database ownership mismatch/);
+          expect(mockDbMismatch.users.length).toBe(2);
+
+          // 2. Already-deleted row: missing row from DB is safely accepted for idempotent recovery
+          const mockDbPartial = createMockDb();
+          mockDbPartial.users.push(
+            { id: 's1', username: `${testBaseUsername}_standard`, password_hash: 'h', is_active: true, created_at: new Date(), updated_at: new Date() }
+          );
+          const partialRes = await cleanupTestIdentities({
+            nodeEnv: 'test',
+            databaseUrl: validDbUrl,
+            expectedDb: expectedDbName,
+            runId: testRunId,
+            baseUsername: testBaseUsername,
+            stateFile: tempStateFile,
+            db: mockDbPartial,
+          });
+          expect(partialRes.cleaned).toBe(true);
+          expect(partialRes.usersRemoved).toBe(1);
+        });
+
+        it('O6: rejects injected outsider session before deletion and restricts SQL predicates to owned identities', async () => {
+          const outsiderId = '99999999-9999-4000-8000-999999999999';
+          const state: TestIdentityState = {
+            runId: testRunId,
+            database: expectedDbName,
+            targetEndpoint: `127.0.0.1:5432/${expectedDbName}`,
+            status: 'active',
+            maintainer: { id: 'm1', username: `${testBaseUsername}_maintainer`, role: 'SYSTEM_MAINTAINER' },
+            standard: { id: 's1', username: `${testBaseUsername}_standard`, role: null },
+            createdUserIds: ['m1', 's1'],
+            createdRoleIds: [],
+            createdGrants: [{ userId: 'm1', roleId: 'SYSTEM_MAINTAINER' }],
+            createdSessionIds: ['outsider_session_only'],
+            createdAt: new Date().toISOString(),
+          };
+          await fs.writeFile(tempStateFile, JSON.stringify(state, null, 2), { mode: 0o600 });
+
+          const mockDb = createMockDb();
+          mockDb.users.push(
+            { id: 'm1', username: `${testBaseUsername}_maintainer`, password_hash: 'h', is_active: true, created_at: new Date(), updated_at: new Date() },
+            { id: 's1', username: `${testBaseUsername}_standard`, password_hash: 'h', is_active: true, created_at: new Date(), updated_at: new Date() },
+            { id: outsiderId, username: 'outsider', password_hash: 'h', is_active: true, created_at: new Date(), updated_at: new Date() }
+          );
+          mockDb.sessions.push({
+            id: 'outsider_session_only',
+            user_id: outsiderId,
+            expires_at: new Date(Date.now() + 3600000),
+            created_at: new Date(),
+          });
+
+          await expect(
+            cleanupTestIdentities({
+              nodeEnv: 'test',
+              databaseUrl: validDbUrl,
+              expectedDb: expectedDbName,
+              runId: testRunId,
+              baseUsername: testBaseUsername,
+              stateFile: tempStateFile,
+              db: mockDb,
+            })
+          ).rejects.toThrow(/Inconsistent session ownership/);
+
+          expect(mockDb.sessions.length).toBe(1);
+          expect(mockDb.users.length).toBe(3);
+        });
+
+        it('O7: rejects unauthorized role claim in createdRoleIds, and preserves preexisting SYSTEM_MAINTAINER', async () => {
+          // 1. Injected unrelated role R
+          const badRoleState = {
+            runId: testRunId,
+            database: expectedDbName,
+            targetEndpoint: `127.0.0.1:5432/${expectedDbName}`,
+            status: 'active',
+            maintainer: { id: 'm1', username: `${testBaseUsername}_maintainer`, role: 'SYSTEM_MAINTAINER' },
+            standard: { id: 's1', username: `${testBaseUsername}_standard`, role: null },
+            createdUserIds: ['m1', 's1'],
+            createdRoleIds: ['UNRELATED_ROLE'],
+            createdGrants: [],
+            createdSessionIds: [],
+            createdAt: new Date().toISOString(),
+          };
+          await fs.writeFile(tempStateFile, JSON.stringify(badRoleState, null, 2), { mode: 0o600 });
+          await expect(
+            readAndValidateStateFile(tempStateFile, testRunId, expectedDbName, `127.0.0.1:5432/${expectedDbName}`)
+          ).rejects.toThrow(/createdRoleIds contains unprovable or unauthorized role "UNRELATED_ROLE"/);
+
+          // 2. Preexisting SYSTEM_MAINTAINER: createdRoleIds is empty
+          const preexistingRoleState: TestIdentityState = {
+            runId: testRunId,
+            database: expectedDbName,
+            targetEndpoint: `127.0.0.1:5432/${expectedDbName}`,
+            status: 'active',
+            maintainer: { id: 'm1', username: `${testBaseUsername}_maintainer`, role: 'SYSTEM_MAINTAINER' },
+            standard: { id: 's1', username: `${testBaseUsername}_standard`, role: null },
+            createdUserIds: ['m1', 's1'],
+            createdRoleIds: [],
+            createdGrants: [{ userId: 'm1', roleId: 'SYSTEM_MAINTAINER' }],
+            createdSessionIds: [],
+            createdAt: new Date().toISOString(),
+          };
+          await fs.writeFile(tempStateFile, JSON.stringify(preexistingRoleState, null, 2), { mode: 0o600 });
+
+          const mockDb = createMockDbWithFixture(preexistingRoleState);
+          const res = await cleanupTestIdentities({
+            nodeEnv: 'test',
+            databaseUrl: validDbUrl,
+            expectedDb: expectedDbName,
+            runId: testRunId,
+            baseUsername: testBaseUsername,
+            stateFile: tempStateFile,
+            db: mockDb,
+          });
+
+          expect(res.cleaned).toBe(true);
+          expect(res.rolesRemoved).toBe(0); // Did NOT delete preexisting role
+          expect(mockDb.roles.some((r: any) => r.id === 'SYSTEM_MAINTAINER')).toBe(true);
+        });
+
+        it('O8: removes only proven fixture resources, preserves outsider resources, and repeats safely', async () => {
+          const state: TestIdentityState = {
+            runId: testRunId,
+            database: expectedDbName,
+            targetEndpoint: `127.0.0.1:5432/${expectedDbName}`,
+            status: 'active',
+            maintainer: { id: 'm1', username: `${testBaseUsername}_maintainer`, role: 'SYSTEM_MAINTAINER' },
+            standard: { id: 's1', username: `${testBaseUsername}_standard`, role: null },
+            createdUserIds: ['m1', 's1'],
+            createdRoleIds: ['SYSTEM_MAINTAINER'],
+            createdGrants: [{ userId: 'm1', roleId: 'SYSTEM_MAINTAINER' }],
+            createdSessionIds: ['sess_maintainer'],
+            createdAt: new Date().toISOString(),
+          };
+          await fs.writeFile(tempStateFile, JSON.stringify(state, null, 2), { mode: 0o600 });
+          const mockDb = createMockDbWithFixture(state);
+
+          // 1. Initial cleanup
+          const res1 = await cleanupTestIdentities({
+            nodeEnv: 'test',
+            databaseUrl: validDbUrl,
+            expectedDb: expectedDbName,
+            runId: testRunId,
+            baseUsername: testBaseUsername,
+            stateFile: tempStateFile,
+            db: mockDb,
+          });
+          expect(res1.cleaned).toBe(true);
+          expect(res1.usersRemoved).toBe(2);
+          expect(res1.grantsRemoved).toBe(1);
+          expect(res1.rolesRemoved).toBe(1);
+          expect(res1.sessionsRemoved).toBe(1);
+          expect(fsSync.existsSync(tempStateFile)).toBe(false);
+
+          // Unrelated user, role, and session survived
+          expect(mockDb.users.some((u: any) => u.username === 'unrelated_user')).toBe(true);
+          expect(mockDb.roles.some((r: any) => r.id === 'ADMINISTRATOR')).toBe(true);
+          expect(mockDb.sessions.some((s: any) => s.id === 'sess_unrelated')).toBe(true);
+
+          // 2. Repeated cleanup
+          const res2 = await cleanupTestIdentities({
+            nodeEnv: 'test',
+            databaseUrl: validDbUrl,
+            expectedDb: expectedDbName,
+            runId: testRunId,
+            baseUsername: testBaseUsername,
+            stateFile: tempStateFile,
+            db: mockDb,
+          });
+          expect(res2.cleaned).toBe(false);
+          expect(res2.reason).toBe('NO_STATE_FILE');
+        });
+
+        it('O9: recovers partial state safely and handles empty initializing records', async () => {
+          // 1. Empty initializing record
+          const initRecord: TestIdentityState = {
+            runId: testRunId,
+            database: expectedDbName,
+            targetEndpoint: `127.0.0.1:5432/${expectedDbName}`,
+            status: 'initializing',
+            maintainer: { id: '', username: `${testBaseUsername}_maintainer`, role: 'SYSTEM_MAINTAINER' },
+            standard: { id: '', username: `${testBaseUsername}_standard`, role: null },
+            createdUserIds: [],
+            createdRoleIds: [],
+            createdGrants: [],
+            createdSessionIds: [],
+            createdAt: new Date().toISOString(),
+          };
+          await fs.writeFile(tempStateFile, JSON.stringify(initRecord, null, 2), { mode: 0o600 });
+          const mockDb = createMockDb();
+
+          const initRes = await cleanupTestIdentities({
+            nodeEnv: 'test',
+            databaseUrl: validDbUrl,
+            expectedDb: expectedDbName,
+            runId: testRunId,
+            baseUsername: testBaseUsername,
+            stateFile: tempStateFile,
+            db: mockDb,
+          });
+          expect(initRes.cleaned).toBe(false);
+          expect(initRes.reason).toBe('EMPTY_INITIALIZING_RECORD');
+          expect(fsSync.existsSync(tempStateFile)).toBe(false);
+        });
+
+        it('O10: recovers committed owned rows from an uncertain record', async () => {
+          const uncertainState: TestIdentityState = {
+            runId: testRunId,
+            database: expectedDbName,
+            targetEndpoint: `127.0.0.1:5432/${expectedDbName}`,
+            status: 'uncertain',
+            maintainer: { id: 'm1', username: `${testBaseUsername}_maintainer`, role: 'SYSTEM_MAINTAINER' },
+            standard: { id: 's1', username: `${testBaseUsername}_standard`, role: null },
+            createdUserIds: ['m1', 's1'],
+            createdRoleIds: ['SYSTEM_MAINTAINER'],
+            createdGrants: [{ userId: 'm1', roleId: 'SYSTEM_MAINTAINER' }],
+            createdSessionIds: [],
+            createdAt: new Date().toISOString(),
+            error: 'Simulated ACK loss',
+          };
+          await fs.writeFile(tempStateFile, JSON.stringify(uncertainState, null, 2), { mode: 0o600 });
+          const mockDb = createMockDbWithFixture(uncertainState);
+
+          const res = await cleanupTestIdentities({
+            nodeEnv: 'test',
+            databaseUrl: validDbUrl,
+            expectedDb: expectedDbName,
+            runId: testRunId,
+            baseUsername: testBaseUsername,
+            stateFile: tempStateFile,
+            db: mockDb,
+          });
+
+          expect(res.cleaned).toBe(true);
+          expect(res.usersRemoved).toBe(2);
+          expect(fsSync.existsSync(tempStateFile)).toBe(false);
+        });
+      });
+
+      describe('10.2 P2 Acceptance Cases (T1–T7)', () => {
+        it('T1: applies 5,000ms lock timeout and 10,000ms statement timeout when overrides are absent', () => {
+          expect(parseTimeoutMs(undefined, undefined, DEFAULT_LOCK_TIMEOUT_MS, 'lockTimeout')).toBe(5000);
+          expect(parseTimeoutMs(undefined, undefined, DEFAULT_STATEMENT_TIMEOUT_MS, 'statementTimeout')).toBe(10000);
+        });
+
+        it('T2: accepts valid numeric options and environment strings at boundaries (1, 1000, 60000)', () => {
+          for (const val of [1, 1000, 60000]) {
+            expect(parseTimeoutMs(val, undefined, 5000, 'lockTimeout')).toBe(val);
+            expect(parseTimeoutMs(undefined, String(val), 5000, 'lockTimeout')).toBe(val);
+          }
+        });
+
+        it('T3: rejects invalid numeric options (0, -1, 1.5, NaN, Inf, 60001, overflow, null, booleans, objects, strings)', () => {
+          const invalidNumbers = [0, -1, 1.5, NaN, Infinity, -Infinity, 60001, 2147483648, Number.MAX_SAFE_INTEGER];
+          for (const num of invalidNumbers) {
+            expect(() => parseTimeoutMs(num, undefined, 5000, 'lockTimeout')).toThrow();
+          }
+          const invalidTypes = [null, true, false, {}, '1000'];
+          for (const t of invalidTypes) {
+            expect(() => parseTimeoutMs(t, undefined, 5000, 'lockTimeout')).toThrow();
+          }
+        });
+
+        it('T4: rejects invalid environment strings without permissive parsing or coercion', () => {
+          const invalidEnv = [
+            '0', '-1', '1.5', 'NaN', 'Infinity', '60001', '2147483648',
+            '', '   ', '1000junk', '1000ms', '1e3', '0x10', '+1000', ' 1000 ',
+          ];
+          for (const envVal of invalidEnv) {
+            expect(() => parseTimeoutMs(undefined, envVal, 5000, 'lockTimeout')).toThrow();
+          }
+        });
+
+        it('T5: rejects environment variables set to 0 immediately without calling DB or issuing DELETE', async () => {
+          const mockDb = createMockDb();
+          process.env.FOUNDATION_LOCK_TIMEOUT_MS = '0';
+          process.env.FOUNDATION_STATEMENT_TIMEOUT_MS = '0';
+
+          await expect(
+            cleanupTestIdentities({
+              nodeEnv: 'test',
+              databaseUrl: validDbUrl,
+              expectedDb: expectedDbName,
+              runId: testRunId,
+              baseUsername: testBaseUsername,
+              stateFile: tempStateFile,
+              db: mockDb,
+            })
+          ).rejects.toThrow(/Invalid lockTimeout environment value "0"/);
+
+          expect(mockDb.query).not.toHaveBeenCalled();
+          delete process.env.FOUNDATION_LOCK_TIMEOUT_MS;
+          delete process.env.FOUNDATION_STATEMENT_TIMEOUT_MS;
+        });
+
+        it('T6: handles lock contention timeout (55P03) by rolling back and preserving state file', async () => {
+          const validState: TestIdentityState = {
+            runId: testRunId,
+            database: expectedDbName,
+            targetEndpoint: `127.0.0.1:5432/${expectedDbName}`,
+            status: 'active',
+            maintainer: { id: 'm1', username: `${testBaseUsername}_maintainer`, role: 'SYSTEM_MAINTAINER' },
+            standard: { id: 's1', username: `${testBaseUsername}_standard`, role: null },
+            createdUserIds: ['m1', 's1'],
+            createdRoleIds: ['SYSTEM_MAINTAINER'],
+            createdGrants: [],
+            createdSessionIds: [],
+            createdAt: new Date().toISOString(),
+          };
+          await writeStateFileAtomic(tempStateFile, validState);
+
+          const mockDb = createMockDbWithFixture(validState);
+          const origQuery = mockDb.query;
+          mockDb.query = vi.fn(async (sql: string, params: any[]) => {
+            if (sql.includes('LOCK TABLE')) {
+              const err = new Error('canceling statement due to lock timeout');
+              (err as any).code = '55P03';
+              throw err;
+            }
+            return origQuery(sql, params);
+          });
+
+          await expect(
+            cleanupTestIdentities({
+              nodeEnv: 'test',
+              databaseUrl: validDbUrl,
+              expectedDb: expectedDbName,
+              runId: testRunId,
+              baseUsername: testBaseUsername,
+              stateFile: tempStateFile,
+              db: mockDb,
+              lockTimeoutMs: 1000,
+              statementTimeoutMs: 2500,
+            })
+          ).rejects.toThrow(/canceling statement due to lock timeout/);
+
+          expect(fsSync.existsSync(tempStateFile)).toBe(true);
+          const rollbackCalls = mockDb.query.mock.calls.filter((c: any) =>
+            typeof c[0] === 'string' && c[0].includes('ROLLBACK')
+          );
+          expect(rollbackCalls.length).toBeGreaterThanOrEqual(1);
+        });
+
+        it('T7: handles statement timeout (57014) by rolling back, preserving state, and subsequent retry succeeds', async () => {
+          const validState: TestIdentityState = {
+            runId: testRunId,
+            database: expectedDbName,
+            targetEndpoint: `127.0.0.1:5432/${expectedDbName}`,
+            status: 'active',
+            maintainer: { id: 'm1', username: `${testBaseUsername}_maintainer`, role: 'SYSTEM_MAINTAINER' },
+            standard: { id: 's1', username: `${testBaseUsername}_standard`, role: null },
+            createdUserIds: ['m1', 's1'],
+            createdRoleIds: ['SYSTEM_MAINTAINER'],
+            createdGrants: [],
+            createdSessionIds: [],
+            createdAt: new Date().toISOString(),
+          };
+          await writeStateFileAtomic(tempStateFile, validState);
+
+          const mockDbWithFixture = createMockDbWithFixture(validState);
+
+          // Simulate statement timeout on SELECT id, username FROM users
+          let failWithTimeout = true;
+          const origQuery = mockDbWithFixture.query;
+          mockDbWithFixture.query = vi.fn(async (sql: string, params: any[]) => {
+            if (failWithTimeout && sql.includes('SELECT id, username FROM users')) {
+              const err = new Error('canceling statement due to statement timeout');
+              (err as any).code = '57014';
+              throw err;
+            }
+            return origQuery(sql, params);
+          });
+
+          await expect(
+            cleanupTestIdentities({
+              nodeEnv: 'test',
+              databaseUrl: validDbUrl,
+              expectedDb: expectedDbName,
+              runId: testRunId,
+              baseUsername: testBaseUsername,
+              stateFile: tempStateFile,
+              db: mockDbWithFixture,
+              statementTimeoutMs: 1000,
+            })
+          ).rejects.toThrow(/canceling statement due to statement timeout/);
+
+          // State preserved after timeout failure
+          expect(fsSync.existsSync(tempStateFile)).toBe(true);
+
+          // Retry after transient condition resolves: succeeds
+          failWithTimeout = false;
+          const retryRes = await cleanupTestIdentities({
+            nodeEnv: 'test',
+            databaseUrl: validDbUrl,
+            expectedDb: expectedDbName,
+            runId: testRunId,
+            baseUsername: testBaseUsername,
+            stateFile: tempStateFile,
+            db: mockDbWithFixture,
+          });
+
+          expect(retryRes.cleaned).toBe(true);
+          expect(fsSync.existsSync(tempStateFile)).toBe(false);
         });
       });
     });
