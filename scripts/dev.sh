@@ -124,11 +124,14 @@ case "$ACTION" in
     source "$FOUNDATION_ENV_FILE"
     set +a
 
-    # Validate required keys and constraints without secret leakage
+    # Validate required keys and constraints as whole values without secret leakage
     if [ -z "${COMPOSE_PROJECT_NAME:-}" ]; then
       _fail "ERROR: COMPOSE_PROJECT_NAME is required in ${FOUNDATION_ENV_FILE}"
     fi
-    if ! echo "$COMPOSE_PROJECT_NAME" | grep -Eq '^[a-z0-9_-]+$'; then
+    case "$COMPOSE_PROJECT_NAME" in
+      *$'\n'*|*$'\r'*) _fail "ERROR: COMPOSE_PROJECT_NAME cannot contain line breaks" ;;
+    esac
+    if [[ ! "$COMPOSE_PROJECT_NAME" =~ ^[a-z0-9_-]+$ ]]; then
       _fail "ERROR: COMPOSE_PROJECT_NAME must be lowercase alphanumeric with hyphens or underscores"
     fi
     if [ "$COMPOSE_PROJECT_NAME" = "s2-assets" ] || [ "$COMPOSE_PROJECT_NAME" = "default" ]; then
@@ -138,7 +141,10 @@ case "$ACTION" in
     if [ -z "${POSTGRES_DB:-}" ]; then
       _fail "ERROR: POSTGRES_DB is required in ${FOUNDATION_ENV_FILE}"
     fi
-    if ! echo "$POSTGRES_DB" | grep -Eq '^s2_foundation_[a-zA-Z0-9_]+$'; then
+    case "$POSTGRES_DB" in
+      *$'\n'*|*$'\r'*) _fail "ERROR: POSTGRES_DB cannot contain line breaks" ;;
+    esac
+    if [[ ! "$POSTGRES_DB" =~ ^s2_foundation_[a-zA-Z0-9_]+$ ]]; then
       _fail "ERROR: POSTGRES_DB must begin with 's2_foundation_' and contain only alphanumeric/underscore characters"
     fi
     if [ "$POSTGRES_DB" = "s2_foundation_s2_assets" ] || [ "$POSTGRES_DB" = "s2_assets" ]; then
@@ -148,7 +154,10 @@ case "$ACTION" in
     if [ -z "${POSTGRES_USER:-}" ]; then
       _fail "ERROR: POSTGRES_USER is required in ${FOUNDATION_ENV_FILE}"
     fi
-    if ! echo "$POSTGRES_USER" | grep -Eq '^[a-zA-Z0-9_]+$'; then
+    case "$POSTGRES_USER" in
+      *$'\n'*|*$'\r'*) _fail "ERROR: POSTGRES_USER cannot contain line breaks" ;;
+    esac
+    if [[ ! "$POSTGRES_USER" =~ ^[a-zA-Z0-9_]+$ ]]; then
       _fail "ERROR: POSTGRES_USER must be alphanumeric with underscores (safe for database URL construction)"
     fi
     if [ "$POSTGRES_USER" = "s2_user" ] || [ "$POSTGRES_USER" = "postgres" ] || [ "$POSTGRES_USER" = "admin" ] || [ "$POSTGRES_USER" = "root" ]; then
@@ -158,8 +167,11 @@ case "$ACTION" in
     if [ -z "${POSTGRES_PASSWORD:-}" ]; then
       _fail "ERROR: POSTGRES_PASSWORD is required in ${FOUNDATION_ENV_FILE}"
     fi
+    case "$POSTGRES_PASSWORD" in
+      *$'\n'*|*$'\r'*) _fail "ERROR: POSTGRES_PASSWORD cannot contain line breaks" ;;
+    esac
     # Enforce documented constraint: fresh random hexadecimal secret, at least 16 hex characters, safe for direct URL construction
-    if ! echo "$POSTGRES_PASSWORD" | grep -Eq '^[0-9a-fA-F]{16,}$'; then
+    if [[ ! "$POSTGRES_PASSWORD" =~ ^[0-9a-fA-F]{16,}$ ]]; then
       _fail "ERROR: POSTGRES_PASSWORD must be a hexadecimal secret of at least 16 characters (safe for URL construction without delimiters or whitespace)"
     fi
     if [ "$POSTGRES_PASSWORD" = "s2_password" ] || [ "$POSTGRES_PASSWORD" = "password" ] || [ "$POSTGRES_PASSWORD" = "postgres" ] || [ "$POSTGRES_PASSWORD" = "admin" ]; then
@@ -169,8 +181,11 @@ case "$ACTION" in
     if [ -z "${COOKIE_SECRET:-}" ]; then
       _fail "ERROR: COOKIE_SECRET is required in ${FOUNDATION_ENV_FILE}"
     fi
+    case "$COOKIE_SECRET" in
+      *$'\n'*|*$'\r'*) _fail "ERROR: COOKIE_SECRET cannot contain line breaks" ;;
+    esac
     # Enforce documented constraint: fresh random hexadecimal signing secret, at least 32 bytes (64 hex characters), non-blank
-    if ! echo "$COOKIE_SECRET" | grep -Eq '^[0-9a-fA-F]{64,}$'; then
+    if [[ ! "$COOKIE_SECRET" =~ ^[0-9a-fA-F]{64,}$ ]]; then
       _fail "ERROR: COOKIE_SECRET must be a hexadecimal signing secret of at least 32 bytes (64 hex characters) without whitespace"
     fi
     if [ "$COOKIE_SECRET" = "secret" ] || [ "$COOKIE_SECRET" = "cookie_secret" ]; then
@@ -180,24 +195,38 @@ case "$ACTION" in
     if [ -z "${FOUNDATION_TEST_RUN_ID:-}" ]; then
       _fail "ERROR: FOUNDATION_TEST_RUN_ID is required in ${FOUNDATION_ENV_FILE}"
     fi
-    if ! echo "$FOUNDATION_TEST_RUN_ID" | grep -Eq '^[a-zA-Z0-9_-]+$'; then
+    case "$FOUNDATION_TEST_RUN_ID" in
+      *$'\n'*|*$'\r'*) _fail "ERROR: FOUNDATION_TEST_RUN_ID cannot contain line breaks" ;;
+    esac
+    if [[ ! "$FOUNDATION_TEST_RUN_ID" =~ ^[a-zA-Z0-9_-]+$ ]]; then
       _fail "ERROR: FOUNDATION_TEST_RUN_ID must be alphanumeric with hyphens or underscores"
     fi
 
     if [ -z "${FOUNDATION_TEST_USERNAME:-}" ]; then
       _fail "ERROR: FOUNDATION_TEST_USERNAME is required in ${FOUNDATION_ENV_FILE}"
     fi
-    if ! echo "$FOUNDATION_TEST_USERNAME" | grep -Eq '^[a-zA-Z0-9_-]+$'; then
+    case "$FOUNDATION_TEST_USERNAME" in
+      *$'\n'*|*$'\r'*) _fail "ERROR: FOUNDATION_TEST_USERNAME cannot contain line breaks" ;;
+    esac
+    if [[ ! "$FOUNDATION_TEST_USERNAME" =~ ^[a-zA-Z0-9_-]+$ ]]; then
       _fail "ERROR: FOUNDATION_TEST_USERNAME must be alphanumeric with hyphens or underscores"
     fi
 
     if [ -z "${FOUNDATION_TEST_PASSWORD:-}" ]; then
       _fail "ERROR: FOUNDATION_TEST_PASSWORD is required in ${FOUNDATION_ENV_FILE}"
     fi
-    # Check that password is not blank/whitespace-only and at least 8 non-whitespace characters
-    TRIMMED_TEST_PW=$(echo "$FOUNDATION_TEST_PASSWORD" | xargs)
-    if [ ${#TRIMMED_TEST_PW} -lt 8 ] || [ "$FOUNDATION_TEST_PASSWORD" = "password" ] || [ "$FOUNDATION_TEST_PASSWORD" = "test" ]; then
-      _fail "ERROR: FOUNDATION_TEST_PASSWORD cannot be blank, default, or less than 8 characters"
+    case "$FOUNDATION_TEST_PASSWORD" in
+      *$'\n'*|*$'\r'*) _fail "ERROR: FOUNDATION_TEST_PASSWORD cannot contain line breaks" ;;
+    esac
+    # Validate documented non-whitespace length and default rules as opaque data without executing child processes or interpreting quotes/backslashes
+    TEST_PW_NON_WS="${FOUNDATION_TEST_PASSWORD//[[:space:]]/}"
+    if [ ${#TEST_PW_NON_WS} -lt 8 ]; then
+      _fail "ERROR: FOUNDATION_TEST_PASSWORD must contain at least 8 non-whitespace characters"
+    fi
+    TEST_PW_TRIMMED="${FOUNDATION_TEST_PASSWORD#"${FOUNDATION_TEST_PASSWORD%%[![:space:]]*}"}"
+    TEST_PW_TRIMMED="${TEST_PW_TRIMMED%"${TEST_PW_TRIMMED##*[![:space:]]}"}"
+    if [ "$TEST_PW_TRIMMED" = "password" ] || [ "$TEST_PW_TRIMMED" = "test" ] || [ "$TEST_PW_TRIMMED" = "admin" ] || [ "$TEST_PW_TRIMMED" = "s2_password" ]; then
+      _fail "ERROR: FOUNDATION_TEST_PASSWORD cannot use default or trivial passwords"
     fi
 
     echo "Building development container tooling image..."
