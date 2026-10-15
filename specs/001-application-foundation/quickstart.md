@@ -1,6 +1,6 @@
 # Quickstart: Application Foundation
 
-**Status: planned executable workflow; not implemented or runtime-verified by the 2026-10-15 documentation candidate.** Baseline `a7cc7188b5cc10d7e33e69529e8be3b757509537` lacks application bootstrap and the planned helper actions/package scripts below. Execute only after their bounded implementation is authorized and independently verified. T033 is a separate authorization gate. The initial checks intentionally stop on the current baseline.
+**Status: T043 development runtime and preparation workflow verified.** T041 API bootstrap, T042 Web SPA bootstrap, and T043 container-only toolchain (`dev.Containerfile`, `compose.yaml`, `scripts/dev.sh prepare`, and `pnpm-lock.yaml`) are implemented and verified. Subsequent steps—explicit migration and disposable test identity lifecycle (T044), HTTP smoke verification (T045), and browser execution (T033/T046)—remain separately gated and require their authorized implementations before execution.
 
 This guide covers an isolated Rootless Podman development/test stack. Git, Spec Kit and agents remain on the Fedora host. Node, pnpm, PostgreSQL and browser execution remain in containers. [Plan](./plan.md) defines the command/lifecycle contract; [research](./research.md) records decisions. The unchanged [data model](./data-model.md) and [API error contract](./contracts/api-error.md) remain authoritative.
 
@@ -44,7 +44,7 @@ compose() {
 
 # Existing exact provider preflight; every helper uses the same project/file.
 bash scripts/dev.sh
-# Planned action: prepare pinned container tooling and a frozen workspace install.
+# Verified action under T043: prepare pinned container tooling and a frozen workspace install.
 bash scripts/dev.sh prepare
 ```
 

@@ -3,26 +3,31 @@ services:
     image: postgres:18.6-alpine
     restart: unless-stopped
     environment:
-      POSTGRES_DB: ${POSTGRES_DB:-s2_assets}
-      POSTGRES_USER: ${POSTGRES_USER:-s2_user}
-      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-s2_password}
+      POSTGRES_DB: ${POSTGRES_DB:?POSTGRES_DB is required}
+      POSTGRES_USER: ${POSTGRES_USER:?POSTGRES_USER is required}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?POSTGRES_PASSWORD is required}
     volumes:
-      - postgres-data:/var/lib/postgresql/data
+      - postgres-data:/var/lib/postgresql
     networks:
       - database
 
   api:
-    image: node:24.21.0-alpine
+    build:
+      context: ../..
+      dockerfile: deploy/podman/dev.Containerfile
+    image: s2-assets-dev:local
     userns_mode: keep-id
     working_dir: /work
     volumes:
-      - ../..:/work
+      - ../..:/work:z
     ports:
-      - "3000:3000"
+      - "127.0.0.1:${API_HOST_PORT:-3000}:3000"
     environment:
       NODE_ENV: development
       PORT: "3000"
-      DATABASE_URL: postgresql://${POSTGRES_USER:-s2_user}:${POSTGRES_PASSWORD:-s2_password}@postgres:5432/${POSTGRES_DB:-s2_assets}
+      DATABASE_URL: postgresql://${POSTGRES_USER:?POSTGRES_USER is required}:${POSTGRES_PASSWORD:?POSTGRES_PASSWORD is required}@postgres:5432/${POSTGRES_DB:?POSTGRES_DB is required}
+      COOKIE_SECRET: ${COOKIE_SECRET:?COOKIE_SECRET is required}
+    command: pnpm --filter api run dev
     depends_on:
       - postgres
     networks:
@@ -30,15 +35,19 @@ services:
       - database
 
   web:
-    image: node:24.21.0-alpine
+    build:
+      context: ../..
+      dockerfile: deploy/podman/dev.Containerfile
+    image: s2-assets-dev:local
     userns_mode: keep-id
     working_dir: /work
     volumes:
-      - ../..:/work
+      - ../..:/work:z
     ports:
-      - "5173:5173"
+      - "127.0.0.1:${WEB_HOST_PORT:-5173}:5173"
     environment:
       NODE_ENV: development
+    command: pnpm --filter web run dev
     depends_on:
       - api
     networks:
