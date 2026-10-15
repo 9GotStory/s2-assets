@@ -599,8 +599,14 @@ with open(target_file, "w", encoding="utf-8") as f:
     }
 
     _clean_smoke_resources() {
-      local trap_signal="${1:-0}"
+      local orig_exit="${1:-0}"
+      local trap_signal="${2:-0}"
       trap - EXIT INT TERM
+
+      # If an unhandled error or exit occurred, record it in FIRST_FAILURE_EXIT if not already set
+      if [ "$FIRST_FAILURE_EXIT" -eq 0 ] && [ "$orig_exit" -ne 0 ]; then
+        FIRST_FAILURE_EXIT="$orig_exit"
+      fi
 
       # 1. Restore PostgreSQL first
       if [ "$PG_INTERRUPTED" -eq 1 ]; then
@@ -638,9 +644,9 @@ with open(target_file, "w", encoding="utf-8") as f:
       exit 0
     }
 
-    trap '_clean_smoke_resources 0' EXIT
-    trap '_clean_smoke_resources 130' INT
-    trap '_clean_smoke_resources 143' TERM
+    trap '_clean_smoke_resources "$?" 0' EXIT
+    trap '_clean_smoke_resources 130 130' INT
+    trap '_clean_smoke_resources 143 143' TERM
 
     # Phase 1: Pre-outage smoke (A1, A2, B1, B2, B3, C1, C2)
     echo "Running HTTP smoke Phase 1 (Pre-outage baseline: Cases A1, A2, B1, B2, B3, C1, C2)..."

@@ -47,8 +47,8 @@ if (!fsSync.existsSync(configFile)) {
 let runnerConfig: Record<string, string>;
 try {
   runnerConfig = JSON.parse(fsSync.readFileSync(configFile, 'utf-8'));
-} catch (err: any) {
-  throw new Error(`Corrupted runner config file "${configFile}": ${err.message}. Failing closed.`);
+} catch {
+  throw new Error(`Corrupted runner config file "${configFile}": failed to parse JSON configuration. Failing closed.`);
 }
 for (const [k, v] of Object.entries(runnerConfig)) {
   if (typeof v === 'string' && v.length > 0 && !process.env[k]) {
@@ -614,6 +614,11 @@ describe('Real Listening Stack HTTP Smoke (T045)', () => {
       expect(invalidCsrf.response.status).toBe(403);
       expect(invalidCsrf.body.error.code).toBe('CSRF_TOKEN_INVALID');
 
+      // Save genuine pre-logout session cookie string for replay denial verification (R2)
+      const loggedOutCookie = jar.get(SESSION_COOKIE_NAME);
+      expect(loggedOutCookie).toBeDefined();
+      const loggedOutCookieHeader = `${SESSION_COOKIE_NAME}=${loggedOutCookie}`;
+
       // 4. Valid CSRF token and cookie succeeds with 200
       const validLogout = await requestJson(
         `${HTTP_API_URL}/auth/logout`,
@@ -626,12 +631,22 @@ describe('Real Listening Stack HTTP Smoke (T045)', () => {
       expect(validLogout.response.status).toBe(200);
       expect(validLogout.body).toEqual({ success: true });
 
-      // 5. Replaying the original logged-out session is rejected on session-check and protected access
-      const replayCheck = await requestJson(`${HTTP_API_URL}/auth/session-check`, {}, jar);
+      // 5. Replaying the genuine pre-logout session cookie is rejected on session-check and protected access
+      const replayCheck = await requestJson(`${HTTP_API_URL}/auth/session-check`, {
+        headers: { Cookie: loggedOutCookieHeader },
+      });
       expect(replayCheck.response.status).toBe(401);
+      expect(['SESSION_NOT_FOUND', 'SESSION_REVOKED', 'UNAUTHORIZED']).toContain(replayCheck.body.error.code);
 
-      const replaySys = await requestJson(`${HTTP_API_URL}/system/info`, {}, jar);
+      const replaySys = await requestJson(`${HTTP_API_URL}/system/info`, {
+        headers: { Cookie: loggedOutCookieHeader },
+      });
       expect(replaySys.response.status).toBe(401);
+      expect(['SESSION_NOT_FOUND', 'SESSION_REVOKED', 'UNAUTHORIZED']).toContain(replaySys.body.error.code);
+
+      // Also confirm unauthenticated request without cookies is rejected
+      const noCookieCheck = await requestJson(`${HTTP_API_URL}/auth/session-check`, {}, jar);
+      expect(noCookieCheck.response.status).toBe(401);
     });
   });
 
@@ -700,6 +715,11 @@ describe('Real Listening Stack HTTP Smoke (T045)', () => {
       expect(rejectLogout.response.status).toBe(403);
       expect(rejectLogout.body.error.code).toBe('CSRF_TOKEN_INVALID');
 
+      // Save genuine pre-logout session cookie string for replay denial verification (R2)
+      const loggedOutWebCookie = webJar.get(SESSION_COOKIE_NAME);
+      expect(loggedOutWebCookie).toBeDefined();
+      const loggedOutWebCookieHeader = `${SESSION_COOKIE_NAME}=${loggedOutWebCookie}`;
+
       // 5. Valid logout through Web proxy
       const validLogout = await requestJson(
         `${HTTP_WEB_URL}/auth/logout`,
@@ -712,12 +732,22 @@ describe('Real Listening Stack HTTP Smoke (T045)', () => {
       expect(validLogout.response.status).toBe(200);
       expect(validLogout.body).toEqual({ success: true });
 
-      // 6. Session replay rejection through Web proxy
-      const replayCheck = await requestJson(`${HTTP_WEB_URL}/auth/session-check`, {}, webJar);
+      // 6. Session replay rejection through Web proxy with genuine logged-out cookie
+      const replayCheck = await requestJson(`${HTTP_WEB_URL}/auth/session-check`, {
+        headers: { Cookie: loggedOutWebCookieHeader },
+      });
       expect(replayCheck.response.status).toBe(401);
+      expect(['SESSION_NOT_FOUND', 'SESSION_REVOKED', 'UNAUTHORIZED']).toContain(replayCheck.body.error.code);
 
-      const replaySys = await requestJson(`${HTTP_WEB_URL}/system/info`, {}, webJar);
+      const replaySys = await requestJson(`${HTTP_WEB_URL}/system/info`, {
+        headers: { Cookie: loggedOutWebCookieHeader },
+      });
       expect(replaySys.response.status).toBe(401);
+      expect(['SESSION_NOT_FOUND', 'SESSION_REVOKED', 'UNAUTHORIZED']).toContain(replaySys.body.error.code);
+
+      // Also confirm unauthenticated request without cookies through Web proxy is rejected
+      const noCookieCheck = await requestJson(`${HTTP_WEB_URL}/auth/session-check`, {}, webJar);
+      expect(noCookieCheck.response.status).toBe(401);
     });
   });
 
@@ -846,9 +876,22 @@ describe('Real Listening Stack HTTP Smoke (T045)', () => {
       expect(logout.response.status).toBe(200);
       expect(logout.body).toEqual({ success: true });
 
-      // 6. Proves replay of the logged-out pre-outage session is rejected
-      const replay = await requestJson(`${HTTP_API_URL}/auth/session-check`, {}, preOutageJar);
+      // 6. Proves replay of the genuine logged-out pre-outage session is rejected
+      const replay = await requestJson(`${HTTP_API_URL}/auth/session-check`, {
+        headers: { Cookie: sessionData.cookie },
+      });
       expect(replay.response.status).toBe(401);
+      expect(['SESSION_NOT_FOUND', 'SESSION_REVOKED', 'UNAUTHORIZED']).toContain(replay.body.error.code);
+
+      const replaySys = await requestJson(`${HTTP_API_URL}/system/info`, {
+        headers: { Cookie: sessionData.cookie },
+      });
+      expect(replaySys.response.status).toBe(401);
+      expect(['SESSION_NOT_FOUND', 'SESSION_REVOKED', 'UNAUTHORIZED']).toContain(replaySys.body.error.code);
+
+      // Also confirm unauthenticated request without cookies is rejected
+      const noCookieReplay = await requestJson(`${HTTP_API_URL}/auth/session-check`, {}, preOutageJar);
+      expect(noCookieReplay.response.status).toBe(401);
     });
   });
 });
