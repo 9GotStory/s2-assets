@@ -128,7 +128,10 @@ async function setupTestApp(options: { databaseUrl: string; secure?: boolean }):
     const appMod = await import('../../src/app.ts' as string);
     const factory = appMod.buildApp || appMod.createApp || appMod.default;
     if (typeof factory === 'function') {
-      return await factory({ databaseUrl: options.databaseUrl, secure: options.secure });
+      const databaseUrl = options.databaseUrl.startsWith('postgres://')
+        ? options.databaseUrl.replace(/^postgres:\/\//, 'postgresql://')
+        : options.databaseUrl;
+      return await factory({ databaseUrl, secure: options.secure });
     }
   } catch (err) {
     if (!isExpectedMissingModuleError(err, '../../src/app.ts')) {
