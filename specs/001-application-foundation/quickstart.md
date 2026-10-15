@@ -94,7 +94,7 @@ curl --fail --silent --show-error --retry 30 --retry-connrefused \
 bash scripts/dev.sh http-smoke
 ```
 
-Both API probes return HTTP 200 with `{"status":"ok"}`. The verified smoke action executes `pnpm --filter api test:http` inside a container against `http://api:3000` and `http://web:5173`. It verifies actual entrypoint/configuration failure, route registration, unauthenticated/capability denial and immediate revocation, valid login/session, CSRF rejection and valid logout followed by session rejection, safe errors, and database interruption/recovery in this dedicated stack. It restores an interrupted test-owned dependency even after failure. It keeps credentials/cookies/CSRF material out of stdout and records non-secret results and exact commands.
+Both API probes return HTTP 200 with `{"status":"ok"}`. The verified smoke action executes `pnpm --filter api test:http` inside a container against `http://api:3000` and `http://web:5173`. It verifies actual entrypoint/configuration failure, route registration, unauthenticated/capability denial and immediate revocation, valid login/session, CSRF rejection and valid logout followed by session rejection, safe error envelopes, and host-coordinated PostgreSQL stop/start outage and recovery in this dedicated stack (during outage, `/ready` returns HTTP 503 with the accepted error envelope, while `/health` remains 200). It automatically restores an interrupted test-owned dependency and invokes fixture cleanup on completion (both on success and failure paths), preserving `SYSTEM_MAINTAINER` and preserving first-failure exit codes if earlier failures occur. It keeps credentials/cookies/CSRF material out of stdout and records non-secret results and exact commands.
 
 Open `http://127.0.0.1:<WEB_HOST_PORT>/login` on the host for manual inspection. Existing relative `/auth/*` requests travel through the development-only Vite proxy to `http://api:3000`; `/system/*` is proxied unchanged too. Direct `/dashboard` navigation/reload loads the SPA and performs the accepted session check. No browser receives server-only database configuration.
 
@@ -115,7 +115,7 @@ Require an actual passing login/dashboard/logout/session-rejection browser flow,
 
 ## 5. Cleanup and later full-workspace acceptance
 
-Run cleanup on success and after failures. Keep the failed check's exit status; a successful cleanup must not mask a failure. If cleanup fails, report it and retain private ownership state for bounded recovery.
+`http-smoke` automatically executes fixture cleanup on completion. Standalone cleanup is also available if fixtures were provisioned without `http-smoke` or after partial setup:
 
 ```bash
 bash scripts/dev.sh test-identity cleanup

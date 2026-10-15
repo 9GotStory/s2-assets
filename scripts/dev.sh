@@ -481,7 +481,13 @@ with open(target_file, "w", encoding="utf-8") as f:
         _fail "ERROR: Fixture state file must reside outside repository checkout: ${STATE_FILE}"
         ;;
     esac
+    # Ensure fixture state file exists before running smoke suite
+    if [ ! -f "$STATE_FILE" ]; then
+      _fail "ERROR: Fixture state file not found at ${STATE_FILE}. Prepare fixtures with 'bash scripts/dev.sh test-identity setup' before running http-smoke."
+    fi
+
     RUNNER_CONFIG_FILE="${ENV_DIR}/.smoke-runner-${FOUNDATION_TEST_RUN_ID}.json"
+    SMOKE_SESSION_FILE="${ENV_DIR}/.smoke-session-${FOUNDATION_TEST_RUN_ID}.json"
 
     (
       umask 077
@@ -494,6 +500,7 @@ keys = [
     "FOUNDATION_TEST_PASSWORD",
     "FOUNDATION_TEST_DATABASE_URL",
     "FOUNDATION_FIXTURE_STATE_FILE",
+    "FOUNDATION_SMOKE_SESSION_FILE",
     "POSTGRES_DB",
     "POSTGRES_USER",
     "POSTGRES_PASSWORD",
@@ -512,27 +519,128 @@ with open(target_file, "w", encoding="utf-8") as f:
 
     PG_INTERRUPTED=0
     FIRST_FAILURE_EXIT=0
+    RESTORE_FAILED=0
+    CLEANUP_FAILED=0
+
+    # R5: Helper to restore PostgreSQL and verify readiness
+    _restore_postgres() {
+      if [ "$PG_INTERRUPTED" -ne 1 ]; then
+        return 0
+      fi
+      echo "PostgreSQL service is currently interrupted; restoring..." >&2
+
+      # R5: Simulation hook for forced restoration failure
+      if [ "${FOUNDATION_SMOKE_SIMULATE_FAIL:-}" = "restoration_fail" ]; then
+        echo "Simulating deliberate restoration failure for Case E verification..." >&2
+        RESTORE_FAILED=1
+        return 1
+      fi
+
+      if ! podman compose --env-file "$FOUNDATION_ENV_FILE" -p "$COMPOSE_PROJECT_NAME" -f "$COMPOSE_FILE" start postgres >/dev/null 2>&1; then
+        echo "ERROR: Failed to issue start command to postgres container for ${COMPOSE_PROJECT_NAME}" >&2
+        RESTORE_FAILED=1
+        return 1
+      fi
+
+      local ready=0
+      for attempt in {1..30}; do
+        if podman compose --env-file "$FOUNDATION_ENV_FILE" -p "$COMPOSE_PROJECT_NAME" -f "$COMPOSE_FILE" exec -T postgres pg_isready -U "$POSTGRES_USER" -d "$POSTGRES_DB" >/dev/null 2>&1; then
+          echo "PostgreSQL service restored and ready (attempt ${attempt})." >&2
+          ready=1
+          break
+        fi
+        sleep 1
+      done
+
+      if [ "$ready" -eq 1 ]; then
+        PG_INTERRUPTED=0
+        return 0
+      else
+        echo "ERROR: Timed out waiting for PostgreSQL service to become ready after 30 attempts" >&2
+        RESTORE_FAILED=1
+        return 1
+      fi
+    }
+
+    # R2: Helper to clean fixtures using existing accepted T044 tooling
+    _run_fixture_cleanup() {
+      if [ ! -f "$STATE_FILE" ]; then
+        return 0
+      fi
+      echo "Executing authorized fixture cleanup for run ${FOUNDATION_TEST_RUN_ID}..." >&2
+
+      # Simulation hook for cleanup failure verification
+      if [ "${FOUNDATION_SMOKE_SIMULATE_FAIL:-}" = "cleanup_fail" ]; then
+        echo "Simulating deliberate cleanup failure for Case E verification..." >&2
+        CLEANUP_FAILED=1
+        return 1
+      fi
+
+      set +e
+      podman compose --env-file "$FOUNDATION_ENV_FILE" \
+        -p "$COMPOSE_PROJECT_NAME" \
+        -f "$COMPOSE_FILE" \
+        run --rm --no-deps -T \
+        -v "${ENV_DIR}:${ENV_DIR}:z" \
+        -e NODE_ENV=test \
+        -e FOUNDATION_TEST_RUN_ID="${FOUNDATION_TEST_RUN_ID}" \
+        -e FOUNDATION_FIXTURE_CONFIG_FILE="${RUNNER_CONFIG_FILE}" \
+        -e FOUNDATION_FIXTURE_STATE_FILE="${STATE_FILE}" \
+        api pnpm --filter api test:identity cleanup
+      local c_exit=$?
+      set -e
+
+      if [ "$c_exit" -ne 0 ]; then
+        echo "ERROR: Fixture cleanup failed with exit code ${c_exit}" >&2
+        CLEANUP_FAILED=1
+        return 1
+      fi
+      return 0
+    }
 
     _clean_smoke_resources() {
-      local trap_exit=$?
+      local trap_signal="${1:-0}"
+      trap - EXIT INT TERM
+
+      # 1. Restore PostgreSQL first
       if [ "$PG_INTERRUPTED" -eq 1 ]; then
-        echo "PostgreSQL service is currently interrupted; restoring..." >&2
-        podman compose --env-file "$FOUNDATION_ENV_FILE" -p "$COMPOSE_PROJECT_NAME" -f "$COMPOSE_FILE" start postgres >/dev/null 2>&1 || true
-        for attempt in {1..30}; do
-          if podman compose --env-file "$FOUNDATION_ENV_FILE" -p "$COMPOSE_PROJECT_NAME" -f "$COMPOSE_FILE" exec -T postgres pg_isready -U "$POSTGRES_USER" -d "$POSTGRES_DB" >/dev/null 2>&1; then
-            break
-          fi
-          sleep 1
-        done
-        PG_INTERRUPTED=0
+        _restore_postgres || true
       fi
-      rm -f "$RUNNER_CONFIG_FILE" 2>/dev/null || true
+
+      # 2. Run fixture cleanup if PostgreSQL is operational
+      if [ "$RESTORE_FAILED" -eq 0 ]; then
+        _run_fixture_cleanup || true
+      else
+        echo "WARNING: Skipping fixture cleanup due to incomplete PostgreSQL recovery; retaining state file ${STATE_FILE}" >&2
+      fi
+
+      # 3. Retain ownership/recovery state if recovery or cleanup failed
+      if [ "$RESTORE_FAILED" -eq 0 ] && [ "$CLEANUP_FAILED" -eq 0 ]; then
+        rm -f "$RUNNER_CONFIG_FILE" 2>/dev/null || true
+        rm -f "$SMOKE_SESSION_FILE" 2>/dev/null || true
+      else
+        echo "WARNING: Incomplete lifecycle cleanup; retaining private runner configuration (${RUNNER_CONFIG_FILE}) and state files for recovery inspection." >&2
+      fi
+
+      # 4. Exit code precedence:
       if [ "$FIRST_FAILURE_EXIT" -ne 0 ]; then
         exit "$FIRST_FAILURE_EXIT"
       fi
-      exit "$trap_exit"
+      if [ "$trap_signal" -ne 0 ]; then
+        exit "$trap_signal"
+      fi
+      if [ "$RESTORE_FAILED" -ne 0 ]; then
+        exit 1
+      fi
+      if [ "$CLEANUP_FAILED" -ne 0 ]; then
+        exit 1
+      fi
+      exit 0
     }
-    trap _clean_smoke_resources EXIT INT TERM
+
+    trap '_clean_smoke_resources 0' EXIT
+    trap '_clean_smoke_resources 130' INT
+    trap '_clean_smoke_resources 143' TERM
 
     # Phase 1: Pre-outage smoke (A1, A2, B1, B2, B3, C1, C2)
     echo "Running HTTP smoke Phase 1 (Pre-outage baseline: Cases A1, A2, B1, B2, B3, C1, C2)..."
@@ -549,6 +657,7 @@ with open(target_file, "w", encoding="utf-8") as f:
       -e FOUNDATION_TEST_RUN_ID="${FOUNDATION_TEST_RUN_ID}" \
       -e FOUNDATION_FIXTURE_CONFIG_FILE="${RUNNER_CONFIG_FILE}" \
       -e FOUNDATION_FIXTURE_STATE_FILE="${STATE_FILE}" \
+      -e FOUNDATION_SMOKE_SESSION_FILE="${SMOKE_SESSION_FILE}" \
       api pnpm --filter api test:http
     PHASE1_EXIT=$?
     set -e
@@ -559,18 +668,39 @@ with open(target_file, "w", encoding="utf-8") as f:
       exit "$PHASE1_EXIT"
     fi
 
-    # Support optional skip of interruption if explicitly requested via environment
-    if [ "${FOUNDATION_SMOKE_SKIP_INTERRUPTION:-0}" = "1" ]; then
-      echo "Skipping database interruption phases as requested by FOUNDATION_SMOKE_SKIP_INTERRUPTION=1."
-      rm -f "$RUNNER_CONFIG_FILE" 2>/dev/null || true
-      trap - EXIT INT TERM
-      exit 0
+    # Phase 2: Database outage (Case D1)
+    # R3: Verify exact test-owned Compose/PostgreSQL identity before interruption
+    echo "Verifying test-owned container identity before service interruption..."
+    case "$COMPOSE_PROJECT_NAME" in
+      s2_*) ;;
+      *) _fail "ERROR: COMPOSE_PROJECT_NAME must begin with 's2_': ${COMPOSE_PROJECT_NAME}" ;;
+    esac
+    case "$POSTGRES_DB" in
+      s2_foundation_*) ;;
+      *) _fail "ERROR: POSTGRES_DB must begin with 's2_foundation_': ${POSTGRES_DB}" ;;
+    esac
+    if [ "$POSTGRES_DB" = "s2_assets" ] || [ "$POSTGRES_DB" = "postgres" ] || [ "$POSTGRES_DB" = "default" ]; then
+      _fail "ERROR: Prohibited target database for interruption: ${POSTGRES_DB}"
     fi
 
-    # Phase 2: Database outage (Case D1)
+    PG_CONTAINER_ID=$(podman ps -a --filter "label=io.podman.compose.project=${COMPOSE_PROJECT_NAME}" --filter "label=io.podman.compose.service=postgres" -q 2>/dev/null | head -n 1 || true)
+    if [ -z "$PG_CONTAINER_ID" ]; then
+      PG_CONTAINER_ID=$(podman ps -a --filter "name=${COMPOSE_PROJECT_NAME}.*postgres" -q 2>/dev/null | head -n 1 || true)
+    fi
+    if [ -z "$PG_CONTAINER_ID" ]; then
+      _fail "ERROR: Cannot resolve PostgreSQL container for project ${COMPOSE_PROJECT_NAME}; refusing interruption"
+    fi
+
+    PG_CONTAINER_NAME=$(podman inspect --format '{{.Name}}' "$PG_CONTAINER_ID" 2>/dev/null || true)
+    case "$PG_CONTAINER_NAME" in
+      *"${COMPOSE_PROJECT_NAME}"*postgres*) ;;
+      *) _fail "ERROR: Container name ${PG_CONTAINER_NAME} does not match expected owned project ${COMPOSE_PROJECT_NAME}; refusing interruption" ;;
+    esac
+
+    # R5: Record recovery responsibility BEFORE interrupting the service
+    PG_INTERRUPTED=1
     echo "Interrupting PostgreSQL service for project ${COMPOSE_PROJECT_NAME}..."
     podman compose --env-file "$FOUNDATION_ENV_FILE" -p "$COMPOSE_PROJECT_NAME" -f "$COMPOSE_FILE" stop postgres
-    PG_INTERRUPTED=1
 
     # Deliberate failure simulation for Case E testing if requested
     if [ "${FOUNDATION_SMOKE_SIMULATE_FAIL:-}" = "outage" ]; then
@@ -593,6 +723,7 @@ with open(target_file, "w", encoding="utf-8") as f:
       -e FOUNDATION_TEST_RUN_ID="${FOUNDATION_TEST_RUN_ID}" \
       -e FOUNDATION_FIXTURE_CONFIG_FILE="${RUNNER_CONFIG_FILE}" \
       -e FOUNDATION_FIXTURE_STATE_FILE="${STATE_FILE}" \
+      -e FOUNDATION_SMOKE_SESSION_FILE="${SMOKE_SESSION_FILE}" \
       api pnpm --filter api test:http
     PHASE2_EXIT=$?
     set -e
@@ -605,20 +736,11 @@ with open(target_file, "w", encoding="utf-8") as f:
 
     # Phase 3: Database recovery (Case D2)
     echo "Restoring PostgreSQL service for project ${COMPOSE_PROJECT_NAME}..."
-    podman compose --env-file "$FOUNDATION_ENV_FILE" -p "$COMPOSE_PROJECT_NAME" -f "$COMPOSE_FILE" start postgres
-    RECOVERED=0
-    for attempt in {1..30}; do
-      if podman compose --env-file "$FOUNDATION_ENV_FILE" -p "$COMPOSE_PROJECT_NAME" -f "$COMPOSE_FILE" exec -T postgres pg_isready -U "$POSTGRES_USER" -d "$POSTGRES_DB" >/dev/null 2>&1; then
-        echo "PostgreSQL service is ready (attempt ${attempt})."
-        RECOVERED=1
-        break
-      fi
-      sleep 1
-    done
-    if [ "$RECOVERED" -eq 0 ]; then
-      _fail "ERROR: Timed out waiting for PostgreSQL service to become ready after restart"
+    if ! _restore_postgres; then
+      FIRST_FAILURE_EXIT=1
+      echo "ERROR: Failed to restore PostgreSQL service for project ${COMPOSE_PROJECT_NAME}" >&2
+      exit 1
     fi
-    PG_INTERRUPTED=0
 
     # Deliberate failure simulation for Case E testing if requested
     if [ "${FOUNDATION_SMOKE_SIMULATE_FAIL:-}" = "recovery" ]; then
@@ -641,6 +763,7 @@ with open(target_file, "w", encoding="utf-8") as f:
       -e FOUNDATION_TEST_RUN_ID="${FOUNDATION_TEST_RUN_ID}" \
       -e FOUNDATION_FIXTURE_CONFIG_FILE="${RUNNER_CONFIG_FILE}" \
       -e FOUNDATION_FIXTURE_STATE_FILE="${STATE_FILE}" \
+      -e FOUNDATION_SMOKE_SESSION_FILE="${SMOKE_SESSION_FILE}" \
       api pnpm --filter api test:http
     PHASE3_EXIT=$?
     set -e
@@ -651,8 +774,6 @@ with open(target_file, "w", encoding="utf-8") as f:
       exit "$PHASE3_EXIT"
     fi
 
-    rm -f "$RUNNER_CONFIG_FILE" 2>/dev/null || true
-    trap - EXIT INT TERM
     echo "HTTP smoke verification completed successfully."
     exit 0
     ;;
