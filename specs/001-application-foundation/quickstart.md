@@ -1,6 +1,6 @@
 # Quickstart: Application Foundation
 
-**Status: T043 development runtime and preparation workflow verified.** T041 API bootstrap, T042 Web SPA bootstrap, and T043 container-only toolchain (`dev.Containerfile`, `compose.yaml`, `scripts/dev.sh prepare`, and `pnpm-lock.yaml`) are implemented and verified. Subsequent steps—explicit migration and disposable test identity lifecycle (T044), HTTP smoke verification (T045), and browser execution (T033/T046)—remain separately gated and require their authorized implementations before execution.
+**Status: T044 development migration and test identity lifecycle verified.** T041 API bootstrap, T042 Web SPA bootstrap, T043 container-only toolchain, and T044 explicit migration and disposable test identity lifecycle (`scripts/dev.sh test-identity setup|cleanup` and `apps/api/tests/fixtures/identity.ts`) are implemented and verified. Subsequent steps—HTTP smoke verification (T045) and browser execution (T033/T046)—remain separately gated and require their authorized implementations before execution.
 
 This guide covers an isolated Rootless Podman development/test stack. Git, Spec Kit and agents remain on the Fedora host. Node, pnpm, PostgreSQL and browser execution remain in containers. [Plan](./plan.md) defines the command/lifecycle contract; [research](./research.md) records decisions. The unchanged [data model](./data-model.md) and [API error contract](./contracts/api-error.md) remain authoritative.
 
@@ -75,7 +75,7 @@ For smoke/browser testing, explicitly prepare disposable identities before start
 bash scripts/dev.sh test-identity setup
 ```
 
-This planned action runs the API fixture command in a short-lived container with `NODE_ENV=test`, the explicit test database URL and run identity. It creates only a maintainer identity and an identity without the capability, using existing Argon2id/role semantics. It refuses production/unmarked/mismatched targets and records exact owned rows privately. No production provisioning or automatic seed occurs.
+This action runs the API fixture command in a short-lived container with `NODE_ENV=test`, the explicit test database URL and run identity. It creates only a maintainer identity and an identity without the capability, using existing Argon2id/role semantics. It refuses production/unmarked/mismatched targets and records exact owned rows privately. No production provisioning or automatic seed occurs.
 
 If setup partially fails, attempt `bash scripts/dev.sh test-identity cleanup` before teardown; retain the original failure and report any cleanup failure. Cleanup must be safe after partial setup and must never delete preexisting identities or role data.
 
