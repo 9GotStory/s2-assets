@@ -2,6 +2,7 @@ import * as fs from 'node:fs/promises';
 import * as fsSync from 'node:fs';
 import * as path from 'node:path';
 import { fileURLToPath } from 'node:url';
+import * as crypto from 'node:crypto';
 import pg from 'pg';
 import { UserService } from '../../src/services/user.service.ts';
 import { CapabilityService } from '../../src/services/capability.service.ts';
@@ -66,9 +67,84 @@ export interface IdentityCleanupResult {
 }
 
 /**
+ * Locates the repository checkout root.
+ */
+export function findRepoRoot(): string {
+  try {
+    let cur = path.dirname(fileURLToPath(import.meta.url));
+    while (cur !== path.dirname(cur)) {
+      if (
+        fsSync.existsSync(path.join(cur, '.git')) ||
+        (fsSync.existsSync(path.join(cur, 'package.json')) &&
+          fsSync.existsSync(path.join(cur, 'pnpm-workspace.yaml')))
+      ) {
+        return path.resolve(cur);
+      }
+      cur = path.dirname(cur);
+    }
+  } catch {
+    // Fall back to relative navigation from apps/api/tests/fixtures
+  }
+  return path.resolve(path.dirname(fileURLToPath(import.meta.url)), '../../..');
+}
+
+/**
+ * Validates that a path resides strictly outside the repository checkout.
+ * Resolves both lexical path and canonical symlink path.
+ */
+export function validateOutsideCheckout(targetPath: string, description = 'Path'): void {
+  const repoRoot = findRepoRoot();
+  let canonicalRepoRoot: string;
+  try {
+    canonicalRepoRoot = fsSync.realpathSync(repoRoot);
+  } catch {
+    canonicalRepoRoot = path.resolve(repoRoot);
+  }
+
+  const absTarget = path.resolve(targetPath);
+  if (
+    absTarget === repoRoot ||
+    absTarget.startsWith(repoRoot + path.sep) ||
+    absTarget === canonicalRepoRoot ||
+    absTarget.startsWith(canonicalRepoRoot + path.sep)
+  ) {
+    throw new Error(
+      `${description} must reside outside repository checkout (path "${targetPath}" is inside "${canonicalRepoRoot}")`
+    );
+  }
+
+  // Resolve canonical path if target or parent directory exists
+  let checkDir = fsSync.existsSync(absTarget) ? absTarget : path.dirname(absTarget);
+  while (!fsSync.existsSync(checkDir) && checkDir !== path.dirname(checkDir)) {
+    checkDir = path.dirname(checkDir);
+  }
+
+  let canonicalTarget: string;
+  try {
+    const canonicalDir = fsSync.realpathSync(checkDir);
+    const relRest = path.relative(checkDir, absTarget);
+    canonicalTarget = path.resolve(canonicalDir, relRest);
+  } catch {
+    canonicalTarget = absTarget;
+  }
+
+  if (
+    canonicalTarget === repoRoot ||
+    canonicalTarget.startsWith(repoRoot + path.sep) ||
+    canonicalTarget === canonicalRepoRoot ||
+    canonicalTarget.startsWith(canonicalRepoRoot + path.sep)
+  ) {
+    throw new Error(
+      `${description} must reside outside repository checkout (resolved "${canonicalTarget}" is inside "${canonicalRepoRoot}")`
+    );
+  }
+}
+
+/**
  * Loads environment variables from an env file without altering raw values.
  */
 export function loadEnvFile(filePath: string): void {
+  validateOutsideCheckout(filePath, 'Environment file');
   try {
     if (!fsSync.existsSync(filePath)) return;
     const content = fsSync.readFileSync(filePath, 'utf-8');
@@ -90,7 +166,10 @@ export function loadEnvFile(filePath: string): void {
         process.env[key] = val;
       }
     }
-  } catch {
+  } catch (err: any) {
+    if (err.message.includes('outside repository checkout')) {
+      throw err;
+    }
     // Silently ignore file read errors; validation will catch missing keys
   }
 }
@@ -99,6 +178,7 @@ export function loadEnvFile(filePath: string): void {
  * Loads configuration from either a JSON configuration file (lossless) or an env file.
  */
 export function loadConfigFile(filePath: string): void {
+  validateOutsideCheckout(filePath, 'Configuration file');
   try {
     if (!fsSync.existsSync(filePath)) return;
     const content = fsSync.readFileSync(filePath, 'utf-8');
@@ -112,7 +192,10 @@ export function loadConfigFile(filePath: string): void {
     } else {
       loadEnvFile(filePath);
     }
-  } catch {
+  } catch (err: any) {
+    if (err.message.includes('outside repository checkout')) {
+      throw err;
+    }
     // Silently ignore read errors
   }
 }
@@ -247,6 +330,158 @@ function validatePrivateDirectory(dirPath: string): void {
 }
 
 /**
+ * Atomically writes state data using a unique temporary file and rename.
+ * Ensures that existing valid state is never truncated or left in an invalid state.
+ */
+export async function writeStateFileAtomic(filePath: string, data: TestIdentityState): Promise<void> {
+  const dir = path.dirname(filePath);
+  const tmpPath = path.join(
+    dir,
+    `.tmp_${path.basename(filePath)}_${Date.now()}_${Math.random().toString(36).slice(2)}.tmp`
+  );
+  const content = JSON.stringify(data, null, 2);
+
+  const handle = await fs.open(tmpPath, 'wx', 0o600);
+  try {
+    await handle.writeFile(content, { encoding: 'utf-8' });
+    await handle.sync();
+  } finally {
+    await handle.close();
+  }
+
+  try {
+    await fs.rename(tmpPath, filePath);
+  } catch (renameErr) {
+    await fs.unlink(tmpPath).catch(() => {});
+    throw renameErr;
+  }
+}
+
+/**
+ * Acquires a session-level advisory lock for the given run ID with a bounded timeout.
+ */
+export async function acquireAdvisoryLock(client: any, runId: string, timeoutMs = 15000): Promise<void> {
+  const start = Date.now();
+  while (Date.now() - start < timeoutMs) {
+    const res = await client.query(
+      "SELECT pg_try_advisory_lock(hashtext('s2_foundation_fixture:' || $1)) AS locked",
+      [runId]
+    );
+    if (res.rows?.[0]?.locked === true) {
+      return;
+    }
+    await new Promise((resolve) => setTimeout(resolve, 100));
+  }
+  throw new Error(
+    `Timed out waiting to acquire fixture advisory lock for run "${runId}" after ${timeoutMs}ms. Failing closed.`
+  );
+}
+
+/**
+ * Releases the session-level advisory lock for the given run ID.
+ */
+export async function releaseAdvisoryLock(client: any, runId: string): Promise<void> {
+  try {
+    await client.query(
+      "SELECT pg_advisory_unlock(hashtext('s2_foundation_fixture:' || $1))",
+      [runId]
+    );
+  } catch {
+    // Silently ignore unlock errors; connection close will release advisory lock automatically
+  }
+}
+
+/**
+ * Reads and validates a fixture state record under lock, enforcing ownership invariants,
+ * secure file permissions (0600 or 0400), valid structure, and fail-closed semantics.
+ */
+export async function readAndValidateStateFile(
+  filePath: string,
+  expectedRunId: string,
+  expectedDb: string,
+  expectedEndpoint: string
+): Promise<TestIdentityState> {
+  validateOutsideCheckout(filePath, 'State file');
+
+  const st = await fs.stat(filePath);
+  if (!st.isFile()) {
+    throw new Error(`State file is not a regular file: "${filePath}". Failing closed.`);
+  }
+
+  const mode = (st.mode & 0o777).toString(8);
+  const tail = mode.slice(-2);
+  if (tail !== '00') {
+    throw new Error(
+      `Insecure permissions on state file "${filePath}": mode must be 600 or 400 (got ${mode}). Failing closed.`
+    );
+  }
+
+  const stateDir = path.dirname(filePath);
+  validatePrivateDirectory(stateDir);
+  validateOutsideCheckout(stateDir, 'State directory');
+
+  let raw: string;
+  try {
+    raw = await fs.readFile(filePath, 'utf-8');
+  } catch (err: any) {
+    throw new Error(`Failed to read fixture state file "${filePath}": ${err.message}. Failing closed.`);
+  }
+
+  let state: TestIdentityState;
+  try {
+    state = JSON.parse(raw);
+  } catch {
+    throw new Error('Corrupted fixture state file: JSON parse failed. Failing closed.');
+  }
+
+  if (typeof state !== 'object' || state === null) {
+    throw new Error('Corrupted fixture state file: not a JSON object. Failing closed.');
+  }
+
+  if (state.runId !== expectedRunId) {
+    throw new Error(
+      `State file run ID mismatch: expected "${expectedRunId}", got "${state.runId}". Failing closed.`
+    );
+  }
+
+  if (state.database !== expectedDb) {
+    throw new Error(
+      `State file database mismatch: expected "${expectedDb}", got "${state.database}". Failing closed.`
+    );
+  }
+
+  if (!state.targetEndpoint || typeof state.targetEndpoint !== 'string' || state.targetEndpoint.trim().length === 0) {
+    throw new Error('Corrupted or incomplete fixture state file: missing targetEndpoint. Failing closed.');
+  }
+
+  if (state.targetEndpoint !== expectedEndpoint) {
+    throw new Error(
+      `State file target mismatch: expected "${expectedEndpoint}", got "${state.targetEndpoint}". Failing closed.`
+    );
+  }
+
+  if (!['active', 'initializing', 'uncertain'].includes(state.status)) {
+    throw new Error(`Invalid fixture state status: "${state.status}". Failing closed.`);
+  }
+
+  if (
+    !Array.isArray(state.createdUserIds) ||
+    !Array.isArray(state.createdGrants) ||
+    !Array.isArray(state.createdRoleIds)
+  ) {
+    throw new Error('Corrupted fixture state file: missing ownership arrays. Failing closed.');
+  }
+
+  for (const uid of state.createdUserIds) {
+    if (typeof uid !== 'string' || uid.trim().length === 0) {
+      throw new Error('Corrupted fixture state file: invalid user ID in createdUserIds. Failing closed.');
+    }
+  }
+
+  return state;
+}
+
+/**
  * Creates disposable test identities in the target isolated database.
  */
 export async function setupTestIdentities(
@@ -314,7 +549,9 @@ export async function setupTestIdentities(
     throw new Error('FOUNDATION_FIXTURE_STATE_FILE is required for ownership tracking');
   }
 
+  validateOutsideCheckout(stateFile, 'State file');
   const stateDir = path.dirname(stateFile);
+  validateOutsideCheckout(stateDir, 'State directory');
   await fs.mkdir(stateDir, { recursive: true, mode: 0o700 });
   validatePrivateDirectory(stateDir);
 
@@ -332,41 +569,6 @@ export async function setupTestIdentities(
   const maintainerUsername = `${baseUsername}_maintainer`;
   const standardUsername = `${baseUsername}_standard`;
 
-  // Reserve state file atomically with 'wx' before initiating any database mutations
-  let reservationHandle: fs.FileHandle;
-  try {
-    reservationHandle = await fs.open(stateFile, 'wx', 0o600);
-  } catch (openErr: any) {
-    throw new Error(`Failed to reserve fixture state file "${stateFile}": ${openErr.message}`);
-  }
-
-  const initialReservation: TestIdentityState = {
-    runId,
-    database: dbName,
-    targetEndpoint,
-    status: 'initializing',
-    maintainer: {
-      id: '',
-      username: maintainerUsername,
-      role: 'SYSTEM_MAINTAINER',
-    },
-    standard: {
-      id: '',
-      username: standardUsername,
-      role: null,
-    },
-    createdUserIds: [],
-    createdRoleIds: [],
-    createdGrants: [],
-    createdSessionIds: [],
-    createdAt: new Date().toISOString(),
-  };
-
-  await reservationHandle.writeFile(JSON.stringify(initialReservation, null, 2), {
-    encoding: 'utf-8',
-  });
-  await reservationHandle.close();
-
   const pool = options.db ?? new Pool({ connectionString: databaseUrl });
   let client: any;
   if ((pool as any)._connected || (pool as any)._connecting) {
@@ -377,21 +579,66 @@ export async function setupTestIdentities(
     client = pool;
   }
 
+  let advisoryLockAcquired = false;
+  let inTransaction = false;
+  let commitAttempted = false;
+  let committed = false;
+  let reservationCreated = false;
+  let maintainer: any = null;
+  let standard: any = null;
   const createdUserIds: string[] = [];
   const createdRoleIds: string[] = [];
   const createdGrants: TestIdentityGrant[] = [];
   const createdSessionIds: string[] = [];
 
-  let inTransaction = false;
-  let commitAttempted = false;
-  let committed = false;
-  let maintainer: any = null;
-  let standard: any = null;
-
   try {
+    // Acquire session-level advisory lock BEFORE creating reservation file or mutating DB
+    await acquireAdvisoryLock(client, runId, 15000);
+    advisoryLockAcquired = true;
+
+    // Re-check state file under the lock
+    if (fsSync.existsSync(stateFile)) {
+      throw new Error(
+        `Existing fixture state record found at "${stateFile}". Cannot overwrite active or partial ownership record. Run cleanup first.`
+      );
+    }
+
+    const initialReservation: TestIdentityState = {
+      runId,
+      database: dbName,
+      targetEndpoint,
+      status: 'initializing',
+      maintainer: {
+        id: '',
+        username: maintainerUsername,
+        role: 'SYSTEM_MAINTAINER',
+      },
+      standard: {
+        id: '',
+        username: standardUsername,
+        role: null,
+      },
+      createdUserIds: [],
+      createdRoleIds: [],
+      createdGrants: [],
+      createdSessionIds: [],
+      createdAt: new Date().toISOString(),
+    };
+
+    // Reserve state file atomically with 'wx' and mode 0600
+    const reservationHandle = await fs.open(stateFile, 'wx', 0o600);
+    try {
+      await reservationHandle.writeFile(JSON.stringify(initialReservation, null, 2), {
+        encoding: 'utf-8',
+      });
+      await reservationHandle.sync();
+    } finally {
+      await reservationHandle.close();
+    }
+    reservationCreated = true;
+
     await client.query('BEGIN');
     inTransaction = true;
-    await client.query("SELECT pg_advisory_xact_lock(hashtext('s2_foundation_fixture:' || $1))", [runId]);
 
     // 1. Conflict check: verify that target usernames do not already exist
     const existingRes = await client.query(
@@ -482,10 +729,7 @@ export async function setupTestIdentities(
       createdAt: new Date().toISOString(),
     };
 
-    await fs.writeFile(stateFile, JSON.stringify(preCommitState, null, 2), {
-      mode: 0o600,
-      encoding: 'utf-8',
-    });
+    await writeStateFileAtomic(stateFile, preCommitState);
 
     // 8. Commit database transaction
     commitAttempted = true;
@@ -499,10 +743,7 @@ export async function setupTestIdentities(
       status: 'active',
     };
 
-    await fs.writeFile(stateFile, JSON.stringify(activeState, null, 2), {
-      mode: 0o600,
-      encoding: 'utf-8',
-    });
+    await writeStateFileAtomic(stateFile, activeState);
 
     return activeState;
   } catch (err: any) {
@@ -519,49 +760,48 @@ export async function setupTestIdentities(
 
     if (!commitAttempted && rollbackSucceeded) {
       // Definite rollback: commit was never attempted and rollback succeeded cleanly.
-      // No rows exist in the database, so safe to unlink reservation file.
-      try {
-        await fs.unlink(stateFile);
-      } catch {
-        // Do not mask primary failure
+      if (reservationCreated) {
+        try {
+          await fs.unlink(stateFile);
+        } catch {}
       }
     } else {
       // Uncertain outcome: commit was attempted or rollback failed.
       // Rows may exist in the database! Preserve state file with status "uncertain"
-      // and record tracked IDs so cleanup can recover and delete any committed rows.
-      try {
-        const uncertainState: TestIdentityState = {
-          runId,
-          database: dbName,
-          targetEndpoint,
-          status: 'uncertain',
-          maintainer: {
-            id: maintainer?.id || '',
-            username: maintainerUsername,
-            role: 'SYSTEM_MAINTAINER',
-          },
-          standard: {
-            id: standard?.id || '',
-            username: standardUsername,
-            role: null,
-          },
-          createdUserIds: [...createdUserIds],
-          createdRoleIds: [...createdRoleIds],
-          createdGrants: [...createdGrants],
-          createdSessionIds: [...createdSessionIds],
-          createdAt: new Date().toISOString(),
-          error: primaryError?.message || 'Uncertain commit/rollback outcome',
-        };
-        await fs.writeFile(stateFile, JSON.stringify(uncertainState, null, 2), {
-          mode: 0o600,
-          encoding: 'utf-8',
-        });
-      } catch {
-        // Do not mask primary failure
+      // using atomic durable replacement so the pre-commit state with tracked IDs is NOT corrupted.
+      if (reservationCreated) {
+        try {
+          const uncertainState: TestIdentityState = {
+            runId,
+            database: dbName,
+            targetEndpoint,
+            status: 'uncertain',
+            maintainer: {
+              id: maintainer?.id || '',
+              username: maintainerUsername,
+              role: 'SYSTEM_MAINTAINER',
+            },
+            standard: {
+              id: standard?.id || '',
+              username: standardUsername,
+              role: null,
+            },
+            createdUserIds: [...createdUserIds],
+            createdRoleIds: [...createdRoleIds],
+            createdGrants: [...createdGrants],
+            createdSessionIds: [...createdSessionIds],
+            createdAt: new Date().toISOString(),
+            error: primaryError?.message || 'Uncertain commit/rollback outcome',
+          };
+          await writeStateFileAtomic(stateFile, uncertainState);
+        } catch {}
       }
     }
     throw primaryError;
   } finally {
+    if (advisoryLockAcquired) {
+      await releaseAdvisoryLock(client, runId);
+    }
     if (typeof client.release === 'function' && client !== options.db) {
       client.release();
     }
@@ -615,74 +855,10 @@ export async function cleanupTestIdentities(
     throw new Error('FOUNDATION_FIXTURE_STATE_FILE is required for ownership tracking');
   }
 
-  // Safe repeated cleanup: if state file does not exist, return safe no-op
-  if (!fsSync.existsSync(stateFile)) {
-    return {
-      cleaned: false,
-      runId,
-      database: dbName,
-      usersRemoved: 0,
-      grantsRemoved: 0,
-      rolesRemoved: 0,
-      sessionsRemoved: 0,
-      reason: 'NO_STATE_FILE',
-    };
-  }
-
+  validateOutsideCheckout(stateFile, 'State file');
   const stateDir = path.dirname(stateFile);
+  validateOutsideCheckout(stateDir, 'State directory');
   validatePrivateDirectory(stateDir);
-
-  const st = fsSync.statSync(stateFile);
-  if (st.isDirectory()) {
-    throw new Error(`State file path is a directory (EISDIR): "${stateFile}". Failing closed.`);
-  }
-
-  // Validate state file mode (must be 0600 or 0400, reject 0644 or other permissive modes)
-  const fileMode = st.mode & 0o777;
-  if ((fileMode & 0o077) !== 0) {
-    throw new Error(
-      `Insecure permissions on state file "${stateFile}": mode must be 0600 or 0400 (got 0${fileMode.toString(8)}). Failing closed.`
-    );
-  }
-
-  let state: TestIdentityState;
-  try {
-    const raw = await fs.readFile(stateFile, 'utf-8');
-    state = JSON.parse(raw);
-  } catch {
-    throw new Error('Corrupted fixture state file: JSON parse failed. Failing closed.');
-  }
-
-  // Verify ownership invariants
-  if (state.runId !== runId) {
-    throw new Error(
-      `State file run ID mismatch: expected "${runId}", got "${state.runId}". Failing closed.`
-    );
-  }
-
-  if (state.database !== dbName) {
-    throw new Error(
-      `State file database mismatch: expected "${dbName}", got "${state.database}". Failing closed.`
-    );
-  }
-
-  if (!state.targetEndpoint || typeof state.targetEndpoint !== 'string' || state.targetEndpoint.trim().length === 0) {
-    throw new Error('Corrupted or incomplete fixture state file: missing targetEndpoint. Failing closed.');
-  }
-
-  if (state.targetEndpoint !== targetEndpoint) {
-    throw new Error(
-      `State file target mismatch: expected "${targetEndpoint}", got "${state.targetEndpoint}". Failing closed.`
-    );
-  }
-
-  if (!['active', 'initializing', 'uncertain'].includes(state.status)) {
-    throw new Error(`Invalid fixture state status: "${state.status}". Failing closed.`);
-  }
-
-  if (!Array.isArray(state.createdUserIds) || !Array.isArray(state.createdGrants) || !Array.isArray(state.createdRoleIds)) {
-    throw new Error('Corrupted fixture state file: missing ownership arrays. Failing closed.');
-  }
 
   const pool = options.db ?? new Pool({ connectionString: databaseUrl });
   let client: any;
@@ -694,26 +870,16 @@ export async function cleanupTestIdentities(
     client = pool;
   }
 
-  let sessionsRemoved = 0;
-  let grantsRemoved = 0;
-  let usersRemoved = 0;
-  let rolesRemoved = 0;
+  let advisoryLockAcquired = false;
+  let inTransaction = false;
 
   try {
-    await client.query('BEGIN');
+    // Acquire session-level advisory lock across the complete run lifecycle
+    await acquireAdvisoryLock(client, runId, 15000);
+    advisoryLockAcquired = true;
 
-    // Serialize with in-flight setup for the same runId across complete database/state lifecycle
-    await client.query("SELECT pg_advisory_xact_lock(hashtext('s2_foundation_fixture:' || $1))", [runId]);
-
-    // Re-check state file in case in-flight setup committed or rolled back while cleanup waited for lock
-    if (fsSync.existsSync(stateFile)) {
-      try {
-        const rawAfterLock = await fs.readFile(stateFile, 'utf-8');
-        state = JSON.parse(rawAfterLock);
-      } catch {}
-    } else {
-      // Setup rolled back and cleaned up state file
-      await client.query('COMMIT');
+    // Check state file UNDER THE LOCK
+    if (!fsSync.existsSync(stateFile)) {
       return {
         cleaned: false,
         runId,
@@ -725,6 +891,36 @@ export async function cleanupTestIdentities(
         reason: 'NO_STATE_FILE',
       };
     }
+
+    // Thoroughly validate locked state file
+    const state = await readAndValidateStateFile(stateFile, runId, dbName, targetEndpoint);
+
+    // If empty initializing record without any created entities:
+    if (
+      state.createdUserIds.length === 0 &&
+      state.createdGrants.length === 0 &&
+      state.createdRoleIds.length === 0
+    ) {
+      await fs.unlink(stateFile);
+      return {
+        cleaned: false,
+        runId,
+        database: dbName,
+        usersRemoved: 0,
+        grantsRemoved: 0,
+        rolesRemoved: 0,
+        sessionsRemoved: 0,
+        reason: 'EMPTY_INITIALIZING_RECORD',
+      };
+    }
+
+    let sessionsRemoved = 0;
+    let grantsRemoved = 0;
+    let usersRemoved = 0;
+    let rolesRemoved = 0;
+
+    await client.query('BEGIN');
+    inTransaction = true;
 
     // 1. Delete sessions for created users or explicitly tracked sessions
     if (state.createdSessionIds && state.createdSessionIds.length > 0) {
@@ -798,6 +994,9 @@ export async function cleanupTestIdentities(
     }
     throw err;
   } finally {
+    if (advisoryLockAcquired) {
+      await releaseAdvisoryLock(client, runId);
+    }
     if (typeof client.release === 'function' && client !== options.db) {
       client.release();
     }

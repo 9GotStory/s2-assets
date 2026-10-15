@@ -75,17 +75,31 @@ _validate_foundation_env_file() {
     *) _fail "ERROR: FOUNDATION_ENV_FILE must be an absolute path: ${FOUNDATION_ENV_FILE}" ;;
   esac
 
+  # Validate path is outside repository checkout (lexical and canonical symlink resolution)
+  CANONICAL_REPO_ROOT=$(realpath "$REPO_ROOT" 2>/dev/null || readlink -f "$REPO_ROOT" 2>/dev/null || echo "$REPO_ROOT")
+  CANONICAL_ENV_FILE=$(realpath "$FOUNDATION_ENV_FILE" 2>/dev/null || readlink -f "$FOUNDATION_ENV_FILE" 2>/dev/null || echo "$FOUNDATION_ENV_FILE")
+  LEXICAL_ENV_FILE=$(realpath -s "$FOUNDATION_ENV_FILE" 2>/dev/null || echo "$FOUNDATION_ENV_FILE")
+
+  case "$FOUNDATION_ENV_FILE" in
+    "${REPO_ROOT}"/*|"${REPO_ROOT}")
+      _fail "ERROR: FOUNDATION_ENV_FILE must reside outside repository checkout: ${FOUNDATION_ENV_FILE}"
+      ;;
+  esac
+  case "$LEXICAL_ENV_FILE" in
+    "${CANONICAL_REPO_ROOT}"/*|"${CANONICAL_REPO_ROOT}"|"${REPO_ROOT}"/*|"${REPO_ROOT}")
+      _fail "ERROR: FOUNDATION_ENV_FILE must reside outside repository checkout: ${FOUNDATION_ENV_FILE}"
+      ;;
+  esac
+  case "$CANONICAL_ENV_FILE" in
+    "${CANONICAL_REPO_ROOT}"/*|"${CANONICAL_REPO_ROOT}"|"${REPO_ROOT}"/*|"${REPO_ROOT}")
+      _fail "ERROR: FOUNDATION_ENV_FILE must reside outside repository checkout: ${FOUNDATION_ENV_FILE}"
+      ;;
+  esac
+
   # Validate file existence
   if [ ! -f "$FOUNDATION_ENV_FILE" ]; then
     _fail "ERROR: FOUNDATION_ENV_FILE not found: ${FOUNDATION_ENV_FILE}"
   fi
-
-  # Validate path is outside repository checkout
-  case "$FOUNDATION_ENV_FILE" in
-    "${REPO_ROOT}"/*)
-      _fail "ERROR: FOUNDATION_ENV_FILE must reside outside repository checkout: ${FOUNDATION_ENV_FILE}"
-      ;;
-  esac
 
   # Validate file permissions (must not be group/other accessible)
   FILE_MODE=$(stat -c "%a" "$FOUNDATION_ENV_FILE" 2>/dev/null || stat -f "%OLp" "$FOUNDATION_ENV_FILE" 2>/dev/null || true)
@@ -96,8 +110,25 @@ _validate_foundation_env_file() {
     fi
   fi
 
-  # Validate directory permissions (must not be group/other accessible)
+  # Validate directory permissions and boundary (must not be group/other accessible or inside repo)
   ENV_DIR=$(dirname "$FOUNDATION_ENV_FILE")
+  CANONICAL_ENV_DIR=$(realpath "$ENV_DIR" 2>/dev/null || readlink -f "$ENV_DIR" 2>/dev/null || echo "$ENV_DIR")
+  LEXICAL_ENV_DIR=$(realpath -s "$ENV_DIR" 2>/dev/null || echo "$ENV_DIR")
+  case "$ENV_DIR" in
+    "${REPO_ROOT}"/*|"${REPO_ROOT}")
+      _fail "ERROR: Environment directory must reside outside repository checkout: ${ENV_DIR}"
+      ;;
+  esac
+  case "$LEXICAL_ENV_DIR" in
+    "${CANONICAL_REPO_ROOT}"/*|"${CANONICAL_REPO_ROOT}"|"${REPO_ROOT}"/*|"${REPO_ROOT}")
+      _fail "ERROR: Environment directory must reside outside repository checkout: ${ENV_DIR}"
+      ;;
+  esac
+  case "$CANONICAL_ENV_DIR" in
+    "${CANONICAL_REPO_ROOT}"/*|"${CANONICAL_REPO_ROOT}"|"${REPO_ROOT}"/*|"${REPO_ROOT}")
+      _fail "ERROR: Environment directory must reside outside repository checkout: ${ENV_DIR}"
+      ;;
+  esac
   DIR_MODE=$(stat -c "%a" "$ENV_DIR" 2>/dev/null || stat -f "%OLp" "$ENV_DIR" 2>/dev/null || true)
   if [ -n "$DIR_MODE" ]; then
     DIR_TAIL="${DIR_MODE: -2}"
@@ -345,6 +376,26 @@ case "$ACTION" in
 
     ENV_DIR=$(dirname "$FOUNDATION_ENV_FILE")
     STATE_FILE="${ENV_DIR}/fixture-state-${FOUNDATION_TEST_RUN_ID}.json"
+    if [ -n "${FOUNDATION_FIXTURE_STATE_FILE:-}" ]; then
+      STATE_FILE="${FOUNDATION_FIXTURE_STATE_FILE}"
+    fi
+    CANONICAL_STATE_FILE=$(realpath "$STATE_FILE" 2>/dev/null || readlink -f "$STATE_FILE" 2>/dev/null || echo "$STATE_FILE")
+    LEXICAL_STATE_FILE=$(realpath -s "$STATE_FILE" 2>/dev/null || echo "$STATE_FILE")
+    case "$STATE_FILE" in
+      "${REPO_ROOT}"/*|"${REPO_ROOT}")
+        _fail "ERROR: Fixture state file must reside outside repository checkout: ${STATE_FILE}"
+        ;;
+    esac
+    case "$LEXICAL_STATE_FILE" in
+      "${CANONICAL_REPO_ROOT}"/*|"${CANONICAL_REPO_ROOT}"|"${REPO_ROOT}"/*|"${REPO_ROOT}")
+        _fail "ERROR: Fixture state file must reside outside repository checkout: ${STATE_FILE}"
+        ;;
+    esac
+    case "$CANONICAL_STATE_FILE" in
+      "${CANONICAL_REPO_ROOT}"/*|"${CANONICAL_REPO_ROOT}"|"${REPO_ROOT}"/*|"${REPO_ROOT}")
+        _fail "ERROR: Fixture state file must reside outside repository checkout: ${STATE_FILE}"
+        ;;
+    esac
     RUNNER_CONFIG_FILE="${ENV_DIR}/.fixture-runner-${FOUNDATION_TEST_RUN_ID}.json"
 
     (

@@ -9,6 +9,10 @@ import {
   cleanupTestIdentities,
   loadEnvFile,
   loadConfigFile,
+  findRepoRoot,
+  validateOutsideCheckout,
+  writeStateFileAtomic,
+  readAndValidateStateFile,
   type TestIdentityState,
 } from '../fixtures/identity.ts';
 import { UserService, isArgon2idHash } from '../../src/services/user.service.ts';
@@ -86,6 +90,14 @@ describe('Identity Fixture Unit Tests (T044 - US4)', () => {
           trimmed.includes('pg_advisory_xact_lock')
         ) {
           return { rows: [], rowCount: 0 };
+        }
+
+        if (trimmed.includes('pg_try_advisory_lock')) {
+          return { rows: [{ locked: true }], rowCount: 1 };
+        }
+
+        if (trimmed.includes('pg_advisory_unlock')) {
+          return { rows: [{ pg_advisory_unlock: true }], rowCount: 1 };
         }
 
         // 1. Conflict check: SELECT id, username FROM users WHERE username = $1 OR username = $2
@@ -1204,7 +1216,7 @@ describe('Identity Fixture Unit Tests (T044 - US4)', () => {
     });
 
     describe('8.3 Advisory Lock Serialization (Finding 1)', () => {
-      it('acquires transaction advisory lock keyed by run ID during setup and cleanup', async () => {
+      it('acquires session advisory lock keyed by run ID during setup and cleanup', async () => {
         const mockDb = createMockDb();
         const state = await setupTestIdentities({
           nodeEnv: 'test',
@@ -1219,7 +1231,11 @@ describe('Identity Fixture Unit Tests (T044 - US4)', () => {
 
         expect(state.status).toBe('active');
         expect(mockDb.query).toHaveBeenCalledWith(
-          expect.stringContaining('SELECT pg_advisory_xact_lock'),
+          expect.stringContaining('pg_try_advisory_lock'),
+          [testRunId]
+        );
+        expect(mockDb.query).toHaveBeenCalledWith(
+          expect.stringContaining('pg_advisory_unlock'),
           [testRunId]
         );
 
@@ -1233,7 +1249,11 @@ describe('Identity Fixture Unit Tests (T044 - US4)', () => {
         });
 
         expect(mockDb.query).toHaveBeenCalledWith(
-          expect.stringContaining('SELECT pg_advisory_xact_lock'),
+          expect.stringContaining('pg_try_advisory_lock'),
+          [testRunId]
+        );
+        expect(mockDb.query).toHaveBeenCalledWith(
+          expect.stringContaining('pg_advisory_unlock'),
           [testRunId]
         );
       });
@@ -1285,6 +1305,142 @@ describe('Identity Fixture Unit Tests (T044 - US4)', () => {
         expect(cleanupRes.cleaned).toBe(true);
         expect(cleanupRes.usersRemoved).toBe(2);
         expect(fsSync.existsSync(tempStateFile)).toBe(false);
+      });
+    });
+
+    describe('8.5 Outside Checkout Boundary Enforcement (Finding 4)', () => {
+      it('rejects setup when stateFile resides inside repository checkout', async () => {
+        const repoRoot = findRepoRoot();
+        const insideCheckoutStateFile = path.join(repoRoot, 'apps/api/test-fixture-state.json');
+        const mockDb = createMockDb();
+
+        await expect(
+          setupTestIdentities({
+            nodeEnv: 'test',
+            databaseUrl: validDbUrl,
+            expectedDb: expectedDbName,
+            runId: testRunId,
+            baseUsername: testBaseUsername,
+            password: testPassword,
+            stateFile: insideCheckoutStateFile,
+            db: mockDb,
+          })
+        ).rejects.toThrow(/must reside outside repository checkout/);
+      });
+
+      it('rejects cleanup when stateFile resides inside repository checkout', async () => {
+        const repoRoot = findRepoRoot();
+        const insideCheckoutStateFile = path.join(repoRoot, 'apps/api/test-fixture-state.json');
+        const mockDb = createMockDb();
+
+        await expect(
+          cleanupTestIdentities({
+            nodeEnv: 'test',
+            databaseUrl: validDbUrl,
+            expectedDb: expectedDbName,
+            runId: testRunId,
+            stateFile: insideCheckoutStateFile,
+            db: mockDb,
+          })
+        ).rejects.toThrow(/must reside outside repository checkout/);
+      });
+    });
+
+    describe('8.6 Atomic State Replacement & Durability (Finding 3)', () => {
+      it('atomically updates state file without truncating existing content on write failure', async () => {
+        const initialState: TestIdentityState = {
+          runId: testRunId,
+          database: expectedDbName,
+          targetEndpoint: `127.0.0.1:5432/${expectedDbName}`,
+          status: 'initializing',
+          maintainer: { id: 'm1', username: 'm_user', role: 'SYSTEM_MAINTAINER' },
+          standard: { id: 's1', username: 's_user', role: null },
+          createdUserIds: ['m1', 's1'],
+          createdRoleIds: [],
+          createdGrants: [],
+          createdSessionIds: [],
+          createdAt: new Date().toISOString(),
+        };
+
+        await writeStateFileAtomic(tempStateFile, initialState);
+        const contentBefore = await fs.readFile(tempStateFile, 'utf-8');
+        expect(JSON.parse(contentBefore).status).toBe('initializing');
+
+        const updatedState: TestIdentityState = {
+          ...initialState,
+          status: 'active',
+        };
+        await writeStateFileAtomic(tempStateFile, updatedState);
+        const contentAfter = await fs.readFile(tempStateFile, 'utf-8');
+        expect(JSON.parse(contentAfter).status).toBe('active');
+        expect(JSON.parse(contentAfter).createdUserIds).toEqual(['m1', 's1']);
+      });
+    });
+
+    describe('8.7 State Revalidation Under Lock (Finding 2)', () => {
+      it('fails closed when state file contains corrupted JSON', async () => {
+        await fs.writeFile(tempStateFile, '{ not valid json ...', { mode: 0o600 });
+        await expect(
+          readAndValidateStateFile(
+            tempStateFile,
+            testRunId,
+            expectedDbName,
+            `127.0.0.1:5432/${expectedDbName}`
+          )
+        ).rejects.toThrow(/JSON parse failed/);
+      });
+
+      it('fails closed when state file run ID mismatches expected run ID', async () => {
+        const mismatchState: TestIdentityState = {
+          runId: 'unrelated_run_id',
+          database: expectedDbName,
+          targetEndpoint: `127.0.0.1:5432/${expectedDbName}`,
+          status: 'active',
+          maintainer: { id: 'm1', username: 'm_user', role: 'SYSTEM_MAINTAINER' },
+          standard: { id: 's1', username: 's_user', role: null },
+          createdUserIds: ['m1', 's1'],
+          createdRoleIds: [],
+          createdGrants: [],
+          createdSessionIds: [],
+          createdAt: new Date().toISOString(),
+        };
+        await writeStateFileAtomic(tempStateFile, mismatchState);
+
+        await expect(
+          readAndValidateStateFile(
+            tempStateFile,
+            testRunId,
+            expectedDbName,
+            `127.0.0.1:5432/${expectedDbName}`
+          )
+        ).rejects.toThrow(/State file run ID mismatch/);
+      });
+
+      it('fails closed when state file has insecure permissions (0644)', async () => {
+        const state: TestIdentityState = {
+          runId: testRunId,
+          database: expectedDbName,
+          targetEndpoint: `127.0.0.1:5432/${expectedDbName}`,
+          status: 'active',
+          maintainer: { id: 'm1', username: 'm_user', role: 'SYSTEM_MAINTAINER' },
+          standard: { id: 's1', username: 's_user', role: null },
+          createdUserIds: ['m1', 's1'],
+          createdRoleIds: [],
+          createdGrants: [],
+          createdSessionIds: [],
+          createdAt: new Date().toISOString(),
+        };
+        await writeStateFileAtomic(tempStateFile, state);
+        await fs.chmod(tempStateFile, 0o644);
+
+        await expect(
+          readAndValidateStateFile(
+            tempStateFile,
+            testRunId,
+            expectedDbName,
+            `127.0.0.1:5432/${expectedDbName}`
+          )
+        ).rejects.toThrow(/Insecure permissions on state file/);
       });
     });
   });
