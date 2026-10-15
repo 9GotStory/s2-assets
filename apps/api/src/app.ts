@@ -30,6 +30,10 @@ export interface AppOptions {
   plugin?: (app: FastifyInstance) => Promise<void> | void;
 }
 
+export function redactSecrets(message: string): string {
+  return message.replace(/(postgresql:\/\/[^:]+:)([^@]+)(@)/gi, '$1***$3');
+}
+
 /**
  * Builds and composes the Fastify application.
  *
@@ -50,56 +54,72 @@ export async function buildApp(options: AppOptions = {}): Promise<FastifyInstanc
   const isProduction = nodeEnv === 'production';
   const secure = options.secure ?? (isProduction ? true : false);
 
-  // 2. Resolve database client and pool ownership
+  let app: FastifyInstance | null = null;
   let ownedPool: pg.Pool | null = null;
-  let dbClient: DatabaseClient | any = options.db;
+  let poolEnded = false;
 
-  if (!dbClient) {
-    const rawDbUrl =
-      options.databaseUrl ??
-      options.config?.DATABASE_URL ??
-      process.env.DATABASE_URL;
-
-    if (!rawDbUrl || typeof rawDbUrl !== 'string' || rawDbUrl.trim().length === 0) {
-      throw new Error('Configuration validation failed: DATABASE_URL is required');
+  const closeOwnedPool = async () => {
+    if (ownedPool && !poolEnded) {
+      poolEnded = true;
+      await ownedPool.end().catch(() => {});
     }
-
-    const trimmedUrl = rawDbUrl.trim();
-    if (!trimmedUrl.startsWith('postgresql://')) {
-      throw new Error('Configuration validation failed: DATABASE_URL must start with postgresql://');
-    }
-
-    try {
-      ownedPool = new pg.Pool({ connectionString: trimmedUrl });
-      ownedPool.on('error', (err) => {
-        // Redact secrets if logging pool idle error
-        app.log?.error?.(err, 'Unexpected error on idle database pool client');
-      });
-      dbClient = ownedPool;
-    } catch (poolErr) {
-      if (ownedPool) {
-        await ownedPool.end().catch(() => {});
-      }
-      throw poolErr;
-    }
-  }
-
-  // 3. Configure Fastify server options
-  const fastifyOpts: FastifyServerOptions = {};
-
-  if (options.logger === false) {
-    fastifyOpts.logger = false;
-  } else if (options.logger && typeof options.logger.info === 'function') {
-    fastifyOpts.loggerInstance = options.logger;
-  } else if (typeof options.logger === 'object' && options.logger !== null) {
-    fastifyOpts.logger = getLoggerOptions(options.logger);
-  } else {
-    fastifyOpts.logger = getLoggerOptions();
-  }
-
-  const app = Fastify(fastifyOpts);
+  };
 
   try {
+    // 2. Resolve database client and pool ownership
+    let dbClient: DatabaseClient | any = options.db;
+
+    if (!dbClient) {
+      const rawDbUrl =
+        options.databaseUrl ??
+        options.config?.DATABASE_URL ??
+        process.env.DATABASE_URL;
+
+      if (!rawDbUrl || typeof rawDbUrl !== 'string' || rawDbUrl.trim().length === 0) {
+        throw new Error('Configuration validation failed: DATABASE_URL is required');
+      }
+
+      const trimmedUrl = rawDbUrl.trim();
+      if (!trimmedUrl.startsWith('postgresql://')) {
+        throw new Error('Configuration validation failed: DATABASE_URL must start with postgresql://');
+      }
+
+      try {
+        ownedPool = new pg.Pool({ connectionString: trimmedUrl });
+      } catch (poolErr) {
+        const rawMsg = poolErr instanceof Error ? poolErr.message : String(poolErr);
+        throw new Error(redactSecrets(rawMsg));
+      }
+
+      ownedPool.on('error', () => {
+        // Redact secrets: do not pass raw error or synthetic secrets to logger
+        app?.log?.error?.('Unexpected error on idle database pool client');
+      });
+      dbClient = ownedPool;
+    }
+
+    // 3. Configure Fastify server options
+    const fastifyOpts: FastifyServerOptions = {};
+
+    if (options.logger === false) {
+      fastifyOpts.logger = false;
+    } else if (options.logger && typeof options.logger.info === 'function') {
+      fastifyOpts.loggerInstance = options.logger;
+    } else if (typeof options.logger === 'object' && options.logger !== null) {
+      fastifyOpts.logger = getLoggerOptions(options.logger);
+    } else {
+      fastifyOpts.logger = getLoggerOptions();
+    }
+
+    app = Fastify(fastifyOpts);
+
+    // Register pool cleanup hook immediately after Fastify creation if pool is owned
+    if (ownedPool) {
+      app.addHook('onClose', async () => {
+        await closeOwnedPool();
+      });
+    }
+
     // 4. Register standardized error handler
     await app.register(errorHandlerPlugin);
 
@@ -186,27 +206,20 @@ export async function buildApp(options: AppOptions = {}): Promise<FastifyInstanc
       db: dbClient,
     });
 
-    // 9. Register connection pool lifecycle hook for application-owned pool
-    if (ownedPool) {
-      app.addHook('onClose', async () => {
-        await ownedPool?.end();
-      });
-    }
-
-    // 10. Execute caller-provided test/extension plugin before finalizing
+    // 9. Execute caller-provided test/extension plugin before finalizing
     if (options.plugin) {
       await options.plugin(app);
     }
 
-    // 11. Finalize plugin registration without listening
+    // 10. Finalize plugin registration without listening
     await app.ready();
 
     return app;
   } catch (initErr) {
-    // If initialization fails, release any acquired resources before rethrowing
-    if (ownedPool) {
-      await ownedPool.end().catch(() => {});
+    if (app) {
+      await app.close().catch(() => {});
     }
+    await closeOwnedPool();
     throw initErr;
   }
 }

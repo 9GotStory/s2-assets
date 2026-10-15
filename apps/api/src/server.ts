@@ -1,12 +1,32 @@
+import { type FastifyInstance } from 'fastify';
 import { loadConfig } from './config/env.ts';
-import { buildApp } from './app.ts';
+import { buildApp, redactSecrets } from './app.ts';
 import { isValidSigningSecret, MIN_COOKIE_SECRET_BYTES } from './plugins/csrf.ts';
 
-function redactSecrets(message: string): string {
-  return message.replace(/(postgresql:\/\/[^:]+:)([^@]+)(@)/gi, '$1***$3');
-}
+export { redactSecrets };
 
-let isShuttingDown = false;
+export function createShutdownHandler(
+  app: FastifyInstance | undefined,
+  exit: (code: number) => void = process.exit
+): (signal: string) => Promise<void> {
+  let isShuttingDown = false;
+  return async (signal: string) => {
+    if (isShuttingDown) return;
+    isShuttingDown = true;
+
+    app?.log?.info?.({ signal }, 'Received termination signal, starting graceful shutdown');
+
+    try {
+      await app?.close();
+      app?.log?.info?.('Graceful shutdown completed');
+      exit(0);
+    } catch (_closeErr) {
+      // Redact secrets: do not pass raw error or synthetic secrets to logger
+      app?.log?.error?.('Error during graceful shutdown');
+      exit(1);
+    }
+  };
+}
 
 export async function startServer(): Promise<void> {
   let app: Awaited<ReturnType<typeof buildApp>> | undefined;
@@ -29,21 +49,7 @@ export async function startServer(): Promise<void> {
     app = await buildApp({ config });
 
     // 4. Attach graceful shutdown handlers
-    const handleShutdown = async (signal: string) => {
-      if (isShuttingDown) return;
-      isShuttingDown = true;
-
-      app?.log?.info?.({ signal }, 'Received termination signal, starting graceful shutdown');
-
-      try {
-        await app?.close();
-        app?.log?.info?.('Graceful shutdown completed');
-        process.exit(0);
-      } catch (closeErr) {
-        app?.log?.error?.(closeErr, 'Error during graceful shutdown');
-        process.exit(1);
-      }
-    };
+    const handleShutdown = createShutdownHandler(app);
 
     process.on('SIGINT', () => {
       void handleShutdown('SIGINT');

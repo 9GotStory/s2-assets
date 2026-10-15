@@ -1,10 +1,14 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
+import { EventEmitter } from 'node:events';
+import { Writable } from 'node:stream';
 import { spawn } from 'node:child_process';
 import * as path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import Fastify, { type FastifyInstance } from 'fastify';
 import pg from 'pg';
 import { buildApp, createApp } from '../../src/app.ts';
+import { createLogger } from '../../src/plugins/logger.ts';
+import { createShutdownHandler } from '../../src/server.ts';
 import { hashPassword } from '../../src/services/user.service.ts';
 
 const __filename = fileURLToPath(import.meta.url);
@@ -121,14 +125,94 @@ describe('Fastify Application Bootstrap (T041)', () => {
       const secretPassword = 'SUPER_SECRET_DB_PASSWORD_XYZ';
       const connectionString = `postgresql://dbuser:${secretPassword}@invalid-db-host.internal:5432/testdb`;
 
+      const pgPoolSpy = vi.spyOn(pg, 'Pool').mockImplementation(function (this: any) {
+        throw new Error(`Failed to connect to ${connectionString}`);
+      });
+
+      let thrownError: Error | null = null;
       try {
         await buildApp({
           databaseUrl: connectionString,
           logger: false,
         });
       } catch (err: any) {
-        expect(err.message).not.toContain(secretPassword);
+        thrownError = err;
+      } finally {
+        pgPoolSpy.mockRestore();
       }
+
+      expect(thrownError).toBeInstanceOf(Error);
+      expect(thrownError!.message).not.toContain(secretPassword);
+      expect(thrownError!.message).toContain('***');
+    });
+
+    it('does not disclose synthetic secrets in logs when idle database pool error fires', async () => {
+      let logOutput = '';
+      const logStream = new Writable({
+        write(chunk, _encoding, callback) {
+          logOutput += chunk.toString();
+          callback();
+        },
+      });
+      const logger = createLogger({}, logStream);
+
+      const secretSentinel = 'REVIEW_SYNTHETIC_IDLE_SECRET';
+      let capturedPool: any = null;
+      const endSpy = vi.fn(async () => {});
+
+      const pgPoolSpy = vi.spyOn(pg, 'Pool').mockImplementation(function (this: any) {
+        const emitter = new EventEmitter();
+        const mock = Object.assign(emitter, {
+          query: vi.fn(async () => ({ rows: [] })),
+          end: endSpy,
+        });
+        capturedPool = mock;
+        return mock as any;
+      });
+
+      try {
+        app = await buildApp({
+          databaseUrl: 'postgresql://testuser:testpass@localhost:5432/testdb',
+          logger,
+        });
+
+        expect(capturedPool).toBeDefined();
+        // Force idle pool error with synthetic secret
+        capturedPool.emit('error', new Error(`Idle pool connection reset: ${secretSentinel}`));
+
+        expect(logOutput).toContain('Unexpected error on idle database pool client');
+        expect(logOutput).not.toContain(secretSentinel);
+      } finally {
+        pgPoolSpy.mockRestore();
+      }
+    });
+
+    it('does not disclose synthetic secrets in logs when graceful shutdown fails', async () => {
+      let logOutput = '';
+      const logStream = new Writable({
+        write(chunk, _encoding, callback) {
+          logOutput += chunk.toString();
+          callback();
+        },
+      });
+      const logger = createLogger({}, logStream);
+
+      const secretSentinel = 'REVIEW_SYNTHETIC_SHUTDOWN_SECRET';
+      const mockApp = {
+        log: logger,
+        close: vi.fn(async () => {
+          throw new Error(`Shutdown failure: ${secretSentinel}`);
+        }),
+      } as unknown as FastifyInstance;
+
+      const exitSpy = vi.fn();
+      const shutdownHandler = createShutdownHandler(mockApp, exitSpy);
+
+      await shutdownHandler('SIGTERM');
+
+      expect(exitSpy).toHaveBeenCalledWith(1);
+      expect(logOutput).toContain('Error during graceful shutdown');
+      expect(logOutput).not.toContain(secretSentinel);
     });
   });
 
@@ -202,6 +286,148 @@ describe('Fastify Application Bootstrap (T041)', () => {
       } finally {
         pgPoolSpy.mockRestore();
       }
+    });
+
+    it('cleans up application-owned pool when logger construction fails with invalid level', async () => {
+      const endSpy = vi.fn(async () => {});
+      class MockPgPool {
+        query = vi.fn(async () => ({ rows: [] }));
+        end = endSpy;
+        on = vi.fn();
+      }
+
+      const pgPoolSpy = vi.spyOn(pg, 'Pool').mockImplementation(function (this: any) {
+        return new MockPgPool() as any;
+      });
+
+      try {
+        await expect(
+          buildApp({
+            databaseUrl: 'postgresql://testuser:testpass@localhost:5432/testdb',
+            logger: { level: 'invalid-logger-level' as any },
+          })
+        ).rejects.toThrow();
+
+        expect(pgPoolSpy).toHaveBeenCalledTimes(1);
+        expect(endSpy).toHaveBeenCalledTimes(1);
+      } finally {
+        pgPoolSpy.mockRestore();
+      }
+    });
+
+    it('closes Fastify and invokes registered onClose hooks when plugin registration throws', async () => {
+      const endSpy = vi.fn(async () => {});
+      class MockPgPool {
+        query = vi.fn(async () => ({ rows: [] }));
+        end = endSpy;
+        on = vi.fn();
+      }
+
+      const pgPoolSpy = vi.spyOn(pg, 'Pool').mockImplementation(function (this: any) {
+        return new MockPgPool() as any;
+      });
+
+      const probeSpy = vi.fn();
+
+      try {
+        await expect(
+          buildApp({
+            databaseUrl: 'postgresql://testuser:testpass@localhost:5432/testdb',
+            logger: false,
+            plugin: async (instance) => {
+              instance.addHook('onClose', async () => {
+                probeSpy();
+              });
+              throw new Error('Plugin initialization failed');
+            },
+          })
+        ).rejects.toThrow('Plugin initialization failed');
+
+        expect(probeSpy).toHaveBeenCalledTimes(1);
+        expect(endSpy).toHaveBeenCalledTimes(1);
+      } finally {
+        pgPoolSpy.mockRestore();
+      }
+    });
+
+    it('releases application-owned pool exactly once', async () => {
+      const endSpy = vi.fn(async () => {});
+      class MockPgPool {
+        query = vi.fn(async () => ({ rows: [] }));
+        end = endSpy;
+        on = vi.fn();
+      }
+
+      const pgPoolSpy = vi.spyOn(pg, 'Pool').mockImplementation(function (this: any) {
+        return new MockPgPool() as any;
+      });
+
+      try {
+        app = await buildApp({
+          databaseUrl: 'postgresql://testuser:testpass@localhost:5432/testdb',
+          logger: false,
+        });
+
+        await app.close();
+        await app.close();
+        expect(endSpy).toHaveBeenCalledTimes(1);
+      } finally {
+        pgPoolSpy.mockRestore();
+      }
+    });
+
+    it('releases application-owned pool when listener fails', async () => {
+      const endSpy = vi.fn(async () => {});
+      class MockPgPool {
+        query = vi.fn(async () => ({ rows: [] }));
+        end = endSpy;
+        on = vi.fn();
+      }
+
+      const pgPoolSpy = vi.spyOn(pg, 'Pool').mockImplementation(function (this: any) {
+        return new MockPgPool() as any;
+      });
+
+      try {
+        app = await buildApp({
+          databaseUrl: 'postgresql://testuser:testpass@localhost:5432/testdb',
+          logger: false,
+        });
+
+        vi.spyOn(app, 'listen').mockRejectedValueOnce(
+          new Error('EADDRINUSE: address already in use')
+        );
+
+        let listenErr: Error | null = null;
+        try {
+          await app.listen({ port: 3000 });
+        } catch (err: any) {
+          listenErr = err;
+          await app.close();
+        }
+
+        expect(listenErr).toBeDefined();
+        expect(listenErr?.message).toContain('EADDRINUSE');
+        expect(endSpy).toHaveBeenCalledTimes(1);
+      } finally {
+        pgPoolSpy.mockRestore();
+      }
+    });
+
+    it('preserves caller ownership of injected database client when initialization fails', async () => {
+      const mockDb = createMockDb();
+
+      await expect(
+        buildApp({
+          db: mockDb,
+          logger: false,
+          plugin: async () => {
+            throw new Error('Plugin initialization failed');
+          },
+        })
+      ).rejects.toThrow('Plugin initialization failed');
+
+      expect(mockDb.end).not.toHaveBeenCalled();
     });
   });
 
