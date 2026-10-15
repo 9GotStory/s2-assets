@@ -1,51 +1,67 @@
 #!/usr/bin/env bash
-if [ "${BASH_SOURCE[0]}" = "$0" ]; then
+_is_sourced=0
+if [ "${BASH_SOURCE[0]}" != "$0" ]; then
+  _is_sourced=1
+fi
+
+if [ "$_is_sourced" -eq 0 ]; then
   set -euo pipefail
 fi
 
 # Ensure deterministic Compose provider is selected
 export PODMAN_COMPOSE_PROVIDER=podman-compose
 
+_run_preflight() {
+  # 1. Verify podman is available
+  if ! command -v podman >/dev/null 2>&1; then
+    echo "ERROR: podman is not installed or not in PATH" >&2
+    return 1
+  fi
+
+  # 2. Verify podman-compose is available
+  if ! command -v podman-compose >/dev/null 2>&1; then
+    echo "ERROR: podman-compose is not installed or not in PATH" >&2
+    return 1
+  fi
+
+  # 3. Verify podman compose provider preflight resolves to podman-compose 1.6.0
+  local version_output clean_version_output
+  if ! version_output=$(podman compose version 2>&1); then
+    echo "ERROR: Failed to query podman compose version: ${version_output}" >&2
+    return 1
+  fi
+
+  clean_version_output=$(echo "${version_output}" | sed 's/\x1b\[[0-9;]*[a-zA-Z]//g')
+
+  if ! echo "${clean_version_output}" | grep -Eq "^podman-compose version 1\.6\.0[[:space:]]*$"; then
+    echo "ERROR: Requires podman-compose 1.6.0" >&2
+    return 1
+  fi
+
+  echo "Compose provider preflight verified: podman-compose 1.6.0 (PODMAN_COMPOSE_PROVIDER=${PODMAN_COMPOSE_PROVIDER})"
+  return 0
+}
+
+# If sourced, execute preflight only and return immediately, ignoring inherited caller arguments
+if [ "$_is_sourced" -eq 1 ]; then
+  _run_preflight
+  return $?
+fi
+
+# Executed directly: run preflight first
+if ! _run_preflight; then
+  exit 1
+fi
+
+# If invoked directly without arguments, preflight is complete
+if [ $# -eq 0 ]; then
+  exit 0
+fi
+
 _fail() {
   echo "$1" >&2
-  if [ "${BASH_SOURCE[0]}" != "$0" ]; then
-    return 1 2>/dev/null || exit 1
-  else
-    exit 1
-  fi
+  exit 1
 }
-
-# 1. Verify podman is available
-if ! command -v podman >/dev/null 2>&1; then
-  _fail "ERROR: podman is not installed or not in PATH"
-fi
-
-# 2. Verify podman-compose is available
-if ! command -v podman-compose >/dev/null 2>&1; then
-  _fail "ERROR: podman-compose is not installed or not in PATH"
-fi
-
-# 3. Verify podman compose provider preflight resolves to podman-compose 1.6.0
-VERSION_OUTPUT=$(podman compose version 2>&1) || {
-  _fail "ERROR: Failed to query podman compose version: ${VERSION_OUTPUT}"
-}
-
-CLEAN_VERSION_OUTPUT=$(echo "${VERSION_OUTPUT}" | sed 's/\x1b\[[0-9;]*[a-zA-Z]//g')
-
-if ! echo "${CLEAN_VERSION_OUTPUT}" | grep -Eq "^podman-compose version 1\.6\.0[[:space:]]*$"; then
-  _fail "ERROR: Requires podman-compose 1.6.0"
-fi
-
-echo "Compose provider preflight verified: podman-compose 1.6.0 (PODMAN_COMPOSE_PROVIDER=${PODMAN_COMPOSE_PROVIDER})"
-
-# If invoked without arguments or sourced without parameters, preflight is complete.
-if [ $# -eq 0 ]; then
-  if [ "${BASH_SOURCE[0]}" != "$0" ]; then
-    return 0 2>/dev/null || exit 0
-  else
-    exit 0
-  fi
-fi
 
 ACTION="$1"
 shift
@@ -122,16 +138,18 @@ case "$ACTION" in
     if [ -z "${POSTGRES_DB:-}" ]; then
       _fail "ERROR: POSTGRES_DB is required in ${FOUNDATION_ENV_FILE}"
     fi
-    case "$POSTGRES_DB" in
-      s2_foundation_?*) ;;
-      *) _fail "ERROR: POSTGRES_DB must begin with 's2_foundation_' and specify a dedicated database name" ;;
-    esac
+    if ! echo "$POSTGRES_DB" | grep -Eq '^s2_foundation_[a-zA-Z0-9_]+$'; then
+      _fail "ERROR: POSTGRES_DB must begin with 's2_foundation_' and contain only alphanumeric/underscore characters"
+    fi
     if [ "$POSTGRES_DB" = "s2_foundation_s2_assets" ] || [ "$POSTGRES_DB" = "s2_assets" ]; then
       _fail "ERROR: POSTGRES_DB cannot use repository default names"
     fi
 
     if [ -z "${POSTGRES_USER:-}" ]; then
       _fail "ERROR: POSTGRES_USER is required in ${FOUNDATION_ENV_FILE}"
+    fi
+    if ! echo "$POSTGRES_USER" | grep -Eq '^[a-zA-Z0-9_]+$'; then
+      _fail "ERROR: POSTGRES_USER must be alphanumeric with underscores (safe for database URL construction)"
     fi
     if [ "$POSTGRES_USER" = "s2_user" ] || [ "$POSTGRES_USER" = "postgres" ] || [ "$POSTGRES_USER" = "admin" ] || [ "$POSTGRES_USER" = "root" ]; then
       _fail "ERROR: POSTGRES_USER cannot use default or privileged usernames"
@@ -140,30 +158,46 @@ case "$ACTION" in
     if [ -z "${POSTGRES_PASSWORD:-}" ]; then
       _fail "ERROR: POSTGRES_PASSWORD is required in ${FOUNDATION_ENV_FILE}"
     fi
-    if [ "$POSTGRES_PASSWORD" = "s2_password" ] || [ "$POSTGRES_PASSWORD" = "password" ] || [ "$POSTGRES_PASSWORD" = "postgres" ] || [ "$POSTGRES_PASSWORD" = "admin" ] || [ ${#POSTGRES_PASSWORD} -lt 16 ]; then
-      _fail "ERROR: POSTGRES_PASSWORD cannot use default or insecure passwords (must be at least 16 characters)"
+    # Enforce documented constraint: fresh random hexadecimal secret, at least 16 hex characters, safe for direct URL construction
+    if ! echo "$POSTGRES_PASSWORD" | grep -Eq '^[0-9a-fA-F]{16,}$'; then
+      _fail "ERROR: POSTGRES_PASSWORD must be a hexadecimal secret of at least 16 characters (safe for URL construction without delimiters or whitespace)"
+    fi
+    if [ "$POSTGRES_PASSWORD" = "s2_password" ] || [ "$POSTGRES_PASSWORD" = "password" ] || [ "$POSTGRES_PASSWORD" = "postgres" ] || [ "$POSTGRES_PASSWORD" = "admin" ]; then
+      _fail "ERROR: POSTGRES_PASSWORD cannot use default or insecure passwords"
     fi
 
     if [ -z "${COOKIE_SECRET:-}" ]; then
       _fail "ERROR: COOKIE_SECRET is required in ${FOUNDATION_ENV_FILE}"
     fi
-    if [ "$COOKIE_SECRET" = "secret" ] || [ "$COOKIE_SECRET" = "cookie_secret" ] || [ ${#COOKIE_SECRET} -lt 32 ]; then
-      _fail "ERROR: COOKIE_SECRET must be at least 32 bytes and cannot use default secrets"
+    # Enforce documented constraint: fresh random hexadecimal signing secret, at least 32 bytes (64 hex characters), non-blank
+    if ! echo "$COOKIE_SECRET" | grep -Eq '^[0-9a-fA-F]{64,}$'; then
+      _fail "ERROR: COOKIE_SECRET must be a hexadecimal signing secret of at least 32 bytes (64 hex characters) without whitespace"
+    fi
+    if [ "$COOKIE_SECRET" = "secret" ] || [ "$COOKIE_SECRET" = "cookie_secret" ]; then
+      _fail "ERROR: COOKIE_SECRET cannot use default secrets"
     fi
 
     if [ -z "${FOUNDATION_TEST_RUN_ID:-}" ]; then
       _fail "ERROR: FOUNDATION_TEST_RUN_ID is required in ${FOUNDATION_ENV_FILE}"
     fi
+    if ! echo "$FOUNDATION_TEST_RUN_ID" | grep -Eq '^[a-zA-Z0-9_-]+$'; then
+      _fail "ERROR: FOUNDATION_TEST_RUN_ID must be alphanumeric with hyphens or underscores"
+    fi
 
     if [ -z "${FOUNDATION_TEST_USERNAME:-}" ]; then
       _fail "ERROR: FOUNDATION_TEST_USERNAME is required in ${FOUNDATION_ENV_FILE}"
+    fi
+    if ! echo "$FOUNDATION_TEST_USERNAME" | grep -Eq '^[a-zA-Z0-9_-]+$'; then
+      _fail "ERROR: FOUNDATION_TEST_USERNAME must be alphanumeric with hyphens or underscores"
     fi
 
     if [ -z "${FOUNDATION_TEST_PASSWORD:-}" ]; then
       _fail "ERROR: FOUNDATION_TEST_PASSWORD is required in ${FOUNDATION_ENV_FILE}"
     fi
-    if [ "$FOUNDATION_TEST_PASSWORD" = "password" ] || [ "$FOUNDATION_TEST_PASSWORD" = "test" ] || [ ${#FOUNDATION_TEST_PASSWORD} -lt 8 ]; then
-      _fail "ERROR: FOUNDATION_TEST_PASSWORD cannot use default or trivial passwords"
+    # Check that password is not blank/whitespace-only and at least 8 non-whitespace characters
+    TRIMMED_TEST_PW=$(echo "$FOUNDATION_TEST_PASSWORD" | xargs)
+    if [ ${#TRIMMED_TEST_PW} -lt 8 ] || [ "$FOUNDATION_TEST_PASSWORD" = "password" ] || [ "$FOUNDATION_TEST_PASSWORD" = "test" ]; then
+      _fail "ERROR: FOUNDATION_TEST_PASSWORD cannot be blank, default, or less than 8 characters"
     fi
 
     echo "Building development container tooling image..."

@@ -15,13 +15,13 @@ Supply `FOUNDATION_ENV_FILE` as an absolute path to a trusted, private shell/env
 | `COMPOSE_PROJECT_NAME` | Unique lowercase project name for this run; do not reuse a shared project |
 | `POSTGRES_DB` | Unique database name beginning `s2_foundation_` |
 | `POSTGRES_USER` | Dedicated local database user |
-| `POSTGRES_PASSWORD` | Fresh random hexadecimal secret; no repository default |
-| `COOKIE_SECRET` | Fresh random hexadecimal signing secret, at least 32 bytes |
+| `POSTGRES_PASSWORD` | Fresh random hexadecimal secret (at least 16 hex characters; safe for URL construction without delimiters or whitespace); no repository default |
+| `COOKIE_SECRET` | Fresh random hexadecimal signing secret of at least 32 bytes (64 hex characters without whitespace); no default |
 | `FOUNDATION_TEST_RUN_ID` | Unique marker recorded in private fixture ownership state |
 | `FOUNDATION_TEST_USERNAME` | Unique base name for this run's disposable identities |
-| `FOUNDATION_TEST_PASSWORD` | Fresh random test password; no production credential |
+| `FOUNDATION_TEST_PASSWORD` | Fresh random test password (at least 8 non-whitespace characters); no production credential |
 
-The planned helper validates permissions, required values and isolated target, and rejects missing/default credentials. Container configuration must explicitly consume these values. Do not enable shell tracing, commit this file, bake secrets into images or print expanded Compose configuration. Runtime-only fixture state/cookie material uses the same private directory.
+The planned helper validates permissions, required values and isolated target, and rejects missing/default credentials, non-hexadecimal secrets, or whitespace padding. Container configuration must explicitly consume these values. Do not enable shell tracing, commit this file, bake secrets into images or print expanded Compose configuration. Runtime-only fixture state/cookie material uses the same private directory.
 
 ```bash
 set -euo pipefail
