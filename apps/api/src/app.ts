@@ -61,7 +61,7 @@ export async function buildApp(options: AppOptions = {}): Promise<FastifyInstanc
   const closeOwnedPool = async () => {
     if (ownedPool && !poolEnded) {
       poolEnded = true;
-      await ownedPool.end().catch(() => {});
+      await ownedPool.end();
     }
   };
 
@@ -219,7 +219,7 @@ export async function buildApp(options: AppOptions = {}): Promise<FastifyInstanc
     if (app) {
       await app.close().catch(() => {});
     }
-    await closeOwnedPool();
+    await closeOwnedPool().catch(() => {});
     throw initErr;
   }
 }

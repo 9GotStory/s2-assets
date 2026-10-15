@@ -187,7 +187,7 @@ describe('Fastify Application Bootstrap (T041)', () => {
       }
     });
 
-    it('does not disclose synthetic secrets in logs when graceful shutdown fails', async () => {
+    it('handles shutdown failure through composed buildApp and shutdown handler when owned pool end rejects', async () => {
       let logOutput = '';
       const logStream = new Writable({
         write(chunk, _encoding, callback) {
@@ -198,21 +198,81 @@ describe('Fastify Application Bootstrap (T041)', () => {
       const logger = createLogger({}, logStream);
 
       const secretSentinel = 'REVIEW_SYNTHETIC_SHUTDOWN_SECRET';
-      const mockApp = {
-        log: logger,
-        close: vi.fn(async () => {
-          throw new Error(`Shutdown failure: ${secretSentinel}`);
-        }),
-      } as unknown as FastifyInstance;
+      const endSpy = vi.fn(async () => {
+        throw new Error(`Shutdown pool close error: ${secretSentinel}`);
+      });
 
-      const exitSpy = vi.fn();
-      const shutdownHandler = createShutdownHandler(mockApp, exitSpy);
+      const pgPoolSpy = vi.spyOn(pg, 'Pool').mockImplementation(function (this: any) {
+        const emitter = new EventEmitter();
+        return Object.assign(emitter, {
+          query: vi.fn(async () => ({ rows: [] })),
+          end: endSpy,
+        }) as any;
+      });
 
-      await shutdownHandler('SIGTERM');
+      try {
+        app = await buildApp({
+          databaseUrl: 'postgresql://testuser:testpass@localhost:5432/testdb',
+          logger,
+        });
 
-      expect(exitSpy).toHaveBeenCalledWith(1);
-      expect(logOutput).toContain('Error during graceful shutdown');
-      expect(logOutput).not.toContain(secretSentinel);
+        const exitSpy = vi.fn();
+        const shutdownHandler = createShutdownHandler(app, exitSpy);
+
+        await shutdownHandler('SIGTERM');
+
+        // 1. Require nonzero failure
+        expect(exitSpy).toHaveBeenCalledWith(1);
+        // 2. Require exactly one cleanup attempt
+        expect(endSpy).toHaveBeenCalledTimes(1);
+        // 3. Error diagnostic emitted
+        expect(logOutput).toContain('Error during graceful shutdown');
+        // 4. No success diagnostic
+        expect(logOutput).not.toContain('Graceful shutdown completed');
+        // 5. No leaked sentinel
+        expect(logOutput).not.toContain(secretSentinel);
+      } finally {
+        pgPoolSpy.mockRestore();
+      }
+    });
+
+    it('executes clean shutdown and exits 0 when close succeeds normally', async () => {
+      let logOutput = '';
+      const logStream = new Writable({
+        write(chunk, _encoding, callback) {
+          logOutput += chunk.toString();
+          callback();
+        },
+      });
+      const logger = createLogger({}, logStream);
+
+      const endSpy = vi.fn(async () => {});
+      const pgPoolSpy = vi.spyOn(pg, 'Pool').mockImplementation(function (this: any) {
+        const emitter = new EventEmitter();
+        return Object.assign(emitter, {
+          query: vi.fn(async () => ({ rows: [] })),
+          end: endSpy,
+        }) as any;
+      });
+
+      try {
+        app = await buildApp({
+          databaseUrl: 'postgresql://testuser:testpass@localhost:5432/testdb',
+          logger,
+        });
+
+        const exitSpy = vi.fn();
+        const shutdownHandler = createShutdownHandler(app, exitSpy);
+
+        await shutdownHandler('SIGTERM');
+
+        expect(exitSpy).toHaveBeenCalledWith(0);
+        expect(endSpy).toHaveBeenCalledTimes(1);
+        expect(logOutput).toContain('Graceful shutdown completed');
+        expect(logOutput).not.toContain('Error during graceful shutdown');
+      } finally {
+        pgPoolSpy.mockRestore();
+      }
     });
   });
 
@@ -428,6 +488,36 @@ describe('Fastify Application Bootstrap (T041)', () => {
       ).rejects.toThrow('Plugin initialization failed');
 
       expect(mockDb.end).not.toHaveBeenCalled();
+    });
+
+    it('retains original initialization error when pool cleanup end rejects during initialization failure', async () => {
+      const endSpy = vi.fn(async () => {
+        throw new Error('Secondary error during pool.end()');
+      });
+
+      const pgPoolSpy = vi.spyOn(pg, 'Pool').mockImplementation(function (this: any) {
+        const emitter = new EventEmitter();
+        return Object.assign(emitter, {
+          query: vi.fn(async () => ({ rows: [] })),
+          end: endSpy,
+        }) as any;
+      });
+
+      try {
+        await expect(
+          buildApp({
+            databaseUrl: 'postgresql://testuser:testpass@localhost:5432/testdb',
+            logger: false,
+            plugin: async () => {
+              throw new Error('Original primary initialization error');
+            },
+          })
+        ).rejects.toThrow('Original primary initialization error');
+
+        expect(endSpy).toHaveBeenCalledTimes(1);
+      } finally {
+        pgPoolSpy.mockRestore();
+      }
     });
   });
 
