@@ -928,8 +928,11 @@ EOF
     INVOCATION_ID="inv-$$-$(od -vN 4 -An -tx1 /dev/urandom 2>/dev/null | tr -d ' \n' || date +%s%N 2>/dev/null || echo "$$")"
     RUNNER_CONTAINER_NAME="${FOUNDATION_E2E_RUNNER_NAME:-s2-e2e-runner-${FOUNDATION_TEST_RUN_ID:-run}-${INVOCATION_ID}}"
     RUNNER_CID_FILE="/tmp/s2-e2e-cid-${INVOCATION_ID}.cid"
+    RUNNER_CREATE_ERR_FILE="/tmp/s2-create-err-${INVOCATION_ID}.log"
     RUNNER_WORKSPACE=$(mktemp -d -p /tmp s2-e2e-workspace-XXXXXX)
     PREFLIGHT_DIAG_LOG="${ENV_DIR}/s2-e2e-preflight-${INVOCATION_ID}.log"
+    touch "$PREFLIGHT_DIAG_LOG"
+    chmod 600 "$PREFLIGHT_DIAG_LOG" 2>/dev/null || true
     FIRST_FAILURE_EXIT=0
     CLEANUP_FAILED=0
 
@@ -938,6 +941,91 @@ EOF
         -e 's#([a-zA-Z][a-zA-Z0-9+.-]*://)[^:@/[:space:]]+:[^@/[:space:]]+@#\1[REDACTED_AUTH]@#g' \
         -e 's#(COOKIE_SECRET|DATABASE_URL|POSTGRES_PASSWORD|TOKEN|KEY|SECRET|PASSWORD)=[^[:space:]]+#\1=[REDACTED]#g' \
         -e 's#Bearer[[:space:]]+[A-Za-z0-9._~+/-]+=*#Bearer [REDACTED]#g'
+    }
+
+    _process_bounded_stream() {
+      local log_path="$1"
+      local tee_mode="${2:-sink}"
+      python3 -c '
+import sys, re, os, collections
+
+log_path = sys.argv[1]
+do_tee = (len(sys.argv) > 2 and sys.argv[2] == "tee")
+max_bytes = 51200
+max_lines = 1000
+
+url_re = re.compile(r"([a-zA-Z][a-zA-Z0-9+.-]*://)[^:@/\s]+:[^@/\s]+@")
+sec_re = re.compile(r"(COOKIE_SECRET|DATABASE_URL|POSTGRES_PASSWORD|TOKEN|KEY|SECRET|PASSWORD)=[^\s]+")
+bearer_re = re.compile(r"Bearer\s+[A-Za-z0-9._~+/-]+=*")
+
+def sanitize(line):
+    line = url_re.sub(r"\g<1>[REDACTED_AUTH]@", line)
+    line = sec_re.sub(r"\g<1>=[REDACTED]", line)
+    line = bearer_re.sub(r"Bearer [REDACTED]", line)
+    return line
+
+buffer = collections.deque()
+current_bytes = 0
+
+if os.path.exists(log_path):
+    try:
+        with open(log_path, "r", encoding="utf-8", errors="replace") as f:
+            for line in f:
+                b_len = len(line.encode("utf-8"))
+                buffer.append(line)
+                current_bytes += b_len
+        while current_bytes > max_bytes or len(buffer) > max_lines:
+            popped = buffer.popleft()
+            current_bytes -= len(popped.encode("utf-8"))
+    except Exception:
+        pass
+
+tmp_path = f"{log_path}.tmp.{os.getpid()}"
+console_bytes = 0
+console_truncated = False
+unflushed_count = 0
+
+def flush_to_disk():
+    try:
+        with open(tmp_path, "w", encoding="utf-8") as f:
+            f.writelines(buffer)
+        os.replace(tmp_path, log_path)
+    except Exception:
+        pass
+
+for line in sys.stdin:
+    s_line = sanitize(line)
+    b_len = len(s_line.encode("utf-8"))
+
+    if do_tee:
+        if console_bytes + b_len <= max_bytes:
+            sys.stdout.write(s_line)
+            sys.stdout.flush()
+            console_bytes += b_len
+        elif not console_truncated:
+            sys.stdout.write(f"\n[Console output truncated after {max_bytes} bytes; remaining diagnostic stream drained to bounded log]\n")
+            sys.stdout.flush()
+            console_truncated = True
+
+    buffer.append(s_line)
+    current_bytes += b_len
+
+    while current_bytes > max_bytes or len(buffer) > max_lines:
+        popped = buffer.popleft()
+        current_bytes -= len(popped.encode("utf-8"))
+
+    unflushed_count += 1
+    if unflushed_count >= 10 or current_bytes >= max_bytes:
+        flush_to_disk()
+        unflushed_count = 0
+
+flush_to_disk()
+if os.path.exists(tmp_path):
+    try:
+        os.remove(tmp_path)
+    except OSError:
+        pass
+' "$log_path" "$tee_mode"
     }
 
     _sanitize_diagnostic_log() {
@@ -959,6 +1047,14 @@ EOF
 
       if [ "$FIRST_FAILURE_EXIT" -eq 0 ] && [ "$orig_exit" -ne 0 ]; then
         FIRST_FAILURE_EXIT="$orig_exit"
+      fi
+
+      # Clean up invocation-owned temporary create error file if it exists
+      if [ -n "${RUNNER_CREATE_ERR_FILE:-}" ] && [ -f "$RUNNER_CREATE_ERR_FILE" ]; then
+        if [ -s "$RUNNER_CREATE_ERR_FILE" ] && [ -f "$PREFLIGHT_DIAG_LOG" ]; then
+          _sanitize_stream < "$RUNNER_CREATE_ERR_FILE" >> "$PREFLIGHT_DIAG_LOG" 2>&1 || true
+        fi
+        rm -f "$RUNNER_CREATE_ERR_FILE" 2>/dev/null || true
       fi
 
       # 1. Clean up container FIRST (before workspace) if CID handle exists
@@ -1062,16 +1158,15 @@ EOF
         fi
       fi
       rm -f "$RUNNER_CID_FILE" 2>/dev/null || true
+      rm -f "$RUNNER_CREATE_ERR_FILE" 2>/dev/null || true
 
       local net_args=()
       if [ -n "$attach_net" ]; then
         net_args=(--network "$attach_net")
       fi
 
-      local create_err
-      create_err=$(mktemp -p /tmp s2-create-err-XXXXXX)
-
       # Use --cidfile so Podman writes CID atomically as container is created
+      set +e
       podman create \
         --name "$stage_container_name" \
         --cidfile "$RUNNER_CID_FILE" \
@@ -1084,32 +1179,39 @@ EOF
         -e NODE_ENV=test \
         -e E2E_BASE_URL="${E2E_BASE_URL:-}" \
         "$RUNNER_IMAGE" \
-        "$@" 2>"$create_err"
+        "$@" 2>"$RUNNER_CREATE_ERR_FILE"
       local create_exit=$?
+      set -e
 
       if [ "$create_exit" -ne 0 ] || [ ! -s "$RUNNER_CID_FILE" ]; then
-        local err_msg
-        err_msg=$(cat "$create_err" 2>/dev/null || true)
-        rm -f "$create_err" 2>/dev/null || true
+        [ "$create_exit" -eq 0 ] && create_exit=1
+        [ "$FIRST_FAILURE_EXIT" -eq 0 ] && FIRST_FAILURE_EXIT="$create_exit"
+        if [ -f "$RUNNER_CREATE_ERR_FILE" ]; then
+          _sanitize_stream < "$RUNNER_CREATE_ERR_FILE" >> "$PREFLIGHT_DIAG_LOG" 2>&1 || true
+          _sanitize_stream < "$RUNNER_CREATE_ERR_FILE" >&2 || true
+          rm -f "$RUNNER_CREATE_ERR_FILE" 2>/dev/null || true
+        fi
         [ -s "$RUNNER_CID_FILE" ] || rm -f "$RUNNER_CID_FILE" 2>/dev/null || true
-        echo "$err_msg" | _sanitize_stream >> "$PREFLIGHT_DIAG_LOG" 2>&1
-        echo "$err_msg" | _sanitize_stream >&2
         return "$create_exit"
       fi
-      rm -f "$create_err" 2>/dev/null || true
+      rm -f "$RUNNER_CREATE_ERR_FILE" 2>/dev/null || true
 
       local active_cid
       active_cid=$(cat "$RUNNER_CID_FILE" 2>/dev/null | tr -d '[:space:]')
 
       local exec_exit=0
+      set +e
       if [ "$stage_name" = "preflight" ]; then
-        set +o pipefail
-        podman start --attach "$active_cid" 2>&1 | _sanitize_stream | tee -a "$PREFLIGHT_DIAG_LOG"
-        exec_exit=${PIPESTATUS[0]}
+        podman start --attach "$active_cid" 2>&1 | _process_bounded_stream "$PREFLIGHT_DIAG_LOG" "tee"
       else
-        set +e
-        podman start --attach "$active_cid" 2>&1 | _sanitize_stream >> "$PREFLIGHT_DIAG_LOG"
-        exec_exit=$?
+        podman start --attach "$active_cid" 2>&1 | _process_bounded_stream "$PREFLIGHT_DIAG_LOG" "sink"
+      fi
+      local -a pipe_status=("${PIPESTATUS[@]}")
+      set -e
+      exec_exit="${pipe_status[0]:-1}"
+
+      if [ "$exec_exit" -ne 0 ] && [ "$FIRST_FAILURE_EXIT" -eq 0 ]; then
+        FIRST_FAILURE_EXIT="$exec_exit"
       fi
 
       # Remove container before workspace. Verify ownership before removal.
@@ -1123,17 +1225,19 @@ EOF
             echo "ERROR: Failed to remove runner container ${active_cid}" >&2
             CLEANUP_FAILED=1
             [ "$FIRST_FAILURE_EXIT" -eq 0 ] && FIRST_FAILURE_EXIT=1
-            return 1
           fi
         else
           echo "ERROR: Container ${active_cid} does not match invocation label; refusing to remove unowned container" >&2
           CLEANUP_FAILED=1
           [ "$FIRST_FAILURE_EXIT" -eq 0 ] && FIRST_FAILURE_EXIT=1
-          return 1
         fi
       fi
 
-      return "$exec_exit"
+      local stage_exit="$exec_exit"
+      if [ "$stage_exit" -eq 0 ] && [ "$CLEANUP_FAILED" -ne 0 ]; then
+        stage_exit=1
+      fi
+      return "$stage_exit"
     }
 
     # Copy application files to runner workspace, strictly excluding Git, Spec Kit, agent tooling, node_modules
@@ -1328,10 +1432,11 @@ PREFLIGHT_EOF
     _run_runner_stage "preflight" "$APP_NETWORK" node --experimental-strip-types /workspace/e2e-preflight.mjs
     PREFLIGHT_EXIT=$?
 
-    if [ "$PREFLIGHT_EXIT" -ne 0 ]; then
-      FIRST_FAILURE_EXIT="$PREFLIGHT_EXIT"
-      echo "ERROR: Isolated Playwright runtime preflight failed with exit code ${PREFLIGHT_EXIT}" >&2
-      exit "$PREFLIGHT_EXIT"
+    if [ "$PREFLIGHT_EXIT" -ne 0 ] || [ "$CLEANUP_FAILED" -ne 0 ]; then
+      [ "$FIRST_FAILURE_EXIT" -eq 0 ] && FIRST_FAILURE_EXIT="$PREFLIGHT_EXIT"
+      [ "$FIRST_FAILURE_EXIT" -eq 0 ] && FIRST_FAILURE_EXIT=1
+      echo "ERROR: Isolated Playwright runtime preflight failed with exit code ${FIRST_FAILURE_EXIT}" >&2
+      exit "$FIRST_FAILURE_EXIT"
     fi
 
     if [ "$PREFLIGHT_ONLY" -eq 1 ]; then
@@ -1344,10 +1449,11 @@ PREFLIGHT_EOF
     _run_runner_stage "test" "$APP_NETWORK" pnpm --filter web test:e2e
     E2E_EXIT=$?
 
-    if [ "$E2E_EXIT" -ne 0 ]; then
-      FIRST_FAILURE_EXIT="$E2E_EXIT"
-      echo "ERROR: E2E browser test run failed with exit code ${E2E_EXIT}" >&2
-      exit "$E2E_EXIT"
+    if [ "$E2E_EXIT" -ne 0 ] || [ "$CLEANUP_FAILED" -ne 0 ]; then
+      [ "$FIRST_FAILURE_EXIT" -eq 0 ] && FIRST_FAILURE_EXIT="$E2E_EXIT"
+      [ "$FIRST_FAILURE_EXIT" -eq 0 ] && FIRST_FAILURE_EXIT=1
+      echo "ERROR: E2E browser test run failed with exit code ${FIRST_FAILURE_EXIT}" >&2
+      exit "$FIRST_FAILURE_EXIT"
     fi
 
     echo "E2E verification completed successfully."
