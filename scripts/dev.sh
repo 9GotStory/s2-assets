@@ -937,55 +937,214 @@ EOF
     CLEANUP_FAILED=0
 
     _sanitize_stream() {
-      sed -E \
-        -e 's#([a-zA-Z][a-zA-Z0-9+.-]*://)[^:@/[:space:]]+:[^@/[:space:]]+@#\1[REDACTED_AUTH]@#g' \
-        -e 's#(COOKIE_SECRET|DATABASE_URL|POSTGRES_PASSWORD|TOKEN|KEY|SECRET|PASSWORD)=[^[:space:]]+#\1=[REDACTED]#g' \
-        -e 's#Bearer[[:space:]]+[A-Za-z0-9._~+/-]+=*#Bearer [REDACTED]#g'
+      _process_bounded_stream "" "filter"
     }
 
     _process_bounded_stream() {
       local log_path="$1"
-      local tee_mode="${2:-sink}"
+      local stream_mode="${2:-sink}"
+      if [ "${FOUNDATION_E2E_SIMULATE_SANITIZER_FAIL:-0}" = "1" ]; then
+        cat >/dev/null 2>&1 || true
+        echo "ERROR: Simulated diagnostic stream processor failure (exit code 1)" >&2
+        return 1
+      fi
       python3 -c '
-import sys, re, os, collections
+import sys, re, os, signal, collections
 
-log_path = sys.argv[1]
-do_tee = (len(sys.argv) > 2 and sys.argv[2] == "tee")
+log_path = sys.argv[1] if len(sys.argv) > 1 else ""
+mode = sys.argv[2] if len(sys.argv) > 2 else "sink"
+do_tee = (mode == "tee")
+is_filter = (mode == "filter")
 max_bytes = 51200
 max_lines = 1000
 
-url_re = re.compile(r"([a-zA-Z][a-zA-Z0-9+.-]*://)[^:@/\s]+:[^@/\s]+@")
-sec_re = re.compile(r"(COOKIE_SECRET|DATABASE_URL|POSTGRES_PASSWORD|TOKEN|KEY|SECRET|PASSWORD)=[^\s]+")
-bearer_re = re.compile(r"Bearer\s+[A-Za-z0-9._~+/-]+=*")
+class StreamSanitizer:
+    SECRET_KEYS = (
+        "COOKIE_SECRET",
+        "DATABASE_URL",
+        "POSTGRES_PASSWORD",
+        "TOKEN",
+        "KEY",
+        "SECRET",
+        "PASSWORD"
+    )
 
-def sanitize(line):
-    line = url_re.sub(r"\g<1>[REDACTED_AUTH]@", line)
-    line = sec_re.sub(r"\g<1>=[REDACTED]", line)
-    line = bearer_re.sub(r"Bearer [REDACTED]", line)
-    return line
+    def __init__(self):
+        self.state = "NORMAL"
+        self.buf = ""
+        key_alt = "|".join(re.escape(k) for k in sorted(self.SECRET_KEYS, key=len, reverse=True))
+        self.trigger_re = re.compile(
+            rf"(?P<sec>(?:{key_alt})=)|(?P<bearer>Bearer\s+)|(?P<url>://)",
+            re.IGNORECASE
+        )
+
+    def feed(self, chunk):
+        self.buf += chunk
+        out = []
+
+        while self.buf:
+            if self.state == "SKIP_SECRET":
+                idx = 0
+                n = len(self.buf)
+                while idx < n and not self.buf[idx].isspace():
+                    idx += 1
+                if idx < n:
+                    self.buf = self.buf[idx:]
+                    self.state = "NORMAL"
+                else:
+                    self.buf = ""
+                    break
+
+            elif self.state == "SKIP_BEARER":
+                idx = 0
+                n = len(self.buf)
+                while idx < n and (self.buf[idx].isalnum() or self.buf[idx] in "._~+/-="):
+                    idx += 1
+                if idx < n:
+                    self.buf = self.buf[idx:]
+                    self.state = "NORMAL"
+                else:
+                    self.buf = ""
+                    break
+
+            elif self.state == "NORMAL":
+                m = self.trigger_re.search(self.buf)
+                if not m:
+                    if len(self.buf) > 64:
+                        safe_len = len(self.buf) - 64
+                        out.append(self.buf[:safe_len])
+                        self.buf = self.buf[safe_len:]
+                    break
+
+                trigger_end = m.end()
+
+                if m.group("sec"):
+                    if m.start() > 0:
+                        out.append(self.buf[:m.start()])
+                    out.append(m.group("sec") + "[REDACTED]")
+                    self.buf = self.buf[trigger_end:]
+                    self.state = "SKIP_SECRET"
+
+                elif m.group("bearer"):
+                    if m.start() > 0:
+                        out.append(self.buf[:m.start()])
+                    out.append("Bearer [REDACTED]")
+                    self.buf = self.buf[trigger_end:]
+                    self.state = "SKIP_BEARER"
+
+                elif m.group("url"):
+                    scheme_end = m.start()
+                    idx = scheme_end - 1
+                    while idx >= 0 and (self.buf[idx].isalnum() or self.buf[idx] in "+.-"):
+                        idx -= 1
+                    scheme_start = idx + 1
+                    if scheme_start < scheme_end and self.buf[scheme_start].isalpha() and (scheme_end - scheme_start) <= 32:
+                        scheme = self.buf[scheme_start:scheme_end] + "://"
+                    else:
+                        scheme = ""
+
+                    if not scheme:
+                        out.append(self.buf[:trigger_end])
+                        self.buf = self.buf[trigger_end:]
+                        continue
+
+                    rest = self.buf[trigger_end:]
+                    at_pos = rest.find("@")
+                    slash_pos = rest.find("/")
+                    space_match = re.search(r"\s", rest)
+                    space_pos = space_match.start() if space_match else -1
+
+                    first_delim = -1
+                    delims = [p for p in (at_pos, slash_pos, space_pos) if p != -1]
+                    if delims:
+                        first_delim = min(delims)
+
+                    if first_delim == -1:
+                        if len(rest) < 2048:
+                            if scheme_start > 0:
+                                out.append(self.buf[:scheme_start])
+                            self.buf = self.buf[scheme_start:]
+                            break
+                        else:
+                            out.append(self.buf[:trigger_end])
+                            self.buf = rest
+                    elif first_delim == at_pos:
+                        userinfo = rest[:at_pos]
+                        if ":" in userinfo:
+                            if scheme_start > 0:
+                                out.append(self.buf[:scheme_start])
+                            out.append(scheme + "[REDACTED_AUTH]@")
+                            self.buf = rest[at_pos + 1:]
+                        else:
+                            out.append(self.buf[:trigger_end])
+                            self.buf = rest
+                    else:
+                        out.append(self.buf[:trigger_end])
+                        self.buf = rest
+
+        return "".join(out)
+
+    def finish(self):
+        out = []
+        if self.state == "NORMAL" and self.buf:
+            out.append(self.buf)
+            self.buf = ""
+        return "".join(out)
+
+san = StreamSanitizer()
+
+if is_filter:
+    while True:
+        chunk = sys.stdin.read(16384)
+        if not chunk:
+            break
+        s_chunk = san.feed(chunk)
+        if s_chunk:
+            sys.stdout.write(s_chunk)
+            sys.stdout.flush()
+    s_tail = san.finish()
+    if s_tail:
+        sys.stdout.write(s_tail)
+        sys.stdout.flush()
+    sys.exit(0)
 
 buffer = collections.deque()
 current_bytes = 0
 
-if os.path.exists(log_path):
+if log_path and os.path.exists(log_path):
     try:
         with open(log_path, "r", encoding="utf-8", errors="replace") as f:
             for line in f:
                 b_len = len(line.encode("utf-8"))
                 buffer.append(line)
                 current_bytes += b_len
-        while current_bytes > max_bytes or len(buffer) > max_lines:
+        while current_bytes > max_bytes:
+            excess = current_bytes - max_bytes
+            oldest = buffer[0]
+            oldest_bytes = len(oldest.encode("utf-8"))
+            if oldest_bytes <= excess:
+                buffer.popleft()
+                current_bytes -= oldest_bytes
+            else:
+                oldest_b = oldest.encode("utf-8")
+                rem_b = oldest_b[excess:]
+                buffer[0] = rem_b.decode("utf-8", errors="ignore")
+                current_bytes -= (oldest_bytes - len(rem_b))
+                break
+        while len(buffer) > max_lines:
             popped = buffer.popleft()
             current_bytes -= len(popped.encode("utf-8"))
     except Exception:
         pass
 
-tmp_path = f"{log_path}.tmp.{os.getpid()}"
+tmp_path = f"{log_path}.tmp.{os.getpid()}" if log_path else ""
 console_bytes = 0
 console_truncated = False
 unflushed_count = 0
 
 def flush_to_disk():
+    if not log_path or not tmp_path:
+        return
     try:
         with open(tmp_path, "w", encoding="utf-8") as f:
             f.writelines(buffer)
@@ -993,13 +1152,22 @@ def flush_to_disk():
     except Exception:
         pass
 
-for line in sys.stdin:
-    s_line = sanitize(line)
-    b_len = len(s_line.encode("utf-8"))
+def handle_sig(sig, frame):
+    flush_to_disk()
+    sys.exit(128 + sig)
 
+signal.signal(signal.SIGTERM, handle_sig)
+signal.signal(signal.SIGINT, handle_sig)
+
+def append_to_buffer_and_emit(s):
+    global console_bytes, console_truncated, current_bytes, unflushed_count
+    if not s:
+        return
+
+    b_len = len(s.encode("utf-8"))
     if do_tee:
         if console_bytes + b_len <= max_bytes:
-            sys.stdout.write(s_line)
+            sys.stdout.write(s)
             sys.stdout.flush()
             console_bytes += b_len
         elif not console_truncated:
@@ -1007,10 +1175,35 @@ for line in sys.stdin:
             sys.stdout.flush()
             console_truncated = True
 
-    buffer.append(s_line)
+    lines = s.splitlines(keepends=True)
+    if not lines:
+        return
+
+    first_line_idx = 0
+    if buffer and not buffer[-1].endswith("\n"):
+        buffer[-1] += lines[0]
+        first_line_idx = 1
+
+    for line in lines[first_line_idx:]:
+        buffer.append(line)
+
     current_bytes += b_len
 
-    while current_bytes > max_bytes or len(buffer) > max_lines:
+    while current_bytes > max_bytes:
+        excess = current_bytes - max_bytes
+        oldest = buffer[0]
+        oldest_bytes = len(oldest.encode("utf-8"))
+        if oldest_bytes <= excess:
+            buffer.popleft()
+            current_bytes -= oldest_bytes
+        else:
+            oldest_b = oldest.encode("utf-8")
+            rem_b = oldest_b[excess:]
+            buffer[0] = rem_b.decode("utf-8", errors="ignore")
+            current_bytes -= (oldest_bytes - len(rem_b))
+            break
+
+    while len(buffer) > max_lines:
         popped = buffer.popleft()
         current_bytes -= len(popped.encode("utf-8"))
 
@@ -1019,26 +1212,45 @@ for line in sys.stdin:
         flush_to_disk()
         unflushed_count = 0
 
-flush_to_disk()
-if os.path.exists(tmp_path):
-    try:
-        os.remove(tmp_path)
-    except OSError:
-        pass
-' "$log_path" "$tee_mode"
+try:
+    while True:
+        raw_chunk = sys.stdin.read(16384)
+        if not raw_chunk:
+            break
+        s_chunk = san.feed(raw_chunk)
+        if s_chunk:
+            append_to_buffer_and_emit(s_chunk)
+
+    s_tail = san.finish()
+    if s_tail:
+        append_to_buffer_and_emit(s_tail)
+
+    flush_to_disk()
+except Exception as e:
+    sys.stderr.write(f"ERROR: Diagnostic stream processor failed: {e}\n")
+    flush_to_disk()
+    sys.exit(1)
+finally:
+    if tmp_path and os.path.exists(tmp_path):
+        try:
+            os.remove(tmp_path)
+        except OSError:
+            pass
+' "$log_path" "$stream_mode"
     }
 
     _sanitize_diagnostic_log() {
       local log_file="$1"
       [ -f "$log_file" ] || return 0
       local tmp_log="${log_file}.tmp.$$"
-      _sanitize_stream < "$log_file" | tail -n 1000 | tail -c 51200 > "$tmp_log" 2>/dev/null || true
+      _process_bounded_stream "$tmp_log" "sink" < "$log_file" 2>/dev/null || true
       if [ -s "$tmp_log" ]; then
         mv -f "$tmp_log" "$log_file" 2>/dev/null || rm -f "$tmp_log" 2>/dev/null || true
       else
         rm -f "$tmp_log" 2>/dev/null || true
       fi
     }
+
 
     _clean_e2e_resources() {
       local orig_exit="${1:-0}"
@@ -1068,7 +1280,13 @@ if os.path.exists(tmp_path):
           local owner_label
           owner_label=$(podman inspect "$trapped_cid" --format '{{index .Config.Labels "io.s2-assets.invocation-id"}}' 2>/dev/null || true)
           if [ "$owner_label" = "$INVOCATION_ID" ]; then
-            if podman rm -f -t 1 "$trapped_cid" >/dev/null 2>&1; then
+            local rm_success=1
+            if [ "${FOUNDATION_E2E_SIMULATE_CLEANUP_FAIL:-0}" = "1" ]; then
+              rm_success=0
+            elif ! podman rm -f -t 1 "$trapped_cid" >/dev/null 2>&1; then
+              rm_success=0
+            fi
+            if [ "$rm_success" -eq 1 ]; then
               rm -f "$RUNNER_CID_FILE" 2>/dev/null || true
               trapped_cid=""
             else
@@ -1208,7 +1426,20 @@ if os.path.exists(tmp_path):
       fi
       local -a pipe_status=("${PIPESTATUS[@]}")
       set -e
-      exec_exit="${pipe_status[0]:-1}"
+      local cmd_exit="${pipe_status[0]:-0}"
+      local sanitizer_exit="${pipe_status[1]:-0}"
+
+      if [ "$cmd_exit" -ne 0 ]; then
+        exec_exit="$cmd_exit"
+        if [ "$sanitizer_exit" -ne 0 ]; then
+          echo "WARNING: Diagnostic stream processor also failed with exit code ${sanitizer_exit}; preserving command exit code ${cmd_exit}" >&2
+        fi
+      elif [ "$sanitizer_exit" -ne 0 ]; then
+        exec_exit="$sanitizer_exit"
+        echo "ERROR: Diagnostic stream processor failed with exit code ${sanitizer_exit}" >&2
+      else
+        exec_exit=0
+      fi
 
       if [ "$exec_exit" -ne 0 ] && [ "$FIRST_FAILURE_EXIT" -eq 0 ]; then
         FIRST_FAILURE_EXIT="$exec_exit"
@@ -1219,7 +1450,13 @@ if os.path.exists(tmp_path):
         local owner_label
         owner_label=$(podman inspect "$active_cid" --format '{{index .Config.Labels "io.s2-assets.invocation-id"}}' 2>/dev/null || true)
         if [ "$owner_label" = "$INVOCATION_ID" ]; then
-          if podman rm -f -t 1 "$active_cid" >/dev/null 2>&1; then
+          local rm_success=1
+          if [ "${FOUNDATION_E2E_SIMULATE_CLEANUP_FAIL:-0}" = "1" ]; then
+            rm_success=0
+          elif ! podman rm -f -t 1 "$active_cid" >/dev/null 2>&1; then
+            rm_success=0
+          fi
+          if [ "$rm_success" -eq 1 ]; then
             rm -f "$RUNNER_CID_FILE" 2>/dev/null || true
           else
             echo "ERROR: Failed to remove runner container ${active_cid}" >&2
