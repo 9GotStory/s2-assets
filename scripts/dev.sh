@@ -937,318 +937,30 @@ EOF
     CLEANUP_FAILED=0
 
     _sanitize_stream() {
-      _process_bounded_stream "" "filter"
+      python3 "${SCRIPT_DIR}/e2e_diagnostics.py" filter
     }
 
     _process_bounded_stream() {
       local log_path="$1"
       local stream_mode="${2:-sink}"
       if [ "${FOUNDATION_E2E_SIMULATE_SANITIZER_FAIL:-0}" = "1" ]; then
-        cat >/dev/null 2>&1 || true
+        python3 "${SCRIPT_DIR}/e2e_diagnostics.py" filter >/dev/null 2>&1 || true
         echo "ERROR: Simulated diagnostic stream processor failure (exit code 1)" >&2
         return 1
       fi
-      python3 -c '
-import sys, re, os, signal, collections
-
-log_path = sys.argv[1] if len(sys.argv) > 1 else ""
-mode = sys.argv[2] if len(sys.argv) > 2 else "sink"
-do_tee = (mode == "tee")
-is_filter = (mode == "filter")
-max_bytes = 51200
-max_lines = 1000
-
-class StreamSanitizer:
-    SECRET_KEYS = (
-        "COOKIE_SECRET",
-        "DATABASE_URL",
-        "POSTGRES_PASSWORD",
-        "TOKEN",
-        "KEY",
-        "SECRET",
-        "PASSWORD"
-    )
-
-    def __init__(self):
-        self.state = "NORMAL"
-        self.buf = ""
-        key_alt = "|".join(re.escape(k) for k in sorted(self.SECRET_KEYS, key=len, reverse=True))
-        self.trigger_re = re.compile(
-            rf"(?P<sec>(?:{key_alt})=)|(?P<bearer>Bearer\s+)|(?P<url>://)",
-            re.IGNORECASE
-        )
-
-    def feed(self, chunk):
-        self.buf += chunk
-        out = []
-
-        while self.buf:
-            if self.state == "SKIP_SECRET":
-                idx = 0
-                n = len(self.buf)
-                while idx < n and not self.buf[idx].isspace():
-                    idx += 1
-                if idx < n:
-                    self.buf = self.buf[idx:]
-                    self.state = "NORMAL"
-                else:
-                    self.buf = ""
-                    break
-
-            elif self.state == "SKIP_BEARER":
-                idx = 0
-                n = len(self.buf)
-                while idx < n and (self.buf[idx].isalnum() or self.buf[idx] in "._~+/-="):
-                    idx += 1
-                if idx < n:
-                    self.buf = self.buf[idx:]
-                    self.state = "NORMAL"
-                else:
-                    self.buf = ""
-                    break
-
-            elif self.state == "NORMAL":
-                m = self.trigger_re.search(self.buf)
-                if not m:
-                    if len(self.buf) > 64:
-                        safe_len = len(self.buf) - 64
-                        out.append(self.buf[:safe_len])
-                        self.buf = self.buf[safe_len:]
-                    break
-
-                trigger_end = m.end()
-
-                if m.group("sec"):
-                    if m.start() > 0:
-                        out.append(self.buf[:m.start()])
-                    out.append(m.group("sec") + "[REDACTED]")
-                    self.buf = self.buf[trigger_end:]
-                    self.state = "SKIP_SECRET"
-
-                elif m.group("bearer"):
-                    if m.start() > 0:
-                        out.append(self.buf[:m.start()])
-                    out.append("Bearer [REDACTED]")
-                    self.buf = self.buf[trigger_end:]
-                    self.state = "SKIP_BEARER"
-
-                elif m.group("url"):
-                    scheme_end = m.start()
-                    idx = scheme_end - 1
-                    while idx >= 0 and (self.buf[idx].isalnum() or self.buf[idx] in "+.-"):
-                        idx -= 1
-                    scheme_start = idx + 1
-                    if scheme_start < scheme_end and self.buf[scheme_start].isalpha() and (scheme_end - scheme_start) <= 32:
-                        scheme = self.buf[scheme_start:scheme_end] + "://"
-                    else:
-                        scheme = ""
-
-                    if not scheme:
-                        out.append(self.buf[:trigger_end])
-                        self.buf = self.buf[trigger_end:]
-                        continue
-
-                    rest = self.buf[trigger_end:]
-                    at_pos = rest.find("@")
-                    slash_pos = rest.find("/")
-                    space_match = re.search(r"\s", rest)
-                    space_pos = space_match.start() if space_match else -1
-
-                    first_delim = -1
-                    delims = [p for p in (at_pos, slash_pos, space_pos) if p != -1]
-                    if delims:
-                        first_delim = min(delims)
-
-                    if first_delim == -1:
-                        if len(rest) < 2048:
-                            if scheme_start > 0:
-                                out.append(self.buf[:scheme_start])
-                            self.buf = self.buf[scheme_start:]
-                            break
-                        else:
-                            out.append(self.buf[:trigger_end])
-                            self.buf = rest
-                    elif first_delim == at_pos:
-                        userinfo = rest[:at_pos]
-                        if ":" in userinfo:
-                            if scheme_start > 0:
-                                out.append(self.buf[:scheme_start])
-                            out.append(scheme + "[REDACTED_AUTH]@")
-                            self.buf = rest[at_pos + 1:]
-                        else:
-                            out.append(self.buf[:trigger_end])
-                            self.buf = rest
-                    else:
-                        out.append(self.buf[:trigger_end])
-                        self.buf = rest
-
-        return "".join(out)
-
-    def finish(self):
-        out = []
-        if self.state == "NORMAL" and self.buf:
-            out.append(self.buf)
-            self.buf = ""
-        return "".join(out)
-
-san = StreamSanitizer()
-
-if is_filter:
-    while True:
-        chunk = sys.stdin.read(16384)
-        if not chunk:
-            break
-        s_chunk = san.feed(chunk)
-        if s_chunk:
-            sys.stdout.write(s_chunk)
-            sys.stdout.flush()
-    s_tail = san.finish()
-    if s_tail:
-        sys.stdout.write(s_tail)
-        sys.stdout.flush()
-    sys.exit(0)
-
-buffer = collections.deque()
-current_bytes = 0
-
-if log_path and os.path.exists(log_path):
-    try:
-        with open(log_path, "r", encoding="utf-8", errors="replace") as f:
-            for line in f:
-                b_len = len(line.encode("utf-8"))
-                buffer.append(line)
-                current_bytes += b_len
-        while current_bytes > max_bytes:
-            excess = current_bytes - max_bytes
-            oldest = buffer[0]
-            oldest_bytes = len(oldest.encode("utf-8"))
-            if oldest_bytes <= excess:
-                buffer.popleft()
-                current_bytes -= oldest_bytes
-            else:
-                oldest_b = oldest.encode("utf-8")
-                rem_b = oldest_b[excess:]
-                buffer[0] = rem_b.decode("utf-8", errors="ignore")
-                current_bytes -= (oldest_bytes - len(rem_b))
-                break
-        while len(buffer) > max_lines:
-            popped = buffer.popleft()
-            current_bytes -= len(popped.encode("utf-8"))
-    except Exception:
-        pass
-
-tmp_path = f"{log_path}.tmp.{os.getpid()}" if log_path else ""
-console_bytes = 0
-console_truncated = False
-unflushed_count = 0
-
-def flush_to_disk():
-    if not log_path or not tmp_path:
-        return
-    try:
-        with open(tmp_path, "w", encoding="utf-8") as f:
-            f.writelines(buffer)
-        os.replace(tmp_path, log_path)
-    except Exception:
-        pass
-
-def handle_sig(sig, frame):
-    flush_to_disk()
-    sys.exit(128 + sig)
-
-signal.signal(signal.SIGTERM, handle_sig)
-signal.signal(signal.SIGINT, handle_sig)
-
-def append_to_buffer_and_emit(s):
-    global console_bytes, console_truncated, current_bytes, unflushed_count
-    if not s:
-        return
-
-    b_len = len(s.encode("utf-8"))
-    if do_tee:
-        if console_bytes + b_len <= max_bytes:
-            sys.stdout.write(s)
-            sys.stdout.flush()
-            console_bytes += b_len
-        elif not console_truncated:
-            sys.stdout.write(f"\n[Console output truncated after {max_bytes} bytes; remaining diagnostic stream drained to bounded log]\n")
-            sys.stdout.flush()
-            console_truncated = True
-
-    lines = s.splitlines(keepends=True)
-    if not lines:
-        return
-
-    first_line_idx = 0
-    if buffer and not buffer[-1].endswith("\n"):
-        buffer[-1] += lines[0]
-        first_line_idx = 1
-
-    for line in lines[first_line_idx:]:
-        buffer.append(line)
-
-    current_bytes += b_len
-
-    while current_bytes > max_bytes:
-        excess = current_bytes - max_bytes
-        oldest = buffer[0]
-        oldest_bytes = len(oldest.encode("utf-8"))
-        if oldest_bytes <= excess:
-            buffer.popleft()
-            current_bytes -= oldest_bytes
-        else:
-            oldest_b = oldest.encode("utf-8")
-            rem_b = oldest_b[excess:]
-            buffer[0] = rem_b.decode("utf-8", errors="ignore")
-            current_bytes -= (oldest_bytes - len(rem_b))
-            break
-
-    while len(buffer) > max_lines:
-        popped = buffer.popleft()
-        current_bytes -= len(popped.encode("utf-8"))
-
-    unflushed_count += 1
-    if unflushed_count >= 10 or current_bytes >= max_bytes:
-        flush_to_disk()
-        unflushed_count = 0
-
-try:
-    while True:
-        raw_chunk = sys.stdin.read(16384)
-        if not raw_chunk:
-            break
-        s_chunk = san.feed(raw_chunk)
-        if s_chunk:
-            append_to_buffer_and_emit(s_chunk)
-
-    s_tail = san.finish()
-    if s_tail:
-        append_to_buffer_and_emit(s_tail)
-
-    flush_to_disk()
-except Exception as e:
-    sys.stderr.write(f"ERROR: Diagnostic stream processor failed: {e}\n")
-    flush_to_disk()
-    sys.exit(1)
-finally:
-    if tmp_path and os.path.exists(tmp_path):
-        try:
-            os.remove(tmp_path)
-        except OSError:
-            pass
-' "$log_path" "$stream_mode"
+      if [ "$stream_mode" = "filter" ] || [ -z "$log_path" ]; then
+        python3 "${SCRIPT_DIR}/e2e_diagnostics.py" filter
+      elif [ "$stream_mode" = "tee" ]; then
+        python3 "${SCRIPT_DIR}/e2e_diagnostics.py" tee --log-file "$log_path"
+      else
+        python3 "${SCRIPT_DIR}/e2e_diagnostics.py" sink --log-file "$log_path"
+      fi
     }
 
     _sanitize_diagnostic_log() {
       local log_file="$1"
       [ -f "$log_file" ] || return 0
-      local tmp_log="${log_file}.tmp.$$"
-      _process_bounded_stream "$tmp_log" "sink" < "$log_file" 2>/dev/null || true
-      if [ -s "$tmp_log" ]; then
-        mv -f "$tmp_log" "$log_file" 2>/dev/null || rm -f "$tmp_log" 2>/dev/null || true
-      else
-        rm -f "$tmp_log" 2>/dev/null || true
-      fi
+      python3 "${SCRIPT_DIR}/e2e_diagnostics.py" sanitize-file "$log_file"
     }
 
 
@@ -1264,7 +976,7 @@ finally:
       # Clean up invocation-owned temporary create error file if it exists
       if [ -n "${RUNNER_CREATE_ERR_FILE:-}" ] && [ -f "$RUNNER_CREATE_ERR_FILE" ]; then
         if [ -s "$RUNNER_CREATE_ERR_FILE" ] && [ -f "$PREFLIGHT_DIAG_LOG" ]; then
-          _sanitize_stream < "$RUNNER_CREATE_ERR_FILE" >> "$PREFLIGHT_DIAG_LOG" 2>&1 || true
+          python3 "${SCRIPT_DIR}/e2e_diagnostics.py" append --log-file "$PREFLIGHT_DIAG_LOG" < "$RUNNER_CREATE_ERR_FILE" || true
         fi
         rm -f "$RUNNER_CREATE_ERR_FILE" 2>/dev/null || true
       fi
@@ -1320,26 +1032,23 @@ finally:
         if [ "$FIRST_FAILURE_EXIT" -eq 0 ] && [ "$trap_signal" -eq 0 ] && [ "$CLEANUP_FAILED" -eq 0 ]; then
           rm -f "$PREFLIGHT_DIAG_LOG" 2>/dev/null || true
         else
-          {
-            echo ""
-            echo "--- E2E Runtime Failure Recovery Information ---"
-            echo "Exit status: ${FIRST_FAILURE_EXIT}"
-            echo "Trap signal: ${trap_signal}"
-            echo "Cleanup failed: ${CLEANUP_FAILED}"
-            echo "Project: ${COMPOSE_PROJECT_NAME}"
-            if [ -n "$trapped_cid" ]; then
-              echo "Unremoved runner container ID: ${trapped_cid}"
-              echo "Manual container removal command: podman rm -f -t 1 ${trapped_cid}"
-            fi
-            if [ -n "${RUNNER_WORKSPACE:-}" ] && [ -d "$RUNNER_WORKSPACE" ]; then
-              echo "Unremoved runner workspace: ${RUNNER_WORKSPACE}"
-              echo "Manual workspace removal command: rm -rf ${RUNNER_WORKSPACE}"
-            fi
-            echo "Recovery: Ensure web container is healthy in project '${COMPOSE_PROJECT_NAME}', check connectivity to http://web:5173, then rerun 'bash scripts/dev.sh e2e --preflight'"
-            echo "------------------------------------------------"
-          } >> "$PREFLIGHT_DIAG_LOG"
-          _sanitize_diagnostic_log "$PREFLIGHT_DIAG_LOG"
-          echo "WARNING: Preflight failed; retaining sanitized diagnostic log at ${PREFLIGHT_DIAG_LOG}" >&2
+          local rec_args=(
+            --log-file "$PREFLIGHT_DIAG_LOG"
+            --exit-status "$FIRST_FAILURE_EXIT"
+            --trap-signal "$trap_signal"
+            --cleanup-failed "$CLEANUP_FAILED"
+            --project "$COMPOSE_PROJECT_NAME"
+          )
+          [ -n "$trapped_cid" ] && rec_args+=(--cid "$trapped_cid")
+          [ -n "${RUNNER_WORKSPACE:-}" ] && [ -d "$RUNNER_WORKSPACE" ] && rec_args+=(--workspace "$RUNNER_WORKSPACE")
+          local rec_exit=0
+          python3 "${SCRIPT_DIR}/e2e_diagnostics.py" append-recovery "${rec_args[@]}" || rec_exit=$?
+          if [ "$rec_exit" -ne 0 ]; then
+            echo "WARNING: Preflight failed; unable to commit recovery metadata to ${PREFLIGHT_DIAG_LOG} (status ${rec_exit})" >&2
+            [ "$FIRST_FAILURE_EXIT" -eq 0 ] && FIRST_FAILURE_EXIT="$rec_exit"
+          else
+            echo "WARNING: Preflight failed; retaining sanitized diagnostic log at ${PREFLIGHT_DIAG_LOG}" >&2
+          fi
         fi
       fi
 
@@ -1405,8 +1114,10 @@ finally:
         [ "$create_exit" -eq 0 ] && create_exit=1
         [ "$FIRST_FAILURE_EXIT" -eq 0 ] && FIRST_FAILURE_EXIT="$create_exit"
         if [ -f "$RUNNER_CREATE_ERR_FILE" ]; then
-          _sanitize_stream < "$RUNNER_CREATE_ERR_FILE" >> "$PREFLIGHT_DIAG_LOG" 2>&1 || true
-          _sanitize_stream < "$RUNNER_CREATE_ERR_FILE" >&2 || true
+          if [ -s "$RUNNER_CREATE_ERR_FILE" ] && [ -f "$PREFLIGHT_DIAG_LOG" ]; then
+            python3 "${SCRIPT_DIR}/e2e_diagnostics.py" append --log-file "$PREFLIGHT_DIAG_LOG" < "$RUNNER_CREATE_ERR_FILE" || true
+          fi
+          python3 "${SCRIPT_DIR}/e2e_diagnostics.py" filter < "$RUNNER_CREATE_ERR_FILE" >&2 || true
           rm -f "$RUNNER_CREATE_ERR_FILE" 2>/dev/null || true
         fi
         [ -s "$RUNNER_CID_FILE" ] || rm -f "$RUNNER_CID_FILE" 2>/dev/null || true
