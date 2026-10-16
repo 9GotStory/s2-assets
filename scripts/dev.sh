@@ -783,7 +783,31 @@ with open(target_file, "w", encoding="utf-8") as f:
     echo "HTTP smoke verification completed successfully."
     exit 0
     ;;
+  e2e)
+    if [ $# -ne 1 ] || [ "${1:-}" != "--preflight" ]; then
+      _fail "ERROR: Only 'e2e --preflight' is currently supported. Browser test execution is gated under T033."
+    fi
+
+    SCRIPT_DIR=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
+    REPO_ROOT=$(cd "${SCRIPT_DIR}/.." && pwd)
+    COMPOSE_FILE="${REPO_ROOT}/deploy/podman/compose.yaml"
+
+    if [ ! -f "$COMPOSE_FILE" ]; then
+      _fail "ERROR: Compose file not found at ${COMPOSE_FILE}"
+    fi
+
+    _validate_foundation_env_file
+
+    if [ -z "${E2E_BASE_URL:-}" ]; then
+      _fail "ERROR: E2E_BASE_URL is required. Set E2E_BASE_URL=http://web:5173"
+    fi
+    if [ "$E2E_BASE_URL" != "http://web:5173" ]; then
+      _fail "ERROR: Invalid E2E_BASE_URL '${E2E_BASE_URL}'. Expected exactly 'http://web:5173'"
+    fi
+
+    exec python3 -B "${SCRIPT_DIR}/e2e_preflight.py"
+    ;;
   *)
-    _fail "ERROR: Unknown action '$ACTION'. Authorized actions: none (provider preflight), 'prepare', 'test-identity', or 'http-smoke'."
+    _fail "ERROR: Unknown action '$ACTION'. Authorized actions: none (provider preflight), 'prepare', 'test-identity', 'http-smoke', or 'e2e'."
     ;;
 esac

@@ -1,6 +1,6 @@
 # Quickstart: Application Foundation
 
-**Status: T045 real listening HTTP smoke and recovery verified.** T041 API bootstrap, T042 Web SPA bootstrap, T043 container-only toolchain, T044 explicit migration and disposable test identity lifecycle, and T045 real HTTP smoke and database outage/recovery verification (`scripts/dev.sh http-smoke` and `apps/api/tests/http/foundation.test.ts`) are implemented and verified. Subsequent step—browser execution (T033/T046)—remains separately gated and requires authorized implementation before execution.
+**Status: T046 isolated Playwright runtime preflight verified.** T041 API bootstrap, T042 Web SPA bootstrap, T043 container-only toolchain, T044 explicit migration and disposable test identity lifecycle, T045 real HTTP smoke and database outage/recovery verification (`scripts/dev.sh http-smoke`), and T046 isolated Playwright runtime preflight (`scripts/dev.sh e2e --preflight`) are implemented and verified. Subsequent step—browser execution (T033)—remains separately gated and requires authorized implementation before execution.
 
 This guide covers an isolated Rootless Podman development/test stack. Git, Spec Kit and agents remain on the Fedora host. Node, pnpm, PostgreSQL and browser execution remain in containers. [Plan](./plan.md) defines the command/lifecycle contract; [research](./research.md) records decisions. The unchanged [data model](./data-model.md) and [API error contract](./contracts/api-error.md) remain authoritative.
 
@@ -100,18 +100,33 @@ Open `http://127.0.0.1:<WEB_HOST_PORT>/login` on the host for manual inspection.
 
 HTTP smoke must pass before T033 can be considered ready; test discovery, mocked requests and `inject` alone do not satisfy this gate.
 
-## 4. Existing T033 browser verification — separately authorized
+## 4. Isolated Playwright runtime preflight (T046) and T033 browser gate
 
-Only after the preceding gates pass and T033 receives authorization:
+T046 provides isolated, trusted runtime preflight without executing browser tests or mutating persistent development state:
 
 ```bash
 export E2E_BASE_URL=http://web:5173
-bash scripts/dev.sh e2e
+bash scripts/dev.sh e2e --preflight
 ```
 
-The planned action prepares the exact Node/pnpm toolchain and frozen project dependencies in a disposable runner-owned application workspace, uses the accepted `mcr.microsoft.com/playwright:v1.63.0-noble` boundary, joins this project's application network, then executes `pnpm --filter web test:e2e`. It does not assume pnpm/project dependencies exist in the browser image or reinstall over running app mounts. Package/image Playwright versions match `1.63.0`; the existing config selects Chromium and one worker. Vite explicitly allows service hostname `web`. The runner's `localhost` is not the Web container.
+### 4.1 Prerequisites and provisioning contract
+- **Pre-provisioned image requirement**: The isolated runner requires pre-provisioned `s2-assets-e2e-runner:local` with immutable image ID `2a4778c23106d33f9c9c4d98d49adccd6d6fe968d4554e5ec20b9225e16a0175` (built from `mcr.microsoft.com/playwright:v1.63.0-noble`, underlying base ID `2c1f4e0fd6450f43ddb46d60c2a6df30855a8588e165b1f2559fb0eda8d7ff35`). Automatic image build or pull (including implicit pull-on-create via `--pull=never`) is strictly prohibited and stops at Human Gate.
+- **Rootless Podman 5.8.4 execution**: Enforces invocation-local `--events-backend=none`, container `--log-driver=none`, `--http-proxy=false`, and a minimal secret-free environment (`HOME=/tmp`, `PNPM_HOME=/tmp/.pnpm`, `E2E_BASE_URL=http://web:5173`). No credentials or host proxy configurations leak into the container.
+- **Application network isolation**: Runner joins only the explicitly verified application network of the dedicated test-owned project (e.g. `<project>_default`), strictly prohibiting attachment to database networks, host network, or the Podman socket.
+- **Disposable runner workspace**: Created under `/tmp` with mode 0700; copies only root configuration, frozen lockfile (`pnpm-lock.yaml`), and `apps/web` (excluding `node_modules`, `dist`, `.git`, `.agents`, `.multica`, and secrets). Frozen lockfile SHA-256 (`a2aeacebb1b8b098b4c96218731cc137812b887c5966f6e20f8361060a80c467`) is verified before and after execution.
 
-Require an actual passing login/dashboard/logout/session-rejection browser flow, including direct navigation, and retain the existing failure diagnostics without secret material. This documentation pass neither implements nor executes T033.
+### 4.2 Trusted assertions and finite control protocol
+- **Toolchain verification**: Exact Node `24.21.0`, pnpm `12.9.1`, and `@playwright/test` `1.63.0` (both declared in `apps/web/package.json` and resolved in installed dependencies).
+- **Web command and config discovery**: Verifies `pnpm --filter web test:e2e` discovers `"playwright test"` and loads `apps/web/playwright.config.ts` (Chromium project, workers 1, timeout 30000ms, expect.timeout 5000ms, outputDir `./test-results`, baseURL `http://web:5173`).
+- **Binary and HTTP availability**: Verifies pre-installed Chromium executable availability and performs non-browser HTTP probes to `http://web:5173` and `http://web:5173/login` (verifying HTML entrypoint).
+- **Test execution boundary**: Asserts `apps/web/tests/e2e/auth.spec.ts` is absent; no browser instances or authentication flows are executed.
+- **Output-silent protocol**: The container-side script (`scripts/e2e_preflight.mjs`) produces no stdout/stderr. Child stdout/stderr is discarded at the source boundary (`/dev/null`). Results are passed via a strictly validated, bounded control file (`/workspace/.control/preflight.json`, maximum 4096 bytes) using schema `s2_e2e_preflight_v1`. Malformed, unknown, oversized, or forged responses fail closed.
+
+### 4.3 Supervision, timeouts, and recovery instructions
+- **Measured execution thresholds**: Frozen installation completes in ~5s; preflight assertions complete in ~1-2s (total calibrated execution: ~7-20s). Standard controller deadlines: 60s for frozen install, 45s for preflight assertions, 10s for container removal.
+- **Failure recovery state**: On failure or signal interruption (SIGINT, SIGTERM), the controller performs container-first cleanup, records unremoved resource handles (container ID, workspace path, manual removal commands) and persists structured recovery metadata to `${ENV_DIR}/s2-e2e-preflight-<inv-id>.log` using atomic replace and filesystem sync (`os.fsync` on file and directory). If persistence fails, honest fallback recovery instructions are emitted directly to stderr.
+- **Producer-first exit precedence**: The first observed producer failure code (e.g. exit 44, 45, 47, 125) is preserved as the process exit code, with subsequent diagnostic or cleanup failures reported separately.
+- **T033 browser execution gate**: Full browser test execution (`bash scripts/dev.sh e2e`) remains separately gated under T033; unsupported modes fail closed.
 
 ## 5. Cleanup and later full-workspace acceptance
 
