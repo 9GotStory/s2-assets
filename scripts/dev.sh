@@ -798,11 +798,8 @@ with open(target_file, "w", encoding="utf-8") as f:
       esac
     done
 
-    # 1. Require exactly E2E_BASE_URL=http://web:5173 (omit raw URL in errors to prevent credential leakage)
-    if [ -z "${E2E_BASE_URL:-}" ]; then
-      _fail "ERROR: E2E_BASE_URL is required. Set E2E_BASE_URL=http://web:5173"
-    fi
-    if [ "$E2E_BASE_URL" != "http://web:5173" ]; then
+    # 1. Require valid initial E2E_BASE_URL if provided (omit raw URL in errors to prevent credential leakage)
+    if [ -n "${E2E_BASE_URL:-}" ] && [ "$E2E_BASE_URL" != "http://web:5173" ]; then
       _fail "ERROR: Invalid E2E_BASE_URL. Expected exactly 'http://web:5173'"
     fi
 
@@ -817,14 +814,22 @@ with open(target_file, "w", encoding="utf-8") as f:
       fi
     fi
 
-    # 3. Environment validation
+    # 3. Environment validation & sourcing private environment
     if [ ! -f "$COMPOSE_FILE" ]; then
       _fail "ERROR: Compose file not found at ${COMPOSE_FILE}"
     fi
 
     _validate_foundation_env_file
 
-    # 4. Validate test-owned Compose project and running Web service
+    # 4. Validate effective E2E_BASE_URL after loading private environment
+    if [ -z "${E2E_BASE_URL:-}" ]; then
+      _fail "ERROR: E2E_BASE_URL is required. Set E2E_BASE_URL=http://web:5173"
+    fi
+    if [ "$E2E_BASE_URL" != "http://web:5173" ]; then
+      _fail "ERROR: Invalid E2E_BASE_URL. Expected exactly 'http://web:5173'"
+    fi
+
+    # 5. Validate test-owned Compose project and running Web service
     case "$COMPOSE_PROJECT_NAME" in
       s2-assets|default) _fail "ERROR: COMPOSE_PROJECT_NAME cannot use shared or default name" ;;
     esac
@@ -855,7 +860,7 @@ with open(target_file, "w", encoding="utf-8") as f:
       _fail "ERROR: Resolved web container '${WEB_CONTAINER_ID}' has invalid labels (project='${INSPECT_WEB_PROJECT}', service='${INSPECT_WEB_SERVICE}'); expected project '${COMPOSE_PROJECT_NAME}' and service 'web'"
     fi
 
-    # 5. Resolve application network and assert isolation invariants
+    # 6. Resolve application network and assert isolation invariants
     CONTAINER_NETWORKS=$(podman inspect "$WEB_CONTAINER_ID" --format '{{range $k, $v := .NetworkSettings.Networks}}{{$k}}{{"\n"}}{{end}}' 2>/dev/null || true)
     NET_COUNT=$(echo "$CONTAINER_NETWORKS" | awk 'NF {c++} END {print c+0}')
 
@@ -899,7 +904,7 @@ with open(target_file, "w", encoding="utf-8") as f:
       _fail "ERROR: Application network '${APP_NETWORK}' project label '${NET_PROJECT}' does not match expected project '${COMPOSE_PROJECT_NAME}'"
     fi
 
-    # 6. Ensure isolated Playwright runner image exists
+    # 7. Ensure isolated Playwright runner image exists
     RUNNER_IMAGE="s2-assets-e2e-runner:local"
     if ! podman image exists "$RUNNER_IMAGE" 2>/dev/null; then
       echo "Building isolated Playwright runner image (${RUNNER_IMAGE})..."
@@ -919,24 +924,27 @@ WORKDIR /workspace
 EOF
     fi
 
-    # 7. Prepare disposable runner-owned application workspace and collision-safe identity
-    RUNNER_WORKSPACE=$(mktemp -d -p /tmp s2-e2e-workspace-XXXXXX)
+    # 8. Prepare collision-safe identity and invocation-isolated paths
     INVOCATION_ID="inv-$$-$(od -vN 4 -An -tx1 /dev/urandom 2>/dev/null | tr -d ' \n' || date +%s%N 2>/dev/null || echo "$$")"
-    RUNNER_CONTAINER_NAME="${FOUNDATION_E2E_RUNNER_NAME:-s2-e2e-runner-${FOUNDATION_TEST_RUN_ID:-$$}-${INVOCATION_ID}}"
-    PREFLIGHT_DIAG_LOG="${ENV_DIR}/s2-e2e-preflight-${FOUNDATION_TEST_RUN_ID:-$$}.log"
+    RUNNER_CONTAINER_NAME="${FOUNDATION_E2E_RUNNER_NAME:-s2-e2e-runner-${FOUNDATION_TEST_RUN_ID:-run}-${INVOCATION_ID}}"
+    RUNNER_CID_FILE="/tmp/s2-e2e-cid-${INVOCATION_ID}.cid"
+    RUNNER_WORKSPACE=$(mktemp -d -p /tmp s2-e2e-workspace-XXXXXX)
+    PREFLIGHT_DIAG_LOG="${ENV_DIR}/s2-e2e-preflight-${INVOCATION_ID}.log"
     FIRST_FAILURE_EXIT=0
     CLEANUP_FAILED=0
-    ACTIVE_RUNNER_CID=""
+
+    _sanitize_stream() {
+      sed -E \
+        -e 's#([a-zA-Z][a-zA-Z0-9+.-]*://)[^:@/[:space:]]+:[^@/[:space:]]+@#\1[REDACTED_AUTH]@#g' \
+        -e 's#(COOKIE_SECRET|DATABASE_URL|POSTGRES_PASSWORD|TOKEN|KEY|SECRET|PASSWORD)=[^[:space:]]+#\1=[REDACTED]#g' \
+        -e 's#Bearer[[:space:]]+[A-Za-z0-9._~+/-]+=*#Bearer [REDACTED]#g'
+    }
 
     _sanitize_diagnostic_log() {
       local log_file="$1"
       [ -f "$log_file" ] || return 0
       local tmp_log="${log_file}.tmp.$$"
-      sed -E \
-        -e 's#([a-zA-Z][a-zA-Z0-9+.-]*://)[^:@/[:space:]]+:[^@/[:space:]]+@#\1[REDACTED_AUTH]@#g' \
-        -e 's#SYNTHETIC_SECRET_SENTINEL#[REDACTED_SENTINEL]#g' \
-        -e 's#(COOKIE_SECRET|DATABASE_URL|POSTGRES_PASSWORD|TOKEN|KEY|SECRET|PASSWORD)=[^[:space:]]+#\1=[REDACTED]#g' \
-        "$log_file" | tail -n 1000 | tail -c 51200 > "$tmp_log" 2>/dev/null || true
+      _sanitize_stream < "$log_file" | tail -n 1000 | tail -c 51200 > "$tmp_log" 2>/dev/null || true
       if [ -s "$tmp_log" ]; then
         mv -f "$tmp_log" "$log_file" 2>/dev/null || rm -f "$tmp_log" 2>/dev/null || true
       else
@@ -953,30 +961,47 @@ EOF
         FIRST_FAILURE_EXIT="$orig_exit"
       fi
 
-      if [ -n "${RUNNER_WORKSPACE:-}" ] && [ -d "$RUNNER_WORKSPACE" ]; then
-        rm -rf "$RUNNER_WORKSPACE" 2>/dev/null || {
-          echo "ERROR: Failed to remove runner workspace ${RUNNER_WORKSPACE}" >&2
-          CLEANUP_FAILED=1
-        }
+      # 1. Clean up container FIRST (before workspace) if CID handle exists
+      local trapped_cid=""
+      if [ -f "${RUNNER_CID_FILE:-}" ] && [ -s "${RUNNER_CID_FILE:-}" ]; then
+        trapped_cid=$(cat "$RUNNER_CID_FILE" 2>/dev/null | tr -d '[:space:]')
       fi
 
-      if [ -n "${ACTIVE_RUNNER_CID:-}" ]; then
-        if podman container exists "$ACTIVE_RUNNER_CID" 2>/dev/null; then
+      if [ -n "$trapped_cid" ]; then
+        if podman container exists "$trapped_cid" 2>/dev/null; then
           local owner_label
-          owner_label=$(podman inspect "$ACTIVE_RUNNER_CID" --format '{{index .Config.Labels "io.s2-assets.invocation-id"}}' 2>/dev/null || true)
+          owner_label=$(podman inspect "$trapped_cid" --format '{{index .Config.Labels "io.s2-assets.invocation-id"}}' 2>/dev/null || true)
           if [ "$owner_label" = "$INVOCATION_ID" ]; then
-            if ! podman rm -f -t 1 "$ACTIVE_RUNNER_CID" >/dev/null 2>&1; then
-              echo "ERROR: Failed to remove owned runner container ${ACTIVE_RUNNER_CID}" >&2
+            if podman rm -f -t 1 "$trapped_cid" >/dev/null 2>&1; then
+              rm -f "$RUNNER_CID_FILE" 2>/dev/null || true
+              trapped_cid=""
+            else
+              echo "ERROR: Failed to remove runner container ${trapped_cid}" >&2
               CLEANUP_FAILED=1
             fi
           else
-            echo "ERROR: Container ${ACTIVE_RUNNER_CID} does not match invocation label '${INVOCATION_ID}'; refusing to remove unowned container" >&2
+            echo "ERROR: Container ${trapped_cid} does not match invocation label '${INVOCATION_ID}'; refusing to remove unowned container" >&2
             CLEANUP_FAILED=1
           fi
+        else
+          rm -f "$RUNNER_CID_FILE" 2>/dev/null || true
+          trapped_cid=""
         fi
-        ACTIVE_RUNNER_CID=""
       fi
 
+      # 2. Clean up workspace SECOND (only after container is confirmed removed)
+      if [ -z "$trapped_cid" ]; then
+        if [ -n "${RUNNER_WORKSPACE:-}" ] && [ -d "$RUNNER_WORKSPACE" ]; then
+          if ! rm -rf "$RUNNER_WORKSPACE" 2>/dev/null; then
+            echo "ERROR: Failed to remove runner workspace ${RUNNER_WORKSPACE}" >&2
+            CLEANUP_FAILED=1
+          else
+            RUNNER_WORKSPACE=""
+          fi
+        fi
+      fi
+
+      # 3. Retain diagnostic artifact on failure, with exact non-secret resource identities
       if [ -f "$PREFLIGHT_DIAG_LOG" ]; then
         if [ "$FIRST_FAILURE_EXIT" -eq 0 ] && [ "$trap_signal" -eq 0 ] && [ "$CLEANUP_FAILED" -eq 0 ]; then
           rm -f "$PREFLIGHT_DIAG_LOG" 2>/dev/null || true
@@ -988,6 +1013,14 @@ EOF
             echo "Trap signal: ${trap_signal}"
             echo "Cleanup failed: ${CLEANUP_FAILED}"
             echo "Project: ${COMPOSE_PROJECT_NAME}"
+            if [ -n "$trapped_cid" ]; then
+              echo "Unremoved runner container ID: ${trapped_cid}"
+              echo "Manual container removal command: podman rm -f -t 1 ${trapped_cid}"
+            fi
+            if [ -n "${RUNNER_WORKSPACE:-}" ] && [ -d "$RUNNER_WORKSPACE" ]; then
+              echo "Unremoved runner workspace: ${RUNNER_WORKSPACE}"
+              echo "Manual workspace removal command: rm -rf ${RUNNER_WORKSPACE}"
+            fi
             echo "Recovery: Ensure web container is healthy in project '${COMPOSE_PROJECT_NAME}', check connectivity to http://web:5173, then rerun 'bash scripts/dev.sh e2e --preflight'"
             echo "------------------------------------------------"
           } >> "$PREFLIGHT_DIAG_LOG"
@@ -1017,18 +1050,18 @@ EOF
       local attach_net="$2"
       shift 2
 
-      ACTIVE_RUNNER_CID=""
-      local runner_cid
       local stage_container_name="${RUNNER_CONTAINER_NAME}"
-
-      if podman container exists "$stage_container_name" 2>/dev/null; then
-        local coll_id
-        coll_id=$(podman inspect "$stage_container_name" --format '{{.Id}}' 2>/dev/null || true)
-        local coll_msg="Error: creating container storage: the container name \"${stage_container_name}\" is already in use by ${coll_id}. You have to remove that container to be able to reuse that name: that name is already in use, or use --replace to instruct Podman to do so."
-        echo "$coll_msg" >&2
-        echo "$coll_msg" >> "$PREFLIGHT_DIAG_LOG" 2>&1
-        return 125
+      if [ -s "${RUNNER_CID_FILE:-}" ]; then
+        local prev_cid
+        prev_cid=$(cat "$RUNNER_CID_FILE" 2>/dev/null | tr -d '[:space:]')
+        if [ -n "$prev_cid" ] && podman container exists "$prev_cid" 2>/dev/null; then
+          echo "ERROR: Previous runner container ${prev_cid} still exists; refusing to create container" >&2
+          CLEANUP_FAILED=1
+          [ "$FIRST_FAILURE_EXIT" -eq 0 ] && FIRST_FAILURE_EXIT=1
+          return 1
+        fi
       fi
+      rm -f "$RUNNER_CID_FILE" 2>/dev/null || true
 
       local net_args=()
       if [ -n "$attach_net" ]; then
@@ -1036,9 +1069,12 @@ EOF
       fi
 
       local create_err
-      create_err=$(mktemp)
-      runner_cid=$(podman create \
+      create_err=$(mktemp -p /tmp s2-create-err-XXXXXX)
+
+      # Use --cidfile so Podman writes CID atomically as container is created
+      podman create \
         --name "$stage_container_name" \
+        --cidfile "$RUNNER_CID_FILE" \
         --label "io.s2-assets.invocation-id=${INVOCATION_ID}" \
         "${net_args[@]}" \
         -v "${RUNNER_WORKSPACE}:/workspace:z" \
@@ -1048,62 +1084,57 @@ EOF
         -e NODE_ENV=test \
         -e E2E_BASE_URL="${E2E_BASE_URL:-}" \
         "$RUNNER_IMAGE" \
-        "$@" 2>"$create_err")
+        "$@" 2>"$create_err"
       local create_exit=$?
 
-      if [ "$create_exit" -ne 0 ] || [ -z "$runner_cid" ]; then
+      if [ "$create_exit" -ne 0 ] || [ ! -s "$RUNNER_CID_FILE" ]; then
         local err_msg
         err_msg=$(cat "$create_err" 2>/dev/null || true)
         rm -f "$create_err" 2>/dev/null || true
-        echo "$err_msg" >> "$PREFLIGHT_DIAG_LOG" 2>&1
-        echo "$err_msg" >&2
+        [ -s "$RUNNER_CID_FILE" ] || rm -f "$RUNNER_CID_FILE" 2>/dev/null || true
+        echo "$err_msg" | _sanitize_stream >> "$PREFLIGHT_DIAG_LOG" 2>&1
+        echo "$err_msg" | _sanitize_stream >&2
         return "$create_exit"
       fi
       rm -f "$create_err" 2>/dev/null || true
 
-      ACTIVE_RUNNER_CID="$runner_cid"
+      local active_cid
+      active_cid=$(cat "$RUNNER_CID_FILE" 2>/dev/null | tr -d '[:space:]')
 
       local exec_exit=0
       if [ "$stage_name" = "preflight" ]; then
         set +o pipefail
-        podman start --attach "$ACTIVE_RUNNER_CID" 2>&1 | tee -a "$PREFLIGHT_DIAG_LOG"
+        podman start --attach "$active_cid" 2>&1 | _sanitize_stream | tee -a "$PREFLIGHT_DIAG_LOG"
         exec_exit=${PIPESTATUS[0]}
       else
         set +e
-        podman start --attach "$ACTIVE_RUNNER_CID" >> "$PREFLIGHT_DIAG_LOG" 2>&1
+        podman start --attach "$active_cid" 2>&1 | _sanitize_stream >> "$PREFLIGHT_DIAG_LOG"
         exec_exit=$?
       fi
 
-      if podman container exists "$ACTIVE_RUNNER_CID" 2>/dev/null; then
+      # Remove container before workspace. Verify ownership before removal.
+      if [ -n "$active_cid" ] && podman container exists "$active_cid" 2>/dev/null; then
         local owner_label
-        owner_label=$(podman inspect "$ACTIVE_RUNNER_CID" --format '{{index .Config.Labels "io.s2-assets.invocation-id"}}' 2>/dev/null || true)
+        owner_label=$(podman inspect "$active_cid" --format '{{index .Config.Labels "io.s2-assets.invocation-id"}}' 2>/dev/null || true)
         if [ "$owner_label" = "$INVOCATION_ID" ]; then
-          if ! podman rm -f -t 1 "$ACTIVE_RUNNER_CID" >/dev/null 2>&1; then
-            echo "ERROR: Failed to remove runner container ${ACTIVE_RUNNER_CID}" >&2
+          if podman rm -f -t 1 "$active_cid" >/dev/null 2>&1; then
+            rm -f "$RUNNER_CID_FILE" 2>/dev/null || true
+          else
+            echo "ERROR: Failed to remove runner container ${active_cid}" >&2
             CLEANUP_FAILED=1
+            [ "$FIRST_FAILURE_EXIT" -eq 0 ] && FIRST_FAILURE_EXIT=1
+            return 1
           fi
         else
-          echo "ERROR: Container ${ACTIVE_RUNNER_CID} does not match invocation label; refusing to remove unowned container" >&2
+          echo "ERROR: Container ${active_cid} does not match invocation label; refusing to remove unowned container" >&2
           CLEANUP_FAILED=1
+          [ "$FIRST_FAILURE_EXIT" -eq 0 ] && FIRST_FAILURE_EXIT=1
+          return 1
         fi
       fi
-      ACTIVE_RUNNER_CID=""
 
       return "$exec_exit"
     }
-
-    # Check for sentinel runner container collision if FOUNDATION_TEST_RUN_ID is set
-    if [ -n "${FOUNDATION_TEST_RUN_ID:-}" ]; then
-      if podman container exists "s2-e2e-runner-${FOUNDATION_TEST_RUN_ID}" 2>/dev/null; then
-        COLL_SENTINEL_ID=$(podman inspect "s2-e2e-runner-${FOUNDATION_TEST_RUN_ID}" --format '{{.Id}}' 2>/dev/null || true)
-        echo "Error: creating container storage: the container name \"s2-e2e-runner-${FOUNDATION_TEST_RUN_ID}\" is already in use by ${COLL_SENTINEL_ID}. You have to remove that container to be able to reuse that name: that name is already in use, or use --replace to instruct Podman to do so." >&2
-        echo "Error: creating container storage: the container name \"s2-e2e-runner-${FOUNDATION_TEST_RUN_ID}\" is already in use by ${COLL_SENTINEL_ID}." >> "$PREFLIGHT_DIAG_LOG" 2>&1
-        echo "Installing frozen dependencies in disposable runner workspace..."
-        echo "ERROR: Runner dependency installation failed with exit code 125" >&2
-        FIRST_FAILURE_EXIT=125
-        exit 125
-      fi
-    fi
 
     # Copy application files to runner workspace, strictly excluding Git, Spec Kit, agent tooling, node_modules
     tar --exclude=".git" \
@@ -1116,7 +1147,7 @@ EOF
         --exclude="*.log" \
         -cf - -C "$REPO_ROOT" . | tar -xf - -C "$RUNNER_WORKSPACE"
 
-    # 8. Run frozen dependency installation inside disposable runner workspace
+    # 9. Run frozen dependency installation inside disposable runner workspace
     echo "Installing frozen dependencies in disposable runner workspace..."
     LOCK_HASH_BEFORE=$(sha256sum "${REPO_ROOT}/pnpm-lock.yaml" | awk '{print $1}')
 
@@ -1129,10 +1160,11 @@ EOF
     _run_runner_stage "install" "" pnpm install --frozen-lockfile
     INSTALL_EXIT=$?
 
-    if [ "$INSTALL_EXIT" -ne 0 ]; then
-      FIRST_FAILURE_EXIT="$INSTALL_EXIT"
-      echo "ERROR: Runner dependency installation failed with exit code ${INSTALL_EXIT}" >&2
-      exit "$INSTALL_EXIT"
+    if [ "$INSTALL_EXIT" -ne 0 ] || [ "$CLEANUP_FAILED" -ne 0 ]; then
+      [ "$FIRST_FAILURE_EXIT" -eq 0 ] && FIRST_FAILURE_EXIT="$INSTALL_EXIT"
+      [ "$FIRST_FAILURE_EXIT" -eq 0 ] && FIRST_FAILURE_EXIT=1
+      echo "ERROR: Runner dependency installation failed with exit code ${FIRST_FAILURE_EXIT}" >&2
+      exit "$FIRST_FAILURE_EXIT"
     fi
 
     LOCK_HASH_AFTER=$(sha256sum "${REPO_ROOT}/pnpm-lock.yaml" | awk '{print $1}')
@@ -1141,7 +1173,7 @@ EOF
       _fail "ERROR: pnpm install altered repository lockfile; frozen lockfile integrity violated"
     fi
 
-    # 9. Execute preflight verification inside runner container attached to application network
+    # 10. Execute preflight verification inside runner container attached to application network
     echo "Executing isolated Playwright runtime preflight..."
 
     if [ "${FOUNDATION_E2E_SIMULATE_FAIL:-}" = "preflight" ]; then
@@ -1157,6 +1189,11 @@ import { execSync } from 'node:child_process';
 import { createRequire } from 'node:module';
 
 const requireWeb = createRequire('/workspace/apps/web/package.json');
+
+function sanitizeUrl(rawUrl) {
+  if (!rawUrl) return '';
+  return String(rawUrl).replace(/([a-zA-Z][a-zA-Z0-9+.-]*:\/\/)[^:@/[:space:]]+:[^@/[:space:]]+@/g, '$1[REDACTED_AUTH]@');
+}
 
 async function runPreflight() {
   console.log("=== Playwright Runtime Preflight Assertions ===");
@@ -1211,7 +1248,7 @@ async function runPreflight() {
   console.log(`  - timeout: ${config.timeout}`);
   console.log(`  - expect.timeout: ${config.expect?.timeout}`);
   console.log(`  - outputDir: ${config.outputDir}`);
-  console.log(`  - baseURL: ${config.use?.baseURL}`);
+  console.log(`  - baseURL: ${sanitizeUrl(config.use?.baseURL)}`);
 
   if (config.testDir !== './tests/e2e') {
     throw new Error(`config.testDir mismatch: expected './tests/e2e', got '${config.testDir}'`);
@@ -1229,7 +1266,7 @@ async function runPreflight() {
     throw new Error(`config.outputDir mismatch: expected './test-results', got '${config.outputDir}'`);
   }
   if (config.use?.baseURL !== 'http://web:5173') {
-    throw new Error(`config.use.baseURL mismatch: expected 'http://web:5173', got '${config.use?.baseURL}'`);
+    throw new Error(`config.use.baseURL mismatch: expected 'http://web:5173', got '${sanitizeUrl(config.use?.baseURL)}'`);
   }
 
   const projects = config.projects || [];
@@ -1254,23 +1291,23 @@ async function runPreflight() {
   }
 
   // 7. Runner-to-Web HTTP connectivity
-  console.log(`Testing runner-to-Web HTTP connectivity at ${baseURL}...`);
+  console.log(`Testing runner-to-Web HTTP connectivity at ${sanitizeUrl(baseURL)}...`);
   const rootRes = await fetch(baseURL);
-  console.log(`  GET ${baseURL} -> HTTP ${rootRes.status}`);
+  console.log(`  GET ${sanitizeUrl(baseURL)} -> HTTP ${rootRes.status}`);
   if (!rootRes.ok) {
-    throw new Error(`Failed to reach ${baseURL}: HTTP status ${rootRes.status}`);
+    throw new Error(`Failed to reach ${sanitizeUrl(baseURL)}: HTTP status ${rootRes.status}`);
   }
 
   const loginURL = `${baseURL}/login`;
-  console.log(`Testing runner-to-Web HTTP connectivity at ${loginURL}...`);
+  console.log(`Testing runner-to-Web HTTP connectivity at ${sanitizeUrl(loginURL)}...`);
   const loginRes = await fetch(loginURL);
-  console.log(`  GET ${loginURL} -> HTTP ${loginRes.status}`);
+  console.log(`  GET ${sanitizeUrl(loginURL)} -> HTTP ${loginRes.status}`);
   if (!loginRes.ok) {
-    throw new Error(`Failed to reach ${loginURL}: HTTP status ${loginRes.status}`);
+    throw new Error(`Failed to reach ${sanitizeUrl(loginURL)}: HTTP status ${loginRes.status}`);
   }
   const loginBody = await loginRes.text();
   if (!loginBody.includes('<html') && !loginBody.includes('<!DOCTYPE')) {
-    throw new Error(`Response from ${loginURL} does not appear to be HTML entrypoint`);
+    throw new Error(`Response from ${sanitizeUrl(loginURL)} does not appear to be HTML entrypoint`);
   }
   console.log("  Runner-to-Web HTTP connectivity successfully verified (HTML entrypoint confirmed).");
 
@@ -1302,7 +1339,7 @@ PREFLIGHT_EOF
       exit 0
     fi
 
-    # 10. If not preflight-only, run full E2E test action (only reachable when T033 authorized and auth.spec.ts exists)
+    # 11. If not preflight-only, run full E2E test action (only reachable when T033 authorized and auth.spec.ts exists)
     echo "Running Playwright E2E browser tests..."
     _run_runner_stage "test" "$APP_NETWORK" pnpm --filter web test:e2e
     E2E_EXIT=$?
