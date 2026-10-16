@@ -783,7 +783,388 @@ with open(target_file, "w", encoding="utf-8") as f:
     echo "HTTP smoke verification completed successfully."
     exit 0
     ;;
+  e2e)
+    # Parse options
+    PREFLIGHT_ONLY=0
+    while [ $# -gt 0 ]; do
+      case "$1" in
+        --preflight|preflight)
+          PREFLIGHT_ONLY=1
+          shift
+          ;;
+        *)
+          _fail "ERROR: Unknown option '$1' for e2e. Supported invocation: bash scripts/dev.sh e2e --preflight"
+          ;;
+      esac
+    done
+
+    # 1. Require exactly E2E_BASE_URL=http://web:5173
+    if [ -z "${E2E_BASE_URL:-}" ]; then
+      _fail "ERROR: E2E_BASE_URL is required. Set E2E_BASE_URL=http://web:5173"
+    fi
+    if [ "$E2E_BASE_URL" != "http://web:5173" ]; then
+      _fail "ERROR: Invalid E2E_BASE_URL '${E2E_BASE_URL}'. Expected exactly 'http://web:5173'"
+    fi
+
+    # 2. Check invocation mode: if not preflight, enforce T033 authorization gate
+    SCRIPT_DIR=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
+    REPO_ROOT=$(cd "${SCRIPT_DIR}/.." && pwd)
+    COMPOSE_FILE="${REPO_ROOT}/deploy/podman/compose.yaml"
+
+    if [ "$PREFLIGHT_ONLY" -eq 0 ]; then
+      if [ ! -f "${REPO_ROOT}/apps/web/tests/e2e/auth.spec.ts" ]; then
+        _fail "ERROR: Browser test suite (apps/web/tests/e2e/auth.spec.ts) is not implemented. E2E browser execution requires separate T033 authorization. Use 'bash scripts/dev.sh e2e --preflight' for runtime preflight."
+      fi
+    fi
+
+    # 3. Environment validation
+    if [ ! -f "$COMPOSE_FILE" ]; then
+      _fail "ERROR: Compose file not found at ${COMPOSE_FILE}"
+    fi
+
+    _validate_foundation_env_file
+
+    # 4. Validate test-owned Compose project and running Web service
+    case "$COMPOSE_PROJECT_NAME" in
+      s2-assets|default) _fail "ERROR: COMPOSE_PROJECT_NAME cannot use shared or default name" ;;
+    esac
+
+    WEB_CONTAINER_ID=$(podman ps --filter "label=io.podman.compose.project=${COMPOSE_PROJECT_NAME}" --filter "label=io.podman.compose.service=web" -q 2>/dev/null | head -n 1 || true)
+    if [ -z "$WEB_CONTAINER_ID" ]; then
+      WEB_CONTAINER_ID=$(podman ps --filter "name=${COMPOSE_PROJECT_NAME}.*web" -q 2>/dev/null | head -n 1 || true)
+    fi
+    if [ -z "$WEB_CONTAINER_ID" ]; then
+      _fail "ERROR: Cannot resolve running web container for project '${COMPOSE_PROJECT_NAME}'. Ensure the web service is running on the application network."
+    fi
+
+    # 5. Resolve application network and assert isolation invariants
+    APP_NETWORK=$(podman inspect "$WEB_CONTAINER_ID" --format '{{range $k, $v := .NetworkSettings.Networks}}{{$k}} {{end}}' 2>/dev/null | awk '{print $1}')
+    if [ -z "$APP_NETWORK" ]; then
+      APP_NETWORK="${COMPOSE_PROJECT_NAME}_default"
+    fi
+
+    if ! podman network exists "$APP_NETWORK" 2>/dev/null; then
+      _fail "ERROR: Application network '${APP_NETWORK}' for project '${COMPOSE_PROJECT_NAME}' does not exist"
+    fi
+
+    case "$APP_NETWORK" in
+      *database*|*db*) _fail "ERROR: Resolved network '${APP_NETWORK}' is a database network; runner must attach only to application network" ;;
+    esac
+    case "$APP_NETWORK" in
+      "${COMPOSE_PROJECT_NAME}"*) ;;
+      *) _fail "ERROR: Resolved network '${APP_NETWORK}' does not match project '${COMPOSE_PROJECT_NAME}'" ;;
+    esac
+
+    # 6. Ensure isolated Playwright runner image exists
+    RUNNER_IMAGE="s2-assets-e2e-runner:local"
+    if ! podman image exists "$RUNNER_IMAGE" 2>/dev/null; then
+      echo "Building isolated Playwright runner image (${RUNNER_IMAGE})..."
+      podman build -t "$RUNNER_IMAGE" - <<'EOF'
+FROM mcr.microsoft.com/playwright:v1.63.0-noble
+RUN curl -fsSL https://nodejs.org/dist/v24.21.0/node-v24.21.0-linux-x64.tar.gz | tar -xz -C /usr/local --strip-components=1 --no-same-owner
+ENV COREPACK_HOME=/usr/local/share/corepack
+RUN corepack enable && \
+    corepack prepare pnpm@12.9.1 --activate && \
+    pnpm --version && \
+    chmod -R 777 /usr/local/share/corepack
+ENV HOME=/tmp
+ENV PNPM_HOME=/tmp/.pnpm
+ENV PATH=$PNPM_HOME:/usr/local/bin:$PATH
+ENV PLAYWRIGHT_BROWSERS_PATH=/ms-playwright
+WORKDIR /workspace
+EOF
+    fi
+
+    # 7. Prepare disposable runner-owned application workspace
+    RUNNER_WORKSPACE=$(mktemp -d -p /tmp s2-e2e-workspace-XXXXXX)
+    RUNNER_CONTAINER_NAME="s2-e2e-runner-${FOUNDATION_TEST_RUN_ID:-$$}"
+    PREFLIGHT_DIAG_LOG="${ENV_DIR}/s2-e2e-preflight-${FOUNDATION_TEST_RUN_ID:-$$}.log"
+    FIRST_FAILURE_EXIT=0
+    CLEANUP_FAILED=0
+
+    _clean_e2e_resources() {
+      local orig_exit="${1:-0}"
+      local trap_signal="${2:-0}"
+      trap - EXIT INT TERM
+
+      if [ "$FIRST_FAILURE_EXIT" -eq 0 ] && [ "$orig_exit" -ne 0 ]; then
+        FIRST_FAILURE_EXIT="$orig_exit"
+      fi
+
+      if [ -n "${RUNNER_WORKSPACE:-}" ] && [ -d "$RUNNER_WORKSPACE" ]; then
+        rm -rf "$RUNNER_WORKSPACE" 2>/dev/null || CLEANUP_FAILED=1
+      fi
+
+      if [ -n "${RUNNER_CONTAINER_NAME:-}" ]; then
+        podman rm -f "$RUNNER_CONTAINER_NAME" >/dev/null 2>&1 || true
+      fi
+
+      if [ "$FIRST_FAILURE_EXIT" -eq 0 ] && [ "$trap_signal" -eq 0 ]; then
+        rm -f "$PREFLIGHT_DIAG_LOG" 2>/dev/null || true
+      else
+        if [ -f "$PREFLIGHT_DIAG_LOG" ]; then
+          echo "WARNING: Preflight failed; retaining sanitized diagnostic log at ${PREFLIGHT_DIAG_LOG}" >&2
+        fi
+      fi
+
+      if [ "$FIRST_FAILURE_EXIT" -ne 0 ]; then
+        exit "$FIRST_FAILURE_EXIT"
+      fi
+      if [ "$trap_signal" -ne 0 ]; then
+        exit "$trap_signal"
+      fi
+      if [ "$CLEANUP_FAILED" -ne 0 ]; then
+        exit 1
+      fi
+      exit 0
+    }
+
+    trap '_clean_e2e_resources "$?" 0' EXIT
+    trap '_clean_e2e_resources 130 130' INT
+    trap '_clean_e2e_resources 143 143' TERM
+
+    # Copy application files to runner workspace, strictly excluding Git, Spec Kit, agent tooling, node_modules
+    tar --exclude=".git" \
+        --exclude=".agents" \
+        --exclude="specs" \
+        --exclude=".specify" \
+        --exclude="node_modules" \
+        --exclude=".multica" \
+        --exclude="AGENTS.md" \
+        --exclude="*.log" \
+        -cf - -C "$REPO_ROOT" . | tar -xf - -C "$RUNNER_WORKSPACE"
+
+    # 8. Run frozen dependency installation inside disposable runner workspace
+    echo "Installing frozen dependencies in disposable runner workspace..."
+    LOCK_HASH_BEFORE=$(sha256sum "${REPO_ROOT}/pnpm-lock.yaml" | awk '{print $1}')
+
+    if [ "${FOUNDATION_E2E_SIMULATE_FAIL:-}" = "install" ]; then
+      FIRST_FAILURE_EXIT=44
+      echo "Simulating deliberate failure in install phase (exit code 44)..." >&2
+      exit 44
+    fi
+
+    set +e
+    podman run --name "$RUNNER_CONTAINER_NAME" \
+      --rm \
+      -v "${RUNNER_WORKSPACE}:/workspace:z" \
+      -w /workspace \
+      -e HOME=/tmp \
+      -e PNPM_HOME=/tmp/.pnpm \
+      "$RUNNER_IMAGE" \
+      pnpm install --frozen-lockfile > "$PREFLIGHT_DIAG_LOG" 2>&1
+    INSTALL_EXIT=$?
+    set -e
+
+    if [ "$INSTALL_EXIT" -ne 0 ]; then
+      FIRST_FAILURE_EXIT="$INSTALL_EXIT"
+      echo "ERROR: Runner dependency installation failed with exit code ${INSTALL_EXIT}" >&2
+      exit "$INSTALL_EXIT"
+    fi
+
+    LOCK_HASH_AFTER=$(sha256sum "${REPO_ROOT}/pnpm-lock.yaml" | awk '{print $1}')
+    if [ "$LOCK_HASH_BEFORE" != "$LOCK_HASH_AFTER" ]; then
+      FIRST_FAILURE_EXIT=1
+      _fail "ERROR: pnpm install altered repository lockfile; frozen lockfile integrity violated"
+    fi
+
+    # 9. Execute preflight verification inside runner container attached to application network
+    echo "Executing isolated Playwright runtime preflight..."
+
+    if [ "${FOUNDATION_E2E_SIMULATE_FAIL:-}" = "preflight" ]; then
+      FIRST_FAILURE_EXIT=45
+      echo "Simulating deliberate failure in preflight phase (exit code 45)..." >&2
+      exit 45
+    fi
+
+    cat <<'PREFLIGHT_EOF' > "${RUNNER_WORKSPACE}/e2e-preflight.mjs"
+import fs from 'node:fs';
+import path from 'node:path';
+import { execSync } from 'node:child_process';
+import { createRequire } from 'node:module';
+
+const requireWeb = createRequire('/workspace/apps/web/package.json');
+
+async function runPreflight() {
+  console.log("=== Playwright Runtime Preflight Assertions ===");
+
+  // 1. Exact Node runtime version
+  const nodeVersion = process.version;
+  console.log(`Node version: ${nodeVersion}`);
+  if (nodeVersion !== 'v24.21.0') {
+    throw new Error(`Node version mismatch: expected v24.21.0, got ${nodeVersion}`);
+  }
+
+  // 2. Exact pnpm version
+  const pnpmVersion = execSync('pnpm -v', { encoding: 'utf8' }).trim();
+  console.log(`pnpm version: ${pnpmVersion}`);
+  if (pnpmVersion !== '12.9.1') {
+    throw new Error(`pnpm version mismatch: expected 12.9.1, got ${pnpmVersion}`);
+  }
+
+  // 3. Playwright package pin
+  const webPkg = JSON.parse(fs.readFileSync('/workspace/apps/web/package.json', 'utf8'));
+  const declaredPlaywright = webPkg.devDependencies?.['@playwright/test'];
+  console.log(`Declared @playwright/test in apps/web: ${declaredPlaywright}`);
+  if (declaredPlaywright !== '1.63.0') {
+    throw new Error(`Declared @playwright/test mismatch: expected 1.63.0, got ${declaredPlaywright}`);
+  }
+
+  const installedPlaywrightPkg = requireWeb('@playwright/test/package.json');
+  console.log(`Installed @playwright/test version: ${installedPlaywrightPkg.version}`);
+  if (installedPlaywrightPkg.version !== '1.63.0') {
+    throw new Error(`Installed @playwright/test mismatch: expected 1.63.0, got ${installedPlaywrightPkg.version}`);
+  }
+
+  // 4. Web command discovery
+  const testE2eScript = webPkg.scripts?.['test:e2e'];
+  console.log(`Web test:e2e command discovered: "${testE2eScript}"`);
+  if (testE2eScript !== 'playwright test') {
+    throw new Error(`Web test:e2e script mismatch: expected "playwright test", got "${testE2eScript}"`);
+  }
+
+  // 5. Config discovery & validation
+  const baseURL = process.env.E2E_BASE_URL;
+  if (!baseURL) {
+    throw new Error("E2E_BASE_URL is not set in container environment");
+  }
+
+  const configModule = await import('/workspace/apps/web/playwright.config.ts');
+  const config = configModule.default;
+
+  console.log("Playwright config loaded successfully:");
+  console.log(`  - testDir: ${config.testDir}`);
+  console.log(`  - workers: ${config.workers}`);
+  console.log(`  - timeout: ${config.timeout}`);
+  console.log(`  - expect.timeout: ${config.expect?.timeout}`);
+  console.log(`  - outputDir: ${config.outputDir}`);
+  console.log(`  - baseURL: ${config.use?.baseURL}`);
+
+  if (config.testDir !== './tests/e2e') {
+    throw new Error(`config.testDir mismatch: expected './tests/e2e', got '${config.testDir}'`);
+  }
+  if (config.workers !== 1) {
+    throw new Error(`config.workers mismatch: expected 1, got ${config.workers}`);
+  }
+  if (config.timeout !== 30000) {
+    throw new Error(`config.timeout mismatch: expected 30000, got ${config.timeout}`);
+  }
+  if (config.expect?.timeout !== 5000) {
+    throw new Error(`config.expect.timeout mismatch: expected 5000, got ${config.expect?.timeout}`);
+  }
+  if (config.outputDir !== './test-results') {
+    throw new Error(`config.outputDir mismatch: expected './test-results', got '${config.outputDir}'`);
+  }
+  if (config.use?.baseURL !== 'http://web:5173') {
+    throw new Error(`config.use.baseURL mismatch: expected 'http://web:5173', got '${config.use?.baseURL}'`);
+  }
+
+  const projects = config.projects || [];
+  const chromiumProject = projects.find(p => p.name === 'chromium');
+  if (!chromiumProject) {
+    throw new Error("config.projects missing required 'chromium' project");
+  }
+  console.log("  - projects: verified Chromium project");
+
+  // 6. Chromium executable availability
+  const { chromium } = requireWeb('@playwright/test');
+  const chromePath = chromium.executablePath();
+  console.log(`Chromium executable path: ${chromePath}`);
+  if (!fs.existsSync(chromePath)) {
+    throw new Error(`Chromium executable not found at ${chromePath}`);
+  }
+
+  const chromeVersion = execSync(`"${chromePath}" --version`, { encoding: 'utf8' }).trim();
+  console.log(`Chromium executable version: ${chromeVersion}`);
+  if (!chromeVersion.toLowerCase().includes('chrome')) {
+    throw new Error(`Unexpected Chromium version output: ${chromeVersion}`);
+  }
+
+  // 7. Runner-to-Web HTTP connectivity
+  console.log(`Testing runner-to-Web HTTP connectivity at ${baseURL}...`);
+  const rootRes = await fetch(baseURL);
+  console.log(`  GET ${baseURL} -> HTTP ${rootRes.status}`);
+  if (!rootRes.ok) {
+    throw new Error(`Failed to reach ${baseURL}: HTTP status ${rootRes.status}`);
+  }
+
+  const loginURL = `${baseURL}/login`;
+  console.log(`Testing runner-to-Web HTTP connectivity at ${loginURL}...`);
+  const loginRes = await fetch(loginURL);
+  console.log(`  GET ${loginURL} -> HTTP ${loginRes.status}`);
+  if (!loginRes.ok) {
+    throw new Error(`Failed to reach ${loginURL}: HTTP status ${loginRes.status}`);
+  }
+  const loginBody = await loginRes.text();
+  if (!loginBody.includes('<html') && !loginBody.includes('<!DOCTYPE')) {
+    throw new Error(`Response from ${loginURL} does not appear to be HTML entrypoint`);
+  }
+  console.log("  Runner-to-Web HTTP connectivity successfully verified (HTML entrypoint confirmed).");
+
+  // 8. Verify browser test execution boundary
+  const authSpecPath = '/workspace/apps/web/tests/e2e/auth.spec.ts';
+  if (fs.existsSync(authSpecPath)) {
+    throw new Error(`Unexpected test file found at ${authSpecPath}: T046 preflight must not contain test stubs`);
+  }
+  console.log("Browser test boundary confirmed: no test execution or authentication flow attempted.");
+  console.log("=== Playwright Runtime Preflight Succeeded ===");
+}
+
+runPreflight().catch(err => {
+  console.error("PREFLIGHT ERROR:", err.message);
+  process.exit(1);
+});
+PREFLIGHT_EOF
+
+    set +e
+    podman run --name "$RUNNER_CONTAINER_NAME" \
+      --rm \
+      --network "$APP_NETWORK" \
+      -v "${RUNNER_WORKSPACE}:/workspace:z" \
+      -w /workspace \
+      -e NODE_ENV=test \
+      -e E2E_BASE_URL="$E2E_BASE_URL" \
+      "$RUNNER_IMAGE" \
+      node --experimental-strip-types /workspace/e2e-preflight.mjs 2>&1 | tee -a "$PREFLIGHT_DIAG_LOG"
+    PREFLIGHT_EXIT=${PIPESTATUS[0]}
+    set -e
+
+    if [ "$PREFLIGHT_EXIT" -ne 0 ]; then
+      FIRST_FAILURE_EXIT="$PREFLIGHT_EXIT"
+      echo "ERROR: Isolated Playwright runtime preflight failed with exit code ${PREFLIGHT_EXIT}" >&2
+      exit "$PREFLIGHT_EXIT"
+    fi
+
+    if [ "$PREFLIGHT_ONLY" -eq 1 ]; then
+      echo "Isolated Playwright runtime preflight completed successfully."
+      exit 0
+    fi
+
+    # 10. If not preflight-only, run full E2E test action (only reachable when T033 authorized)
+    echo "Running Playwright E2E browser tests..."
+    set +e
+    podman run --name "$RUNNER_CONTAINER_NAME" \
+      --rm \
+      --network "$APP_NETWORK" \
+      -v "${RUNNER_WORKSPACE}:/workspace:z" \
+      -w /workspace \
+      -e NODE_ENV=test \
+      -e E2E_BASE_URL="$E2E_BASE_URL" \
+      "$RUNNER_IMAGE" \
+      pnpm --filter web test:e2e
+    E2E_EXIT=$?
+    set -e
+
+    if [ "$E2E_EXIT" -ne 0 ]; then
+      FIRST_FAILURE_EXIT="$E2E_EXIT"
+      echo "ERROR: E2E browser test run failed with exit code ${E2E_EXIT}" >&2
+      exit "$E2E_EXIT"
+    fi
+
+    echo "E2E verification completed successfully."
+    exit 0
+    ;;
   *)
-    _fail "ERROR: Unknown action '$ACTION'. Authorized actions: none (provider preflight), 'prepare', 'test-identity', or 'http-smoke'."
+    _fail "ERROR: Unknown action '$ACTION'. Authorized actions: none (provider preflight), 'prepare', 'test-identity', 'http-smoke', or 'e2e'."
     ;;
 esac

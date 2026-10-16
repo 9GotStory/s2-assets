@@ -100,7 +100,22 @@ Open `http://127.0.0.1:<WEB_HOST_PORT>/login` on the host for manual inspection.
 
 HTTP smoke must pass before T033 can be considered ready; test discovery, mocked requests and `inject` alone do not satisfy this gate.
 
-## 4. Existing T033 browser verification — separately authorized
+## 4. Playwright runtime preflight and browser verification
+
+### Isolated Playwright runtime preflight (T046)
+
+Verify isolated browser runner readiness and toolchain/network/config prerequisites without launching browser tests or executing authentication flows:
+
+```bash
+export E2E_BASE_URL=http://web:5173
+bash scripts/dev.sh e2e --preflight
+```
+
+The verified preflight action uses Rootless Podman and the accepted `mcr.microsoft.com/playwright:v1.63.0-noble` base image. It prepares the exact Node `24.21.0`, pnpm `12.9.1`, and `@playwright/test: 1.63.0` toolchain in a disposable runner-owned application workspace (`/tmp/s2-e2e-workspace-*`), strictly excluding Git, Spec Kit, and agent tooling. It verifies frozen lockfile integrity (`pnpm install --frozen-lockfile` leaves repository `pnpm-lock.yaml` unchanged), joins only the explicit test project application network (`${COMPOSE_PROJECT_NAME}_default`, never host or private database networks), proves runner-to-Web HTTP connectivity against `http://web:5173` and `http://web:5173/login` (HTML entrypoint), loads `apps/web/playwright.config.ts` to verify single-worker execution (`workers: 1`), timeouts (`timeout: 30000`, `expect: 5000`), diagnostic paths (`outputDir: ./test-results`), and Chromium project availability, and confirms the Chromium browser binary is executable. It ensures `apps/web/tests/e2e/auth.spec.ts` remains absent in T046 and executes no browser tests. Runner containers and disposable workspaces are automatically disposed on completion (both on success and failure paths), retaining sanitized failure diagnostics in the private environment directory if errors occur and preserving first-failure exit codes.
+
+Preflight PASS establishes browser runtime readiness only; it does not satisfy or execute T033.
+
+### Existing T033 browser verification — separately authorized
 
 Only after the preceding gates pass and T033 receives authorization:
 
@@ -109,9 +124,7 @@ export E2E_BASE_URL=http://web:5173
 bash scripts/dev.sh e2e
 ```
 
-The planned action prepares the exact Node/pnpm toolchain and frozen project dependencies in a disposable runner-owned application workspace, uses the accepted `mcr.microsoft.com/playwright:v1.63.0-noble` boundary, joins this project's application network, then executes `pnpm --filter web test:e2e`. It does not assume pnpm/project dependencies exist in the browser image or reinstall over running app mounts. Package/image Playwright versions match `1.63.0`; the existing config selects Chromium and one worker. Vite explicitly allows service hostname `web`. The runner's `localhost` is not the Web container.
-
-Require an actual passing login/dashboard/logout/session-rejection browser flow, including direct navigation, and retain the existing failure diagnostics without secret material. This documentation pass neither implements nor executes T033.
+Full browser execution runs `pnpm --filter web test:e2e` inside the isolated runner against `http://web:5173` after authorized implementation of `apps/web/tests/e2e/auth.spec.ts`. Invoking `bash scripts/dev.sh e2e` without `--preflight` fails closed when the T033 test suite is not present. Require an actual passing login/dashboard/logout/session-rejection browser flow, including direct navigation, and retain the existing failure diagnostics without secret material. This documentation pass neither implements nor executes T033.
 
 ## 5. Cleanup and later full-workspace acceptance
 
