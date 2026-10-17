@@ -7,6 +7,7 @@ import json
 import os
 from pathlib import Path
 import re
+import selectors
 import shutil
 import signal
 import stat
@@ -14,6 +15,7 @@ import subprocess
 import sys
 import tempfile
 import time
+from typing import Any
 
 EXPECTED_IMAGE = "s2-assets-e2e-runner:local"
 EXPECTED_IMAGE_ID = "2a4778c23106d33f9c9c4d98d49adccd6d6fe968d4554e5ec20b9225e16a0175"
@@ -24,12 +26,14 @@ CONTROL_PROTOCOL_VERSION = "s2_e2e_preflight_v1"
 MAX_CONTROL_FILE_BYTES = 4096
 
 # Global state for cleanup and signal handling
-_cleanup_state = {
+_cleanup_state: dict[str, Any] = {
     "inv_id": None,
+    "invocation_id": None,
     "active_cid": None,
     "active_cidfile": None,
     "active_workspace": None,
     "active_proc": None,
+    "assertion_script_sha256": None,
     "cleanup_failed": False,
     "signal_received": 0,
     "producer_exit": None,
@@ -74,8 +78,9 @@ def _compute_sha256(file_path: Path) -> str:
 def _run_bounded(
     cmd: list[str],
     max_bytes: int = 4096,
-    timeout: int = 10,
+    timeout: float = 10.0,
 ) -> tuple[int, str]:
+    deadline = time.monotonic() + timeout
     try:
         proc = subprocess.Popen(
             cmd,
@@ -83,44 +88,128 @@ def _run_bounded(
             stderr=subprocess.DEVNULL,
         )
     except Exception:
-        return -1, ""
+        return 1, ""
+
+    _cleanup_state["active_proc"] = proc
+    sel = selectors.DefaultSelector()
+    raw = bytearray()
+    timed_out = False
+    oversized = False
 
     try:
-        raw = b""
-        while len(raw) < max_bytes:
-            chunk = proc.stdout.read(min(1024, max_bytes - len(raw)))
-            if not chunk:
-                break
-            raw += chunk
-        extra = proc.stdout.read(1)
-        if extra:
+        proc_stdout = getattr(proc, "stdout", None)
+        has_fileno = False
+        if proc_stdout is not None:
             try:
-                proc.kill()
-                proc.wait(timeout=2)
+                proc_stdout.fileno()
+                has_fileno = True
+            except Exception:
+                has_fileno = False
+
+        if not has_fileno and proc_stdout is not None:
+            try:
+                content = proc_stdout.read(max_bytes + 1)
+                if isinstance(content, str):
+                    raw_b = content.encode("utf-8")
+                elif isinstance(content, (bytes, bytearray)):
+                    raw_b = bytes(content)
+                else:
+                    raw_b = b""
+                if len(raw_b) > max_bytes:
+                    return 1, ""
+                ret = getattr(proc, "returncode", 0)
+                return (ret if ret is not None else 0), raw_b.decode("utf-8", errors="replace")
+            except Exception:
+                return 1, ""
+
+        if has_fileno and proc_stdout is not None:
+            try:
+                os.set_blocking(proc_stdout.fileno(), False)
+                sel.register(proc_stdout, selectors.EVENT_READ)
             except Exception:
                 pass
-            return -1, ""
-        proc.wait(timeout=timeout)
+
+        while True:
+            now = time.monotonic()
+            rem = deadline - now
+            if rem <= 0:
+                timed_out = True
+                break
+
+            events = sel.select(timeout=min(rem, 0.1))
+            for key, mask in events:
+                try:
+                    chunk = os.read(key.fileobj.fileno(), 1024)
+                    if not chunk:
+                        sel.unregister(key.fileobj)
+                    else:
+                        raw.extend(chunk)
+                        if len(raw) > max_bytes:
+                            oversized = True
+                            break
+                except (BlockingIOError, InterruptedError):
+                    continue
+                except OSError:
+                    sel.unregister(key.fileobj)
+
+            if oversized:
+                break
+
+            poll_fn = getattr(proc, "poll", None)
+            if poll_fn is not None and poll_fn() is not None:
+                # Process exited, drain non-blocking stdout
+                if proc_stdout is not None:
+                    try:
+                        while len(raw) <= max_bytes:
+                            chunk = os.read(proc_stdout.fileno(), 1024)
+                            if not chunk:
+                                break
+                            raw.extend(chunk)
+                            if len(raw) > max_bytes:
+                                oversized = True
+                                break
+                    except (BlockingIOError, OSError):
+                        pass
+                break
+
+        if timed_out or oversized:
+            try:
+                proc.terminate()
+                try:
+                    proc.wait(timeout=0.3)
+                except subprocess.TimeoutExpired:
+                    proc.kill()
+                    proc.wait(timeout=0.3)
+            except Exception:
+                pass
+            if timed_out:
+                return 124, ""
+            return 1, ""
+
+        try:
+            rem = max(0.01, deadline - time.monotonic())
+            proc.wait(timeout=rem)
+        except subprocess.TimeoutExpired:
+            try:
+                proc.kill()
+                proc.wait(timeout=0.3)
+            except Exception:
+                pass
+            return 124, ""
+
         return proc.returncode, raw.decode("utf-8", errors="replace")
-    except subprocess.TimeoutExpired:
-        try:
-            proc.kill()
-            proc.wait(timeout=2)
-        except Exception:
-            pass
-        return -1, ""
-    except Exception:
-        try:
-            proc.kill()
-            proc.wait(timeout=2)
-        except Exception:
-            pass
-        return -1, ""
     finally:
         try:
-            proc.stdout.close()
+            sel.close()
         except Exception:
             pass
+        proc_stdout = getattr(proc, "stdout", None)
+        if proc_stdout is not None:
+            try:
+                proc_stdout.close()
+            except Exception:
+                pass
+        _cleanup_state["active_proc"] = None
 
 
 def atomic_write_recovery_log(target_path: str, content: str) -> tuple[bool, int]:
@@ -232,8 +321,12 @@ def _perform_cleanup() -> None:
     proc = _cleanup_state.get("active_proc")
     if proc:
         try:
-            proc.kill()
-            proc.wait(timeout=2)
+            proc.terminate()
+            try:
+                proc.wait(timeout=0.5)
+            except subprocess.TimeoutExpired:
+                proc.kill()
+                proc.wait(timeout=0.5)
         except Exception:
             pass
         _cleanup_state["active_proc"] = None
@@ -241,6 +334,18 @@ def _perform_cleanup() -> None:
     cid = _cleanup_state.get("active_cid")
     cidfile = _cleanup_state.get("active_cidfile")
     ws = _cleanup_state.get("active_workspace")
+
+    # If active_cid is None but cidfile exists with a valid 64-char CID, create was interrupted
+    if cid is None and cidfile and os.path.exists(cidfile):
+        try:
+            with open(cidfile, "r", encoding="utf-8") as f:
+                content = f.read().strip()
+                if len(content) == 64 and all(c in "0123456789abcdefABCDEF" for c in content):
+                    cid = content
+                    _cleanup_state["active_cid"] = content
+                    _cleanup_state["cleanup_failed"] = True
+        except Exception:
+            pass
 
     # Order invariant: container first, mounted workspace afterward
     if cid and not _cleanup_state.get("cleanup_failed"):
@@ -273,6 +378,12 @@ def _perform_cleanup() -> None:
                     )
                 else:
                     _cleanup_state["active_cid"] = None
+            except subprocess.TimeoutExpired:
+                _cleanup_state["cleanup_failed"] = True
+                _cleanup_state["cleanup_exit"] = 124
+                sys.stderr.write(
+                    f"ERROR: Timed out removing runner container {cid}\n"
+                )
             except Exception:
                 _cleanup_state["cleanup_failed"] = True
                 _cleanup_state["cleanup_exit"] = 1
@@ -280,7 +391,7 @@ def _perform_cleanup() -> None:
                     f"ERROR: Failed to remove runner container {cid}\n"
                 )
 
-    if cidfile and _cleanup_state.get("active_cid") is None:
+    if cidfile and _cleanup_state.get("active_cid") is None and not _cleanup_state.get("cleanup_failed"):
         try:
             if os.path.exists(cidfile):
                 os.unlink(cidfile)
@@ -288,7 +399,7 @@ def _perform_cleanup() -> None:
         except Exception:
             _cleanup_state["cleanup_failed"] = True
 
-    if ws and _cleanup_state.get("active_cid") is None and not _cleanup_state["cleanup_failed"]:
+    if ws and _cleanup_state.get("active_cid") is None and not _cleanup_state.get("cleanup_failed"):
         try:
             if os.path.exists(ws):
                 shutil.rmtree(ws)
@@ -429,18 +540,14 @@ def validate_environment(repo_root: Path) -> dict[str, str]:
 def verify_image() -> None:
     # 1. Verify rootless Podman runtime
     rc, info_out = _run_bounded(
-        ["podman", "--events-backend=none", "info", "--format", "{{json .}}"],
-        max_bytes=65536,
+        ["podman", "--events-backend=none", "info", "--format", "{{.Host.Security.Rootless}}"],
+        max_bytes=256,
         timeout=10,
     )
-    if rc == 0 and info_out:
-        try:
-            info_data = json.loads(info_out)
-            rootless = info_data.get("host", {}).get("security", {}).get("rootless")
-            if rootless is False:
-                _fail_exit("ERROR: Podman runtime must be rootless")
-        except Exception:
-            pass
+    if rc != 0:
+        _fail_exit("ERROR: Failed to inspect Podman runtime security status")
+    if info_out.strip().lower() != "true":
+        _fail_exit("ERROR: Podman runtime must be rootless")
 
     # 2. Verify immutable image ID
     rc, img_out = _run_bounded(
@@ -552,19 +659,13 @@ def resolve_web_and_network(project_name: str) -> tuple[str, str]:
         _fail_exit(f"ERROR: Failed to inspect network for web container {web_cid}")
 
     networks = net_out.strip().split()
-    valid_nets = [
-        n for n in networks
-        if (n.startswith(f"{project_name}_") or n == project_name)
-        and n not in ["host", "bridge", "none"]
-        and not n.endswith("_db")
-        and not n.endswith("_database")
-    ]
-    if not valid_nets:
+    expected_net = f"{project_name}_default"
+    if expected_net not in networks:
         _fail_exit(
-            f"ERROR: Web container is not connected to a valid application network for project '{project_name}': {networks}"
+            f"ERROR: Web container is not connected to expected application network '{expected_net}': {networks}"
         )
 
-    return web_cid, valid_nets[0]
+    return web_cid, expected_net
 
 
 def _reconcile_container(cidfile: str, cname: str, inv_id: str) -> str | None:
@@ -573,7 +674,7 @@ def _reconcile_container(cidfile: str, cname: str, inv_id: str) -> str | None:
         try:
             with open(cidfile, "r", encoding="utf-8") as f:
                 content = f.read().strip()
-                if len(content) == 64 and all(c in "0123456789abcdef" for c in content.lower()):
+                if len(content) == 64 and all(c in "0123456789abcdefABCDEF" for c in content):
                     cid = content
         except Exception:
             pass
@@ -592,10 +693,11 @@ def _reconcile_container(cidfile: str, cname: str, inv_id: str) -> str | None:
         max_bytes=256,
         timeout=5,
     )
-    if rc == 0:
-        val = out.strip()
-        if val and val != inv_id and val != "0":
-            return None
+    if rc != 0:
+        return None
+    val = out.strip()
+    if not val or val != inv_id:
+        return None
     return cid
 
 
@@ -609,6 +711,11 @@ def setup_workspace(repo_root: Path) -> Path:
         _fail_exit(
             f"ERROR: Repository lockfile mismatch before preflight: {lock_hash}"
         )
+
+    # Check ancestor directories for symlinks
+    for p in [repo_root, repo_root / "apps", repo_root / "apps" / "web"]:
+        if p.is_symlink() or os.path.islink(p):
+            _fail_exit(f"ERROR: Source symlinks not permitted: {p}")
 
     # Check auth.spec.ts absence in real source before allowlisting can hide it
     web_src = repo_root / "apps" / "web"
@@ -651,6 +758,12 @@ def setup_workspace(repo_root: Path) -> Path:
         if src_dir.is_symlink() or os.path.islink(src_dir):
             _fail_exit("ERROR: Source symlinks not permitted: apps/web/src")
         for root, dirs, files in os.walk(src_dir):
+            dirs[:] = [
+                d for d in dirs
+                if not d.startswith(".")
+                and not (Path(root) / d).is_symlink()
+                and not os.path.islink(Path(root) / d)
+            ]
             for d in dirs:
                 d_p = Path(root) / d
                 if d_p.is_symlink() or os.path.islink(d_p):
@@ -662,12 +775,17 @@ def setup_workspace(repo_root: Path) -> Path:
                 if f.startswith("."):
                     continue
                 rel = f_p.relative_to(src_dir)
+                if any(part.startswith(".") for part in rel.parts):
+                    continue
                 target = web_dst / "src" / rel
                 target.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
                 shutil.copy2(f_p, target)
 
-    # 4. Copy assertion script into workspace
+    # 4. Copy assertion script into workspace and record hash
     preflight_mjs_src = repo_root / "scripts" / "e2e_preflight.mjs"
+    if not preflight_mjs_src.is_file() or preflight_mjs_src.is_symlink() or os.path.islink(preflight_mjs_src):
+        _fail_exit("ERROR: Preflight assertion script missing or symlink")
+    _cleanup_state["assertion_script_sha256"] = _compute_sha256(preflight_mjs_src)
     shutil.copy2(preflight_mjs_src, ws_dir / "e2e_preflight.mjs")
 
     # 5. Create private control directory
@@ -680,6 +798,15 @@ def setup_workspace(repo_root: Path) -> Path:
         _fail_exit("ERROR: Lockfile integrity violated during workspace copy")
 
     return ws_dir
+
+
+def _reject_duplicates(pairs: list[tuple[str, Any]]) -> dict[str, Any]:
+    res: dict[str, Any] = {}
+    for k, v in pairs:
+        if k in res:
+            raise ValueError(f"Duplicate key in JSON: {k}")
+        res[k] = v
+    return res
 
 
 def validate_control_response(
@@ -705,7 +832,7 @@ def validate_control_response(
             raw = f.read(MAX_CONTROL_FILE_BYTES + 1)
             if len(raw) > MAX_CONTROL_FILE_BYTES:
                 return False, "Control response oversized content"
-            data = json.loads(raw)
+            data = json.loads(raw, object_pairs_hook=_reject_duplicates)
     except Exception:
         return False, "Control response malformed JSON or unreadable"
 
@@ -807,7 +934,28 @@ def validate_control_response(
     return True, "ok"
 
 
+def _reset_cleanup_state() -> None:
+    _cleanup_state.update(
+        inv_id=None,
+        invocation_id=None,
+        active_cid=None,
+        active_cidfile=None,
+        active_workspace=None,
+        active_proc=None,
+        assertion_script_sha256=None,
+        cleanup_failed=False,
+        signal_received=0,
+        producer_exit=None,
+        controller_exit=0,
+        cleanup_exit=0,
+        project_name=None,
+        env_dir=None,
+        recovery_log_path=None,
+    )
+
+
 def run_preflight() -> int:
+    _reset_cleanup_state()
     signal.signal(signal.SIGINT, _handle_signal)
     signal.signal(signal.SIGTERM, _handle_signal)
 
@@ -824,6 +972,7 @@ def run_preflight() -> int:
 
     inv_id = f"inv-{os.getpid()}-{hashlib.sha256(os.urandom(16)).hexdigest()[:8]}"
     _cleanup_state["inv_id"] = inv_id
+    _cleanup_state["invocation_id"] = inv_id
 
     recovery_dir = os.environ.get("FOUNDATION_RECOVERY_DIR") or env_dir
     recovery_log_path = os.path.join(
@@ -845,6 +994,11 @@ def run_preflight() -> int:
 
     # 4. Prepare disposable runner workspace
     ws_dir = setup_workspace(repo_root)
+
+    # Establish baseline SHA-256 for the preflight assertion script before installation
+    assertion_script_in_ws = ws_dir / "e2e_preflight.mjs"
+    if assertion_script_in_ws.is_file() and not _cleanup_state.get("assertion_script_sha256"):
+        _cleanup_state["assertion_script_sha256"] = _compute_sha256(assertion_script_in_ws)
 
     # 5. Phase 1: Frozen dependency installation
     sys.stdout.write(
@@ -916,6 +1070,9 @@ def run_preflight() -> int:
     cid = _reconcile_container(install_cidfile, install_cname, inv_id)
     if cid:
         _cleanup_state["active_cid"] = cid
+    elif create_exit == 0:
+        create_exit = 1
+        _cleanup_state["cleanup_failed"] = True
 
     if create_exit != 0:
         _cleanup_state["producer_exit"] = create_exit
@@ -932,29 +1089,36 @@ def run_preflight() -> int:
         return create_exit
 
     start_cmd = ["podman", "--events-backend=none", "start", cid]
-    start_res = subprocess.run(
-        start_cmd,
-        stdout=subprocess.DEVNULL,
-        stderr=subprocess.DEVNULL,
-        timeout=15,
-    )
-    if start_res.returncode != 0:
-        install_exit = start_res.returncode
-    else:
-        wait_cmd = ["podman", "--events-backend=none", "wait", cid]
-        proc = subprocess.Popen(
-            wait_cmd,
+    try:
+        start_res = subprocess.run(
+            start_cmd,
             stdout=subprocess.DEVNULL,
             stderr=subprocess.DEVNULL,
+            timeout=15,
         )
-        _cleanup_state["active_proc"] = proc
-        try:
-            proc.wait(timeout=60)
-            install_exit = proc.returncode
-        except subprocess.TimeoutExpired:
-            proc.kill()
-            install_exit = 124
-        _cleanup_state["active_proc"] = None
+        if start_res.returncode != 0:
+            install_exit = start_res.returncode
+        else:
+            wait_cmd = ["podman", "--events-backend=none", "wait", cid]
+            proc = subprocess.Popen(
+                wait_cmd,
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.DEVNULL,
+            )
+            _cleanup_state["active_proc"] = proc
+            try:
+                proc.wait(timeout=60)
+                install_exit = getattr(proc, "returncode", None)
+                if install_exit is None:
+                    install_exit = 0
+            except subprocess.TimeoutExpired:
+                proc.kill()
+                install_exit = 124
+            _cleanup_state["active_proc"] = None
+    except subprocess.TimeoutExpired:
+        install_exit = 124
+    except Exception:
+        install_exit = 1
 
     if install_exit != 0:
         actual_install_exit = install_exit
@@ -988,27 +1152,36 @@ def run_preflight() -> int:
             elif inspect_out.strip().isdigit():
                 actual_install_exit = int(inspect_out.strip())
             else:
-                actual_install_exit = 0
+                actual_install_exit = 1
 
     # Remove install container
-    rm_res = subprocess.run(
-        ["podman", "--events-backend=none", "rm", "-f", "-t", "1", cid],
-        stdout=subprocess.DEVNULL,
-        stderr=subprocess.DEVNULL,
-        timeout=10,
-    )
-    if rm_res.returncode != 0:
+    try:
+        rm_res = subprocess.run(
+            ["podman", "--events-backend=none", "rm", "-f", "-t", "1", cid],
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+            timeout=10,
+        )
+        if rm_res.returncode != 0:
+            _cleanup_state["cleanup_failed"] = True
+            _cleanup_state["cleanup_exit"] = rm_res.returncode
+            sys.stderr.write(f"ERROR: Failed to remove install container {cid}\n")
+        else:
+            _cleanup_state["active_cid"] = None
+            if os.path.exists(install_cidfile):
+                try:
+                    os.unlink(install_cidfile)
+                except Exception:
+                    pass
+            _cleanup_state["active_cidfile"] = None
+    except subprocess.TimeoutExpired:
         _cleanup_state["cleanup_failed"] = True
-        _cleanup_state["cleanup_exit"] = rm_res.returncode
+        _cleanup_state["cleanup_exit"] = 124
+        sys.stderr.write(f"ERROR: Timed out removing install container {cid}\n")
+    except Exception:
+        _cleanup_state["cleanup_failed"] = True
+        _cleanup_state["cleanup_exit"] = 1
         sys.stderr.write(f"ERROR: Failed to remove install container {cid}\n")
-    else:
-        _cleanup_state["active_cid"] = None
-        if os.path.exists(install_cidfile):
-            try:
-                os.unlink(install_cidfile)
-            except Exception:
-                pass
-        _cleanup_state["active_cidfile"] = None
 
     if actual_install_exit != 0 or _cleanup_state["cleanup_failed"]:
         final_code = resolve_exit_code(
@@ -1040,6 +1213,25 @@ def run_preflight() -> int:
         _fail_exit(
             "ERROR: pnpm install altered repository lockfile; frozen lockfile integrity violated"
         )
+
+    # Verify preflight assertion script integrity before Phase 2
+    copied_script = ws_dir / "e2e_preflight.mjs"
+    if (
+        not copied_script.is_file()
+        or copied_script.is_symlink()
+        or os.path.islink(copied_script)
+    ):
+        _cleanup_state["producer_exit"] = 1
+        _perform_cleanup()
+        sys.stderr.write("ERROR: Preflight assertion script missing or symlink\n")
+        return 1
+    if _cleanup_state.get("assertion_script_sha256") and _compute_sha256(copied_script) != _cleanup_state["assertion_script_sha256"]:
+        _cleanup_state["producer_exit"] = 1
+        _perform_cleanup()
+        sys.stderr.write(
+            "ERROR: Preflight assertion script altered during dependency install phase\n"
+        )
+        return 1
 
     # 6. Phase 2: Runtime preflight assertions inside container
     sys.stdout.write("Executing isolated Playwright runtime preflight...\n")
@@ -1112,6 +1304,9 @@ def run_preflight() -> int:
         cid = _reconcile_container(runner_cidfile, runner_cname, inv_id)
         if cid:
             _cleanup_state["active_cid"] = cid
+        elif create_runner_exit == 0:
+            create_runner_exit = 1
+            _cleanup_state["cleanup_failed"] = True
 
         if create_runner_exit != 0:
             _cleanup_state["producer_exit"] = create_runner_exit
@@ -1128,29 +1323,36 @@ def run_preflight() -> int:
             return create_runner_exit
 
         run_start_cmd = ["podman", "--events-backend=none", "start", cid]
-        start_res = subprocess.run(
-            run_start_cmd,
-            stdout=subprocess.DEVNULL,
-            stderr=subprocess.DEVNULL,
-            timeout=15,
-        )
-        if start_res.returncode != 0:
-            runner_exit = start_res.returncode
-        else:
-            wait_cmd = ["podman", "--events-backend=none", "wait", cid]
-            proc = subprocess.Popen(
-                wait_cmd,
+        try:
+            start_res = subprocess.run(
+                run_start_cmd,
                 stdout=subprocess.DEVNULL,
                 stderr=subprocess.DEVNULL,
+                timeout=15,
             )
-            _cleanup_state["active_proc"] = proc
-            try:
-                proc.wait(timeout=45)
-                runner_exit = proc.returncode
-            except subprocess.TimeoutExpired:
-                proc.kill()
-                runner_exit = 124
-            _cleanup_state["active_proc"] = None
+            if start_res.returncode != 0:
+                runner_exit = start_res.returncode
+            else:
+                wait_cmd = ["podman", "--events-backend=none", "wait", cid]
+                proc = subprocess.Popen(
+                    wait_cmd,
+                    stdout=subprocess.DEVNULL,
+                    stderr=subprocess.DEVNULL,
+                )
+                _cleanup_state["active_proc"] = proc
+                try:
+                    proc.wait(timeout=45)
+                    runner_exit = getattr(proc, "returncode", None)
+                    if runner_exit is None:
+                        runner_exit = 0
+                except subprocess.TimeoutExpired:
+                    proc.kill()
+                    runner_exit = 124
+                _cleanup_state["active_proc"] = None
+        except subprocess.TimeoutExpired:
+            runner_exit = 124
+        except Exception:
+            runner_exit = 1
 
         if runner_exit != 0:
             actual_runner_exit = runner_exit
@@ -1183,7 +1385,7 @@ def run_preflight() -> int:
                 elif inspect_out.strip().isdigit():
                     actual_runner_exit = int(inspect_out.strip())
                 else:
-                    actual_runner_exit = 0
+                    actual_runner_exit = 1
 
         _cleanup_state["producer_exit"] = actual_runner_exit
 

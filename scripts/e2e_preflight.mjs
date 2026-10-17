@@ -36,19 +36,15 @@ async function readBoundedBody(res, maxBytes = 4096) {
   const chunks = [];
   let totalBytes = 0;
   try {
-    while (totalBytes < maxBytes) {
+    while (true) {
       const { done, value } = await reader.read();
       if (done) break;
       if (value) {
-        const remaining = maxBytes - totalBytes;
-        if (value.byteLength > remaining) {
-          chunks.push(value.subarray(0, remaining));
-          totalBytes += remaining;
-          break;
-        } else {
-          chunks.push(value);
-          totalBytes += value.byteLength;
+        totalBytes += value.byteLength;
+        if (totalBytes > maxBytes) {
+          throw new Error('oversized_http_response');
         }
+        chunks.push(value);
       }
     }
   } finally {
@@ -72,7 +68,7 @@ function writeControlFile(data) {
     const dir = path.dirname(controlFilePath);
     fs.mkdirSync(dir, { recursive: true, mode: 0o700 });
     const payload = JSON.stringify(data);
-    fs.writeFileSync(controlFilePath, payload, { encoding: 'utf8', mode: 0o600 });
+    fs.writeFileSync(controlFilePath, payload, { flag: 'wx', encoding: 'utf8', mode: 0o600 });
   } catch {
     // Fail silently without writing raw exceptions or unverified data
   }

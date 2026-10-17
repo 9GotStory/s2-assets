@@ -1,9 +1,11 @@
 #!/usr/bin/env python3
 """Focused regression test suite for T046 trusted structured diagnostics and preflight."""
 
+import contextlib
 import copy
 import errno
 import hashlib
+import io
 import json
 import os
 from pathlib import Path
@@ -13,6 +15,7 @@ import stat
 import subprocess
 import sys
 import tempfile
+import time
 import unittest
 from unittest.mock import MagicMock, patch
 
@@ -624,13 +627,21 @@ class TestControllerSubprocessFaults(unittest.TestCase):
             return subprocess.CompletedProcess(cmd, 0, stdout="0\n", stderr="")
         class FakeProc:
             def __init__(self, cmd, **kw):
-                self.returncode = 47 if len([x for x in calls if "create" in x]) == 1 else 0
+                self.cmd = cmd
+                if "inspect" in cmd:
+                    self.returncode = 0
+                    self.stdout = io.BytesIO(f"{e2e_preflight._cleanup_state.get('inv_id', '')}\n".encode())
+                else:
+                    self.returncode = 47 if len([x for x in calls if "create" in x]) == 1 else 0
+                    self.stdout = io.BytesIO(b"")
+            def poll(self):
+                return self.returncode
             def wait(self, **kw):
                 return self.returncode
             def kill(self): pass
         with patch.object(e2e_preflight, "validate_environment", return_value={"COMPOSE_PROJECT_NAME": "s2-test-probe", "ENV_DIR": str(self.envdir)}), \
              patch.object(e2e_preflight, "verify_image"), \
-             patch.object(e2e_preflight, "resolve_web_and_network", return_value=("web", "app")), \
+             patch.object(e2e_preflight, "resolve_web_and_network", return_value=("web", "s2-test-probe_default")), \
              patch.object(e2e_preflight, "setup_workspace", return_value=ws), \
              patch.object(e2e_preflight.subprocess, "run", side_effect=fake_run), \
              patch.object(e2e_preflight.subprocess, "Popen", FakeProc), \
@@ -650,12 +661,20 @@ class TestControllerSubprocessFaults(unittest.TestCase):
             return subprocess.CompletedProcess(cmd, status, stdout="0\n", stderr="")
         class FakeProc:
             returncode = 0
-            def __init__(self, cmd, **kw): self.returncode = 0
+            def __init__(self, cmd, **kw):
+                self.cmd = cmd
+                self.returncode = 0
+                if "inspect" in cmd:
+                    self.stdout = io.BytesIO(f"{e2e_preflight._cleanup_state.get('inv_id', '')}\n".encode())
+                else:
+                    self.stdout = io.BytesIO(b"")
+            def poll(self):
+                return self.returncode
             def wait(self, **kw): return 0
             def kill(self): pass
         with patch.object(e2e_preflight, "validate_environment", return_value={"COMPOSE_PROJECT_NAME": "s2-test-probe", "ENV_DIR": str(self.envdir)}), \
              patch.object(e2e_preflight, "verify_image"), \
-             patch.object(e2e_preflight, "resolve_web_and_network", return_value=("web", "app")), \
+             patch.object(e2e_preflight, "resolve_web_and_network", return_value=("web", "s2-test-probe_default")), \
              patch.object(e2e_preflight, "setup_workspace", return_value=ws), \
              patch.object(e2e_preflight.subprocess, "run", side_effect=fake_run), \
              patch.object(e2e_preflight.subprocess, "Popen", FakeProc), \
@@ -684,6 +703,239 @@ class TestControllerSubprocessFaults(unittest.TestCase):
             except subprocess.TimeoutExpired:
                 self.fail("TimeoutExpired must be caught and handled inside run_preflight")
             self.assertEqual(code, 124, "Must return 124 on create timeout")
+
+
+class TestRound2SupervisionAndSecurityRegressions(unittest.TestCase):
+    def setUp(self):
+        self.temp_dir = tempfile.mkdtemp(prefix="s2-test-r2-")
+        self.tmp_path = Path(self.temp_dir)
+        self.envdir = self.tmp_path / "env"
+        self.envdir.mkdir(mode=0o700)
+
+    def tearDown(self):
+        shutil.rmtree(self.temp_dir, ignore_errors=True)
+
+    def test_quiet_cli_deadline_respected(self):
+        start = time.monotonic()
+        rc, out = e2e_preflight._run_bounded(
+            [sys.executable, "-c", "import time; time.sleep(1.25)"],
+            timeout=0.05,
+        )
+        elapsed = time.monotonic() - start
+        self.assertLess(elapsed, 0.5, "Monotonic deadline must cover quiet child reading")
+        self.assertNotEqual(rc, 0, "Timed out child must return non-zero (124)")
+
+    def test_nested_metadata_excluded_from_workspace(self):
+        source = self.tmp_path / "src_meta"
+        (source / "apps" / "web" / "src" / ".agents").mkdir(parents=True)
+        (source / "scripts").mkdir()
+        shutil.copy2(REPO_ROOT / "pnpm-lock.yaml", source / "pnpm-lock.yaml")
+        shutil.copy2(REPO_ROOT / "scripts" / "e2e_preflight.mjs", source / "scripts" / "e2e_preflight.mjs")
+        (source / "apps" / "web" / "package.json").write_text('{"name":"web"}')
+        (source / "apps" / "web" / "src" / ".agents" / "config").write_text("LEAD_SYNTHETIC_NESTED_SECRET")
+        ws = e2e_preflight.setup_workspace(source)
+        try:
+            self.assertFalse((ws / "apps" / "web" / "src" / ".agents" / "config").exists())
+        finally:
+            shutil.rmtree(ws, ignore_errors=True)
+
+    def test_symlink_ancestor_rejected(self):
+        second = self.tmp_path / "src_symlink"
+        (second / "apps").mkdir(parents=True)
+        (second / "scripts").mkdir()
+        shutil.copy2(REPO_ROOT / "pnpm-lock.yaml", second / "pnpm-lock.yaml")
+        shutil.copy2(REPO_ROOT / "scripts" / "e2e_preflight.mjs", second / "scripts" / "e2e_preflight.mjs")
+        external = self.tmp_path / "external-web"
+        external.mkdir()
+        (external / "package.json").write_text('{"canary":"LEAD_SYNTHETIC_EXTERNAL_SECRET"}')
+        (second / "apps" / "web").symlink_to(external, target_is_directory=True)
+        with self.assertRaises(SystemExit):
+            e2e_preflight.setup_workspace(second)
+
+    def test_duplicate_keys_in_control_json_rejected(self):
+        ctrl = self.tmp_path / "dup.json"
+        raw = '{"protocol":"s2_e2e_preflight_v1","invocation_id":"inv-dup","status":"fail","status":"pass"}'
+        ctrl.write_text(raw)
+        ok, msg = e2e_preflight.validate_control_response(ctrl, expected_inv_id="inv-dup")
+        self.assertFalse(ok, "Control response with duplicate keys must be rejected")
+
+    def test_foreign_label_zero_rejected(self):
+        cidfile = self.tmp_path / "foreign.cid"
+        cidfile.write_text("c" * 64)
+        with patch.object(e2e_preflight, "_run_bounded", return_value=(0, "0\n")):
+            res = e2e_preflight._reconcile_container(str(cidfile), "foreign", "inv-expected")
+            self.assertIsNone(res, "Label 0 must not be accepted as matching inv-expected")
+
+    def test_ownership_inspection_failure_rejected(self):
+        cidfile = self.tmp_path / "foreign2.cid"
+        cidfile.write_text("c" * 64)
+        with patch.object(e2e_preflight, "_run_bounded", return_value=(125, "")):
+            res = e2e_preflight._reconcile_container(str(cidfile), "foreign", "inv-expected")
+            self.assertIsNone(res, "Inspection failure (rc 125) must not accept CID")
+
+    def test_wrong_application_network_rejected(self):
+        def network_reply(cmd, **kw):
+            if "ps" in cmd:
+                return 0, "d" * 12 + "\n"
+            return 0, "s2-probe_other s2-probe_default\n"
+        with patch.object(e2e_preflight, "_run_bounded", side_effect=network_reply):
+            _, net = e2e_preflight.resolve_web_and_network("s2-probe")
+            self.assertEqual(net, "s2-probe_default", "Must select exact application network s2-probe_default")
+
+    def test_failed_rootless_inspection_fails_closed(self):
+        def image_reply(cmd, **kw):
+            return (125, "") if "info" in cmd else (0, e2e_preflight.EXPECTED_IMAGE_ID)
+        with patch.object(e2e_preflight, "_run_bounded", side_effect=image_reply):
+            with self.assertRaises(SystemExit):
+                e2e_preflight.verify_image()
+
+    def test_signal_during_create_retains_handles_and_records_cid(self):
+        ws = self.tmp_path / "signal-ws"
+        ws.mkdir()
+        cidfile = self.tmp_path / "pending.cid"
+        cidfile.write_text("e" * 64)
+        recovery = self.tmp_path / "signal-recovery.log"
+        e2e_preflight._cleanup_state.update(
+            active_workspace=str(ws),
+            active_cidfile=str(cidfile),
+            active_cid=None,
+            recovery_log_path=str(recovery),
+            project_name="s2-probe",
+        )
+        try:
+            e2e_preflight._handle_signal(signal.SIGTERM, None)
+        except SystemExit:
+            pass
+        self.assertTrue(ws.exists(), "Workspace must not be deleted when unreconciled CID exists")
+        self.assertTrue(cidfile.exists(), "CID file must not be deleted when unreconciled CID exists")
+        self.assertTrue(recovery.exists(), "Recovery log must be committed on signal")
+        self.assertIn("e" * 64, recovery.read_text(), "Unreconciled CID must appear in recovery log")
+        self.assertTrue(e2e_preflight._cleanup_state["cleanup_failed"])
+
+    def test_start_timeout_handled_cleanly(self):
+        ws = self.tmp_path / "ws_start_timeout"
+        ws.mkdir()
+        def fake_run(cmd, **kw):
+            if "create" in cmd:
+                Path(cmd[cmd.index("--cidfile") + 1]).write_text("a" * 64)
+            if "start" in cmd:
+                raise subprocess.TimeoutExpired(cmd, 15)
+            return subprocess.CompletedProcess(cmd, 0)
+        def metadata(cmd, **kw):
+            if any("io.s2-assets.invocation-id" in str(s) for s in cmd):
+                return 0, e2e_preflight._cleanup_state["inv_id"]
+            return 0, ""
+        with patch.object(e2e_preflight, "validate_environment", return_value={"COMPOSE_PROJECT_NAME": "s2-probe", "ENV_DIR": str(self.envdir)}), \
+             patch.object(e2e_preflight, "verify_image"), \
+             patch.object(e2e_preflight, "resolve_web_and_network", return_value=("web", "s2-probe_default")), \
+             patch.object(e2e_preflight, "setup_workspace", return_value=ws), \
+             patch.object(e2e_preflight, "_run_bounded", side_effect=metadata), \
+             patch.object(e2e_preflight.subprocess, "run", side_effect=fake_run), \
+             patch.object(e2e_preflight.signal, "signal"):
+            try:
+                code = e2e_preflight.run_preflight()
+            except subprocess.TimeoutExpired:
+                self.fail("TimeoutExpired on start must be handled within run_preflight")
+            self.assertEqual(code, 124, "Must return 124 on start timeout")
+
+    def test_producer_47_preserved_on_rm_timeout(self):
+        ws = self.tmp_path / "ws_rm_timeout"
+        ws.mkdir()
+        calls = []
+        def fake_run(cmd, **kw):
+            calls.append(cmd)
+            if "create" in cmd:
+                Path(cmd[cmd.index("--cidfile") + 1]).write_text("a" * 64)
+            if "rm" in cmd:
+                raise subprocess.TimeoutExpired(cmd, 10)
+            return subprocess.CompletedProcess(cmd, 0)
+        def metadata(cmd, **kw):
+            if any("io.s2-assets.invocation-id" in str(s) for s in cmd):
+                return 0, e2e_preflight._cleanup_state["inv_id"]
+            return 0, "false 47"
+        class FakeWait:
+            returncode = 0
+            def __init__(self, *a, **k):
+                self.returncode = 0
+            def wait(self, **k): return 0
+            def kill(self): pass
+        with patch.object(e2e_preflight, "validate_environment", return_value={"COMPOSE_PROJECT_NAME": "s2-probe", "ENV_DIR": str(self.envdir)}), \
+             patch.object(e2e_preflight, "verify_image"), \
+             patch.object(e2e_preflight, "resolve_web_and_network", return_value=("web", "s2-probe_default")), \
+             patch.object(e2e_preflight, "setup_workspace", return_value=ws), \
+             patch.object(e2e_preflight, "_run_bounded", side_effect=metadata), \
+             patch.object(e2e_preflight.subprocess, "run", side_effect=fake_run), \
+             patch.object(e2e_preflight.subprocess, "Popen", FakeWait), \
+             patch.object(e2e_preflight.signal, "signal"):
+            try:
+                code = e2e_preflight.run_preflight()
+            except subprocess.TimeoutExpired:
+                self.fail("TimeoutExpired on rm must be caught")
+            self.assertEqual(code, 47, "Must preserve producer exit 47 when rm times out")
+
+    def test_malformed_terminal_state_fails_closed(self):
+        ws = self.tmp_path / "ws_malformed"
+        ws.mkdir()
+        def fake_run(cmd, **kw):
+            if "create" in cmd:
+                Path(cmd[cmd.index("--cidfile") + 1]).write_text("a" * 64)
+            return subprocess.CompletedProcess(cmd, 0)
+        def metadata(cmd, **kw):
+            if any("io.s2-assets.invocation-id" in str(s) for s in cmd):
+                return 0, e2e_preflight._cleanup_state["inv_id"]
+            return 0, "garbage"
+        class FakeWait:
+            def __init__(self, *a, **k): pass
+            def wait(self, **k): return 0
+            def kill(self): pass
+        out = io.StringIO()
+        with patch.object(e2e_preflight, "validate_environment", return_value={"COMPOSE_PROJECT_NAME": "s2-probe", "ENV_DIR": str(self.envdir)}), \
+             patch.object(e2e_preflight, "verify_image"), \
+             patch.object(e2e_preflight, "resolve_web_and_network", return_value=("web", "s2-probe_default")), \
+             patch.object(e2e_preflight, "setup_workspace", return_value=ws), \
+             patch.object(e2e_preflight, "_run_bounded", side_effect=metadata), \
+             patch.object(e2e_preflight.subprocess, "run", side_effect=fake_run), \
+             patch.object(e2e_preflight.subprocess, "Popen", FakeWait), \
+             patch.object(e2e_preflight.signal, "signal"), \
+             contextlib.redirect_stdout(out):
+            code = e2e_preflight.run_preflight()
+            self.assertNotEqual(code, 0, "Malformed terminal state must fail closed")
+            self.assertNotIn("Playwright runtime preflight verified:", out.getvalue())
+
+    def test_installation_replaces_assertions_fails_closed(self):
+        ws = self.tmp_path / "ws_tamper"
+        ws.mkdir()
+        (ws / "e2e_preflight.mjs").write_text("reviewed")
+        calls = []
+        def fake_run(cmd, **kw):
+            calls.append(cmd)
+            if "create" in cmd:
+                phase = sum("create" in c for c in calls)
+                Path(cmd[cmd.index("--cidfile") + 1]).write_text("a" * 64)
+                if phase == 1:
+                    (ws / "e2e_preflight.mjs").write_text("forged replacement")
+            return subprocess.CompletedProcess(cmd, 0)
+        def metadata(cmd, **kw):
+            if any("io.s2-assets.invocation-id" in str(s) for s in cmd):
+                return 0, e2e_preflight._cleanup_state["inv_id"]
+            return 0, "false 0"
+        class FakeWait:
+            def __init__(self, *a, **k): pass
+            def wait(self, **k): return 0
+            def kill(self): pass
+        out = io.StringIO()
+        with patch.object(e2e_preflight, "validate_environment", return_value={"COMPOSE_PROJECT_NAME": "s2-probe", "ENV_DIR": str(self.envdir)}), \
+             patch.object(e2e_preflight, "verify_image"), \
+             patch.object(e2e_preflight, "resolve_web_and_network", return_value=("web", "s2-probe_default")), \
+             patch.object(e2e_preflight, "setup_workspace", return_value=ws), \
+             patch.object(e2e_preflight, "_run_bounded", side_effect=metadata), \
+             patch.object(e2e_preflight.subprocess, "run", side_effect=fake_run), \
+             patch.object(e2e_preflight.subprocess, "Popen", FakeWait), \
+             patch.object(e2e_preflight.signal, "signal"), \
+             contextlib.redirect_stdout(out):
+            code = e2e_preflight.run_preflight()
+            self.assertNotEqual(code, 0, "Altered assertion script during install must fail closed")
+            self.assertNotIn("Playwright runtime preflight verified:", out.getvalue())
 
 
 if __name__ == "__main__":
