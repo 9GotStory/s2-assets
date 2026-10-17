@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 """Focused regression test suite for T046 trusted structured diagnostics and preflight."""
 
+import copy
 import errno
 import hashlib
 import json
@@ -52,6 +53,7 @@ class TestControlProtocolValidation(unittest.TestCase):
     def test_valid_pass_response(self):
         valid_data = {
             "protocol": "s2_e2e_preflight_v1",
+            "invocation_id": "inv-valid-test",
             "status": "pass",
             "checks": {
                 "node_version": "v24.21.0",
@@ -74,7 +76,7 @@ class TestControlProtocolValidation(unittest.TestCase):
             },
         }
         self._write_ctrl(valid_data)
-        ok, msg = e2e_preflight.validate_control_response(self.ctrl_file)
+        ok, msg = e2e_preflight.validate_control_response(self.ctrl_file, expected_inv_id="inv-valid-test")
         self.assertTrue(ok, f"Expected pass but got: {msg}")
 
     def test_missing_control_file(self):
@@ -101,6 +103,7 @@ class TestControlProtocolValidation(unittest.TestCase):
     def test_unknown_root_keys(self):
         data = {
             "protocol": "s2_e2e_preflight_v1",
+            "invocation_id": "inv-valid-test",
             "status": "pass",
             "checks": {
                 "node_version": "v24.21.0",
@@ -124,13 +127,14 @@ class TestControlProtocolValidation(unittest.TestCase):
             "unauthorized_extra_key": "injected_data",
         }
         self._write_ctrl(data)
-        ok, msg = e2e_preflight.validate_control_response(self.ctrl_file)
+        ok, msg = e2e_preflight.validate_control_response(self.ctrl_file, expected_inv_id="inv-valid-test")
         self.assertFalse(ok)
         self.assertIn("invalid/unknown keys", msg.lower())
 
     def test_forged_check_value_fails(self):
         forged_data = {
             "protocol": "s2_e2e_preflight_v1",
+            "invocation_id": "inv-valid-test",
             "status": "pass",
             "checks": {
                 "node_version": "v22.0.0",  # Forged wrong version
@@ -153,20 +157,80 @@ class TestControlProtocolValidation(unittest.TestCase):
             },
         }
         self._write_ctrl(forged_data)
-        ok, msg = e2e_preflight.validate_control_response(self.ctrl_file)
+        ok, msg = e2e_preflight.validate_control_response(self.ctrl_file, expected_inv_id="inv-valid-test")
         self.assertFalse(ok)
         self.assertIn("node_version", msg)
 
     def test_failed_status_with_known_check(self):
         fail_data = {
             "protocol": "s2_e2e_preflight_v1",
+            "invocation_id": "inv-valid-test",
             "status": "fail",
             "failed_check": "web_connectivity",
         }
         self._write_ctrl(fail_data)
-        ok, msg = e2e_preflight.validate_control_response(self.ctrl_file)
+        ok, msg = e2e_preflight.validate_control_response(self.ctrl_file, expected_inv_id="inv-valid-test")
         self.assertFalse(ok)
         self.assertIn("web_connectivity", msg)
+
+    def test_strict_types_reject_bool_as_int_and_int_as_bool(self):
+        valid_data = {
+            "protocol": "s2_e2e_preflight_v1",
+            "invocation_id": "inv-test-types",
+            "status": "pass",
+            "checks": {
+                "node_version": "v24.21.0",
+                "pnpm_version": "12.9.1",
+                "playwright_declared": "1.63.0",
+                "playwright_installed": "1.63.0",
+                "web_test_script": "playwright test",
+                "playwright_config": {
+                    "test_dir": "./tests/e2e",
+                    "workers": True,  # Bool as int must be rejected!
+                    "timeout": 30000,
+                    "expect_timeout": 5000,
+                    "output_dir": "./test-results",
+                    "base_url": "http://web:5173",
+                    "project_chromium": 1,  # Int as bool must be rejected!
+                },
+                "chromium_available": True,
+                "web_connectivity": True,
+                "auth_spec_absent": True,
+            },
+        }
+        self._write_ctrl(valid_data)
+        ok, msg = e2e_preflight.validate_control_response(self.ctrl_file, expected_inv_id="inv-test-types")
+        self.assertFalse(ok, "Must reject bool-as-int and int-as-bool in playwright_config")
+
+    def test_stale_epoch_timestamp_rejected(self):
+        valid_data = {
+            "protocol": "s2_e2e_preflight_v1",
+            "invocation_id": "inv-test-stale",
+            "status": "pass",
+            "checks": {
+                "node_version": "v24.21.0",
+                "pnpm_version": "12.9.1",
+                "playwright_declared": "1.63.0",
+                "playwright_installed": "1.63.0",
+                "web_test_script": "playwright test",
+                "playwright_config": {
+                    "test_dir": "./tests/e2e",
+                    "workers": 1,
+                    "timeout": 30000,
+                    "expect_timeout": 5000,
+                    "output_dir": "./test-results",
+                    "base_url": "http://web:5173",
+                    "project_chromium": True,
+                },
+                "chromium_available": True,
+                "web_connectivity": True,
+                "auth_spec_absent": True,
+            },
+        }
+        self._write_ctrl(valid_data)
+        os.utime(self.ctrl_file, (1, 1))
+        ok, msg = e2e_preflight.validate_control_response(self.ctrl_file, expected_inv_id="inv-test-stale")
+        self.assertFalse(ok, "Must reject stale epoch timestamp control response")
 
 
 class TestAtomicPersistenceAndFaults(unittest.TestCase):
@@ -281,74 +345,63 @@ class TestCanaryInvarianceAndMemory(unittest.TestCase):
             shutil.rmtree(temp_dir, ignore_errors=True)
 
 
+class TestWorkspaceIsolationAndAllowlist(unittest.TestCase):
+    def setUp(self):
+        self.tmp = tempfile.mkdtemp(prefix="s2-test-ws-")
+        self.tmp_path = Path(self.tmp)
+        self.source = self.tmp_path / "source"
+        (self.source / "apps" / "web" / ".agents").mkdir(parents=True)
+        (self.source / "apps" / "web" / "src").mkdir(parents=True)
+        (self.source / "scripts").mkdir(parents=True)
+        shutil.copy2(REPO_ROOT / "pnpm-lock.yaml", self.source / "pnpm-lock.yaml")
+        shutil.copy2(REPO_ROOT / "scripts" / "e2e_preflight.mjs", self.source / "scripts" / "e2e_preflight.mjs")
+        (self.source / "apps" / "web" / "package.json").write_text('{"name": "web"}')
+        (self.source / "apps" / "web" / "playwright.config.ts").write_text('export default {}')
+        (self.source / "apps" / "web" / "vite.config.ts").write_text('export default {}')
+        (self.source / "apps" / "web" / "tsconfig.json").write_text('{}')
+        (self.source / "apps" / "web" / "index.html").write_text('<html></html>')
+        (self.source / "apps" / "web" / "src" / "main.tsx").write_text('console.log("hello");')
+
+        # Add synthetic secret files that MUST NOT be copied
+        (self.source / "apps" / "web" / ".env.local").write_text("PASSWORD=LEAD_SYNTHETIC_CANARY_81e4\n")
+        (self.source / "apps" / "web" / ".agents" / "config").write_text("synthetic-agent-config")
+        external = self.tmp_path / "external-secret"
+        external.write_text("LEAD_SYNTHETIC_EXTERNAL_CANARY")
+        (self.source / "apps" / "web" / "external-link").symlink_to(external)
+
+    def tearDown(self):
+        shutil.rmtree(self.tmp, ignore_errors=True)
+
+    def test_workspace_copy_excludes_env_agents_and_symlinks(self):
+        ws = e2e_preflight.setup_workspace(self.source)
+        try:
+            self.assertFalse((ws / "apps" / "web" / ".env.local").exists(), ".env.local must not be copied")
+            self.assertFalse((ws / "apps" / "web" / ".agents").exists(), ".agents must not be copied")
+            self.assertFalse((ws / "apps" / "web" / "external-link").exists(), "external symlink must not be copied")
+            # Verify required files are copied
+            self.assertTrue((ws / "apps" / "web" / "package.json").is_file())
+            self.assertTrue((ws / "apps" / "web" / "playwright.config.ts").is_file())
+            self.assertTrue((ws / "apps" / "web" / "src" / "main.tsx").is_file())
+        finally:
+            shutil.rmtree(ws, ignore_errors=True)
+            e2e_preflight._cleanup_state["active_workspace"] = None
+
+
 class TestExitCodePrecedence(unittest.TestCase):
     def test_producer_takes_precedence_over_cleanup(self):
-        # Producer 47, cleanup failure 1 -> exit 47
-        producer_exit = 47
-        controller_exit = 0
-        cleanup_failed = True
+        self.assertEqual(e2e_preflight.resolve_exit_code(producer_exit=47, controller_exit=0, cleanup_failed=True), 47)
 
-        def resolve_exit(prod, ctrl, clean):
-            if prod is not None and prod != 0:
-                return prod
-            if ctrl != 0:
-                return ctrl
-            if clean:
-                return 1
-            return 0
+    def test_producer_takes_precedence_over_controller(self):
+        self.assertEqual(e2e_preflight.resolve_exit_code(producer_exit=47, controller_exit=74, cleanup_failed=False), 47)
 
-        self.assertEqual(resolve_exit(producer_exit, controller_exit, cleanup_failed), 47)
-
-    def test_producer_takes_precedence_over_sanitizer(self):
-        # Producer 47, sanitizer 74, cleanup 0 -> exit 47
-        producer_exit = 47
-        controller_exit = 74
-        cleanup_failed = False
-
-        def resolve_exit(prod, ctrl, clean):
-            if prod is not None and prod != 0:
-                return prod
-            if ctrl != 0:
-                return ctrl
-            if clean:
-                return 1
-            return 0
-
-        self.assertEqual(resolve_exit(producer_exit, controller_exit, cleanup_failed), 47)
-
-    def test_sanitizer_takes_precedence_when_producer_zero(self):
-        # Producer 0, sanitizer 74, cleanup 1 -> exit 74
-        producer_exit = 0
-        controller_exit = 74
-        cleanup_failed = True
-
-        def resolve_exit(prod, ctrl, clean):
-            if prod is not None and prod != 0:
-                return prod
-            if ctrl != 0:
-                return ctrl
-            if clean:
-                return 1
-            return 0
-
-        self.assertEqual(resolve_exit(producer_exit, controller_exit, cleanup_failed), 74)
+    def test_controller_takes_precedence_when_producer_zero(self):
+        self.assertEqual(e2e_preflight.resolve_exit_code(producer_exit=0, controller_exit=74, cleanup_failed=True), 74)
 
     def test_cleanup_takes_precedence_when_producer_and_controller_zero(self):
-        # Producer 0, sanitizer 0, cleanup 1 -> exit 1
-        producer_exit = 0
-        controller_exit = 0
-        cleanup_failed = True
+        self.assertEqual(e2e_preflight.resolve_exit_code(producer_exit=0, controller_exit=0, cleanup_failed=True), 1)
 
-        def resolve_exit(prod, ctrl, clean):
-            if prod is not None and prod != 0:
-                return prod
-            if ctrl != 0:
-                return ctrl
-            if clean:
-                return 1
-            return 0
-
-        self.assertEqual(resolve_exit(producer_exit, controller_exit, cleanup_failed), 1)
+    def test_all_zero_returns_zero(self):
+        self.assertEqual(e2e_preflight.resolve_exit_code(producer_exit=0, controller_exit=0, cleanup_failed=False), 0)
 
 
 class TestRunnerImageAndPodmanFlags(unittest.TestCase):
@@ -501,7 +554,8 @@ FOUNDATION_TEST_PASSWORD={self.canary_pass}
     def test_invalid_e2e_base_url_fails_closed(self):
         env = os.environ.copy()
         env["FOUNDATION_ENV_FILE"] = str(self.env_file)
-        env["E2E_BASE_URL"] = "http://malicious-site:5173"
+        canary_url_secret = "http://web:5173/CANARY_SECRET_LEAD_URL_TOKEN"
+        env["E2E_BASE_URL"] = canary_url_secret
         res = subprocess.run(
             ["bash", str(REPO_ROOT / "scripts" / "dev.sh"), "e2e", "--preflight"],
             cwd=str(REPO_ROOT),
@@ -511,6 +565,7 @@ FOUNDATION_TEST_PASSWORD={self.canary_pass}
         )
         self.assertEqual(res.returncode, 1)
         self.assertIn("Invalid E2E_BASE_URL", res.stderr)
+        self.assertNotIn("CANARY_SECRET_LEAD_URL_TOKEN", res.stderr, "Candidate URL canary must not leak to stderr")
 
 
 class TestSignalHandling(unittest.TestCase):
@@ -522,6 +577,14 @@ class TestSignalHandling(unittest.TestCase):
                 e2e_preflight._handle_signal(signal.SIGTERM, None)
                 mock_exit.assert_called_with(143)
 
+    def test_producer_47_preserved_on_sigterm(self):
+        with patch("sys.exit") as mock_exit:
+            with patch("e2e_preflight._perform_cleanup"):
+                e2e_preflight._cleanup_state["project_name"] = "s2_test_sig"
+                e2e_preflight._cleanup_state["producer_exit"] = 47
+                e2e_preflight._handle_signal(signal.SIGTERM, None)
+                mock_exit.assert_called_with(47)
+
     def test_sigint_handling(self):
         with patch("sys.exit") as mock_exit:
             with patch("e2e_preflight._perform_cleanup"):
@@ -529,6 +592,98 @@ class TestSignalHandling(unittest.TestCase):
                 e2e_preflight._cleanup_state["producer_exit"] = None
                 e2e_preflight._handle_signal(signal.SIGINT, None)
                 mock_exit.assert_called_with(130)
+
+
+class TestControllerSubprocessFaults(unittest.TestCase):
+    def setUp(self):
+        self.tmp = tempfile.mkdtemp(prefix="s2-test-ctrlfault-")
+        self.tmp_path = Path(self.tmp)
+        self.envdir = self.tmp_path / "env"
+        self.envdir.mkdir(mode=0o700)
+        self.readonly = self.tmp_path / "readonly"
+        self.readonly.mkdir(mode=0o500)
+        self.initial_cleanup = copy.deepcopy(e2e_preflight._cleanup_state)
+
+    def tearDown(self):
+        try:
+            os.chmod(self.readonly, 0o700)
+        except OSError:
+            pass
+        shutil.rmtree(self.tmp, ignore_errors=True)
+        e2e_preflight._cleanup_state.clear()
+        e2e_preflight._cleanup_state.update(self.initial_cleanup)
+
+    def test_install_cli_47_preserved_against_inspect_0(self):
+        ws = self.tmp_path / "ws_install_47"
+        ws.mkdir()
+        calls = []
+        def fake_run(cmd, **kw):
+            calls.append(cmd)
+            if "create" in cmd:
+                Path(cmd[cmd.index("--cidfile") + 1]).write_text("a" * 64)
+            return subprocess.CompletedProcess(cmd, 0, stdout="0\n", stderr="")
+        class FakeProc:
+            def __init__(self, cmd, **kw):
+                self.returncode = 47 if len([x for x in calls if "create" in x]) == 1 else 0
+            def wait(self, **kw):
+                return self.returncode
+            def kill(self): pass
+        with patch.object(e2e_preflight, "validate_environment", return_value={"COMPOSE_PROJECT_NAME": "s2-test-probe", "ENV_DIR": str(self.envdir)}), \
+             patch.object(e2e_preflight, "verify_image"), \
+             patch.object(e2e_preflight, "resolve_web_and_network", return_value=("web", "app")), \
+             patch.object(e2e_preflight, "setup_workspace", return_value=ws), \
+             patch.object(e2e_preflight.subprocess, "run", side_effect=fake_run), \
+             patch.object(e2e_preflight.subprocess, "Popen", FakeProc), \
+             patch.object(e2e_preflight.signal, "signal"):
+            code = e2e_preflight.run_preflight()
+            self.assertEqual(code, 47, "Must preserve install CLI exit 47 over inspect 0")
+
+    def test_install_removal_failure_retains_handles_and_fails_nonzero(self):
+        ws = self.tmp_path / "ws_rm_fail"
+        ws.mkdir()
+        calls = []
+        def fake_run(cmd, **kw):
+            calls.append(cmd)
+            if "create" in cmd:
+                Path(cmd[cmd.index("--cidfile") + 1]).write_text("a" * 64)
+            status = 1 if "rm" in cmd and sum("rm" in x for x in calls) == 1 else 0
+            return subprocess.CompletedProcess(cmd, status, stdout="0\n", stderr="")
+        class FakeProc:
+            returncode = 0
+            def __init__(self, cmd, **kw): self.returncode = 0
+            def wait(self, **kw): return 0
+            def kill(self): pass
+        with patch.object(e2e_preflight, "validate_environment", return_value={"COMPOSE_PROJECT_NAME": "s2-test-probe", "ENV_DIR": str(self.envdir)}), \
+             patch.object(e2e_preflight, "verify_image"), \
+             patch.object(e2e_preflight, "resolve_web_and_network", return_value=("web", "app")), \
+             patch.object(e2e_preflight, "setup_workspace", return_value=ws), \
+             patch.object(e2e_preflight.subprocess, "run", side_effect=fake_run), \
+             patch.object(e2e_preflight.subprocess, "Popen", FakeProc), \
+             patch.object(e2e_preflight.signal, "signal"):
+            code = e2e_preflight.run_preflight()
+            self.assertNotEqual(code, 0, "Must not return 0 when container removal fails")
+            self.assertTrue(ws.exists(), "Workspace must not be removed when container removal fails")
+            self.assertIsNotNone(e2e_preflight._cleanup_state.get("active_cid"), "active_cid must be retained")
+
+    def test_interrupted_create_handled_cleanly(self):
+        ws = self.tmp_path / "ws_int_create"
+        ws.mkdir()
+        def fake_run(cmd, **kw):
+            if "create" in cmd:
+                Path(cmd[cmd.index("--cidfile") + 1]).write_text("a" * 64)
+                raise subprocess.TimeoutExpired(cmd, 30)
+            return subprocess.CompletedProcess(cmd, 0, stdout="0\n", stderr="")
+        with patch.object(e2e_preflight, "validate_environment", return_value={"COMPOSE_PROJECT_NAME": "s2-test-probe", "ENV_DIR": str(self.envdir)}), \
+             patch.object(e2e_preflight, "verify_image"), \
+             patch.object(e2e_preflight, "resolve_web_and_network", return_value=("web", "app")), \
+             patch.object(e2e_preflight, "setup_workspace", return_value=ws), \
+             patch.object(e2e_preflight.subprocess, "run", side_effect=fake_run), \
+             patch.object(e2e_preflight.signal, "signal"):
+            try:
+                code = e2e_preflight.run_preflight()
+            except subprocess.TimeoutExpired:
+                self.fail("TimeoutExpired must be caught and handled inside run_preflight")
+            self.assertEqual(code, 124, "Must return 124 on create timeout")
 
 
 if __name__ == "__main__":

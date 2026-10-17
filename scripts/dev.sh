@@ -802,7 +802,7 @@ with open(target_file, "w", encoding="utf-8") as f:
       _fail "ERROR: E2E_BASE_URL is required. Set E2E_BASE_URL=http://web:5173"
     fi
     if [ "$E2E_BASE_URL" != "http://web:5173" ]; then
-      _fail "ERROR: Invalid E2E_BASE_URL '${E2E_BASE_URL}'. Expected exactly 'http://web:5173'"
+      _fail "ERROR: Invalid E2E_BASE_URL. Expected exactly 'http://web:5173'"
     fi
 
     exec python3 -B "${SCRIPT_DIR}/e2e_preflight.py"

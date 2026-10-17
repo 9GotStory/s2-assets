@@ -24,10 +24,48 @@ const ALLOWED_CHECKS = new Set([
 ]);
 
 const workspaceRoot = process.env.WORKSPACE_ROOT || '/workspace';
+const invocationId = process.env.E2E_INVOCATION_ID || '';
 const controlFilePath =
   process.env.E2E_CONTROL_FILE ||
   path.join(workspaceRoot, '.control', 'preflight.json');
 const baseURL = process.env.E2E_BASE_URL || 'http://web:5173';
+
+async function readBoundedBody(res, maxBytes = 4096) {
+  if (!res.body) return '';
+  const reader = res.body.getReader();
+  const chunks = [];
+  let totalBytes = 0;
+  try {
+    while (totalBytes < maxBytes) {
+      const { done, value } = await reader.read();
+      if (done) break;
+      if (value) {
+        const remaining = maxBytes - totalBytes;
+        if (value.byteLength > remaining) {
+          chunks.push(value.subarray(0, remaining));
+          totalBytes += remaining;
+          break;
+        } else {
+          chunks.push(value);
+          totalBytes += value.byteLength;
+        }
+      }
+    }
+  } finally {
+    try {
+      await reader.cancel();
+    } catch {
+      // Ignore reader cancellation errors
+    }
+  }
+  const decoder = new TextDecoder('utf-8');
+  let out = '';
+  for (const c of chunks) {
+    out += decoder.decode(c, { stream: true });
+  }
+  out += decoder.decode();
+  return out;
+}
 
 function writeControlFile(data) {
   try {
@@ -142,6 +180,9 @@ async function runPreflight() {
     const rootRes = await fetch(baseURL, {
       signal: AbortSignal.timeout(5000),
     });
+    try {
+      await rootRes.body?.cancel();
+    } catch {}
     if (!rootRes.ok) {
       throw new Error('web_connectivity');
     }
@@ -153,8 +194,7 @@ async function runPreflight() {
     if (!loginRes.ok) {
       throw new Error('web_connectivity');
     }
-    const loginBodyRaw = await loginRes.text();
-    const loginBody = loginBodyRaw.slice(0, 4096);
+    const loginBody = await readBoundedBody(loginRes, 4096);
     if (!loginBody.includes('<html') && !loginBody.includes('<!DOCTYPE')) {
       throw new Error('web_connectivity');
     }
@@ -172,6 +212,7 @@ async function runPreflight() {
     // All assertions verified: commit finite exact-schema pass result
     const passResult = {
       protocol: PROTOCOL_VERSION,
+      invocation_id: invocationId,
       status: 'pass',
       checks: {
         node_version: 'v24.21.0',
@@ -201,6 +242,7 @@ async function runPreflight() {
       : 'unknown';
     const failResult = {
       protocol: PROTOCOL_VERSION,
+      invocation_id: invocationId,
       status: 'fail',
       failed_check: verifiedFailedCheck,
     };
