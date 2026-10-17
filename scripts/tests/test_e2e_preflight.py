@@ -18,6 +18,7 @@ import tempfile
 import time
 import unittest
 from unittest.mock import MagicMock, patch
+import uuid
 
 # Add parent directory to path to import e2e_preflight
 REPO_ROOT = Path(__file__).resolve().parent.parent.parent
@@ -381,10 +382,9 @@ class TestWorkspaceIsolationAndAllowlist(unittest.TestCase):
             self.assertFalse((ws / "apps" / "web" / ".env.local").exists(), ".env.local must not be copied")
             self.assertFalse((ws / "apps" / "web" / ".agents").exists(), ".agents must not be copied")
             self.assertFalse((ws / "apps" / "web" / "external-link").exists(), "external symlink must not be copied")
-            # Verify required files are copied
+            # Verify required manifests are copied, but src/ is not copied
             self.assertTrue((ws / "apps" / "web" / "package.json").is_file())
-            self.assertTrue((ws / "apps" / "web" / "playwright.config.ts").is_file())
-            self.assertTrue((ws / "apps" / "web" / "src" / "main.tsx").is_file())
+            self.assertFalse((ws / "apps" / "web" / "src").exists(), "src/ must not be copied (exact allowlist, no src walk)")
         finally:
             shutil.rmtree(ws, ignore_errors=True)
             e2e_preflight._cleanup_state["active_workspace"] = None
@@ -573,28 +573,43 @@ FOUNDATION_TEST_PASSWORD={self.canary_pass}
 
 class TestSignalHandling(unittest.TestCase):
     def test_sigterm_handling(self):
-        with patch("sys.exit") as mock_exit:
-            with patch("e2e_preflight._perform_cleanup"):
-                e2e_preflight._cleanup_state["project_name"] = "s2_test_sig"
-                e2e_preflight._cleanup_state["producer_exit"] = None
-                e2e_preflight._handle_signal(signal.SIGTERM, None)
-                mock_exit.assert_called_with(143)
+        e2e_preflight._cleanup_state["signal_received"] = 0
+        e2e_preflight._cleanup_state["producer_exit"] = None
+        e2e_preflight._handle_signal(signal.SIGTERM, None)
+        self.assertEqual(e2e_preflight._cleanup_state["signal_received"], signal.SIGTERM)
+        self.assertEqual(
+            e2e_preflight.resolve_exit_code(
+                producer_exit=e2e_preflight._cleanup_state["producer_exit"],
+                signal_received=e2e_preflight._cleanup_state["signal_received"],
+            ),
+            143,
+        )
 
     def test_producer_47_preserved_on_sigterm(self):
-        with patch("sys.exit") as mock_exit:
-            with patch("e2e_preflight._perform_cleanup"):
-                e2e_preflight._cleanup_state["project_name"] = "s2_test_sig"
-                e2e_preflight._cleanup_state["producer_exit"] = 47
-                e2e_preflight._handle_signal(signal.SIGTERM, None)
-                mock_exit.assert_called_with(47)
+        e2e_preflight._cleanup_state["signal_received"] = 0
+        e2e_preflight._cleanup_state["producer_exit"] = 47
+        e2e_preflight._handle_signal(signal.SIGTERM, None)
+        self.assertEqual(e2e_preflight._cleanup_state["signal_received"], signal.SIGTERM)
+        self.assertEqual(
+            e2e_preflight.resolve_exit_code(
+                producer_exit=e2e_preflight._cleanup_state["producer_exit"],
+                signal_received=e2e_preflight._cleanup_state["signal_received"],
+            ),
+            47,
+        )
 
     def test_sigint_handling(self):
-        with patch("sys.exit") as mock_exit:
-            with patch("e2e_preflight._perform_cleanup"):
-                e2e_preflight._cleanup_state["project_name"] = "s2_test_sig"
-                e2e_preflight._cleanup_state["producer_exit"] = None
-                e2e_preflight._handle_signal(signal.SIGINT, None)
-                mock_exit.assert_called_with(130)
+        e2e_preflight._cleanup_state["signal_received"] = 0
+        e2e_preflight._cleanup_state["producer_exit"] = None
+        e2e_preflight._handle_signal(signal.SIGINT, None)
+        self.assertEqual(e2e_preflight._cleanup_state["signal_received"], signal.SIGINT)
+        self.assertEqual(
+            e2e_preflight.resolve_exit_code(
+                producer_exit=e2e_preflight._cleanup_state["producer_exit"],
+                signal_received=e2e_preflight._cleanup_state["signal_received"],
+            ),
+            130,
+        )
 
 
 class TestControllerSubprocessFaults(unittest.TestCase):
@@ -801,11 +816,22 @@ class TestRound2SupervisionAndSecurityRegressions(unittest.TestCase):
             active_cid=None,
             recovery_log_path=str(recovery),
             project_name="s2-probe",
+            cleanup_failed=False,
+            signal_received=0,
         )
-        try:
-            e2e_preflight._handle_signal(signal.SIGTERM, None)
-        except SystemExit:
-            pass
+        e2e_preflight._handle_signal(signal.SIGTERM, None)
+        self.assertEqual(e2e_preflight._cleanup_state["signal_received"], signal.SIGTERM)
+        # In Round 3, cleanup & recovery commit are executed by supervisor on latched signal
+        e2e_preflight._perform_cleanup()
+        rec_info = e2e_preflight.format_recovery_info(
+            exit_status=143,
+            trap_signal=143,
+            cleanup_failed=e2e_preflight._cleanup_state["cleanup_failed"],
+            project_name="s2-probe",
+            unremoved_cid=e2e_preflight._cleanup_state.get("active_cid"),
+            unremoved_workspace=e2e_preflight._cleanup_state.get("active_workspace"),
+        )
+        e2e_preflight.commit_recovery(str(recovery), rec_info)
         self.assertTrue(ws.exists(), "Workspace must not be deleted when unreconciled CID exists")
         self.assertTrue(cidfile.exists(), "CID file must not be deleted when unreconciled CID exists")
         self.assertTrue(recovery.exists(), "Recovery log must be committed on signal")
@@ -936,6 +962,274 @@ class TestRound2SupervisionAndSecurityRegressions(unittest.TestCase):
             code = e2e_preflight.run_preflight()
             self.assertNotEqual(code, 0, "Altered assertion script during install must fail closed")
             self.assertNotIn("Playwright runtime preflight verified:", out.getvalue())
+
+
+class TestRound3PhaseARegressions(unittest.TestCase):
+    def setUp(self):
+        self.tmp = tempfile.mkdtemp(prefix="s2-test-r3-")
+        self.tmp_path = Path(self.tmp)
+        self.envdir = self.tmp_path / "env"
+        self.envdir.mkdir(mode=0o700)
+
+    def tearDown(self):
+        shutil.rmtree(self.tmp, ignore_errors=True)
+        e2e_preflight._reset_cleanup_state()
+
+    def test_quiet_child_terminates_within_monotonic_deadline(self):
+        t = time.monotonic()
+        rc, out = e2e_preflight._run_bounded(
+            [sys.executable, "-c", "import time; time.sleep(1.25)"],
+            timeout=0.05,
+        )
+        elapsed = time.monotonic() - t
+        self.assertEqual(rc, 124, "Quiet child must return 124 on timeout")
+        self.assertLess(elapsed, 0.25, f"Deadline must be respected (elapsed: {elapsed}s)")
+
+    def test_nonallowlisted_sensitive_copy_prevented(self):
+        source = self.tmp_path / "source"
+        (source / "apps" / "web" / "src" / "cache").mkdir(parents=True)
+        (source / "scripts").mkdir()
+        shutil.copy2(REPO_ROOT / "pnpm-lock.yaml", source / "pnpm-lock.yaml")
+        shutil.copy2(REPO_ROOT / "scripts" / "e2e_preflight.mjs", source / "scripts" / "e2e_preflight.mjs")
+        (source / "apps" / "web" / "package.json").write_text('{"name":"web"}')
+        (source / "apps" / "web" / "src" / "credentials.json").write_text("SYNTHETIC_CREDENTIAL")
+        (source / "apps" / "web" / "src" / "cache" / "session").write_text("SYNTHETIC_CACHED_SECRET")
+
+        ws = e2e_preflight.setup_workspace(source)
+        try:
+            self.assertFalse((ws / "apps" / "web" / "src" / "credentials.json").exists())
+            self.assertFalse((ws / "apps" / "web" / "src" / "cache" / "session").exists())
+            self.assertFalse((ws / "apps" / "web" / "src").exists())
+        finally:
+            shutil.rmtree(ws, ignore_errors=True)
+
+    def test_checked_path_swap_prevented(self):
+        source = self.tmp_path / "source_swap"
+        (source / "apps" / "web").mkdir(parents=True)
+        (source / "scripts").mkdir()
+        shutil.copy2(REPO_ROOT / "pnpm-lock.yaml", source / "pnpm-lock.yaml")
+        shutil.copy2(REPO_ROOT / "scripts" / "e2e_preflight.mjs", source / "scripts" / "e2e_preflight.mjs")
+        pkg = source / "apps" / "web" / "package.json"
+        pkg.write_text('{"name":"web"}')
+        external = self.tmp_path / "external-secret"
+        external.write_text("SYNTHETIC_RACE_SECRET")
+
+        original_copy2 = shutil.copy2
+        def swap_copy(src, dst, *a, **kw):
+            if Path(src) == pkg:
+                pkg.unlink()
+                pkg.symlink_to(external)
+            return original_copy2(src, dst, *a, **kw)
+
+        with patch.object(e2e_preflight.shutil, "copy2", side_effect=swap_copy):
+            ws = e2e_preflight.setup_workspace(source)
+        try:
+            copied_text = (ws / "apps" / "web" / "package.json").read_text("utf-8")
+            self.assertNotIn("SYNTHETIC_RACE_SECRET", copied_text)
+            self.assertIn("web", copied_text)
+        finally:
+            shutil.rmtree(ws, ignore_errors=True)
+
+    def test_name_rejected_without_full_cid(self):
+        with patch.object(e2e_preflight, "_run_bounded", return_value=(0, "inv-exact")):
+            cid = e2e_preflight._reconcile_container(str(self.tmp_path / "missing.cid"), "some-name", "inv-exact")
+            self.assertIsNone(cid, "Must not accept container name as CID")
+
+    def test_bare_zero_terminal_state_rejected(self):
+        valid, exit_code = e2e_preflight._parse_terminal_state("0")
+        self.assertFalse(valid, "Bare '0' inspect must be rejected")
+        self.assertIsNone(exit_code)
+
+    def test_nonboolean_terminal_state_rejected(self):
+        valid, exit_code = e2e_preflight._parse_terminal_state("garbage 0 ignored-extra")
+        self.assertFalse(valid, "Non-boolean or multi-token inspect must be rejected")
+        self.assertIsNone(exit_code)
+
+    def test_create_timeout_without_cid_retains_workspace(self):
+        ws = self.tmp_path / "ws_timeout"
+        ws.mkdir()
+        def fake_run(cmd, **kw):
+            if "create" in cmd:
+                raise subprocess.TimeoutExpired(cmd, 30)
+            return subprocess.CompletedProcess(cmd, 0)
+        def metadata(cmd, **kw):
+            return 125, ""
+
+        with patch.object(e2e_preflight, "validate_environment", return_value={"COMPOSE_PROJECT_NAME": "s2-probe", "ENV_DIR": str(self.envdir)}), \
+             patch.object(e2e_preflight, "verify_image"), \
+             patch.object(e2e_preflight, "resolve_web_and_network", return_value=("web", "s2-probe_default")), \
+             patch.object(e2e_preflight, "setup_workspace", return_value=ws), \
+             patch.object(e2e_preflight, "_run_bounded", side_effect=metadata), \
+             patch.object(e2e_preflight.subprocess, "run", side_effect=fake_run), \
+             patch.object(e2e_preflight.signal, "signal"):
+            code = e2e_preflight.run_preflight()
+            self.assertEqual(code, 124)
+            self.assertTrue(ws.exists(), "Uncertain create timeout must retain workspace")
+            self.assertTrue(e2e_preflight._cleanup_state["cleanup_failed"])
+
+    def test_producer_47_preserved_across_sigterm(self):
+        ws = self.tmp_path / "ws_sigterm"
+        ws.mkdir()
+        (ws / ".control").mkdir()
+        calls = []
+        def fake_run(cmd, **kw):
+            calls.append(cmd)
+            if "create" in cmd:
+                Path(cmd[cmd.index("--cidfile") + 1]).write_text("a" * 64)
+            if "rm" in cmd:
+                os.kill(os.getpid(), signal.SIGTERM)
+            return subprocess.CompletedProcess(cmd, 0)
+        def metadata(cmd, **kw):
+            if any("io.s2-assets.invocation-id" in str(s) for s in cmd):
+                return 0, e2e_preflight._cleanup_state["inv_id"]
+            return 0, "false 47"
+        class FakeWait:
+            def __init__(self, *a, **k): pass
+            def wait(self, **k): return 0
+            def kill(self): pass
+
+        old_term = signal.getsignal(signal.SIGTERM)
+        try:
+            with patch.object(e2e_preflight, "validate_environment", return_value={"COMPOSE_PROJECT_NAME": "s2-probe", "ENV_DIR": str(self.envdir)}), \
+                 patch.object(e2e_preflight, "verify_image"), \
+                 patch.object(e2e_preflight, "resolve_web_and_network", return_value=("web", "s2-probe_default")), \
+                 patch.object(e2e_preflight, "setup_workspace", return_value=ws), \
+                 patch.object(e2e_preflight, "_run_bounded", side_effect=metadata), \
+                 patch.object(e2e_preflight.subprocess, "run", side_effect=fake_run), \
+                 patch.object(e2e_preflight.subprocess, "Popen", FakeWait):
+                code = e2e_preflight.run_preflight()
+                self.assertEqual(code, 47, "Producer 47 must be preserved across SIGTERM")
+                self.assertEqual(e2e_preflight._cleanup_state["producer_exit"], 47)
+        finally:
+            signal.signal(signal.SIGTERM, old_term)
+
+    def test_producer_47_preserved_across_sigint(self):
+        ws = self.tmp_path / "ws_sigint"
+        ws.mkdir()
+        (ws / ".control").mkdir()
+        calls = []
+        def fake_run(cmd, **kw):
+            calls.append(cmd)
+            if "create" in cmd:
+                Path(cmd[cmd.index("--cidfile") + 1]).write_text("a" * 64)
+            if "rm" in cmd:
+                os.kill(os.getpid(), signal.SIGINT)
+            return subprocess.CompletedProcess(cmd, 0)
+        def metadata(cmd, **kw):
+            if any("io.s2-assets.invocation-id" in str(s) for s in cmd):
+                return 0, e2e_preflight._cleanup_state["inv_id"]
+            return 0, "false 47"
+        class FakeWait:
+            def __init__(self, *a, **k): pass
+            def wait(self, **k): return 0
+            def kill(self): pass
+
+        old_int = signal.getsignal(signal.SIGINT)
+        try:
+            with patch.object(e2e_preflight, "validate_environment", return_value={"COMPOSE_PROJECT_NAME": "s2-probe", "ENV_DIR": str(self.envdir)}), \
+                 patch.object(e2e_preflight, "verify_image"), \
+                 patch.object(e2e_preflight, "resolve_web_and_network", return_value=("web", "s2-probe_default")), \
+                 patch.object(e2e_preflight, "setup_workspace", return_value=ws), \
+                 patch.object(e2e_preflight, "_run_bounded", side_effect=metadata), \
+                 patch.object(e2e_preflight.subprocess, "run", side_effect=fake_run), \
+                 patch.object(e2e_preflight.subprocess, "Popen", FakeWait):
+                code = e2e_preflight.run_preflight()
+                self.assertEqual(code, 47, "Producer 47 must be preserved across SIGINT")
+                self.assertEqual(e2e_preflight._cleanup_state["producer_exit"], 47)
+        finally:
+            signal.signal(signal.SIGINT, old_int)
+
+    def test_config_tampered_during_install_fails_closed(self):
+        ws = self.tmp_path / "ws_cfg_tamper"
+        ws.mkdir()
+        (ws / "apps" / "web").mkdir(parents=True)
+        (ws / "apps" / "web" / "playwright.config.ts").write_text("reviewed")
+        calls = []
+        def fake_run(cmd, **kw):
+            calls.append(cmd)
+            if "create" in cmd:
+                phase = sum("create" in c for c in calls)
+                Path(cmd[cmd.index("--cidfile") + 1]).write_text("a" * 64)
+                if phase == 1:
+                    (ws / "apps" / "web" / "playwright.config.ts").write_text("unreviewed config")
+            return subprocess.CompletedProcess(cmd, 0)
+        def metadata(cmd, **kw):
+            if any("io.s2-assets.invocation-id" in str(s) for s in cmd):
+                return 0, e2e_preflight._cleanup_state["inv_id"]
+            return 0, "false 0"
+        class FakeWait:
+            def __init__(self, *a, **k): pass
+            def wait(self, **k): return 0
+            def kill(self): pass
+
+        out = io.StringIO()
+        with patch.object(e2e_preflight, "validate_environment", return_value={"COMPOSE_PROJECT_NAME": "s2-probe", "ENV_DIR": str(self.envdir)}), \
+             patch.object(e2e_preflight, "verify_image"), \
+             patch.object(e2e_preflight, "resolve_web_and_network", return_value=("web", "s2-probe_default")), \
+             patch.object(e2e_preflight, "setup_workspace", return_value=ws), \
+             patch.object(e2e_preflight, "_run_bounded", side_effect=metadata), \
+             patch.object(e2e_preflight.subprocess, "run", side_effect=fake_run), \
+             patch.object(e2e_preflight.subprocess, "Popen", FakeWait), \
+             patch.object(e2e_preflight.signal, "signal"), \
+             contextlib.redirect_stdout(out):
+            code = e2e_preflight.run_preflight()
+            self.assertEqual(code, 1, "Config tampered during install must fail closed")
+            self.assertNotIn("Playwright runtime preflight verified:", out.getvalue())
+
+    def test_real_imported_config_forgery_fails_closed(self):
+        # Verify in actual runtime container that forged config fails closed
+        runtime = self.tmp_path / "runtime"
+        (runtime / "apps" / "web" / "node_modules" / "@playwright" / "test").mkdir(parents=True)
+        (runtime / ".control").mkdir()
+        shutil.copy2(REPO_ROOT / "scripts" / "e2e_preflight.mjs", runtime / "e2e_preflight.mjs")
+        (runtime / "apps" / "web" / "package.json").write_text(json.dumps({
+            "name": "web",
+            "type": "module",
+            "scripts": {"test:e2e": "playwright test"},
+            "devDependencies": {"@playwright/test": "1.63.0"},
+        }))
+        (runtime / "apps" / "web" / "node_modules" / "@playwright" / "test" / "package.json").write_text('{"version":"1.63.0"}')
+        inv = f"test-forgery-{uuid.uuid4().hex}"
+        forged_config = (
+            "import fs from 'node:fs';\n"
+            "process.exit(0);\n"
+        )
+        (runtime / "apps" / "web" / "playwright.config.ts").write_text(forged_config)
+        cname = f"s2-test-forgery-{uuid.uuid4().hex[:8]}"
+        cid = None
+        try:
+            r = subprocess.run(
+                [
+                    "podman", "--events-backend=none", "create",
+                    "--name", cname, "--pull=never", "--network=none",
+                    "--log-driver=none", "--http-proxy=false",
+                    "-v", f"{runtime}:/workspace:z",
+                    "-w", "/workspace",
+                    "-e", "HOME=/tmp",
+                    "-e", f"E2E_INVOCATION_ID={inv}",
+                    "-e", f"E2E_CONTROL_FILE=/workspace/.control/forged.json",
+                    "-e", "E2E_BASE_URL=http://web:5173",
+                    e2e_preflight.EXPECTED_IMAGE_ID,
+                    "node", "/workspace/e2e_preflight.mjs",
+                ],
+                stdout=subprocess.PIPE,
+                stderr=subprocess.DEVNULL,
+                timeout=20,
+            )
+            if r.returncode == 0:
+                cid = r.stdout.decode().strip()
+                subprocess.run(["podman", "--events-backend=none", "start", cid], timeout=15)
+                wait_res = subprocess.run(["podman", "--events-backend=none", "wait", cid], stdout=subprocess.PIPE, timeout=20)
+                wait_code = int(wait_res.stdout.decode().strip())
+                self.assertEqual(wait_code, 1, "Forged config must cause preflight script to exit 1")
+                # Control response must be status: fail or not accepted
+                ctrl_path = runtime / ".control" / "forged.json"
+                if ctrl_path.exists():
+                    ok, _ = e2e_preflight.validate_control_response(ctrl_path, expected_inv_id=inv)
+                    self.assertFalse(ok, "Forged config must not produce an accepted pass control response")
+        finally:
+            if cid:
+                subprocess.run(["podman", "--events-backend=none", "rm", "-f", "-t", "1", cid], timeout=10)
 
 
 if __name__ == "__main__":

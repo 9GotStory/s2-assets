@@ -1,7 +1,7 @@
 import fs from 'node:fs';
 import path from 'node:path';
+import crypto from 'node:crypto';
 import { execFileSync } from 'node:child_process';
-import { createRequire } from 'node:module';
 
 // Enforce output-silent invariant at the runtime boundary
 console.log = () => {};
@@ -23,7 +23,12 @@ const ALLOWED_CHECKS = new Set([
   'auth_spec_absent',
 ]);
 
+const EXPECTED_CONFIG_SHA256 =
+  'ac4512bd908d6e4b4204624d2208a0f59076d5f3101b12225aaa8d61e7bc4930';
+const EXPECTED_CONFIG_BYTES = 979;
+
 const workspaceRoot = process.env.WORKSPACE_ROOT || '/workspace';
+const trustedRoot = process.env.TRUSTED_ROOT || '/trusted';
 const invocationId = process.env.E2E_INVOCATION_ID || '';
 const controlFilePath =
   process.env.E2E_CONTROL_FILE ||
@@ -74,6 +79,28 @@ function writeControlFile(data) {
   }
 }
 
+function findChromiumPath() {
+  const browserDir = process.env.PLAYWRIGHT_BROWSERS_PATH || '/ms-playwright';
+  if (fs.existsSync(browserDir)) {
+    try {
+      const entries = fs.readdirSync(browserDir);
+      for (const entry of entries) {
+        if (entry.startsWith('chromium-')) {
+          const candidate = path.join(browserDir, entry, 'chrome-linux64', 'chrome');
+          if (fs.existsSync(candidate)) {
+            return candidate;
+          }
+        }
+      }
+    } catch {
+      // Ignore errors reading browser directory
+    }
+  }
+  const fallback = '/ms-playwright/chromium-1243/chrome-linux64/chrome';
+  if (fs.existsSync(fallback)) return fallback;
+  return null;
+}
+
 async function runPreflight() {
   let currentCheck = 'node_version';
   try {
@@ -107,9 +134,22 @@ async function runPreflight() {
     }
 
     currentCheck = 'playwright_installed';
-    const requireWeb = createRequire(pkgPath);
-    const installedPlaywrightPkg = requireWeb('@playwright/test/package.json');
-    if (installedPlaywrightPkg.version !== '1.63.0') {
+    const candidateInstalledPaths = [
+      path.join(workspaceRoot, 'apps/web/node_modules/@playwright/test/package.json'),
+      path.join(workspaceRoot, 'node_modules/@playwright/test/package.json'),
+    ];
+    let installedPkg = null;
+    for (const p of candidateInstalledPaths) {
+      if (fs.existsSync(p)) {
+        try {
+          installedPkg = JSON.parse(fs.readFileSync(p, 'utf8'));
+          break;
+        } catch {
+          // ignore read error
+        }
+      }
+    }
+    if (!installedPkg || installedPkg.version !== '1.63.0') {
       throw new Error('playwright_installed');
     }
 
@@ -119,46 +159,34 @@ async function runPreflight() {
       throw new Error('web_test_script');
     }
 
-    // 5. Playwright configuration validation
+    // 5. Playwright configuration validation (pure-data fingerprint verification, no evaluation)
     currentCheck = 'playwright_config';
     if (baseURL !== 'http://web:5173') {
       throw new Error('playwright_config');
     }
-    const configPath = path.join(workspaceRoot, 'apps/web/playwright.config.ts');
-    const configModule = await import(configPath);
-    const config = configModule.default;
 
-    if (!config || typeof config !== 'object') {
-      throw new Error('playwright_config');
+    let configPath = path.join(trustedRoot, 'playwright.config.ts');
+    if (!fs.existsSync(configPath)) {
+      configPath = path.join(workspaceRoot, 'apps/web/playwright.config.ts');
     }
-    if (config.testDir !== './tests/e2e') {
-      throw new Error('playwright_config');
-    }
-    if (config.workers !== 1) {
-      throw new Error('playwright_config');
-    }
-    if (config.timeout !== 30000) {
-      throw new Error('playwright_config');
-    }
-    if (config.expect?.timeout !== 5000) {
-      throw new Error('playwright_config');
-    }
-    if (config.outputDir !== './test-results') {
-      throw new Error('playwright_config');
-    }
-    if (config.use?.baseURL !== 'http://web:5173') {
-      throw new Error('playwright_config');
-    }
-    const projects = Array.isArray(config.projects) ? config.projects : [];
-    const hasChromium = projects.some((p) => p && p.name === 'chromium');
-    if (!hasChromium) {
+    if (!fs.existsSync(configPath)) {
       throw new Error('playwright_config');
     }
 
-    // 6. Chromium executable availability
+    const configStat = fs.statSync(configPath);
+    if (configStat.size !== EXPECTED_CONFIG_BYTES) {
+      throw new Error('playwright_config');
+    }
+
+    const configBytes = fs.readFileSync(configPath);
+    const computedHash = crypto.createHash('sha256').update(configBytes).digest('hex');
+    if (computedHash !== EXPECTED_CONFIG_SHA256) {
+      throw new Error('playwright_config');
+    }
+
+    // 6. Chromium executable availability (resolved directly from immutable image)
     currentCheck = 'chromium_available';
-    const { chromium } = requireWeb('@playwright/test');
-    const chromePath = chromium.executablePath();
+    const chromePath = findChromiumPath();
     if (!chromePath || !fs.existsSync(chromePath)) {
       throw new Error('chromium_available');
     }

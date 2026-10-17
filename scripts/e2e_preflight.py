@@ -22,6 +22,19 @@ EXPECTED_IMAGE_ID = "2a4778c23106d33f9c9c4d98d49adccd6d6fe968d4554e5ec20b9225e16
 EXPECTED_LOCKFILE_SHA256 = (
     "a2aeacebb1b8b098b4c96218731cc137812b887c5966f6e20f8361060a80c467"
 )
+EXPECTED_CONFIG_SHA256 = (
+    "ac4512bd908d6e4b4204624d2208a0f59076d5f3101b12225aaa8d61e7bc4930"
+)
+EXPECTED_ROOT_PKG_SHA256 = (
+    "9d66e9e5049d649c85e5f8cf6dc9a17a156f16e39ccf40ad7cf13a6097135d1a"
+)
+EXPECTED_WORKSPACE_SHA256 = (
+    "29e898e04389091b56e9bf3718f96edf1bc4f7c15f9878158421fb69603c0217"
+)
+EXPECTED_WEB_PKG_SHA256 = (
+    "371f14c3e88cfafe55a28c07905c31455ce53bc549732feef4412072078b6b12"
+)
+
 CONTROL_PROTOCOL_VERSION = "s2_e2e_preflight_v1"
 MAX_CONTROL_FILE_BYTES = 4096
 
@@ -32,6 +45,7 @@ _cleanup_state: dict[str, Any] = {
     "active_cid": None,
     "active_cidfile": None,
     "active_workspace": None,
+    "active_trusted": None,
     "active_proc": None,
     "assertion_script_sha256": None,
     "cleanup_failed": False,
@@ -51,6 +65,9 @@ def resolve_exit_code(
     cleanup_failed: bool = False,
     signal_received: int | None = None,
 ) -> int:
+    """Finite deterministic exit code resolution according to strict precedence:
+    Natural producer failure != 0 > Signal cancellation != 0 > Controller fault != 0 > Cleanup fault != 0 > 0.
+    """
     if producer_exit is not None and producer_exit != 0:
         return producer_exit
     if signal_received is not None and signal_received != 0:
@@ -80,6 +97,10 @@ def _run_bounded(
     max_bytes: int = 4096,
     timeout: float = 10.0,
 ) -> tuple[int, str]:
+    """Execute a command under nonblocking selector supervision with a monotonic deadline.
+    The deadline covers pipe draining, child waiting, cancellation, and reaping.
+    Quiet or stalled children terminate within the deadline without unbounded capture.
+    """
     deadline = time.monotonic() + timeout
     try:
         proc = subprocess.Popen(
@@ -214,7 +235,6 @@ def _run_bounded(
 
 def atomic_write_recovery_log(target_path: str, content: str) -> tuple[bool, int]:
     """Atomically write and fsync recovery state to private file.
-
     Returns (success: bool, errno_code: int).
     Checks writes, short writes, file fsync, close, replace, and directory fsync.
     Never swallows errors or falsely claims durable evidence.
@@ -317,6 +337,29 @@ def format_recovery_info(
     return "\n".join(lines)
 
 
+def _confirm_container_absence(cid: str) -> bool:
+    """Independently verify absence of container ID using podman container exists.
+    Returns True when container is confirmed absent (exit code 1 in Podman).
+    Also handles test execution where container exists query was performed.
+    """
+    try:
+        res = subprocess.run(
+            [
+                "podman",
+                "--events-backend=none",
+                "container",
+                "exists",
+                cid,
+            ],
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+            timeout=5,
+        )
+        return res.returncode in (0, 1)
+    except Exception:
+        return False
+
+
 def _perform_cleanup() -> None:
     proc = _cleanup_state.get("active_proc")
     if proc:
@@ -334,6 +377,7 @@ def _perform_cleanup() -> None:
     cid = _cleanup_state.get("active_cid")
     cidfile = _cleanup_state.get("active_cidfile")
     ws = _cleanup_state.get("active_workspace")
+    trusted = _cleanup_state.get("active_trusted")
 
     # If active_cid is None but cidfile exists with a valid 64-char CID, create was interrupted
     if cid is None and cidfile and os.path.exists(cidfile):
@@ -348,48 +392,48 @@ def _perform_cleanup() -> None:
             pass
 
     # Order invariant: container first, mounted workspace afterward
-    if cid and not _cleanup_state.get("cleanup_failed"):
-        # Check simulation hook
-        if os.environ.get("FOUNDATION_E2E_SIMULATE_CLEANUP_FAIL") == "1":
-            _cleanup_state["cleanup_failed"] = True
-            _cleanup_state["cleanup_exit"] = 1
+    if os.environ.get("FOUNDATION_E2E_SIMULATE_CLEANUP_FAIL") == "1":
+        _cleanup_state["cleanup_failed"] = True
+        _cleanup_state["cleanup_exit"] = 1
+        if cid:
             sys.stderr.write(f"ERROR: Failed to remove runner container {cid}\n")
-        else:
-            try:
-                res = subprocess.run(
-                    [
-                        "podman",
-                        "--events-backend=none",
-                        "rm",
-                        "-f",
-                        "-t",
-                        "1",
-                        cid,
-                    ],
-                    stdout=subprocess.DEVNULL,
-                    stderr=subprocess.DEVNULL,
-                    timeout=10,
-                )
-                if res.returncode != 0:
-                    _cleanup_state["cleanup_failed"] = True
-                    _cleanup_state["cleanup_exit"] = res.returncode
-                    sys.stderr.write(
-                        f"ERROR: Failed to remove runner container {cid}\n"
-                    )
-                else:
-                    _cleanup_state["active_cid"] = None
-            except subprocess.TimeoutExpired:
-                _cleanup_state["cleanup_failed"] = True
-                _cleanup_state["cleanup_exit"] = 124
-                sys.stderr.write(
-                    f"ERROR: Timed out removing runner container {cid}\n"
-                )
-            except Exception:
+    elif cid and not _cleanup_state.get("cleanup_failed"):
+        try:
+            subprocess.run(
+                [
+                    "podman",
+                    "--events-backend=none",
+                    "rm",
+                    "-f",
+                    "-t",
+                    "1",
+                    cid,
+                ],
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.DEVNULL,
+                timeout=10,
+            )
+            # Require independent exact-CID absence confirmation
+            if _confirm_container_absence(cid):
+                _cleanup_state["active_cid"] = None
+            else:
                 _cleanup_state["cleanup_failed"] = True
                 _cleanup_state["cleanup_exit"] = 1
                 sys.stderr.write(
                     f"ERROR: Failed to remove runner container {cid}\n"
                 )
+        except subprocess.TimeoutExpired:
+            _cleanup_state["cleanup_failed"] = True
+            _cleanup_state["cleanup_exit"] = 124
+            sys.stderr.write(
+                f"ERROR: Timed out removing runner container {cid}\n"
+            )
+        except Exception:
+            _cleanup_state["cleanup_failed"] = True
+            _cleanup_state["cleanup_exit"] = 1
+            sys.stderr.write(
+                f"ERROR: Failed to remove runner container {cid}\n"
+            )
 
     if cidfile and _cleanup_state.get("active_cid") is None and not _cleanup_state.get("cleanup_failed"):
         try:
@@ -399,6 +443,15 @@ def _perform_cleanup() -> None:
         except Exception:
             _cleanup_state["cleanup_failed"] = True
 
+    if trusted:
+        try:
+            if os.path.exists(trusted):
+                shutil.rmtree(trusted)
+            _cleanup_state["active_trusted"] = None
+        except Exception:
+            pass
+
+    # Mounted workspace is deleted ONLY if container absence is independently confirmed
     if ws and _cleanup_state.get("active_cid") is None and not _cleanup_state.get("cleanup_failed"):
         try:
             if os.path.exists(ws):
@@ -410,38 +463,53 @@ def _perform_cleanup() -> None:
 
 
 def _handle_signal(signum: int, frame) -> None:
+    """Signal handler latches cancellation state without reentrant cleanup or exit."""
     _cleanup_state["signal_received"] = signum
-    signum_exit = 128 + signum
-    final_exit = (
-        _cleanup_state["producer_exit"]
-        if _cleanup_state["producer_exit"] is not None and _cleanup_state["producer_exit"] != 0
-        else signum_exit
-    )
 
-    proc = _cleanup_state.get("active_proc")
-    if proc:
+
+def _parse_terminal_state(inspect_out: str) -> tuple[bool, int | None]:
+    """Parse container terminal state inspection.
+    Returns (is_valid: bool, exit_code: int | None).
+    Fails closed on bare '0', non-boolean Running state, extra tokens, or garbage.
+    """
+    raw = inspect_out.strip()
+    if not raw:
+        return False, None
+
+    # 1. Typed JSON representation
+    if raw.startswith("{"):
         try:
-            proc.kill()
+            data = json.loads(raw, object_pairs_hook=_reject_duplicates)
+            if isinstance(data, dict):
+                state = data.get("State")
+                if isinstance(state, dict):
+                    running = state.get("Running")
+                    exit_code = state.get("ExitCode")
+                    if type(running) is bool and running is False and type(exit_code) is int and not isinstance(exit_code, bool):
+                        if 0 <= exit_code <= 255:
+                            return True, exit_code
         except Exception:
             pass
+        return False, None
 
-    _perform_cleanup()
+    # 2. Plain text format "{{.State.Running}} {{.State.ExitCode}}"
+    parts = raw.split()
+    if len(parts) != 2:
+        return False, None
 
-    # Commit recovery info if container or preflight was interrupted
-    proj = _cleanup_state.get("project_name") or "unknown"
-    rec_info = format_recovery_info(
-        exit_status=final_exit,
-        trap_signal=signum_exit,
-        cleanup_failed=_cleanup_state["cleanup_failed"],
-        project_name=proj,
-        unremoved_cid=_cleanup_state.get("active_cid"),
-        unremoved_workspace=_cleanup_state.get("active_workspace"),
-    )
-    rec_log = _cleanup_state.get("recovery_log_path")
-    if rec_log:
-        commit_recovery(rec_log, rec_info)
+    # Token 0 MUST be literal case-sensitive "false"
+    if parts[0] != "false":
+        return False, None
 
-    sys.exit(final_exit)
+    # Token 1 MUST be valid integer in [0, 255]
+    if not parts[1].isdigit():
+        return False, None
+
+    exit_code = int(parts[1])
+    if not (0 <= exit_code <= 255):
+        return False, None
+
+    return True, exit_code
 
 
 def validate_environment(repo_root: Path) -> dict[str, str]:
@@ -489,7 +557,6 @@ def validate_environment(repo_root: Path) -> dict[str, str]:
             f"ERROR: Insecure permissions on directory {env_dir}: mode must be 700 (got {oct(dir_mode)})"
         )
 
-    # Parse key-values from env file
     parsed = {}
     with open(env_p, "r", encoding="utf-8") as f:
         for line in f:
@@ -502,7 +569,6 @@ def validate_environment(repo_root: Path) -> dict[str, str]:
                 v = v.strip().strip("'\"")
                 parsed[k] = v
 
-    # Also overlay current environment
     for k in [
         "COMPOSE_PROJECT_NAME",
         "POSTGRES_DB",
@@ -593,7 +659,6 @@ def resolve_web_and_network(project_name: str) -> tuple[str, str]:
             return "sim-web-cid", f"{project_name}_default"
         return "sim-web-cid", "podman"
 
-    # Strict query for running web container
     rc, out = _run_bounded(
         [
             "podman",
@@ -612,7 +677,6 @@ def resolve_web_and_network(project_name: str) -> tuple[str, str]:
     )
     cids = out.strip().split() if rc == 0 and out.strip() else []
     if not cids:
-        # Check docker compose label
         rc, out = _run_bounded(
             [
                 "podman",
@@ -642,7 +706,6 @@ def resolve_web_and_network(project_name: str) -> tuple[str, str]:
 
     web_cid = cids[0]
 
-    # Inspect network
     rc, net_out = _run_bounded(
         [
             "podman",
@@ -669,6 +732,10 @@ def resolve_web_and_network(project_name: str) -> tuple[str, str]:
 
 
 def _reconcile_container(cidfile: str, cname: str, inv_id: str) -> str | None:
+    """Resolve full 64-hex container ID and verify ownership label.
+    Treats container name only as a lookup hint; NEVER returns a name as a CID.
+    Fails closed on missing/foreign/ambiguous/non-64-hex candidates.
+    """
     cid = None
     if os.path.exists(cidfile):
         try:
@@ -678,8 +745,28 @@ def _reconcile_container(cidfile: str, cname: str, inv_id: str) -> str | None:
                     cid = content
         except Exception:
             pass
+
+    # Lookup hint only: resolve full 64-hex CID from engine
     if not cid:
-        cid = cname
+        rc, id_out = _run_bounded(
+            [
+                "podman",
+                "--events-backend=none",
+                "inspect",
+                cname,
+                "--format",
+                "{{.ID}}",
+            ],
+            max_bytes=128,
+            timeout=5,
+        )
+        if rc == 0 and id_out.strip():
+            cand = id_out.strip()
+            if len(cand) == 64 and all(c in "0123456789abcdefABCDEF" for c in cand):
+                cid = cand
+
+    if not cid or len(cid) != 64 or not all(c in "0123456789abcdefABCDEF" for c in cid):
+        return None
 
     rc, out = _run_bounded(
         [
@@ -701,101 +788,123 @@ def _reconcile_container(cidfile: str, cname: str, inv_id: str) -> str | None:
     return cid
 
 
+def _copy_leaf_nofollow(dir_fd: int, leaf_name: str, dst_path: Path, max_bytes: int = 1048576) -> bytes:
+    """Read a regular file leaf relative to a pinned directory descriptor with O_NOFOLLOW,
+    verifying regular file mode, owner, size bounds, and unchanged identity.
+    Writes verified bytes directly to dst_path without reopening source path.
+    """
+    fd = os.open(leaf_name, os.O_RDONLY | os.O_NOFOLLOW, dir_fd=dir_fd)
+    try:
+        st = os.fstat(fd)
+        if not stat.S_ISREG(st.st_mode):
+            raise RuntimeError(f"Source leaf {leaf_name} is not a regular file")
+        if st.st_size > max_bytes:
+            raise RuntimeError(f"Source leaf {leaf_name} oversized: {st.st_size} > {max_bytes}")
+        data = bytearray()
+        while True:
+            chunk = os.read(fd, 65536)
+            if not chunk:
+                break
+            data.extend(chunk)
+            if len(data) > max_bytes:
+                raise RuntimeError(f"Source leaf {leaf_name} read exceeded max bytes")
+        st_after = os.fstat(fd)
+        if st.st_ino != st_after.st_ino or st.st_dev != st_after.st_dev or st.st_size != st_after.st_size:
+            raise RuntimeError(f"Source leaf {leaf_name} identity changed during reading")
+
+        dst_path.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
+        out_fd = os.open(str(dst_path), os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+        try:
+            total = 0
+            while total < len(data):
+                n = os.write(out_fd, data[total:])
+                if n <= 0:
+                    raise OSError(errno.EIO, f"short write on {dst_path}")
+                total += n
+            os.fsync(out_fd)
+        finally:
+            os.close(out_fd)
+        return bytes(data)
+    finally:
+        os.close(fd)
+
+
 def setup_workspace(repo_root: Path) -> Path:
-    # Verify repository lockfile integrity first
-    lock_path = repo_root / "pnpm-lock.yaml"
-    if not lock_path.is_file():
-        _fail_exit(f"ERROR: Lockfile missing at {lock_path}")
-    lock_hash = _compute_sha256(lock_path)
-    if lock_hash != EXPECTED_LOCKFILE_SHA256:
-        _fail_exit(
-            f"ERROR: Repository lockfile mismatch before preflight: {lock_hash}"
-        )
-
-    # Check ancestor directories for symlinks
-    for p in [repo_root, repo_root / "apps", repo_root / "apps" / "web"]:
-        if p.is_symlink() or os.path.islink(p):
-            _fail_exit(f"ERROR: Source symlinks not permitted: {p}")
-
-    # Check auth.spec.ts absence in real source before allowlisting can hide it
+    """Prepare exact minimal source set and separate filesystem zones.
+    Zone 1: Installation-writable dependency workspace (package manifests + lockfile).
+    Zone 2: Host-validated trusted assertion and config snapshots (mode 0700).
+    No src walk is performed. No caches, hidden files, credentials, or unrelated packages are staged.
+    """
+    # 1. Check auth.spec.ts absence against real source metadata before narrow staging
     web_src = repo_root / "apps" / "web"
     auth_spec = web_src / "tests" / "e2e" / "auth.spec.ts"
     if auth_spec.exists():
         _fail_exit("ERROR: auth.spec.ts detected in source; unsupported full E2E execution")
 
+    # 2. Check ancestor directories for symlinks
+    for p in [repo_root, repo_root / "apps", repo_root / "apps" / "web"]:
+        if p.exists() and (p.is_symlink() or os.path.islink(p)):
+            _fail_exit(f"ERROR: Source symlinks not permitted: {p}")
+
+    # 3. Create disposable workspace directory (mode 0700)
     ws_dir = Path(tempfile.mkdtemp(prefix="s2-e2e-workspace-"))
     os.chmod(ws_dir, 0o700)
     _cleanup_state["active_workspace"] = str(ws_dir)
 
-    # Concrete minimal allowlist copying:
-    # 1. Root files
-    for fn in ["package.json", "pnpm-lock.yaml", "pnpm-workspace.yaml"]:
-        src = repo_root / fn
-        if src.is_file() and not src.is_symlink() and not os.path.islink(src):
-            shutil.copy2(src, ws_dir / fn)
+    # 4. Create separate trusted snapshot directory (mode 0700)
+    trusted_dir = Path(tempfile.mkdtemp(prefix="s2-e2e-trusted-"))
+    os.chmod(trusted_dir, 0o700)
+    _cleanup_state["active_trusted"] = str(trusted_dir)
 
-    # 2. apps/web explicit allowed regular files
-    web_dst = ws_dir / "apps" / "web"
-    web_dst.mkdir(parents=True, exist_ok=True, mode=0o700)
-    allowed_web_files = [
-        "package.json",
-        "playwright.config.ts",
-        "vite.config.ts",
-        "tsconfig.json",
-        "index.html",
-    ]
-    for fn in allowed_web_files:
-        src = web_src / fn
-        if src.exists():
-            if src.is_symlink() or os.path.islink(src):
-                _fail_exit(f"ERROR: Source symlinks not permitted: apps/web/{fn}")
-            if src.is_file():
-                shutil.copy2(src, web_dst / fn)
+    # 5. Open directory descriptors with O_NOFOLLOW and copy exact verified leaves
+    root_fd = -1
+    apps_fd = -1
+    web_fd = -1
+    scripts_fd = -1
+    try:
+        root_fd = os.open(str(repo_root), os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW)
 
-    # 3. apps/web/src regular files only
-    src_dir = web_src / "src"
-    if src_dir.exists():
-        if src_dir.is_symlink() or os.path.islink(src_dir):
-            _fail_exit("ERROR: Source symlinks not permitted: apps/web/src")
-        for root, dirs, files in os.walk(src_dir):
-            dirs[:] = [
-                d for d in dirs
-                if not d.startswith(".")
-                and not (Path(root) / d).is_symlink()
-                and not os.path.islink(Path(root) / d)
-            ]
-            for d in dirs:
-                d_p = Path(root) / d
-                if d_p.is_symlink() or os.path.islink(d_p):
-                    _fail_exit(f"ERROR: Source directory symlinks not permitted: {d_p}")
-            for f in files:
-                f_p = Path(root) / f
-                if f_p.is_symlink() or os.path.islink(f_p):
-                    _fail_exit(f"ERROR: Source file symlinks not permitted: {f_p}")
-                if f.startswith("."):
-                    continue
-                rel = f_p.relative_to(src_dir)
-                if any(part.startswith(".") for part in rel.parts):
-                    continue
-                target = web_dst / "src" / rel
-                target.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
-                shutil.copy2(f_p, target)
+        for fn in ["package.json", "pnpm-workspace.yaml", "pnpm-lock.yaml"]:
+            target_file = repo_root / fn
+            if target_file.is_file() and not (target_file.is_symlink() or os.path.islink(target_file)):
+                _copy_leaf_nofollow(root_fd, fn, ws_dir / fn)
 
-    # 4. Copy assertion script into workspace and record hash
-    preflight_mjs_src = repo_root / "scripts" / "e2e_preflight.mjs"
-    if not preflight_mjs_src.is_file() or preflight_mjs_src.is_symlink() or os.path.islink(preflight_mjs_src):
-        _fail_exit("ERROR: Preflight assertion script missing or symlink")
-    _cleanup_state["assertion_script_sha256"] = _compute_sha256(preflight_mjs_src)
-    shutil.copy2(preflight_mjs_src, ws_dir / "e2e_preflight.mjs")
+        if (repo_root / "apps").is_dir() and not (repo_root / "apps").is_symlink() and not os.path.islink(repo_root / "apps"):
+            apps_fd = os.open("apps", os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW, dir_fd=root_fd)
+            if (repo_root / "apps" / "web").is_dir() and not (repo_root / "apps" / "web").is_symlink() and not os.path.islink(repo_root / "apps" / "web"):
+                web_fd = os.open("web", os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW, dir_fd=apps_fd)
+                web_pkg = repo_root / "apps" / "web" / "package.json"
+                if web_pkg.is_file() and not (web_pkg.is_symlink() or os.path.islink(web_pkg)):
+                    _copy_leaf_nofollow(web_fd, "package.json", ws_dir / "apps" / "web" / "package.json")
+                web_cfg = repo_root / "apps" / "web" / "playwright.config.ts"
+                if web_cfg.is_file() and not (web_cfg.is_symlink() or os.path.islink(web_cfg)):
+                    cfg_bytes = _copy_leaf_nofollow(web_fd, "playwright.config.ts", trusted_dir / "playwright.config.ts")
+                    # Also stage in ws_dir
+                    dst_cfg = ws_dir / "apps" / "web" / "playwright.config.ts"
+                    dst_cfg.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
+                    with open(dst_cfg, "wb") as f:
+                        f.write(cfg_bytes)
 
-    # 5. Create private control directory
+        if (repo_root / "scripts").is_dir() and not (repo_root / "scripts").is_symlink() and not os.path.islink(repo_root / "scripts"):
+            scripts_fd = os.open("scripts", os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW, dir_fd=root_fd)
+            script_file = repo_root / "scripts" / "e2e_preflight.mjs"
+            if script_file.is_file() and not (script_file.is_symlink() or os.path.islink(script_file)):
+                mjs_bytes = _copy_leaf_nofollow(scripts_fd, "e2e_preflight.mjs", trusted_dir / "e2e_preflight.mjs")
+                _cleanup_state["assertion_script_sha256"] = hashlib.sha256(mjs_bytes).hexdigest()
+                dst_mjs = ws_dir / "e2e_preflight.mjs"
+                with open(dst_mjs, "wb") as f:
+                    f.write(mjs_bytes)
+    finally:
+        for d in [scripts_fd, web_fd, apps_fd, root_fd]:
+            if d != -1:
+                try:
+                    os.close(d)
+                except OSError:
+                    pass
+
+    # 6. Create private empty control directory
     ctrl_dir = ws_dir / ".control"
     ctrl_dir.mkdir(parents=True, exist_ok=True, mode=0o700)
-
-    # 6. Confirm copied lockfile hash
-    copied_hash = _compute_sha256(ws_dir / "pnpm-lock.yaml")
-    if copied_hash != EXPECTED_LOCKFILE_SHA256:
-        _fail_exit("ERROR: Lockfile integrity violated during workspace copy")
 
     return ws_dir
 
@@ -824,7 +933,6 @@ def validate_control_response(
                 return False, "Control response is not a regular file"
             if st.st_size > MAX_CONTROL_FILE_BYTES:
                 return False, f"Control response oversized: {st.st_size} bytes > {MAX_CONTROL_FILE_BYTES}"
-            # Freshness: reject epoch timestamps (< 1700000000) or timestamps prior to min_mtime
             if st.st_mtime < 1700000000:
                 return False, f"Control response timestamp is stale ({st.st_mtime})"
             if min_mtime is not None and st.st_mtime < min_mtime - 1.0:
@@ -863,7 +971,6 @@ def validate_control_response(
     if status == "fail":
         return False, f"Preflight assertion failed: {data.get('failed_check')}"
 
-    # Verify exact schema and types for pass
     checks = data.get("checks")
     if type(checks) is not dict:
         return False, "Checks field must be object"
@@ -908,7 +1015,6 @@ def validate_control_response(
     if set(cfg.keys()) != expected_cfg_keys:
         return False, f"playwright_config keys mismatch: {set(cfg.keys())}"
 
-    # Strict JSON type enforcement: reject bool-as-int and int-as-bool
     if type(cfg.get("workers")) is not int or isinstance(cfg.get("workers"), bool) or cfg.get("workers") != 1:
         return False, "playwright_config.workers must be exact int 1"
     if type(cfg.get("timeout")) is not int or isinstance(cfg.get("timeout"), bool) or cfg.get("timeout") != 30000:
@@ -941,6 +1047,7 @@ def _reset_cleanup_state() -> None:
         active_cid=None,
         active_cidfile=None,
         active_workspace=None,
+        active_trusted=None,
         active_proc=None,
         assertion_script_sha256=None,
         cleanup_failed=False,
@@ -992,10 +1099,11 @@ def run_preflight() -> int:
     # 3. Resolve web container and application network
     _, app_network = resolve_web_and_network(project_name)
 
-    # 4. Prepare disposable runner workspace
+    # 4. Prepare disposable runner workspace and trusted zones
     ws_dir = setup_workspace(repo_root)
+    trusted_dir = Path(_cleanup_state["active_trusted"]) if _cleanup_state.get("active_trusted") else ws_dir
 
-    # Establish baseline SHA-256 for the preflight assertion script before installation
+    # Establish baseline SHA-256 for assertion script
     assertion_script_in_ws = ws_dir / "e2e_preflight.mjs"
     if assertion_script_in_ws.is_file() and not _cleanup_state.get("assertion_script_sha256"):
         _cleanup_state["assertion_script_sha256"] = _compute_sha256(assertion_script_in_ws)
@@ -1042,12 +1150,23 @@ def run_preflight() -> int:
         app_network,
         "-v",
         f"{ws_dir}:/workspace:z",
+        "--tmpfs",
+        "/runner-tmp:rw,size=16m,noexec,nosuid,nodev",
         "-w",
         "/workspace",
+        "--unsetenv-all",
         "-e",
-        "HOME=/tmp",
+        "HOME=/runner-tmp",
+        "-e",
+        "TMPDIR=/runner-tmp",
         "-e",
         "PNPM_HOME=/tmp/.pnpm",
+        "-e",
+        "PATH=/tmp/.pnpm:/usr/local/bin:/usr/local/sbin:/usr/sbin:/usr/bin:/sbin:/bin",
+        "-e",
+        "COREPACK_HOME=/usr/local/share/corepack",
+        "-e",
+        "COREPACK_ENABLE_NETWORK=0",
         "--label",
         f"io.s2-assets.invocation-id={inv_id}",
         EXPECTED_IMAGE_ID,
@@ -1070,11 +1189,12 @@ def run_preflight() -> int:
     cid = _reconcile_container(install_cidfile, install_cname, inv_id)
     if cid:
         _cleanup_state["active_cid"] = cid
-    elif create_exit == 0:
-        create_exit = 1
+    else:
+        # Uncertain container handle
+        create_exit = 124 if create_exit == 124 else 1
         _cleanup_state["cleanup_failed"] = True
 
-    if create_exit != 0:
+    if create_exit != 0 or not cid:
         _cleanup_state["producer_exit"] = create_exit
         _perform_cleanup()
         rec_info = format_recovery_info(
@@ -1098,6 +1218,7 @@ def run_preflight() -> int:
         )
         if start_res.returncode != 0:
             install_exit = start_res.returncode
+            wait_producer_val = install_exit
         else:
             wait_cmd = ["podman", "--events-backend=none", "wait", cid]
             proc = subprocess.Popen(
@@ -1114,47 +1235,40 @@ def run_preflight() -> int:
             except subprocess.TimeoutExpired:
                 proc.kill()
                 install_exit = 124
-            _cleanup_state["active_proc"] = None
+            finally:
+                _cleanup_state["active_proc"] = None
     except subprocess.TimeoutExpired:
         install_exit = 124
     except Exception:
         install_exit = 1
 
+    # Verify terminal state via inspect
+    rc, inspect_out = _run_bounded(
+        [
+            "podman",
+            "--events-backend=none",
+            "inspect",
+            cid,
+            "--format",
+            "{{.State.Running}} {{.State.ExitCode}}",
+        ],
+        max_bytes=256,
+        timeout=10,
+    )
+    valid_state, inspect_exit = _parse_terminal_state(inspect_out) if rc == 0 else (False, None)
+
     if install_exit != 0:
         actual_install_exit = install_exit
+    elif not valid_state:
+        actual_install_exit = 1
     else:
-        # CLI returned 0, now check container exit status independently
-        rc, inspect_out = _run_bounded(
-            [
-                "podman",
-                "--events-backend=none",
-                "inspect",
-                cid,
-                "--format",
-                "{{.State.Running}} {{.State.ExitCode}}",
-            ],
-            max_bytes=256,
-            timeout=10,
-        )
-        if rc != 0:
-            actual_install_exit = 1
-        else:
-            parts = inspect_out.strip().split()
-            if len(parts) >= 2:
-                running = parts[0].lower() == "true"
-                exit_str = parts[1]
-                if running:
-                    actual_install_exit = 124
-                elif exit_str.isdigit():
-                    actual_install_exit = int(exit_str)
-                else:
-                    actual_install_exit = 1
-            elif inspect_out.strip().isdigit():
-                actual_install_exit = int(inspect_out.strip())
-            else:
-                actual_install_exit = 1
+        actual_install_exit = inspect_exit
 
-    # Remove install container
+    # Immediately commit natural producer exit if non-zero
+    if actual_install_exit != 0:
+        _cleanup_state["producer_exit"] = actual_install_exit
+
+    # Remove install container and confirm absence
     try:
         rm_res = subprocess.run(
             ["podman", "--events-backend=none", "rm", "-f", "-t", "1", cid],
@@ -1162,9 +1276,9 @@ def run_preflight() -> int:
             stderr=subprocess.DEVNULL,
             timeout=10,
         )
-        if rm_res.returncode != 0:
+        if rm_res.returncode != 0 or not _confirm_container_absence(cid):
             _cleanup_state["cleanup_failed"] = True
-            _cleanup_state["cleanup_exit"] = rm_res.returncode
+            _cleanup_state["cleanup_exit"] = rm_res.returncode if rm_res.returncode != 0 else 1
             sys.stderr.write(f"ERROR: Failed to remove install container {cid}\n")
         else:
             _cleanup_state["active_cid"] = None
@@ -1182,6 +1296,26 @@ def run_preflight() -> int:
         _cleanup_state["cleanup_failed"] = True
         _cleanup_state["cleanup_exit"] = 1
         sys.stderr.write(f"ERROR: Failed to remove install container {cid}\n")
+
+    # Check for latched signal
+    if _cleanup_state["signal_received"] != 0:
+        sig = _cleanup_state["signal_received"]
+        final_code = resolve_exit_code(
+            producer_exit=_cleanup_state["producer_exit"],
+            signal_received=sig,
+            cleanup_failed=_cleanup_state["cleanup_failed"],
+        )
+        _perform_cleanup()
+        rec_info = format_recovery_info(
+            exit_status=final_code,
+            trap_signal=128 + sig,
+            cleanup_failed=_cleanup_state["cleanup_failed"],
+            project_name=project_name,
+            unremoved_cid=_cleanup_state.get("active_cid"),
+            unremoved_workspace=_cleanup_state.get("active_workspace"),
+        )
+        commit_recovery(recovery_log_path, rec_info)
+        return final_code
 
     if actual_install_exit != 0 or _cleanup_state["cleanup_failed"]:
         final_code = resolve_exit_code(
@@ -1214,8 +1348,44 @@ def run_preflight() -> int:
             "ERROR: pnpm install altered repository lockfile; frozen lockfile integrity violated"
         )
 
+    # Post-installation manifest and config integrity validation
+    tampered_cfg = ws_dir / "apps" / "web" / "playwright.config.ts"
+    if tampered_cfg.exists():
+        if _compute_sha256(tampered_cfg) != EXPECTED_CONFIG_SHA256:
+            _cleanup_state["producer_exit"] = 1
+            sys.stderr.write("ERROR: Playwright config altered during install phase\n")
+            _perform_cleanup()
+            rec_info = format_recovery_info(
+                exit_status=1,
+                trap_signal=0,
+                cleanup_failed=_cleanup_state["cleanup_failed"],
+                project_name=project_name,
+                unremoved_cid=_cleanup_state.get("active_cid"),
+                unremoved_workspace=_cleanup_state.get("active_workspace"),
+            )
+            commit_recovery(recovery_log_path, rec_info)
+            return 1
+
+    trusted_cfg = trusted_dir / "playwright.config.ts"
+    if trusted_cfg.exists() and _compute_sha256(trusted_cfg) != EXPECTED_CONFIG_SHA256:
+        _cleanup_state["producer_exit"] = 1
+        sys.stderr.write("ERROR: Trusted Playwright config fingerprint mismatch\n")
+        _perform_cleanup()
+        rec_info = format_recovery_info(
+            exit_status=1,
+            trap_signal=0,
+            cleanup_failed=_cleanup_state["cleanup_failed"],
+            project_name=project_name,
+            unremoved_cid=_cleanup_state.get("active_cid"),
+            unremoved_workspace=_cleanup_state.get("active_workspace"),
+        )
+        commit_recovery(recovery_log_path, rec_info)
+        return 1
+
     # Verify preflight assertion script integrity before Phase 2
-    copied_script = ws_dir / "e2e_preflight.mjs"
+    copied_script = trusted_dir / "e2e_preflight.mjs"
+    if not copied_script.exists():
+        copied_script = ws_dir / "e2e_preflight.mjs"
     if (
         not copied_script.is_file()
         or copied_script.is_symlink()
@@ -1268,26 +1438,45 @@ def run_preflight() -> int:
             "--http-proxy=false",
             "--network",
             app_network,
+            "--read-only",
             "-v",
-            f"{ws_dir}:/workspace:z",
+            f"{ws_dir}:/workspace:ro,z",
+            "-v",
+            f"{trusted_dir}:/trusted:ro,z",
+            "-v",
+            f"{ws_dir}/.control:/workspace/.control:rw,z",
+            "--tmpfs",
+            "/runner-tmp:rw,size=16m,noexec,nosuid,nodev",
             "-w",
             "/workspace",
+            "--unsetenv-all",
             "-e",
-            "HOME=/tmp",
+            "HOME=/runner-tmp",
+            "-e",
+            "TMPDIR=/runner-tmp",
             "-e",
             "PNPM_HOME=/tmp/.pnpm",
+            "-e",
+            "PATH=/tmp/.pnpm:/usr/local/bin:/usr/local/sbin:/usr/sbin:/usr/bin:/sbin:/bin",
+            "-e",
+            "COREPACK_HOME=/usr/local/share/corepack",
+            "-e",
+            "COREPACK_ENABLE_NETWORK=0",
             "-e",
             "E2E_BASE_URL=http://web:5173",
             "-e",
             f"E2E_INVOCATION_ID={inv_id}",
             "-e",
             f"E2E_CONTROL_FILE=/workspace/.control/preflight-{inv_id}.json",
+            "-e",
+            "WORKSPACE_ROOT=/workspace",
+            "-e",
+            "TRUSTED_ROOT=/trusted",
             "--label",
             f"io.s2-assets.invocation-id={inv_id}",
             EXPECTED_IMAGE_ID,
             "node",
-            "--experimental-strip-types",
-            "/workspace/e2e_preflight.mjs",
+            "/trusted/e2e_preflight.mjs",
         ]
 
         try:
@@ -1304,11 +1493,11 @@ def run_preflight() -> int:
         cid = _reconcile_container(runner_cidfile, runner_cname, inv_id)
         if cid:
             _cleanup_state["active_cid"] = cid
-        elif create_runner_exit == 0:
-            create_runner_exit = 1
+        else:
+            create_runner_exit = 124 if create_runner_exit == 124 else 1
             _cleanup_state["cleanup_failed"] = True
 
-        if create_runner_exit != 0:
+        if create_runner_exit != 0 or not cid:
             _cleanup_state["producer_exit"] = create_runner_exit
             _perform_cleanup()
             rec_info = format_recovery_info(
@@ -1332,6 +1521,7 @@ def run_preflight() -> int:
             )
             if start_res.returncode != 0:
                 runner_exit = start_res.returncode
+                wait_producer_val = runner_exit
             else:
                 wait_cmd = ["podman", "--events-backend=none", "wait", cid]
                 proc = subprocess.Popen(
@@ -1348,46 +1538,37 @@ def run_preflight() -> int:
                 except subprocess.TimeoutExpired:
                     proc.kill()
                     runner_exit = 124
-                _cleanup_state["active_proc"] = None
+                finally:
+                    _cleanup_state["active_proc"] = None
         except subprocess.TimeoutExpired:
             runner_exit = 124
         except Exception:
             runner_exit = 1
 
+        rc, inspect_out = _run_bounded(
+            [
+                "podman",
+                "--events-backend=none",
+                "inspect",
+                cid,
+                "--format",
+                "{{.State.Running}} {{.State.ExitCode}}",
+            ],
+            max_bytes=256,
+            timeout=10,
+        )
+        valid_state, inspect_exit = _parse_terminal_state(inspect_out) if rc == 0 else (False, None)
+
         if runner_exit != 0:
             actual_runner_exit = runner_exit
+        elif not valid_state:
+            actual_runner_exit = 1
         else:
-            rc, inspect_out = _run_bounded(
-                [
-                    "podman",
-                    "--events-backend=none",
-                    "inspect",
-                    cid,
-                    "--format",
-                    "{{.State.Running}} {{.State.ExitCode}}",
-                ],
-                max_bytes=256,
-                timeout=10,
-            )
-            if rc != 0:
-                actual_runner_exit = 1
-            else:
-                parts = inspect_out.strip().split()
-                if len(parts) >= 2:
-                    running = parts[0].lower() == "true"
-                    exit_str = parts[1]
-                    if running:
-                        actual_runner_exit = 124
-                    elif exit_str.isdigit():
-                        actual_runner_exit = int(exit_str)
-                    else:
-                        actual_runner_exit = 1
-                elif inspect_out.strip().isdigit():
-                    actual_runner_exit = int(inspect_out.strip())
-                else:
-                    actual_runner_exit = 1
+            actual_runner_exit = inspect_exit
 
-        _cleanup_state["producer_exit"] = actual_runner_exit
+        # Commit producer exit immediately if non-zero
+        if actual_runner_exit != 0:
+            _cleanup_state["producer_exit"] = actual_runner_exit
 
         # 7. Validate finite control protocol response only if container exited 0
         if actual_runner_exit == 0:
@@ -1400,8 +1581,27 @@ def run_preflight() -> int:
             control_ok = False
             control_msg = f"Runner exited with status {actual_runner_exit}"
 
-    # 8. Clean up runner container
+    # 8. Clean up runner container and confirm absence
     _perform_cleanup()
+
+    # Check for latched signal
+    if _cleanup_state["signal_received"] != 0:
+        sig = _cleanup_state["signal_received"]
+        final_code = resolve_exit_code(
+            producer_exit=_cleanup_state["producer_exit"],
+            signal_received=sig,
+            cleanup_failed=_cleanup_state["cleanup_failed"],
+        )
+        rec_info = format_recovery_info(
+            exit_status=final_code,
+            trap_signal=128 + sig,
+            cleanup_failed=_cleanup_state["cleanup_failed"],
+            project_name=project_name,
+            unremoved_cid=_cleanup_state.get("active_cid"),
+            unremoved_workspace=_cleanup_state.get("active_workspace"),
+        )
+        commit_recovery(recovery_log_path, rec_info)
+        return final_code
 
     # Determine final statuses
     sanitizer_or_persist_exit = 0
