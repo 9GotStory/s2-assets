@@ -2,6 +2,8 @@ import * as fs from 'node:fs/promises';
 import * as fsSync from 'node:fs';
 import * as path from 'node:path';
 import * as os from 'node:os';
+import * as child_process from 'node:child_process';
+import pg from 'pg';
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import {
   validateTargetDatabase,
@@ -35,6 +37,7 @@ describe('Identity Fixture Unit Tests (T044 - US4)', () => {
   const testRunId = 'test_run_001';
   const testBaseUsername = 'testuser_t044';
   const testPassword = 'Secure_Test_Password_123';
+  const validBaseURL = 'http://localhost:5173';
 
   let tempDir: string;
   let tempStateFile: string;
@@ -2538,6 +2541,30 @@ describe('Identity Fixture Unit Tests (T044 - US4)', () => {
     });
     const validDevRuntimeEvidence = getDevEvidence();
 
+    const createActiveState = (overrides: Partial<TestIdentityState> = {}): TestIdentityState => ({
+      runId: testRunId,
+      database: expectedDbName,
+      targetEndpoint: `127.0.0.1:5432/${expectedDbName}`,
+      status: 'active',
+      maintainer: {
+        id: 'u-maintainer-active-1',
+        username: `${testBaseUsername}_maintainer`,
+        role: 'SYSTEM_MAINTAINER',
+      },
+      standard: {
+        id: 'u-standard-active-2',
+        username: `${testBaseUsername}_standard`,
+        role: null,
+      },
+      createdUserIds: ['u-maintainer-active-1', 'u-standard-active-2'],
+      createdRoleIds: [],
+      createdGrants: [{ userId: 'u-maintainer-active-1', roleId: 'SYSTEM_MAINTAINER' }],
+      createdSessionIds: [],
+      createdAt: new Date().toISOString(),
+      targetPolicy: 'isolated',
+      ...overrides,
+    });
+
     describe('12.1 Valid Narrowly Scoped Development Policy', () => {
       it('validates target database successfully for approved dev endpoints, port, and runtime evidence', () => {
         for (const host of ['127.0.0.1', 'localhost', 'postgres']) {
@@ -3494,30 +3521,6 @@ describe('Identity Fixture Unit Tests (T044 - US4)', () => {
     describe('12.8 Browser Authentication Prerequisites and Credentials Validation (R3)', () => {
       const validBaseURL = 'http://127.0.0.1:5173';
 
-      const createActiveState = (overrides: Partial<TestIdentityState> = {}): TestIdentityState => ({
-        runId: testRunId,
-        database: expectedDbName,
-        targetEndpoint: `127.0.0.1:5432/${expectedDbName}`,
-        status: 'active',
-        maintainer: {
-          id: 'u-maintainer-active-1',
-          username: `${testBaseUsername}_maintainer`,
-          role: 'SYSTEM_MAINTAINER',
-        },
-        standard: {
-          id: 'u-standard-active-2',
-          username: `${testBaseUsername}_standard`,
-          role: null,
-        },
-        createdUserIds: ['u-maintainer-active-1', 'u-standard-active-2'],
-        createdRoleIds: [],
-        createdGrants: [{ userId: 'u-maintainer-active-1', roleId: 'SYSTEM_MAINTAINER' }],
-        createdSessionIds: [],
-        createdAt: new Date().toISOString(),
-        targetPolicy: 'isolated',
-        ...overrides,
-      });
-
       const getDefaultPrereqs = (): BrowserAuthPrerequisitesOptions => ({
         baseURL: validBaseURL,
         stateFile: tempStateFile,
@@ -3943,6 +3946,8 @@ describe('Identity Fixture Unit Tests (T044 - US4)', () => {
           runId: testRunId,
           targetPolicy: 'shared-development',
           expectedDb: 's2_assets_dev',
+          databaseUrl: 'postgresql://postgres:secret@127.0.0.1:5432/s2_assets_dev',
+          runtimeEvidence: devEvidence,
           username: `${testBaseUsername}_maintainer`,
           password: testPassword,
         });
@@ -3952,6 +3957,417 @@ describe('Identity Fixture Unit Tests (T044 - US4)', () => {
         expect(creds.runId).toBe(testRunId);
         expect(creds.database).toBe('s2_assets_dev');
         expect(creds.targetPolicy).toBe('shared-development');
+      });
+    });
+
+    describe('12.12 Real E2E Guard Invocation Without Explicit Expected Endpoint (Finding 1)', () => {
+      const devEvidencePostgres: RuntimeEvidence = {
+        project: 's2-assets-dev',
+        service: 'postgres',
+        application: 's2-assets',
+        ownerUid: '1001',
+        containerId: 'a'.repeat(64),
+        endpoint: 'postgres:5432/s2_assets_dev',
+      };
+
+      const devEvidenceLocalhost: RuntimeEvidence = {
+        project: 's2-assets-dev',
+        service: 'postgres',
+        application: 's2-assets',
+        ownerUid: '1001',
+        containerId: 'a'.repeat(64),
+        endpoint: 'localhost:5432/s2_assets_dev',
+      };
+
+      beforeEach(() => {
+        process.env.FOUNDATION_TARGET_POLICY = 'shared-development';
+        process.env.FOUNDATION_DEV_RUNTIME = 's2-assets-dev';
+        process.env.FOUNDATION_TEST_RUN_ID = testRunId;
+        process.env.FOUNDATION_TEST_USERNAME = testBaseUsername;
+        process.env.FOUNDATION_TEST_PASSWORD = testPassword;
+        process.env.FOUNDATION_FIXTURE_STATE_FILE = tempStateFile;
+        process.env.E2E_BASE_URL = validBaseURL;
+      });
+
+      it('rejects when state target endpoint is localhost:5432/s2_assets_dev while configured runtime is postgres:5432/s2_assets_dev', async () => {
+        process.env.FOUNDATION_TEST_DATABASE_URL = 'postgresql://postgres:secret@postgres:5432/s2_assets_dev';
+        process.env.FOUNDATION_RUNTIME_EVIDENCE = JSON.stringify(devEvidencePostgres);
+
+        const stateRuntimeB = createActiveState({
+          targetPolicy: 'shared-development',
+          database: 's2_assets_dev',
+          targetEndpoint: 'localhost:5432/s2_assets_dev',
+          runtimeEvidence: devEvidenceLocalhost,
+        });
+        await writeStateFileAtomic(tempStateFile, stateRuntimeB);
+
+        expect(() =>
+          validateBrowserAuthPrerequisites({ baseURL: validBaseURL })
+        ).toThrow(
+          /State file target endpoint mismatch: independently verified target is "postgres:5432\/s2_assets_dev", but state file has "localhost:5432\/s2_assets_dev"/
+        );
+      });
+
+      it('rejects when independent runtime evidence has substituted container ID (valid 64-hex SHA)', async () => {
+        process.env.FOUNDATION_TEST_DATABASE_URL = 'postgresql://postgres:secret@postgres:5432/s2_assets_dev';
+        process.env.FOUNDATION_RUNTIME_EVIDENCE = JSON.stringify(devEvidencePostgres);
+
+        const stateDifferentContainer = createActiveState({
+          targetPolicy: 'shared-development',
+          database: 's2_assets_dev',
+          targetEndpoint: 'postgres:5432/s2_assets_dev',
+          runtimeEvidence: {
+            ...devEvidencePostgres,
+            containerId: 'b'.repeat(64),
+          },
+        });
+        await writeStateFileAtomic(tempStateFile, stateDifferentContainer);
+
+        expect(() =>
+          validateBrowserAuthPrerequisites({ baseURL: validBaseURL })
+        ).toThrow(/State file runtime evidence container ID mismatch/);
+      });
+
+      it('rejects when state runtime evidence has substituted ownerUid, service, or project', async () => {
+        process.env.FOUNDATION_TEST_DATABASE_URL = 'postgresql://postgres:secret@postgres:5432/s2_assets_dev';
+        process.env.FOUNDATION_RUNTIME_EVIDENCE = JSON.stringify(devEvidencePostgres);
+
+        const stateWrongOwner = createActiveState({
+          targetPolicy: 'shared-development',
+          database: 's2_assets_dev',
+          targetEndpoint: 'postgres:5432/s2_assets_dev',
+          runtimeEvidence: {
+            ...devEvidencePostgres,
+            ownerUid: '1002',
+          },
+        });
+        await writeStateFileAtomic(tempStateFile, stateWrongOwner);
+
+        expect(() =>
+          validateBrowserAuthPrerequisites({ baseURL: validBaseURL })
+        ).toThrow(/ownerUid/);
+      });
+
+      it('rejects when FOUNDATION_RUNTIME_EVIDENCE is missing in environment on E2E path', async () => {
+        process.env.FOUNDATION_TEST_DATABASE_URL = 'postgresql://postgres:secret@postgres:5432/s2_assets_dev';
+        delete process.env.FOUNDATION_RUNTIME_EVIDENCE;
+
+        const state = createActiveState({
+          targetPolicy: 'shared-development',
+          database: 's2_assets_dev',
+          targetEndpoint: 'postgres:5432/s2_assets_dev',
+          runtimeEvidence: devEvidencePostgres,
+        });
+        await writeStateFileAtomic(tempStateFile, state);
+
+        expect(() =>
+          validateBrowserAuthPrerequisites({ baseURL: validBaseURL })
+        ).toThrow(/Shared Development policy requires independently verified runtime evidence/);
+      });
+
+      it('rejects when FOUNDATION_TEST_DATABASE_URL is missing in environment on E2E path', async () => {
+        delete process.env.FOUNDATION_TEST_DATABASE_URL;
+        delete process.env.DATABASE_URL;
+        process.env.FOUNDATION_RUNTIME_EVIDENCE = JSON.stringify(devEvidencePostgres);
+
+        const state = createActiveState({
+          targetPolicy: 'shared-development',
+          database: 's2_assets_dev',
+          targetEndpoint: 'postgres:5432/s2_assets_dev',
+          runtimeEvidence: devEvidencePostgres,
+        });
+        await writeStateFileAtomic(tempStateFile, state);
+
+        expect(() =>
+          validateBrowserAuthPrerequisites({ baseURL: validBaseURL })
+        ).toThrow(/Shared Development policy requires independently configured database URL/);
+      });
+
+      it('successfully resolves credentials on E2E path when configuration matches state exactly', async () => {
+        process.env.FOUNDATION_TEST_DATABASE_URL = 'postgresql://postgres:secret@postgres:5432/s2_assets_dev';
+        process.env.FOUNDATION_RUNTIME_EVIDENCE = JSON.stringify(devEvidencePostgres);
+
+        const state = createActiveState({
+          targetPolicy: 'shared-development',
+          database: 's2_assets_dev',
+          targetEndpoint: 'postgres:5432/s2_assets_dev',
+          runtimeEvidence: devEvidencePostgres,
+        });
+        await writeStateFileAtomic(tempStateFile, state);
+
+        const creds = validateBrowserAuthPrerequisites({ baseURL: validBaseURL });
+        expect(creds.username).toBe(`${testBaseUsername}_maintainer`);
+        expect(creds.password).toBe(testPassword);
+        expect(creds.runId).toBe(testRunId);
+        expect(creds.database).toBe('s2_assets_dev');
+        expect(creds.targetEndpoint).toBe('postgres:5432/s2_assets_dev');
+        expect(creds.targetPolicy).toBe('shared-development');
+      });
+
+      it('preserves legacy isolated policy behavior without database URL configured', async () => {
+        delete process.env.FOUNDATION_TEST_DATABASE_URL;
+        delete process.env.DATABASE_URL;
+        delete process.env.FOUNDATION_RUNTIME_EVIDENCE;
+        process.env.FOUNDATION_TARGET_POLICY = 'isolated';
+
+        const isolatedState = createActiveState({
+          targetPolicy: 'isolated',
+          database: expectedDbName,
+          targetEndpoint: `127.0.0.1:5432/${expectedDbName}`,
+        });
+        await writeStateFileAtomic(tempStateFile, isolatedState);
+
+        const creds = validateBrowserAuthPrerequisites({
+          baseURL: validBaseURL,
+          stateFile: tempStateFile,
+          runId: testRunId,
+          targetPolicy: 'isolated',
+          expectedDb: expectedDbName,
+          username: `${testBaseUsername}_maintainer`,
+          password: testPassword,
+        });
+        expect(creds.username).toBe(`${testBaseUsername}_maintainer`);
+        expect(creds.targetPolicy).toBe('isolated');
+      });
+    });
+
+    describe('12.13 Lossless Private Configuration Generation (Finding 3)', () => {
+      it('losslessly serializes and parses password containing quotes, backslashes, whitespace, percent, and URL reserved characters', async () => {
+        const specialPassword = 'P@ss"w0rd\\with %20 spaces & special/chars:?#123';
+        const recoveryDir = path.join(tempDir, 'recovery_lossless');
+        await fs.mkdir(recoveryDir, { mode: 0o700 });
+
+        const dbUrl = new URL('postgresql://postgres@postgres:5432/s2_assets_dev');
+        dbUrl.password = encodeURIComponent(specialPassword);
+
+        const config = {
+          FOUNDATION_TARGET_POLICY: 'shared-development',
+          FOUNDATION_DEV_RUNTIME: 's2-assets-dev',
+          FOUNDATION_TEST_RUN_ID: testRunId,
+          FOUNDATION_TEST_USERNAME: testBaseUsername,
+          FOUNDATION_TEST_PASSWORD: specialPassword,
+          FOUNDATION_TEST_DATABASE_URL: dbUrl.toString(),
+          POSTGRES_DB: 's2_assets_dev',
+          FOUNDATION_FIXTURE_STATE_FILE: path.join(recoveryDir, `fixture-state-${testRunId}.json`),
+          FOUNDATION_RUNTIME_EVIDENCE: path.join(recoveryDir, 'runtime-evidence.json'),
+          E2E_BASE_URL: validBaseURL,
+          PLAYWRIGHT_BROWSERS_PATH: '/ms-playwright',
+        };
+
+        const configPath = path.join(recoveryDir, 'fixture-config.json');
+        await fs.writeFile(configPath, JSON.stringify(config, null, 2), { mode: 0o600 });
+
+        const stat = await fs.stat(configPath);
+        expect((stat.mode & 0o777).toString(8)).toBe('600');
+
+        const rawContent = await fs.readFile(configPath, 'utf-8');
+        const parsedConfig = JSON.parse(rawContent);
+        expect(parsedConfig.FOUNDATION_TEST_PASSWORD).toBe(specialPassword);
+
+        const client = new pg.Client({ connectionString: parsedConfig.FOUNDATION_TEST_DATABASE_URL });
+        expect(client.connectionParameters.password).toBe(specialPassword);
+        expect(client.connectionParameters.host).toBe('postgres');
+        expect(client.connectionParameters.port).toBe(5432);
+        expect(client.connectionParameters.database).toBe('s2_assets_dev');
+      });
+    });
+
+    describe('12.14 Runbook Script Execution Flow and Interruption Trapping (Findings 2 & 4)', () => {
+      function runMockedRunbookScript(options: {
+        setupExit: number;
+        browserExit: number;
+        cleanupExit: number;
+      }): { exitCode: number; stdout: string; stderr: string } {
+        const script = `
+set -euo pipefail
+
+SETUP_CONTAINER="s2-dev-setup-test"
+BROWSER_CONTAINER="s2-dev-browser-test"
+CLEANUP_CONTAINER="s2-dev-cleanup-test"
+
+SETUP_COMPLETED=0
+CLEANUP_COMPLETED=0
+SETUP_EXIT=0
+BROWSER_EXIT=0
+CLEANUP_EXIT=0
+FIRST_FAILURE_EXIT=0
+
+podman() {
+  local cmd="$1"
+  shift
+  if [ "$cmd" = "network" ]; then
+    echo "net-123"
+    return 0
+  elif [ "$cmd" = "container" ] && [ "$1" = "inspect" ]; then
+    if [ "$3" = "{{.State.Running}}" ]; then
+      echo "true"
+    elif [ "$3" = "{{.ID}}" ]; then
+      echo "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+    elif [[ "$3" =~ "io.9gotstory.dev-runtime.application" ]]; then
+      echo "s2-assets"
+    elif [[ "$3" =~ "io.9gotstory.dev-runtime.owner-uid" ]]; then
+      echo "1001"
+    elif [[ "$3" =~ "compose.project" ]]; then
+      echo "s2-assets-dev"
+    elif [[ "$3" =~ "compose.service" ]]; then
+      echo "postgres"
+    elif [[ "$3" =~ "NetworkSettings.Networks" ]]; then
+      echo "s2-assets-dev-database"
+    fi
+    return 0
+  elif [ "$cmd" = "container" ] && [ "$1" = "exists" ]; then
+    return 0
+  elif [ "$cmd" = "stop" ] || [ "$cmd" = "rm" ]; then
+    return 0
+  elif [ "$cmd" = "run" ]; then
+    local name=""
+    while [ "$#" -gt 0 ]; do
+      if [ "$1" = "--name" ]; then
+        name="$2"
+        shift 2
+      else
+        shift
+      fi
+    done
+    if [[ "$name" =~ s2-dev-setup ]]; then
+      return ${options.setupExit}
+    elif [[ "$name" =~ s2-dev-browser ]]; then
+      return ${options.browserExit}
+    elif [[ "$name" =~ s2-dev-cleanup ]]; then
+      return ${options.cleanupExit}
+    fi
+    return 0
+  fi
+  return 0
+}
+
+cleanup_handler() {
+  local trap_sig=$?
+  trap - EXIT INT TERM
+  if podman container exists "$BROWSER_CONTAINER" 2>/dev/null; then
+    podman stop -t 5 "$BROWSER_CONTAINER" 2>/dev/null || true
+    podman rm -f "$BROWSER_CONTAINER" 2>/dev/null || true
+  fi
+  if [ "$SETUP_COMPLETED" -eq 1 ] && [ "$CLEANUP_COMPLETED" -eq 0 ]; then
+    local trap_cleanup_code=0
+    podman run --name "$CLEANUP_CONTAINER" cleanup || trap_cleanup_code=$?
+    if [ "$trap_cleanup_code" -ne 0 ]; then
+      if [ "$FIRST_FAILURE_EXIT" -eq 0 ]; then
+        FIRST_FAILURE_EXIT="$trap_cleanup_code"
+      fi
+    else
+      CLEANUP_COMPLETED=1
+    fi
+  fi
+  if [ "$FIRST_FAILURE_EXIT" -ne 0 ]; then
+    exit "$FIRST_FAILURE_EXIT"
+  fi
+  exit "$trap_sig"
+}
+
+trap cleanup_handler EXIT INT TERM
+
+echo "PHASE:SETUP"
+podman run --name "$SETUP_CONTAINER" setup || SETUP_EXIT=$?
+if [ "$SETUP_EXIT" -ne 0 ]; then
+  echo "ERROR: Fixture setup failed with exit code $SETUP_EXIT" >&2
+  FIRST_FAILURE_EXIT="$SETUP_EXIT"
+else
+  SETUP_COMPLETED=1
+  echo "SETUP_SUCCESS"
+fi
+
+if [ "$SETUP_COMPLETED" -eq 1 ]; then
+  echo "PHASE:BROWSER"
+  podman run --name "$BROWSER_CONTAINER" browser || BROWSER_EXIT=$?
+  if [ "$BROWSER_EXIT" -ne 0 ]; then
+    echo "ERROR: Browser E2E test failed with exit code $BROWSER_EXIT" >&2
+    if [ "$FIRST_FAILURE_EXIT" -eq 0 ]; then
+      FIRST_FAILURE_EXIT="$BROWSER_EXIT"
+    fi
+  else
+    echo "BROWSER_SUCCESS"
+  fi
+fi
+
+if [ "$SETUP_COMPLETED" -eq 1 ]; then
+  echo "PHASE:CLEANUP"
+  podman run --name "$CLEANUP_CONTAINER" cleanup || CLEANUP_EXIT=$?
+  if [ "$CLEANUP_EXIT" -ne 0 ]; then
+    echo "ERROR: Fixture cleanup failed with exit code $CLEANUP_EXIT" >&2
+    if [ "$FIRST_FAILURE_EXIT" -eq 0 ]; then
+      FIRST_FAILURE_EXIT="$CLEANUP_EXIT"
+    fi
+  else
+    CLEANUP_COMPLETED=1
+    echo "CLEANUP_SUCCESS"
+  fi
+fi
+
+trap - EXIT INT TERM
+if [ "$FIRST_FAILURE_EXIT" -ne 0 ]; then
+  exit "$FIRST_FAILURE_EXIT"
+fi
+exit 0
+`;
+
+        const res = child_process.spawnSync('bash', ['-c', script], {
+          encoding: 'utf-8',
+        });
+        return {
+          exitCode: res.status ?? 0,
+          stdout: res.stdout,
+          stderr: res.stderr,
+        };
+      }
+
+      it('case 1: setup fails (7) -> skips browser, runs cleanup, exits with 7', () => {
+        const res = runMockedRunbookScript({ setupExit: 7, browserExit: 0, cleanupExit: 0 });
+        expect(res.exitCode).toBe(7);
+        expect(res.stdout).toContain('PHASE:SETUP');
+        expect(res.stdout).not.toContain('PHASE:BROWSER');
+        expect(res.stderr).toContain('Fixture setup failed with exit code 7');
+      });
+
+      it('case 2: setup succeeds (0), browser fails (8), cleanup succeeds (0) -> exits with 8', () => {
+        const res = runMockedRunbookScript({ setupExit: 0, browserExit: 8, cleanupExit: 0 });
+        expect(res.exitCode).toBe(8);
+        expect(res.stdout).toContain('PHASE:SETUP');
+        expect(res.stdout).toContain('PHASE:BROWSER');
+        expect(res.stdout).toContain('PHASE:CLEANUP');
+        expect(res.stderr).toContain('Browser E2E test failed with exit code 8');
+      });
+
+      it('case 3: setup succeeds (0), browser succeeds (0), cleanup fails (9) -> exits with 9', () => {
+        const res = runMockedRunbookScript({ setupExit: 0, browserExit: 0, cleanupExit: 9 });
+        expect(res.exitCode).toBe(9);
+        expect(res.stdout).toContain('PHASE:SETUP');
+        expect(res.stdout).toContain('PHASE:BROWSER');
+        expect(res.stdout).toContain('PHASE:CLEANUP');
+        expect(res.stderr).toContain('Fixture cleanup failed with exit code 9');
+      });
+
+      it('case 4: setup fails (7), cleanup fails (9) -> preserves first failure exit 7', () => {
+        const res = runMockedRunbookScript({ setupExit: 7, browserExit: 0, cleanupExit: 9 });
+        expect(res.exitCode).toBe(7);
+        expect(res.stdout).toContain('PHASE:SETUP');
+        expect(res.stdout).not.toContain('PHASE:BROWSER');
+      });
+
+      it('case 5: browser fails (8), cleanup fails (9) -> preserves first failure exit 8', () => {
+        const res = runMockedRunbookScript({ setupExit: 0, browserExit: 8, cleanupExit: 9 });
+        expect(res.exitCode).toBe(8);
+        expect(res.stdout).toContain('PHASE:SETUP');
+        expect(res.stdout).toContain('PHASE:BROWSER');
+        expect(res.stdout).toContain('PHASE:CLEANUP');
+      });
+
+      it('case 6: all phases succeed -> exits with 0', () => {
+        const res = runMockedRunbookScript({ setupExit: 0, browserExit: 0, cleanupExit: 0 });
+        expect(res.exitCode).toBe(0);
+        expect(res.stdout).toContain('SETUP_SUCCESS');
+        expect(res.stdout).toContain('BROWSER_SUCCESS');
+        expect(res.stdout).toContain('CLEANUP_SUCCESS');
       });
     });
   });

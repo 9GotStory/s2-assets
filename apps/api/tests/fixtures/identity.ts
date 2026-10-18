@@ -105,6 +105,9 @@ export interface BrowserAuthPrerequisitesOptions {
   runId?: string;
   expectedDb?: string;
   expectedEndpoint?: string;
+  databaseUrl?: string;
+  runtimeEvidence?: RuntimeEvidence | string;
+  runtimeIdentity?: string;
   targetPolicy?: TargetPolicy;
   username?: string;
   password?: string;
@@ -1655,8 +1658,16 @@ export async function cleanupTestIdentities(
 export function validateBrowserAuthPrerequisites(
   options: BrowserAuthPrerequisitesOptions = {}
 ): BrowserCredentials {
-  if (options.configFile || process.env.FOUNDATION_FIXTURE_CONFIG_FILE) {
-    loadConfigFile(options.configFile ?? process.env.FOUNDATION_FIXTURE_CONFIG_FILE!);
+  const explicitConfigFile =
+    options.configFile ??
+    process.env.FOUNDATION_FIXTURE_CONFIG_FILE ??
+    process.env.E2E_CONFIG_FILE;
+  if (explicitConfigFile) {
+    validateOutsideCheckout(explicitConfigFile, 'Configuration file');
+    if (!fsSync.existsSync(explicitConfigFile)) {
+      throw new Error(`Configuration file "${explicitConfigFile}" does not exist. Failing closed.`);
+    }
+    loadConfigFile(explicitConfigFile);
   }
 
   const baseURL = options.baseURL ?? process.env.E2E_BASE_URL ?? process.env.PLAYWRIGHT_BASE_URL;
@@ -1838,11 +1849,7 @@ export function validateBrowserAuthPrerequisites(
     throw new Error(`Production database target host "${endpointHost}" is prohibited. Failing closed.`);
   }
 
-  if (options.expectedEndpoint && state.targetEndpoint !== options.expectedEndpoint) {
-    throw new Error(
-      `State file target endpoint mismatch: expected "${options.expectedEndpoint}", got "${state.targetEndpoint}". Failing closed.`
-    );
-  }
+
 
   if (targetPolicy === 'shared-development') {
     if (state.database !== APPROVED_DEV_DB) {
@@ -1977,6 +1984,101 @@ export function validateBrowserAuthPrerequisites(
 
   if (!Array.isArray(state.createdRoleIds)) {
     throw new Error('Corrupted fixture state file: createdRoleIds must be an array. Failing closed.');
+  }
+
+  // 7. Resolve independent database URL, runtime identity and runtime evidence, and verify against state
+  const databaseUrl =
+    options.databaseUrl ??
+    process.env.FOUNDATION_TEST_DATABASE_URL ??
+    process.env.DATABASE_URL;
+
+  const runtimeIdentity =
+    options.runtimeIdentity ??
+    process.env.FOUNDATION_DEV_RUNTIME ??
+    process.env.DEV_PROJECT ??
+    (targetPolicy === 'shared-development' ? APPROVED_DEV_PROJECT : undefined);
+
+  const rawRuntimeEvidence =
+    options.runtimeEvidence ??
+    process.env.FOUNDATION_RUNTIME_EVIDENCE;
+
+  let verifiedTarget:
+    | { dbName: string; targetEndpoint: string; targetPolicy: TargetPolicy; runtimeEvidence?: RuntimeEvidence }
+    | undefined;
+
+  if (targetPolicy === 'shared-development') {
+    if (!databaseUrl || typeof databaseUrl !== 'string' || databaseUrl.trim().length === 0) {
+      throw new Error(
+        'Shared Development policy requires independently configured database URL (FOUNDATION_TEST_DATABASE_URL). Failing closed.'
+      );
+    }
+    if (!rawRuntimeEvidence) {
+      throw new Error(
+        `Shared Development policy requires independently verified runtime evidence (FOUNDATION_RUNTIME_EVIDENCE) for "${APPROVED_DEV_PROJECT}". Missing runtime evidence. Failing closed.`
+      );
+    }
+
+    verifiedTarget = validateTargetDatabase(databaseUrl, expectedDb, {
+      targetPolicy,
+      runtimeIdentity,
+      runtimeEvidence: rawRuntimeEvidence,
+    });
+  } else if (targetPolicy === 'isolated' && databaseUrl) {
+    verifiedTarget = validateTargetDatabase(databaseUrl, expectedDb, {
+      targetPolicy,
+    });
+  }
+
+  if (verifiedTarget) {
+    if (state.targetEndpoint !== verifiedTarget.targetEndpoint) {
+      throw new Error(
+        `State file target endpoint mismatch: independently verified target is "${verifiedTarget.targetEndpoint}", but state file has "${state.targetEndpoint}". Failing closed.`
+      );
+    }
+    if (targetPolicy === 'shared-development') {
+      if (!state.runtimeEvidence || typeof state.runtimeEvidence !== 'object') {
+        throw new Error(
+          'Shared-Development state file requires runtime evidence. Missing runtime evidence. Failing closed.'
+        );
+      }
+      const verified = verifiedTarget.runtimeEvidence!;
+      if (state.runtimeEvidence.containerId !== verified.containerId) {
+        throw new Error(
+          `State file runtime evidence container ID mismatch: independently verified "${verified.containerId}", got "${state.runtimeEvidence.containerId}". Failing closed.`
+        );
+      }
+      if (state.runtimeEvidence.endpoint !== verified.endpoint) {
+        throw new Error(
+          `State file runtime evidence endpoint mismatch: independently verified "${verified.endpoint}", got "${state.runtimeEvidence.endpoint}". Failing closed.`
+        );
+      }
+      if (state.runtimeEvidence.project !== verified.project) {
+        throw new Error(
+          `State file runtime evidence project mismatch: expected "${verified.project}", got "${state.runtimeEvidence.project}". Failing closed.`
+        );
+      }
+      if (state.runtimeEvidence.service !== verified.service) {
+        throw new Error(
+          `State file runtime evidence service mismatch: expected "${verified.service}", got "${state.runtimeEvidence.service}". Failing closed.`
+        );
+      }
+      if (state.runtimeEvidence.application !== verified.application) {
+        throw new Error(
+          `State file runtime evidence application mismatch: expected "${verified.application}", got "${state.runtimeEvidence.application}". Failing closed.`
+        );
+      }
+      if (state.runtimeEvidence.ownerUid !== verified.ownerUid) {
+        throw new Error(
+          `State file runtime evidence ownerUid mismatch: expected "${verified.ownerUid}", got "${state.runtimeEvidence.ownerUid}". Failing closed.`
+        );
+      }
+    }
+  }
+
+  if (options.expectedEndpoint && state.targetEndpoint !== options.expectedEndpoint) {
+    throw new Error(
+      `State file target endpoint mismatch: expected "${options.expectedEndpoint}", got "${state.targetEndpoint}". Failing closed.`
+    );
   }
 
   return {
