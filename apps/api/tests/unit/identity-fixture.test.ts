@@ -16,7 +16,11 @@ import {
   parseTimeoutMs,
   DEFAULT_LOCK_TIMEOUT_MS,
   DEFAULT_STATEMENT_TIMEOUT_MS,
+  APPROVED_DEV_PROJECT,
+  APPROVED_DEV_DB,
+  APPROVED_DEV_HOSTS,
   type TestIdentityState,
+  type TargetPolicy,
 } from '../fixtures/identity.ts';
 import { UserService, isArgon2idHash } from '../../src/services/user.service.ts';
 import { CapabilityService } from '../../src/services/capability.service.ts';
@@ -2510,6 +2514,604 @@ describe('Identity Fixture Unit Tests (T044 - US4)', () => {
           // State file preserved
           expect(fsSync.existsSync(tempStateFile)).toBe(true);
         });
+      });
+    });
+  });
+
+  describe('12. Shared Development Runtime Policy Regressions (T033)', () => {
+    const validDevDbUrl = 'postgresql://postgres:postgres@127.0.0.1:5432/s2_assets_dev';
+    const validDevDbName = 's2_assets_dev';
+    const devRuntimeIdentity = 's2-assets-dev';
+
+    describe('12.1 Valid Narrowly Scoped Development Policy', () => {
+      it('validates target database successfully for approved dev endpoints and runtime identity', () => {
+        for (const host of ['127.0.0.1', 'localhost', 'postgres']) {
+          const url = `postgresql://postgres:postgres@${host}:5432/s2_assets_dev`;
+          const { dbName, targetEndpoint } = validateTargetDatabase(
+            url,
+            validDevDbName,
+            'shared-development',
+            devRuntimeIdentity
+          );
+          expect(dbName).toBe('s2_assets_dev');
+          expect(targetEndpoint).toBe(`${host}:5432/s2_assets_dev`);
+        }
+      });
+
+      it('executes setupTestIdentities under shared-development policy when preexisting SYSTEM_MAINTAINER exists', async () => {
+        const mockDb = createMockDb();
+        mockDb.roles.push({ id: 'SYSTEM_MAINTAINER', description: 'Pre-existing system maintainer' });
+
+        const state = await setupTestIdentities({
+          nodeEnv: 'test',
+          databaseUrl: validDevDbUrl,
+          expectedDb: validDevDbName,
+          runId: testRunId,
+          baseUsername: testBaseUsername,
+          password: testPassword,
+          stateFile: tempStateFile,
+          targetPolicy: 'shared-development',
+          runtimeIdentity: devRuntimeIdentity,
+          db: mockDb,
+        });
+
+        expect(state.status).toBe('active');
+        expect(state.targetPolicy).toBe('shared-development');
+        expect(state.database).toBe('s2_assets_dev');
+        expect(state.createdRoleIds).toEqual([]); // Roles must NOT be created
+        expect(state.createdUserIds.length).toBe(2);
+        expect(state.createdGrants).toEqual([
+          { userId: state.maintainer.id, roleId: 'SYSTEM_MAINTAINER' },
+        ]);
+
+        // State file validation
+        const loadedState = await readAndValidateStateFile(
+          tempStateFile,
+          testRunId,
+          validDevDbName,
+          `127.0.0.1:5432/${validDevDbName}`,
+          testBaseUsername,
+          'shared-development'
+        );
+        expect(loadedState.targetPolicy).toBe('shared-development');
+        expect(loadedState.createdRoleIds).toEqual([]);
+      });
+
+      it('executes cleanupTestIdentities under shared-development policy cleanly without deleting roles', async () => {
+        const mockDb = createMockDb();
+        mockDb.roles.push({ id: 'SYSTEM_MAINTAINER', description: 'Pre-existing system maintainer' });
+
+        await setupTestIdentities({
+          nodeEnv: 'test',
+          databaseUrl: validDevDbUrl,
+          expectedDb: validDevDbName,
+          runId: testRunId,
+          baseUsername: testBaseUsername,
+          password: testPassword,
+          stateFile: tempStateFile,
+          targetPolicy: 'shared-development',
+          runtimeIdentity: devRuntimeIdentity,
+          db: mockDb,
+        });
+
+        const cleanupRes = await cleanupTestIdentities({
+          nodeEnv: 'test',
+          databaseUrl: validDevDbUrl,
+          expectedDb: validDevDbName,
+          runId: testRunId,
+          baseUsername: testBaseUsername,
+          stateFile: tempStateFile,
+          targetPolicy: 'shared-development',
+          runtimeIdentity: devRuntimeIdentity,
+          db: mockDb,
+        });
+
+        expect(cleanupRes.cleaned).toBe(true);
+        expect(cleanupRes.usersRemoved).toBe(2);
+        expect(cleanupRes.grantsRemoved).toBe(1);
+        expect(cleanupRes.rolesRemoved).toBe(0);
+        expect(mockDb.roles.some((r: any) => r.id === 'SYSTEM_MAINTAINER')).toBe(true);
+        expect(fsSync.existsSync(tempStateFile)).toBe(false);
+      });
+    });
+
+    describe('12.2 Missing/Wrong Policy, Runtime, Endpoint, or Database', () => {
+      it('rejects s2_assets_dev database under default isolated policy', () => {
+        expect(() =>
+          validateTargetDatabase(validDevDbUrl, validDevDbName, 'isolated')
+        ).toThrow(/Database target must begin with "s2_foundation_"/);
+
+        expect(() =>
+          validateTargetDatabase(validDevDbUrl, validDevDbName)
+        ).toThrow(/Database target must begin with "s2_foundation_"/);
+      });
+
+      it('rejects shared-development policy if runtimeIdentity is missing or wrong', () => {
+        expect(() =>
+          validateTargetDatabase(validDevDbUrl, validDevDbName, 'shared-development', undefined)
+        ).toThrow(/requires verified runtime identity "s2-assets-dev"/);
+
+        expect(() =>
+          validateTargetDatabase(validDevDbUrl, validDevDbName, 'shared-development', 'wrong-runtime')
+        ).toThrow(/requires verified runtime identity "s2-assets-dev"/);
+      });
+
+      it('rejects shared-development policy if database name is not s2_assets_dev', () => {
+        const otherDbUrl = 'postgresql://postgres:postgres@127.0.0.1:5432/other_db';
+        expect(() =>
+          validateTargetDatabase(otherDbUrl, 'other_db', 'shared-development', devRuntimeIdentity)
+        ).toThrow(/Shared Development policy is restricted strictly to database "s2_assets_dev"/);
+
+        expect(() =>
+          validateTargetDatabase(validDevDbUrl, 'other_expected_db', 'shared-development', devRuntimeIdentity)
+        ).toThrow(/Shared Development expected database must be "s2_assets_dev"/);
+      });
+
+      it('rejects shared-development policy if host is not an approved development host', () => {
+        const unapprovedHostUrl = 'postgresql://postgres:postgres@remote-host:5432/s2_assets_dev';
+        expect(() =>
+          validateTargetDatabase(unapprovedHostUrl, validDevDbName, 'shared-development', devRuntimeIdentity)
+        ).toThrow(/is not an approved endpoint/);
+      });
+
+      it('fails closed when setup or cleanup is called with missing or invalid runtimeIdentity', async () => {
+        const mockDb = createMockDb();
+        mockDb.roles.push({ id: 'SYSTEM_MAINTAINER', description: 'System maintainer' });
+
+        await expect(
+          setupTestIdentities({
+            nodeEnv: 'test',
+            databaseUrl: validDevDbUrl,
+            expectedDb: validDevDbName,
+            runId: testRunId,
+            baseUsername: testBaseUsername,
+            password: testPassword,
+            stateFile: tempStateFile,
+            targetPolicy: 'shared-development',
+            runtimeIdentity: 'unauthorized-runtime',
+            db: mockDb,
+          })
+        ).rejects.toThrow(/requires verified runtime identity "s2-assets-dev"/);
+
+        await expect(
+          cleanupTestIdentities({
+            nodeEnv: 'test',
+            databaseUrl: validDevDbUrl,
+            expectedDb: validDevDbName,
+            runId: testRunId,
+            baseUsername: testBaseUsername,
+            stateFile: tempStateFile,
+            targetPolicy: 'shared-development',
+            runtimeIdentity: 'unauthorized-runtime',
+            db: mockDb,
+          })
+        ).rejects.toThrow(/requires verified runtime identity "s2-assets-dev"/);
+      });
+    });
+
+    describe('12.3 Production and Connection Overrides', () => {
+      it('rejects database URLs with production hostnames even when shared-development policy is specified', () => {
+        const prodUrls = [
+          'postgresql://user:pass@production.rds.amazonaws.com:5432/s2_assets_dev',
+          'postgresql://user:pass@s2-prod.internal:5432/s2_assets_dev',
+          'postgresql://user:pass@prod-db.corp:5432/s2_assets_dev',
+        ];
+
+        for (const url of prodUrls) {
+          expect(() =>
+            validateTargetDatabase(url, validDevDbName, 'shared-development', devRuntimeIdentity)
+          ).toThrow();
+        }
+      });
+
+      it('rejects connection override parameters in database URL under shared-development policy', () => {
+        const overrideUrls = [
+          'postgresql://postgres:postgres@127.0.0.1:5432/s2_assets_dev?host=evil.com',
+          'postgresql://postgres:postgres@127.0.0.1:5432/s2_assets_dev?host=production.internal',
+          'postgresql://postgres:postgres@127.0.0.1:5432/s2_assets_dev?sslmode=disable&host=override',
+        ];
+
+        for (const url of overrideUrls) {
+          expect(() =>
+            validateTargetDatabase(url, validDevDbName, 'shared-development', devRuntimeIdentity)
+          ).toThrow();
+        }
+      });
+    });
+
+    describe('12.4 Missing Preexisting Role With No Mutation', () => {
+      it('fails closed immediately when SYSTEM_MAINTAINER does not preexist, without inserting roles or users', async () => {
+        const mockDb = createMockDb();
+        // mockDb.roles is empty!
+
+        await expect(
+          setupTestIdentities({
+            nodeEnv: 'test',
+            databaseUrl: validDevDbUrl,
+            expectedDb: validDevDbName,
+            runId: testRunId,
+            baseUsername: testBaseUsername,
+            password: testPassword,
+            stateFile: tempStateFile,
+            targetPolicy: 'shared-development',
+            runtimeIdentity: devRuntimeIdentity,
+            db: mockDb,
+          })
+        ).rejects.toThrow(/Preexisting "SYSTEM_MAINTAINER" role is required under shared-Development policy/);
+
+        // Invariant: ZERO database mutations occurred
+        expect(mockDb.roles.length).toBe(0);
+        expect(mockDb.users.length).toBe(0);
+        expect(mockDb.userRoles.length).toBe(0);
+        expect(mockDb.sessions.length).toBe(0);
+
+        // Invariant: No active state file is left behind
+        expect(fsSync.existsSync(tempStateFile)).toBe(false);
+      });
+    });
+
+    describe('12.5 Role Immutability Under Shared Development Policy', () => {
+      it('never creates roles and leaves createdRoleIds empty in state file', async () => {
+        const mockDb = createMockDb();
+        mockDb.roles.push({ id: 'SYSTEM_MAINTAINER', description: 'Pre-existing maintainer' });
+
+        const state = await setupTestIdentities({
+          nodeEnv: 'test',
+          databaseUrl: validDevDbUrl,
+          expectedDb: validDevDbName,
+          runId: testRunId,
+          baseUsername: testBaseUsername,
+          password: testPassword,
+          stateFile: tempStateFile,
+          targetPolicy: 'shared-development',
+          runtimeIdentity: devRuntimeIdentity,
+          db: mockDb,
+        });
+
+        expect(state.createdRoleIds).toEqual([]);
+        expect(mockDb.roles.length).toBe(1);
+
+        const savedContent = JSON.parse(await fs.readFile(tempStateFile, 'utf-8'));
+        expect(savedContent.createdRoleIds).toEqual([]);
+      });
+
+      it('cleanup under shared-development policy never deletes roles (rolesRemoved: 0)', async () => {
+        const mockDb = createMockDb();
+        mockDb.roles.push({ id: 'SYSTEM_MAINTAINER', description: 'Pre-existing maintainer' });
+
+        await setupTestIdentities({
+          nodeEnv: 'test',
+          databaseUrl: validDevDbUrl,
+          expectedDb: validDevDbName,
+          runId: testRunId,
+          baseUsername: testBaseUsername,
+          password: testPassword,
+          stateFile: tempStateFile,
+          targetPolicy: 'shared-development',
+          runtimeIdentity: devRuntimeIdentity,
+          db: mockDb,
+        });
+
+        const cleanupRes = await cleanupTestIdentities({
+          nodeEnv: 'test',
+          databaseUrl: validDevDbUrl,
+          expectedDb: validDevDbName,
+          runId: testRunId,
+          baseUsername: testBaseUsername,
+          stateFile: tempStateFile,
+          targetPolicy: 'shared-development',
+          runtimeIdentity: devRuntimeIdentity,
+          db: mockDb,
+        });
+
+        expect(cleanupRes.rolesRemoved).toBe(0);
+        expect(mockDb.roles.length).toBe(1);
+        expect(mockDb.roles[0].id).toBe('SYSTEM_MAINTAINER');
+      });
+
+      it('rejects tampered state file claiming createdRoleIds under shared-development policy', async () => {
+        const tamperedState: TestIdentityState = {
+          runId: testRunId,
+          database: validDevDbName,
+          targetEndpoint: `127.0.0.1:5432/${validDevDbName}`,
+          status: 'active',
+          maintainer: { id: 'm-dev', username: `${testBaseUsername}_maintainer`, role: 'SYSTEM_MAINTAINER' },
+          standard: { id: 's-dev', username: `${testBaseUsername}_standard`, role: null },
+          createdUserIds: ['m-dev', 's-dev'],
+          createdRoleIds: ['SYSTEM_MAINTAINER'], // FORBIDDEN under shared-development
+          createdGrants: [{ userId: 'm-dev', roleId: 'SYSTEM_MAINTAINER' }],
+          createdSessionIds: [],
+          createdAt: new Date().toISOString(),
+          targetPolicy: 'shared-development',
+        };
+        await writeStateFileAtomic(tempStateFile, tamperedState);
+
+        await expect(
+          readAndValidateStateFile(
+            tempStateFile,
+            testRunId,
+            validDevDbName,
+            `127.0.0.1:5432/${validDevDbName}`,
+            testBaseUsername,
+            'shared-development'
+          )
+        ).rejects.toThrow(/Inconsistent role ownership: shared-Development policy prohibits creating or tracking roles/);
+
+        const mockDb = createMockDbWithFixture(tamperedState);
+        await expect(
+          cleanupTestIdentities({
+            nodeEnv: 'test',
+            databaseUrl: validDevDbUrl,
+            expectedDb: validDevDbName,
+            runId: testRunId,
+            baseUsername: testBaseUsername,
+            stateFile: tempStateFile,
+            targetPolicy: 'shared-development',
+            runtimeIdentity: devRuntimeIdentity,
+            db: mockDb,
+          })
+        ).rejects.toThrow(/Inconsistent role ownership: shared-Development policy prohibits creating or tracking roles/);
+      });
+    });
+
+    describe('12.6 Outsider User, Grant, and Session Protection', () => {
+      it('preserves existing outsider users, grants, and sessions across setup and cleanup', async () => {
+        const mockDb = createMockDb();
+        mockDb.roles.push(
+          { id: 'SYSTEM_MAINTAINER', description: 'System maintainer' },
+          { id: 'DEVELOPER', description: 'Dev role' }
+        );
+
+        // Pre-existing outsider user and session
+        const outsiderUser = {
+          id: '11111111-1111-4000-8000-111111111111',
+          username: 'outsider_dev_lead',
+          password_hash: 'hash_outsider',
+          is_active: true,
+          created_at: new Date(),
+          updated_at: new Date(),
+        };
+        mockDb.users.push(outsiderUser);
+        mockDb.userRoles.push({
+          user_id: outsiderUser.id,
+          role_id: 'DEVELOPER',
+        });
+        const outsiderSession = {
+          id: 'sess_outsider_active_123',
+          user_id: outsiderUser.id,
+          expires_at: new Date(Date.now() + 86400000),
+          created_at: new Date(),
+        };
+        mockDb.sessions.push(outsiderSession);
+
+        // 1. Run setup
+        const state = await setupTestIdentities({
+          nodeEnv: 'test',
+          databaseUrl: validDevDbUrl,
+          expectedDb: validDevDbName,
+          runId: testRunId,
+          baseUsername: testBaseUsername,
+          password: testPassword,
+          stateFile: tempStateFile,
+          targetPolicy: 'shared-development',
+          runtimeIdentity: devRuntimeIdentity,
+          db: mockDb,
+        });
+
+        // Verify outsider user and session remain completely intact during setup
+        expect(mockDb.users.some((u: any) => u.id === outsiderUser.id)).toBe(true);
+        expect(mockDb.userRoles.some((ur: any) => ur.user_id === outsiderUser.id)).toBe(true);
+        expect(mockDb.sessions.some((s: any) => s.id === outsiderSession.id)).toBe(true);
+        expect(mockDb.users.length).toBe(3); // 1 outsider + 2 test users
+
+        // 2. Add an owned session for the test maintainer
+        mockDb.sessions.push({
+          id: 'sess_test_maintainer_456',
+          user_id: state.maintainer.id,
+          expires_at: new Date(Date.now() + 3600000),
+          created_at: new Date(),
+        });
+
+        // 3. Run cleanup
+        const cleanupRes = await cleanupTestIdentities({
+          nodeEnv: 'test',
+          databaseUrl: validDevDbUrl,
+          expectedDb: validDevDbName,
+          runId: testRunId,
+          baseUsername: testBaseUsername,
+          stateFile: tempStateFile,
+          targetPolicy: 'shared-development',
+          runtimeIdentity: devRuntimeIdentity,
+          db: mockDb,
+        });
+
+        expect(cleanupRes.cleaned).toBe(true);
+        expect(cleanupRes.usersRemoved).toBe(2);
+        expect(cleanupRes.grantsRemoved).toBe(1);
+        expect(cleanupRes.rolesRemoved).toBe(0);
+
+        // Invariant: Outsider records preserved without any change
+        expect(mockDb.users.length).toBe(1);
+        expect(mockDb.users[0].id).toBe(outsiderUser.id);
+        expect(mockDb.users[0].username).toBe('outsider_dev_lead');
+
+        expect(mockDb.userRoles.length).toBe(1);
+        expect(mockDb.userRoles[0].user_id).toBe(outsiderUser.id);
+        expect(mockDb.userRoles[0].role_id).toBe('DEVELOPER');
+
+        expect(mockDb.sessions.length).toBe(1);
+        expect(mockDb.sessions[0].id).toBe(outsiderSession.id);
+        expect(mockDb.sessions[0].user_id).toBe(outsiderUser.id);
+
+        expect(mockDb.roles.length).toBe(2);
+      });
+
+      it('fails closed and refuses cleanup if state file claims an outsider user ID', async () => {
+        const outsiderUser = {
+          id: '22222222-2222-4000-8000-222222222222',
+          username: 'dev_admin_outsider',
+          password_hash: 'hash_admin',
+          is_active: true,
+          created_at: new Date(),
+          updated_at: new Date(),
+        };
+
+        const mockDb = createMockDb();
+        mockDb.roles.push({ id: 'SYSTEM_MAINTAINER', description: 'Maintainer' });
+        mockDb.users.push(outsiderUser);
+
+        const maliciousState: TestIdentityState = {
+          runId: testRunId,
+          database: validDevDbName,
+          targetEndpoint: `127.0.0.1:5432/${validDevDbName}`,
+          status: 'active',
+          maintainer: { id: outsiderUser.id, username: `${testBaseUsername}_maintainer`, role: 'SYSTEM_MAINTAINER' },
+          standard: { id: 's-owned', username: `${testBaseUsername}_standard`, role: null },
+          createdUserIds: [outsiderUser.id, 's-owned'],
+          createdRoleIds: [],
+          createdGrants: [],
+          createdSessionIds: [],
+          createdAt: new Date().toISOString(),
+          targetPolicy: 'shared-development',
+        };
+        await writeStateFileAtomic(tempStateFile, maliciousState);
+
+        await expect(
+          cleanupTestIdentities({
+            nodeEnv: 'test',
+            databaseUrl: validDevDbUrl,
+            expectedDb: validDevDbName,
+            runId: testRunId,
+            baseUsername: testBaseUsername,
+            stateFile: tempStateFile,
+            targetPolicy: 'shared-development',
+            runtimeIdentity: devRuntimeIdentity,
+            db: mockDb,
+          })
+        ).rejects.toThrow(/Database ownership mismatch|unprovable user ownership/);
+
+        // Invariant: outsider user was NOT deleted
+        expect(mockDb.users.some((u: any) => u.id === outsiderUser.id)).toBe(true);
+      });
+    });
+
+    describe('12.7 Failure and Recovery Paths', () => {
+      it('rolls back created test users if setup fails before completion and leaves no orphaned records', async () => {
+        const mockDb = createMockDb();
+        mockDb.roles.push({ id: 'SYSTEM_MAINTAINER', description: 'System maintainer' });
+
+        const origQuery = mockDb.query;
+        // Inject error during grant creation (INSERT INTO user_roles)
+        mockDb.query = vi.fn(async (sql: string, params: any[]) => {
+          if (sql.includes('INSERT INTO user_roles')) {
+            throw new Error('Simulated database write error during grant assignment');
+          }
+          return origQuery(sql, params);
+        });
+
+        await expect(
+          setupTestIdentities({
+            nodeEnv: 'test',
+            databaseUrl: validDevDbUrl,
+            expectedDb: validDevDbName,
+            runId: testRunId,
+            baseUsername: testBaseUsername,
+            password: testPassword,
+            stateFile: tempStateFile,
+            targetPolicy: 'shared-development',
+            runtimeIdentity: devRuntimeIdentity,
+            db: mockDb,
+          })
+        ).rejects.toThrow(/Simulated database write error during grant assignment/);
+
+        // Users inserted inside transaction were rolled back or cleared
+        const rollbackCalls = mockDb.query.mock.calls.filter((c: any) =>
+          typeof c[0] === 'string' && c[0].includes('ROLLBACK')
+        );
+        expect(rollbackCalls.length).toBeGreaterThanOrEqual(1);
+      });
+
+      it('recovers from uncertain state file under shared-development policy while preserving outsider records', async () => {
+        const mockDb = createMockDb();
+        mockDb.roles.push({ id: 'SYSTEM_MAINTAINER', description: 'System maintainer' });
+
+        // Add outsider user
+        const outsiderUser = {
+          id: '33333333-3333-4000-8000-333333333333',
+          username: 'shared_dev_persisted_user',
+          password_hash: 'hash_persisted',
+          is_active: true,
+          created_at: new Date(),
+          updated_at: new Date(),
+        };
+        mockDb.users.push(outsiderUser);
+
+        // Add test fixture users
+        const maintainerId = 'm-uncertain-dev';
+        const standardId = 's-uncertain-dev';
+        mockDb.users.push(
+          {
+            id: maintainerId,
+            username: `${testBaseUsername}_maintainer`,
+            password_hash: 'hash_m',
+            is_active: true,
+            created_at: new Date(),
+            updated_at: new Date(),
+          },
+          {
+            id: standardId,
+            username: `${testBaseUsername}_standard`,
+            password_hash: 'hash_s',
+            is_active: true,
+            created_at: new Date(),
+            updated_at: new Date(),
+          }
+        );
+        mockDb.userRoles.push({
+          user_id: maintainerId,
+          role_id: 'SYSTEM_MAINTAINER',
+        });
+
+        const uncertainState: TestIdentityState = {
+          runId: testRunId,
+          database: validDevDbName,
+          targetEndpoint: `127.0.0.1:5432/${validDevDbName}`,
+          status: 'uncertain',
+          maintainer: { id: maintainerId, username: `${testBaseUsername}_maintainer`, role: 'SYSTEM_MAINTAINER' },
+          standard: { id: standardId, username: `${testBaseUsername}_standard`, role: null },
+          createdUserIds: [maintainerId, standardId],
+          createdRoleIds: [],
+          createdGrants: [{ userId: maintainerId, roleId: 'SYSTEM_MAINTAINER' }],
+          createdSessionIds: [],
+          createdAt: new Date().toISOString(),
+          targetPolicy: 'shared-development',
+        };
+        await writeStateFileAtomic(tempStateFile, uncertainState);
+
+        const cleanupRes = await cleanupTestIdentities({
+          nodeEnv: 'test',
+          databaseUrl: validDevDbUrl,
+          expectedDb: validDevDbName,
+          runId: testRunId,
+          baseUsername: testBaseUsername,
+          stateFile: tempStateFile,
+          targetPolicy: 'shared-development',
+          runtimeIdentity: devRuntimeIdentity,
+          db: mockDb,
+        });
+
+        expect(cleanupRes.cleaned).toBe(true);
+        expect(cleanupRes.usersRemoved).toBe(2);
+        expect(cleanupRes.grantsRemoved).toBe(1);
+        expect(cleanupRes.rolesRemoved).toBe(0);
+
+        // Outsider user is completely intact
+        expect(mockDb.users.length).toBe(1);
+        expect(mockDb.users[0].id).toBe(outsiderUser.id);
+        expect(mockDb.users[0].username).toBe('shared_dev_persisted_user');
+
+        // State file was cleaned up
+        expect(fsSync.existsSync(tempStateFile)).toBe(false);
       });
     });
   });

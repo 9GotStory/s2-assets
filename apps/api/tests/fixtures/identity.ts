@@ -20,10 +20,17 @@ export interface TestIdentityGrant {
   roleId: string;
 }
 
+export type TargetPolicy = 'isolated' | 'shared-development';
+
+export const APPROVED_DEV_PROJECT = 's2-assets-dev';
+export const APPROVED_DEV_DB = 's2_assets_dev';
+export const APPROVED_DEV_HOSTS = ['postgres', '127.0.0.1', 'localhost'];
+
 export interface TestIdentityState {
   runId: string;
   database: string;
   targetEndpoint: string;
+  targetPolicy?: TargetPolicy;
   status: 'active' | 'initializing' | 'uncertain';
   maintainer: TestIdentityUser;
   standard: TestIdentityUser;
@@ -44,6 +51,8 @@ export interface IdentitySetupOptions {
   nodeEnv?: string;
   expectedDb?: string;
   db?: any;
+  targetPolicy?: TargetPolicy;
+  runtimeIdentity?: string;
 }
 
 export interface IdentityCleanupOptions {
@@ -56,6 +65,8 @@ export interface IdentityCleanupOptions {
   db?: any;
   lockTimeoutMs?: number;
   statementTimeoutMs?: number;
+  targetPolicy?: TargetPolicy;
+  runtimeIdentity?: string;
 }
 
 export interface IdentityCleanupResult {
@@ -261,17 +272,41 @@ if (process.env.FOUNDATION_FIXTURE_CONFIG_FILE) {
 
 /**
  * Validates the database target without leaking any connection credentials.
+ * Supports default-deny isolated target policy and narrowly verified shared-development policy.
  */
 export function validateTargetDatabase(
   databaseUrl: string | undefined,
-  expectedDb?: string
-): { dbName: string; targetEndpoint: string } {
+  expectedDb?: string,
+  options?:
+    | {
+        targetPolicy?: TargetPolicy;
+        runtimeIdentity?: string;
+      }
+    | TargetPolicy,
+  legacyRuntimeIdentity?: string
+): { dbName: string; targetEndpoint: string; targetPolicy: TargetPolicy } {
   if (!databaseUrl || typeof databaseUrl !== 'string' || databaseUrl.trim().length === 0) {
     throw new Error('Database URL is required and must be a non-empty string');
   }
 
   if (!expectedDb || typeof expectedDb !== 'string' || expectedDb.trim().length === 0) {
     throw new Error('Expected database name is required for target verification');
+  }
+
+  const targetPolicy: TargetPolicy =
+    (typeof options === 'string' ? options : options?.targetPolicy) ??
+    (process.env.FOUNDATION_TARGET_POLICY as TargetPolicy) ??
+    'isolated';
+
+  const runtimeIdentity: string | undefined =
+    (typeof options === 'string' ? legacyRuntimeIdentity : options?.runtimeIdentity) ??
+    process.env.FOUNDATION_DEV_RUNTIME ??
+    process.env.DEV_PROJECT;
+
+  if (targetPolicy !== 'isolated' && targetPolicy !== 'shared-development') {
+    throw new Error(
+      `Invalid targetPolicy "${targetPolicy}": must be "isolated" or "shared-development". Failing closed.`
+    );
   }
 
   let parsedUrl: URL;
@@ -335,27 +370,62 @@ export function validateTargetDatabase(
     throw new Error('Database name is required in database URL');
   }
 
-  if (!/^s2_foundation_[a-zA-Z0-9_]+$/.test(dbName)) {
-    throw new Error(`Database target must begin with "s2_foundation_" (got "${dbName}")`);
-  }
+  if (targetPolicy === 'shared-development') {
+    // Narrowly verified Development Runtime policy strictly bound to approved s2-assets-dev
+    if (!runtimeIdentity || runtimeIdentity.trim() !== APPROVED_DEV_PROJECT) {
+      throw new Error(
+        `Shared Development policy requires verified runtime identity "${APPROVED_DEV_PROJECT}" (got "${runtimeIdentity || 'undefined'}"). Failing closed.`
+      );
+    }
 
-  if (
-    dbName === 's2_assets' ||
-    dbName === 's2_foundation_s2_assets' ||
-    dbName === 'postgres' ||
-    dbName === 'default'
-  ) {
-    throw new Error(`Database target cannot be default or shared database "${dbName}"`);
-  }
+    if (dbName !== APPROVED_DEV_DB) {
+      throw new Error(
+        `Shared Development policy is restricted strictly to database "${APPROVED_DEV_DB}" (got "${dbName}"). Failing closed.`
+      );
+    }
 
-  if (dbName !== expectedDb) {
-    throw new Error(
-      `Database target mismatch: URL database "${dbName}" does not match expected "${expectedDb}"`
-    );
+    if (expectedDb !== APPROVED_DEV_DB) {
+      throw new Error(
+        `Shared Development expected database must be "${APPROVED_DEV_DB}" (got "${expectedDb}"). Failing closed.`
+      );
+    }
+
+    if (dbName !== expectedDb) {
+      throw new Error(
+        `Database target mismatch: URL database "${dbName}" does not match expected "${expectedDb}"`
+      );
+    }
+
+    if (!APPROVED_DEV_HOSTS.includes(effectiveHost)) {
+      throw new Error(
+        `Shared Development database host "${effectiveHost}" is not an approved endpoint for "${APPROVED_DEV_PROJECT}". Failing closed.`
+      );
+    }
+  } else {
+    // Default-deny isolated target policy
+    if (!/^s2_foundation_[a-zA-Z0-9_]+$/.test(dbName)) {
+      throw new Error(`Database target must begin with "s2_foundation_" (got "${dbName}")`);
+    }
+
+    if (
+      dbName === 's2_assets' ||
+      dbName === 's2_foundation_s2_assets' ||
+      dbName === 'postgres' ||
+      dbName === 'default' ||
+      dbName === APPROVED_DEV_DB
+    ) {
+      throw new Error(`Database target cannot be default or shared database "${dbName}"`);
+    }
+
+    if (dbName !== expectedDb) {
+      throw new Error(
+        `Database target mismatch: URL database "${dbName}" does not match expected "${expectedDb}"`
+      );
+    }
   }
 
   const targetEndpoint = `${effectiveHost}:${effectivePort}/${dbName}`;
-  return { dbName, targetEndpoint };
+  return { dbName, targetEndpoint, targetPolicy };
 }
 
 /**
@@ -450,7 +520,8 @@ export async function readAndValidateStateFile(
   expectedRunId: string,
   expectedDb: string,
   expectedEndpoint: string,
-  expectedBaseUsername?: string
+  expectedBaseUsername?: string,
+  expectedTargetPolicy?: TargetPolicy
 ): Promise<TestIdentityState> {
   validateOutsideCheckout(filePath, 'State file');
 
@@ -513,6 +584,34 @@ export async function readAndValidateStateFile(
 
   if (!['active', 'initializing', 'uncertain'].includes(state.status)) {
     throw new Error(`Invalid fixture state status: "${state.status}". Failing closed.`);
+  }
+
+  if (state.targetPolicy !== undefined) {
+    if (state.targetPolicy !== 'isolated' && state.targetPolicy !== 'shared-development') {
+      throw new Error(`Invalid fixture state targetPolicy: "${state.targetPolicy}". Failing closed.`);
+    }
+  }
+
+  if (expectedTargetPolicy !== undefined) {
+    const effectiveStatePolicy = state.targetPolicy ?? 'isolated';
+    if (effectiveStatePolicy !== expectedTargetPolicy) {
+      throw new Error(
+        `State file targetPolicy mismatch: expected "${expectedTargetPolicy}", got "${effectiveStatePolicy}". Failing closed.`
+      );
+    }
+  }
+
+  if (state.targetPolicy === 'shared-development' || expectedTargetPolicy === 'shared-development') {
+    if (state.database !== APPROVED_DEV_DB) {
+      throw new Error(
+        `State file database mismatch under shared-Development policy: expected "${APPROVED_DEV_DB}", got "${state.database}". Failing closed.`
+      );
+    }
+    if (state.createdRoleIds.length > 0) {
+      throw new Error(
+        'Inconsistent role ownership: shared-Development policy prohibits creating or tracking roles. Failing closed.'
+      );
+    }
   }
 
   if (
@@ -714,7 +813,20 @@ export async function setupTestIdentities(
     throw new Error('POSTGRES_DB or expectedDb is required for target verification');
   }
 
-  const { dbName, targetEndpoint } = validateTargetDatabase(databaseUrl, expectedDb);
+  const targetPolicy: TargetPolicy =
+    options.targetPolicy ??
+    (process.env.FOUNDATION_TARGET_POLICY as TargetPolicy) ??
+    'isolated';
+
+  const runtimeIdentity =
+    options.runtimeIdentity ??
+    process.env.FOUNDATION_DEV_RUNTIME ??
+    process.env.DEV_PROJECT;
+
+  const { dbName, targetEndpoint } = validateTargetDatabase(databaseUrl, expectedDb, {
+    targetPolicy,
+    runtimeIdentity,
+  });
 
   const baseUsername = options.baseUsername ?? process.env.FOUNDATION_TEST_USERNAME;
   if (!baseUsername || typeof baseUsername !== 'string' || !/^[a-zA-Z0-9_-]+$/.test(baseUsername)) {
@@ -810,6 +922,7 @@ export async function setupTestIdentities(
       runId,
       database: dbName,
       targetEndpoint,
+      targetPolicy,
       status: 'initializing',
       maintainer: {
         id: '',
@@ -858,6 +971,11 @@ export async function setupTestIdentities(
     // 2. Ensure role 'SYSTEM_MAINTAINER' exists in roles table
     const roleCheck = await client.query('SELECT id FROM roles WHERE id = $1', ['SYSTEM_MAINTAINER']);
     if (!roleCheck.rows || roleCheck.rows.length === 0) {
+      if (targetPolicy === 'shared-development') {
+        throw new Error(
+          'Preexisting "SYSTEM_MAINTAINER" role is required under shared-Development policy. Failing closed without mutating roles.'
+        );
+      }
       await client.query('INSERT INTO roles (id, description) VALUES ($1, $2)', [
         'SYSTEM_MAINTAINER',
         'System maintainer with maintenance capabilities',
@@ -914,6 +1032,7 @@ export async function setupTestIdentities(
       runId,
       database: dbName,
       targetEndpoint,
+      targetPolicy,
       status: 'initializing',
       maintainer: {
         id: maintainer.id,
@@ -978,6 +1097,7 @@ export async function setupTestIdentities(
             runId,
             database: dbName,
             targetEndpoint,
+            targetPolicy,
             status: 'uncertain',
             maintainer: {
               id: maintainer?.id || '',
@@ -1044,8 +1164,21 @@ export async function cleanupTestIdentities(
     throw new Error('POSTGRES_DB or expectedDb is required for target verification');
   }
 
+  const targetPolicy: TargetPolicy =
+    options.targetPolicy ??
+    (process.env.FOUNDATION_TARGET_POLICY as TargetPolicy) ??
+    'isolated';
+
+  const runtimeIdentity =
+    options.runtimeIdentity ??
+    process.env.FOUNDATION_DEV_RUNTIME ??
+    process.env.DEV_PROJECT;
+
   // Target database validation MUST occur before state-file check
-  const { dbName, targetEndpoint } = validateTargetDatabase(databaseUrl, expectedDb);
+  const { dbName, targetEndpoint } = validateTargetDatabase(databaseUrl, expectedDb, {
+    targetPolicy,
+    runtimeIdentity,
+  });
 
   const baseUsername = options.baseUsername ?? process.env.FOUNDATION_TEST_USERNAME;
   if (!baseUsername || typeof baseUsername !== 'string' || !/^[a-zA-Z0-9_-]+$/.test(baseUsername)) {
@@ -1116,13 +1249,14 @@ export async function cleanupTestIdentities(
       };
     }
 
-    // Thoroughly validate locked state file with expected base username (P1 / O4)
+    // Thoroughly validate locked state file with expected base username (P1 / O4) and targetPolicy
     const state = await readAndValidateStateFile(
       stateFile,
       runId,
       dbName,
       targetEndpoint,
-      baseUsername
+      baseUsername,
+      targetPolicy
     );
 
     // If empty initializing record without any created entities:

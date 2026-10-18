@@ -1,6 +1,6 @@
 # Quickstart: Application Foundation
 
-**Status: T046 direct Playwright readiness accepted.** T041 API bootstrap, T042 Web SPA bootstrap, T043 container-only toolchain, T044 explicit migration and disposable test identity lifecycle, and T045 real HTTP smoke and database outage/recovery verification (`scripts/dev.sh http-smoke` and `apps/api/tests/http/foundation.test.ts`) are implemented and verified. The Product Owner accepted T046 execution at `8ff1c54f2f06cd1e111847aa5093056bb462b3ff` using shared `s2-assets-dev`; audit receipts are retained on issue `9GOTSTORY-233`. T033 real-browser implementation/execution remains separately gated.
+**Status: T033 candidate authored; real-browser execution and Development writes remain separately gated.** T041 API bootstrap, T042 Web SPA bootstrap, T043 container-only toolchain, T044 explicit migration and disposable test identity lifecycle, and T045 real HTTP smoke and database outage/recovery verification (`scripts/dev.sh http-smoke` and `apps/api/tests/http/foundation.test.ts`) are implemented and verified. The Product Owner accepted T046 direct Playwright readiness at `8ff1c54f2f06cd1e111847aa5093056bb462b3ff` using shared `s2-assets-dev`; audit receipts are retained on issue `9GOTSTORY-233`. T033 candidate implementation (real Chromium authentication and session tests in `apps/web/tests/e2e/auth.spec.ts`, verified shared-Development fixture extension in `apps/api/tests/fixtures/identity.ts`, and comprehensive unit regressions in `apps/api/tests/unit/identity-fixture.test.ts`) is authored and validated via isolated container unit verification and static typechecks; actual browser execution and shared-Development database writes remain unperformed and separately gated under future Product Owner authorization.
 
 This guide covers an isolated Rootless Podman development/test stack. Git, Spec Kit and agents remain on the Fedora host. Node, pnpm, PostgreSQL and browser execution remain in containers. [Plan](./plan.md) defines the command/lifecycle contract; [research](./research.md) records decisions. The unchanged [data model](./data-model.md) and [API error contract](./contracts/api-error.md) remain authoritative.
 
@@ -304,7 +304,59 @@ fi
 
 Record both absence results and recheck persistent resources/input hashes using the final commands above. Retain recovery evidence outside any directory selected for deletion; remove the exact private directory only after both containers are confirmed absent and no creation is in flight. Recovery establishes cleanup only, **never readiness PASS**; failed, pending or missing phase evidence remains FAIL/HOLD.
 
-**T033 gate:** T046 does not implement `auth.spec.ts`, run `pnpm --filter web test:e2e`, or complete browser acceptance. After separate T033 authorization, use the unchanged Chromium/single-worker configuration for actual login/dashboard/logout/session-rejection and direct-navigation browser flows, preserving existing failure diagnostics without secrets. A passing readiness report cannot replace that real-browser evidence. Shared Development browser tests additionally require separately approved dedicated identities, run-owned records and exact ownership-based cleanup that preserves unrelated data. The current fixture tooling rejects the Development database target; do not bypass those guards or change persistent service configuration. Resolve this compatibility boundary under T033 authorization before any fixture/browser writes.
+**T033 gate:** T046 direct Playwright readiness proved the offline container toolchain, versions and HTTP network reachability, but did not execute browser E2E or perform database mutations. Under explicit Product Owner authorization on `9GOTSTORY-247`, T033 authored the real Chromium Playwright tests in `apps/web/tests/e2e/auth.spec.ts` (covering valid login/session cookies, protected dashboard direct navigation and reload, CSRF-protected logout, and server rejection on session revocation and deliberate cookie reuse), extended fixture identity validation in `apps/api/tests/fixtures/identity.ts`, and verified isolated regressions in `apps/api/tests/unit/identity-fixture.test.ts`.
+
+### 4.1 Bounded Shared-Development Runtime Fixture Policy (T033)
+
+The fixture extension provides a default-deny, narrowly verified policy for exactly the approved shared `s2-assets-dev` Development Runtime alongside the established dedicated isolated-test policy (`TargetPolicy = 'isolated' | 'shared-development'`):
+- **Endpoint & Identity Verification**: Explicitly requires `targetPolicy: 'shared-development'`, verified runtime identity `s2-assets-dev` (from `FOUNDATION_DEV_RUNTIME` or `DEV_PROJECT`), database `s2_assets_dev`, expected database `s2_assets_dev`, and approved host (`postgres`, `127.0.0.1`, or `localhost`). A generic allow-shared flag or caller-supplied expected database alone fails closed.
+- **Fail-Closed Safeguards**: Rejects production host indicators (e.g., `production`, `prod`, `rds`, `aws`, `azure`, `cloudsql`, `s2.internal`), connection override query parameters (`?host=...`), driver overrides, and target database mismatches.
+- **Preexisting Role Requirement & Immutability**: Shared-Development setup requires preexisting `SYSTEM_MAINTAINER` role in PostgreSQL and fails closed immediately without inserting or mutating roles if absent (`rolesRemoved: 0`, `createdRoleIds: []`). Fixture setup and cleanup never insert, alter, or delete shared roles under `shared-development`.
+- **Outsider Resource Preservation**: Outsider users, grants, and sessions are strictly preserved across setup, execution, failure, and cleanup.
+
+### 4.2 Exact Ownership Invariants and Recovery Procedure
+
+Fixture state is tracked in a mode-600 JSON state file outside checkout in a mode-700 directory:
+1. **Atomic State Updates**: State changes are written atomically via temporary files with sync and rename.
+2. **Exact Run Ownership**: Created users and sessions are uniquely tagged with the invocation's `runId` and verified against database descriptors before cleanup.
+3. **Uncertain State Recovery**: If setup commits but the acknowledgment is interrupted, status transitions to `'uncertain'` with owned IDs preserved. Subsequent cleanup validates ownership and removes owned rows while preserving outsider data.
+4. **Fail-Closed on Tampering**: If a state file claims unowned user IDs, outsider session IDs, or non-empty `createdRoleIds` under `shared-development`, cleanup fails closed and preserves database integrity. Incomplete cleanup retains exact private ownership and recovery evidence.
+
+### 4.3 Diagnostics, Traces, and Sensitive Data Handling
+
+- **Zero-Secret Invariant**: Passwords, session cookies, and CSRF tokens must never be written to stdout, logs, diffs, PR comments, or review artifacts.
+- **Sensitive Diagnostics Boundary**: Playwright traces (`trace.zip`), failure screenshots (`test-results/**/*.png`), and video recordings capture live DOM state, cookies, and tokens.
+- **Private Handling**: When browser tests are authorized and executed, store all diagnostics inside a private mode-700 directory (`${XDG_STATE_HOME:-$HOME/.local/state}/s2-assets-t033/`). Never commit traces or screenshots to git and never attach raw diagnostic archives to public issues or PRs. Inspect diagnostics locally in private operator sessions.
+
+### 4.4 Separately Gated Future Execution Commands
+
+> [!IMPORTANT]
+> **Execution Boundary Notice**: Browser E2E execution and shared-Development database writes remain strictly unperformed and gated under future Product Owner authorization. The commands below document the approved procedure for when explicit authorization is granted.
+
+```bash
+# GATED: Requires explicit Product Owner authorization before running
+set -euo pipefail
+DEV_PROJECT=s2-assets-dev
+IMAGE=2a4778c23106d33f9c9c4d98d49adccd6d6fe968d4554e5ec20b9225e16a0175
+APP_NET_ID=$(timeout -k 2s 10s podman --events-backend=none network inspect s2-assets-dev-app --format '{{.ID}}')
+
+# 1. Setup disposable test identities under shared-development policy
+FOUNDATION_TARGET_POLICY=shared-development \
+FOUNDATION_DEV_RUNTIME=s2-assets-dev \
+FOUNDATION_TEST_RUN_ID="s2-t033-$(cat /proc/sys/kernel/random/uuid)" \
+bash scripts/dev.sh test-identity setup
+
+# 2. Execute Chromium E2E auth test suite inside pinned runner container
+podman run --rm --network "$APP_NET_ID" \
+  -v "$PWD:/workspace:ro,Z" \
+  -w /workspace/apps/web \
+  -e E2E_BASE_URL=http://web:5173 \
+  -e PLAYWRIGHT_BROWSERS_PATH=/ms-playwright \
+  "$IMAGE" pnpm exec playwright test tests/e2e/auth.spec.ts --project=chromium
+
+# 3. Cleanup disposable test identities
+bash scripts/dev.sh test-identity cleanup
+```
 
 ## 5. Cleanup and later full-workspace acceptance
 
