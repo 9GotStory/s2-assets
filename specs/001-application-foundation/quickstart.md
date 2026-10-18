@@ -1,6 +1,6 @@
 # Quickstart: Application Foundation
 
-**Status: T045 real listening HTTP smoke and recovery verified.** T041 API bootstrap, T042 Web SPA bootstrap, T043 container-only toolchain, T044 explicit migration and disposable test identity lifecycle, and T045 real HTTP smoke and database outage/recovery verification (`scripts/dev.sh http-smoke` and `apps/api/tests/http/foundation.test.ts`) are implemented and verified. T046 direct Playwright readiness awaits authorization and runtime evidence; T033 real-browser execution remains separately gated.
+**Status: T046 direct Playwright readiness accepted.** T041 API bootstrap, T042 Web SPA bootstrap, T043 container-only toolchain, T044 explicit migration and disposable test identity lifecycle, and T045 real HTTP smoke and database outage/recovery verification (`scripts/dev.sh http-smoke` and `apps/api/tests/http/foundation.test.ts`) are implemented and verified. The Product Owner accepted T046 execution at `8ff1c54f2f06cd1e111847aa5093056bb462b3ff` using shared `s2-assets-dev`; audit receipts are retained on issue `9GOTSTORY-233`. T033 real-browser implementation/execution remains separately gated.
 
 This guide covers an isolated Rootless Podman development/test stack. Git, Spec Kit and agents remain on the Fedora host. Node, pnpm, PostgreSQL and browser execution remain in containers. [Plan](./plan.md) defines the command/lifecycle contract; [research](./research.md) records decisions. The unchanged [data model](./data-model.md) and [API error contract](./contracts/api-error.md) remain authoritative.
 
