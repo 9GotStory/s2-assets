@@ -338,24 +338,31 @@ Fixture state is tracked in a mode-600 JSON state file outside checkout in a mod
 set -uo pipefail
 
 DEV_PROJECT=s2-assets-dev
-IMAGE="localhost/s2-assets-dev:local"
+FIXTURE_IMAGE="localhost/s2-assets-dev:local"
+BROWSER_RUNNER_IMAGE="2a4778c23106d33f9c9c4d98d49adccd6d6fe968d4554e5ec20b9225e16a0175"
 RUN_ID="s2-t033-$(cat /proc/sys/kernel/random/uuid)"
 RECOVERY_DIR="${XDG_STATE_HOME:-$HOME/.local/state}/s2-assets-t033-${RUN_ID}"
 mkdir -p -m 700 "$RECOVERY_DIR"
 
-# 1. Independently verify existing persistent development resources
+# 1. Independently verify existing persistent development resources and exact networks
+DB_NET_ID=$(timeout -k 2s 10s podman --events-backend=none network inspect s2-assets-dev-database --format '{{.ID}}')
 APP_NET_ID=$(timeout -k 2s 10s podman --events-backend=none network inspect s2-assets-dev-app --format '{{.ID}}')
 PG_CONTAINER_ID=$(timeout -k 2s 10s podman --events-backend=none container inspect s2-assets-dev-postgres --format '{{.ID}}')
-PG_APP_LABEL=$(podman container inspect s2-assets-dev-postgres --format '{{index .Config.Labels "com.multica.application"}}')
-PG_SVC_LABEL=$(podman container inspect s2-assets-dev-postgres --format '{{index .Config.Labels "com.multica.service"}}')
-PG_PROJ_LABEL=$(podman container inspect s2-assets-dev-postgres --format '{{index .Config.Labels "com.multica.project"}}')
 
-if [ "$PG_APP_LABEL" != "s2-assets" ] || [ "$PG_SVC_LABEL" != "postgres" ] || [ "$PG_PROJ_LABEL" != "s2-assets-dev" ]; then
+PG_APP_LABEL=$(podman container inspect s2-assets-dev-postgres --format '{{index .Config.Labels "io.9gotstory.dev-runtime.application"}}')
+PG_UID_LABEL=$(podman container inspect s2-assets-dev-postgres --format '{{index .Config.Labels "io.9gotstory.dev-runtime.owner-uid"}}')
+PG_PROJ_LABEL=$(podman container inspect s2-assets-dev-postgres --format '{{or (index .Config.Labels "com.docker.compose.project") (index .Config.Labels "io.podman.compose.project")}}')
+PG_SVC_LABEL=$(podman container inspect s2-assets-dev-postgres --format '{{or (index .Config.Labels "com.docker.compose.service") (index .Config.Labels "io.podman.compose.service")}}')
+
+if [ "$PG_APP_LABEL" != "s2-assets" ] || [ "$PG_UID_LABEL" != "1001" ] || [ "$PG_PROJ_LABEL" != "s2-assets-dev" ] || [ "$PG_SVC_LABEL" != "postgres" ]; then
   echo "ERROR: PostgreSQL container failed independent runtime verification" >&2
   exit 1
 fi
 
 # 2. Write verified runtime evidence and lossless runner configuration to private directory
+# Connection secret must be obtained from private operator environment (POSTGRES_PASSWORD); no committed credentials
+: "${POSTGRES_PASSWORD:?Set POSTGRES_PASSWORD in environment}"
+
 cat <<EOF > "$RECOVERY_DIR/runtime-evidence.json"
 {
   "project": "s2-assets-dev",
@@ -378,7 +385,7 @@ cat <<EOF > "$RECOVERY_DIR/fixture-config.json"
   "FOUNDATION_TEST_RUN_ID": "${RUN_ID}",
   "FOUNDATION_TEST_USERNAME": "${BASE_USERNAME}",
   "FOUNDATION_TEST_PASSWORD": "${TEST_PASSWORD}",
-  "FOUNDATION_TEST_DATABASE_URL": "postgresql://postgres:postgres@postgres:5432/s2_assets_dev",
+  "FOUNDATION_TEST_DATABASE_URL": "postgresql://postgres:${POSTGRES_PASSWORD}@postgres:5432/s2_assets_dev",
   "POSTGRES_DB": "s2_assets_dev",
   "FOUNDATION_FIXTURE_STATE_FILE": "/private/fixture-state-${RUN_ID}.json",
   "FOUNDATION_RUNTIME_EVIDENCE": "/private/runtime-evidence.json",
@@ -388,50 +395,74 @@ cat <<EOF > "$RECOVERY_DIR/fixture-config.json"
 EOF
 chmod 600 "$RECOVERY_DIR/fixture-config.json"
 
-# 3. Setup disposable test identities using accepted dependency workspace
-podman run --rm --network "$APP_NET_ID" --userns=keep-id \
-  -v "$PWD:/work:ro,z" \
-  -v "$RECOVERY_DIR:/private:rw,z" \
-  -v "/home/multica-agent/projects/s2-assets/node_modules:/work/node_modules:ro,z" \
-  -v "/home/multica-agent/projects/s2-assets/apps/api/node_modules:/work/apps/api/node_modules:ro,z" \
-  -v "/home/multica-agent/projects/s2-assets/packages/db/node_modules:/work/packages/db/node_modules:ro,z" \
+SETUP_EXIT=0
+BROWSER_EXIT=0
+CLEANUP_EXIT=0
+
+# 3. Setup disposable test identities on s2-assets-dev-database network using read-only shared dependency mounts
+# Mounts must not relabel shared dependencies with :z; private recovery directory uses :rw
+if ! podman run --rm --network "$DB_NET_ID" --pull=never --userns=keep-id \
+  -v "$PWD:/work:ro" \
+  -v "$RECOVERY_DIR:/private:rw" \
+  -v "/home/multica-agent/projects/s2-assets/node_modules:/work/node_modules:ro" \
+  -v "/home/multica-agent/projects/s2-assets/apps/api/node_modules:/work/apps/api/node_modules:ro" \
+  -v "/home/multica-agent/projects/s2-assets/packages/db/node_modules:/work/packages/db/node_modules:ro" \
   --tmpfs /work/apps/api/node_modules/.vite-temp:rw,mode=1777 \
   -e FOUNDATION_FIXTURE_CONFIG_FILE=/private/fixture-config.json \
   -e NODE_ENV=test \
   -w /work/apps/api \
-  "$IMAGE" node tests/fixtures/identity.ts setup
+  "$FIXTURE_IMAGE" node tests/fixtures/identity.ts setup; then
+  SETUP_EXIT=$?
+fi
 
-# 4. Execute Chromium E2E auth test suite and capture exit code safely
+# 4. Execute Chromium E2E auth test suite on s2-assets-dev-app network only if setup succeeded
 mkdir -p -m 700 "$RECOVERY_DIR/diagnostics"
-TEST_EXIT=0
 
-podman run --rm --network "$APP_NET_ID" --userns=keep-id \
-  -v "$PWD:/work:ro,z" \
-  -v "$RECOVERY_DIR:/private:rw,z" \
-  -v "/home/multica-agent/projects/s2-assets/node_modules:/work/node_modules:ro,z" \
-  -v "/home/multica-agent/projects/s2-assets/apps/web/node_modules:/work/apps/web/node_modules:ro,z" \
-  -e FOUNDATION_FIXTURE_CONFIG_FILE=/private/fixture-config.json \
-  -e PLAYWRIGHT_BROWSERS_PATH=/ms-playwright \
-  -e E2E_BASE_URL=http://web:5173 \
-  -w /work/apps/web \
-  "$IMAGE" /work/apps/web/node_modules/.bin/playwright test tests/e2e/auth.spec.ts --project=chromium --output=/private/diagnostics || TEST_EXIT=$?
+if [ "$SETUP_EXIT" -eq 0 ]; then
+  if ! podman run --rm --network "$APP_NET_ID" --pull=never --userns=keep-id \
+    -v "$PWD:/work:ro" \
+    -v "$RECOVERY_DIR:/private:rw" \
+    -v "/home/multica-agent/projects/s2-assets/node_modules:/work/node_modules:ro" \
+    -v "/home/multica-agent/projects/s2-assets/apps/web/node_modules:/work/apps/web/node_modules:ro" \
+    -v "/home/multica-agent/projects/s2-assets/apps/api/node_modules:/work/apps/api/node_modules:ro" \
+    -e FOUNDATION_FIXTURE_CONFIG_FILE=/private/fixture-config.json \
+    -e PLAYWRIGHT_BROWSERS_PATH=/ms-playwright \
+    -e E2E_BASE_URL=http://web:5173 \
+    -w /work/apps/web \
+    "$BROWSER_RUNNER_IMAGE" /work/apps/web/node_modules/.bin/playwright test tests/e2e/auth.spec.ts --project=chromium --output=/private/diagnostics; then
+    BROWSER_EXIT=$?
+  fi
+else
+  echo "WARNING: Fixture setup failed with exit code $SETUP_EXIT; skipping browser execution to preserve error state and attempt cleanup" >&2
+fi
 
-# 5. Guaranteed cleanup: attempt ownership-proven cleanup on failure preserving first failure evidence
-podman run --rm --network "$APP_NET_ID" --userns=keep-id \
-  -v "$PWD:/work:ro,z" \
-  -v "$RECOVERY_DIR:/private:rw,z" \
-  -v "/home/multica-agent/projects/s2-assets/node_modules:/work/node_modules:ro,z" \
-  -v "/home/multica-agent/projects/s2-assets/apps/api/node_modules:/work/apps/api/node_modules:ro,z" \
-  -v "/home/multica-agent/projects/s2-assets/packages/db/node_modules:/work/packages/db/node_modules:ro,z" \
+# 5. Guaranteed cleanup: always attempt ownership-proven cleanup on s2-assets-dev-database network
+if ! podman run --rm --network "$DB_NET_ID" --pull=never --userns=keep-id \
+  -v "$PWD:/work:ro" \
+  -v "$RECOVERY_DIR:/private:rw" \
+  -v "/home/multica-agent/projects/s2-assets/node_modules:/work/node_modules:ro" \
+  -v "/home/multica-agent/projects/s2-assets/apps/api/node_modules:/work/apps/api/node_modules:ro" \
+  -v "/home/multica-agent/projects/s2-assets/packages/db/node_modules:/work/packages/db/node_modules:ro" \
   --tmpfs /work/apps/api/node_modules/.vite-temp:rw,mode=1777 \
   -e FOUNDATION_FIXTURE_CONFIG_FILE=/private/fixture-config.json \
   -e NODE_ENV=test \
   -w /work/apps/api \
-  "$IMAGE" node tests/fixtures/identity.ts cleanup || true
+  "$FIXTURE_IMAGE" node tests/fixtures/identity.ts cleanup; then
+  CLEANUP_EXIT=$?
+fi
 
-if [ "$TEST_EXIT" -ne 0 ]; then
-  echo "Browser E2E test failed with exit code $TEST_EXIT; diagnostics captured in $RECOVERY_DIR/diagnostics" >&2
-  exit "$TEST_EXIT"
+# 6. Report failures and return first failure code
+if [ "$SETUP_EXIT" -ne 0 ]; then
+  echo "ERROR: Fixture setup failed with exit code $SETUP_EXIT" >&2
+  exit "$SETUP_EXIT"
+fi
+if [ "$BROWSER_EXIT" -ne 0 ]; then
+  echo "ERROR: Browser E2E test failed with exit code $BROWSER_EXIT; diagnostics captured in $RECOVERY_DIR/diagnostics" >&2
+  exit "$BROWSER_EXIT"
+fi
+if [ "$CLEANUP_EXIT" -ne 0 ]; then
+  echo "ERROR: Fixture cleanup failed with exit code $CLEANUP_EXIT" >&2
+  exit "$CLEANUP_EXIT"
 fi
 ```
 

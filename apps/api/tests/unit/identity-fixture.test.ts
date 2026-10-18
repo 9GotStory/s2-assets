@@ -3293,6 +3293,202 @@ describe('Identity Fixture Unit Tests (T044 - US4)', () => {
         // State file was cleaned up
         expect(fsSync.existsSync(tempStateFile)).toBe(false);
       });
+
+      it('rejects state file missing runtime evidence under shared-development policy', async () => {
+        const noEvidenceState: TestIdentityState = {
+          runId: testRunId,
+          database: validDevDbName,
+          targetEndpoint: `127.0.0.1:5432/${validDevDbName}`,
+          status: 'active',
+          maintainer: { id: 'm-dev', username: `${testBaseUsername}_maintainer`, role: 'SYSTEM_MAINTAINER' },
+          standard: { id: 's-dev', username: `${testBaseUsername}_standard`, role: null },
+          createdUserIds: ['m-dev', 's-dev'],
+          createdRoleIds: [],
+          createdGrants: [{ userId: 'm-dev', roleId: 'SYSTEM_MAINTAINER' }],
+          createdSessionIds: [],
+          createdAt: new Date().toISOString(),
+          targetPolicy: 'shared-development',
+        };
+        await writeStateFileAtomic(tempStateFile, noEvidenceState);
+
+        await expect(
+          readAndValidateStateFile(
+            tempStateFile,
+            testRunId,
+            validDevDbName,
+            `127.0.0.1:5432/${validDevDbName}`,
+            testBaseUsername,
+            'shared-development'
+          )
+        ).rejects.toThrow(/Shared-Development state file requires runtime evidence/);
+      });
+
+      it('rejects state file with partial runtime evidence under shared-development policy', async () => {
+        const partialEvidenceState: TestIdentityState = {
+          runId: testRunId,
+          database: validDevDbName,
+          targetEndpoint: `127.0.0.1:5432/${validDevDbName}`,
+          status: 'active',
+          maintainer: { id: 'm-dev', username: `${testBaseUsername}_maintainer`, role: 'SYSTEM_MAINTAINER' },
+          standard: { id: 's-dev', username: `${testBaseUsername}_standard`, role: null },
+          createdUserIds: ['m-dev', 's-dev'],
+          createdRoleIds: [],
+          createdGrants: [{ userId: 'm-dev', roleId: 'SYSTEM_MAINTAINER' }],
+          createdSessionIds: [],
+          createdAt: new Date().toISOString(),
+          targetPolicy: 'shared-development',
+          runtimeEvidence: {
+            project: 's2-assets-dev',
+          } as any,
+        };
+        await writeStateFileAtomic(tempStateFile, partialEvidenceState);
+
+        await expect(
+          readAndValidateStateFile(
+            tempStateFile,
+            testRunId,
+            validDevDbName,
+            `127.0.0.1:5432/${validDevDbName}`,
+            testBaseUsername,
+            'shared-development'
+          )
+        ).rejects.toThrow(/State file runtime evidence mismatch|containerId invalid/);
+      });
+
+      it('fails closed and preserves state file when cleanup verified evidence containerId mismatches setup state', async () => {
+        const mockDb = createMockDb();
+        mockDb.roles.push({ id: 'SYSTEM_MAINTAINER', description: 'Maintainer' });
+
+        const setupEvidence = getDevEvidence('127.0.0.1:5432/s2_assets_dev');
+        const setupState: TestIdentityState = {
+          runId: testRunId,
+          database: validDevDbName,
+          targetEndpoint: `127.0.0.1:5432/${validDevDbName}`,
+          status: 'active',
+          maintainer: { id: 'm-mismatch', username: `${testBaseUsername}_maintainer`, role: 'SYSTEM_MAINTAINER' },
+          standard: { id: 's-mismatch', username: `${testBaseUsername}_standard`, role: null },
+          createdUserIds: ['m-mismatch', 's-mismatch'],
+          createdRoleIds: [],
+          createdGrants: [{ userId: 'm-mismatch', roleId: 'SYSTEM_MAINTAINER' }],
+          createdSessionIds: [],
+          createdAt: new Date().toISOString(),
+          targetPolicy: 'shared-development',
+          runtimeEvidence: setupEvidence,
+        };
+        await writeStateFileAtomic(tempStateFile, setupState);
+
+        const cleanupDifferentContainerEvidence: RuntimeEvidence = {
+          ...setupEvidence,
+          containerId: 'b'.repeat(64),
+        };
+
+        await expect(
+          cleanupTestIdentities({
+            nodeEnv: 'test',
+            databaseUrl: validDevDbUrl,
+            expectedDb: validDevDbName,
+            runId: testRunId,
+            baseUsername: testBaseUsername,
+            stateFile: tempStateFile,
+            targetPolicy: 'shared-development',
+            runtimeIdentity: devRuntimeIdentity,
+            runtimeEvidence: cleanupDifferentContainerEvidence,
+            db: mockDb,
+          })
+        ).rejects.toThrow(/Runtime evidence containerId mismatch between setup/);
+
+        // Invariant: state file is preserved on failure before mutation
+        expect(fsSync.existsSync(tempStateFile)).toBe(true);
+      });
+
+      it('fails closed and preserves state file when cleanup verified evidence service/owner mismatches setup state', async () => {
+        const mockDb = createMockDb();
+        mockDb.roles.push({ id: 'SYSTEM_MAINTAINER', description: 'Maintainer' });
+
+        const setupEvidence = getDevEvidence('127.0.0.1:5432/s2_assets_dev');
+        const setupState: TestIdentityState = {
+          runId: testRunId,
+          database: validDevDbName,
+          targetEndpoint: `127.0.0.1:5432/${validDevDbName}`,
+          status: 'active',
+          maintainer: { id: 'm-mismatch2', username: `${testBaseUsername}_maintainer`, role: 'SYSTEM_MAINTAINER' },
+          standard: { id: 's-mismatch2', username: `${testBaseUsername}_standard`, role: null },
+          createdUserIds: ['m-mismatch2', 's-mismatch2'],
+          createdRoleIds: [],
+          createdGrants: [{ userId: 'm-mismatch2', roleId: 'SYSTEM_MAINTAINER' }],
+          createdSessionIds: [],
+          createdAt: new Date().toISOString(),
+          targetPolicy: 'shared-development',
+          runtimeEvidence: setupEvidence,
+        };
+        await writeStateFileAtomic(tempStateFile, setupState);
+
+        const mismatchedServiceEvidence: RuntimeEvidence = {
+          ...setupEvidence,
+          service: 'other_service',
+        };
+
+        await expect(
+          cleanupTestIdentities({
+            nodeEnv: 'test',
+            databaseUrl: validDevDbUrl,
+            expectedDb: validDevDbName,
+            runId: testRunId,
+            baseUsername: testBaseUsername,
+            stateFile: tempStateFile,
+            targetPolicy: 'shared-development',
+            runtimeIdentity: devRuntimeIdentity,
+            runtimeEvidence: mismatchedServiceEvidence,
+            db: mockDb,
+          })
+        ).rejects.toThrow(/Substituted runtime evidence: expected service "postgres"/);
+
+        // State file preserved
+        expect(fsSync.existsSync(tempStateFile)).toBe(true);
+      });
+
+      it('preserves legacy isolated state without runtime evidence across cleanup cleanly', async () => {
+        const mockDb = createMockDb();
+        const isolatedState: TestIdentityState = {
+          runId: testRunId,
+          database: expectedDbName,
+          targetEndpoint: `127.0.0.1:5432/${expectedDbName}`,
+          status: 'active',
+          maintainer: { id: 'm-iso', username: `${testBaseUsername}_maintainer`, role: 'SYSTEM_MAINTAINER' },
+          standard: { id: 's-iso', username: `${testBaseUsername}_standard`, role: null },
+          createdUserIds: ['m-iso', 's-iso'],
+          createdRoleIds: ['SYSTEM_MAINTAINER'],
+          createdGrants: [{ userId: 'm-iso', roleId: 'SYSTEM_MAINTAINER' }],
+          createdSessionIds: [],
+          createdAt: new Date().toISOString(),
+          targetPolicy: 'isolated',
+        };
+        await writeStateFileAtomic(tempStateFile, isolatedState);
+
+        const loaded = await readAndValidateStateFile(
+          tempStateFile,
+          testRunId,
+          expectedDbName,
+          `127.0.0.1:5432/${expectedDbName}`,
+          testBaseUsername,
+          'isolated'
+        );
+        expect(loaded.targetPolicy).toBe('isolated');
+        expect(loaded.runtimeEvidence).toBeUndefined();
+
+        const cleanupRes = await cleanupTestIdentities({
+          nodeEnv: 'test',
+          databaseUrl: validDbUrl,
+          expectedDb: expectedDbName,
+          runId: testRunId,
+          baseUsername: testBaseUsername,
+          stateFile: tempStateFile,
+          targetPolicy: 'isolated',
+          db: mockDb,
+        });
+        expect(cleanupRes.cleaned).toBe(true);
+        expect(fsSync.existsSync(tempStateFile)).toBe(false);
+      });
     });
 
     describe('12.8 Browser Authentication Prerequisites and Credentials Validation (R3)', () => {
@@ -3322,13 +3518,23 @@ describe('Identity Fixture Unit Tests (T044 - US4)', () => {
         ...overrides,
       });
 
+      const getDefaultPrereqs = (): BrowserAuthPrerequisitesOptions => ({
+        baseURL: validBaseURL,
+        stateFile: tempStateFile,
+        runId: testRunId,
+        targetPolicy: 'isolated',
+        expectedDb: expectedDbName,
+        username: `${testBaseUsername}_maintainer`,
+        password: testPassword,
+      });
+
       it('rejects missing or empty browser base URL', () => {
         expect(() =>
-          validateBrowserAuthPrerequisites({ baseURL: '' })
+          validateBrowserAuthPrerequisites({ ...getDefaultPrereqs(), baseURL: '' })
         ).toThrow(/Browser base URL is required/);
 
         expect(() =>
-          validateBrowserAuthPrerequisites({ baseURL: undefined })
+          validateBrowserAuthPrerequisites({ ...getDefaultPrereqs(), baseURL: undefined })
         ).toThrow(/Browser base URL is required/);
       });
 
@@ -3343,14 +3549,68 @@ describe('Identity Fixture Unit Tests (T044 - US4)', () => {
 
         for (const url of unapprovedUrls) {
           expect(() =>
-            validateBrowserAuthPrerequisites({ baseURL: url, stateFile: tempStateFile })
+            validateBrowserAuthPrerequisites({ ...getDefaultPrereqs(), baseURL: url })
           ).toThrow(/Unapproved browser base URL/);
+        }
+      });
+
+      it('rejects missing or invalid independently supplied run ID', () => {
+        expect(() =>
+          validateBrowserAuthPrerequisites({ ...getDefaultPrereqs(), runId: '' })
+        ).toThrow(/Valid run ID is required for browser authentication/);
+
+        expect(() =>
+          validateBrowserAuthPrerequisites({ ...getDefaultPrereqs(), runId: 'invalid run id!' })
+        ).toThrow(/Valid run ID is required for browser authentication/);
+      });
+
+      it('rejects missing or invalid independently supplied target policy', () => {
+        expect(() =>
+          validateBrowserAuthPrerequisites({ ...getDefaultPrereqs(), targetPolicy: undefined })
+        ).toThrow(/Valid target policy is required for browser authentication/);
+
+        expect(() =>
+          validateBrowserAuthPrerequisites({ ...getDefaultPrereqs(), targetPolicy: 'unapproved-policy' as any })
+        ).toThrow(/Valid target policy is required for browser authentication/);
+      });
+
+      it('rejects missing independently supplied database name', () => {
+        expect(() =>
+          validateBrowserAuthPrerequisites({ ...getDefaultPrereqs(), expectedDb: '' })
+        ).toThrow(/Target database name is required for browser authentication/);
+      });
+
+      it('rejects missing independently supplied configured run-owned username', () => {
+        expect(() =>
+          validateBrowserAuthPrerequisites({ ...getDefaultPrereqs(), username: '' })
+        ).toThrow(/Configured run-owned username is required for browser authentication/);
+      });
+
+      it('rejects missing or invalid test password (too short or trivial)', async () => {
+        const activeState = createActiveState();
+        await writeStateFileAtomic(tempStateFile, activeState);
+
+        // Missing password
+        expect(() =>
+          validateBrowserAuthPrerequisites({ ...getDefaultPrereqs(), password: '' })
+        ).toThrow(/Test password is required/);
+
+        // Short password (<8 characters)
+        expect(() =>
+          validateBrowserAuthPrerequisites({ ...getDefaultPrereqs(), password: 'short' })
+        ).toThrow(/must contain at least 8 non-whitespace characters/);
+
+        // Trivial passwords
+        for (const trivial of ['password', 'test', 'admin', 's2_password']) {
+          expect(() =>
+            validateBrowserAuthPrerequisites({ ...getDefaultPrereqs(), password: trivial })
+          ).toThrow(/cannot use default or trivial passwords/);
         }
       });
 
       it('rejects missing fixture state file', () => {
         expect(() =>
-          validateBrowserAuthPrerequisites({ baseURL: validBaseURL, stateFile: undefined })
+          validateBrowserAuthPrerequisites({ ...getDefaultPrereqs(), stateFile: undefined })
         ).toThrow(/Fixture state file is required/);
       });
 
@@ -3358,14 +3618,14 @@ describe('Identity Fixture Unit Tests (T044 - US4)', () => {
         const repoRoot = findRepoRoot();
         const insideFile = path.join(repoRoot, 'in-repo-state.json');
         expect(() =>
-          validateBrowserAuthPrerequisites({ baseURL: validBaseURL, stateFile: insideFile })
+          validateBrowserAuthPrerequisites({ ...getDefaultPrereqs(), stateFile: insideFile })
         ).toThrow(/must reside outside repository checkout/);
       });
 
       it('rejects non-existent state file', () => {
         const nonExistent = path.join(tempDir, 'non-existent-state.json');
         expect(() =>
-          validateBrowserAuthPrerequisites({ baseURL: validBaseURL, stateFile: nonExistent })
+          validateBrowserAuthPrerequisites({ ...getDefaultPrereqs(), stateFile: nonExistent })
         ).toThrow(/does not exist/);
       });
 
@@ -3376,7 +3636,7 @@ describe('Identity Fixture Unit Tests (T044 - US4)', () => {
         });
 
         expect(() =>
-          validateBrowserAuthPrerequisites({ baseURL: validBaseURL, stateFile: tempStateFile })
+          validateBrowserAuthPrerequisites(getDefaultPrereqs())
         ).toThrow(/Insecure permissions on fixture state file/);
       });
 
@@ -3385,14 +3645,14 @@ describe('Identity Fixture Unit Tests (T044 - US4)', () => {
         await writeStateFileAtomic(tempStateFile, initializingState);
 
         expect(() =>
-          validateBrowserAuthPrerequisites({ baseURL: validBaseURL, stateFile: tempStateFile })
+          validateBrowserAuthPrerequisites(getDefaultPrereqs())
         ).toThrow(/Fixture state is not active/);
 
         const uncertainState = createActiveState({ status: 'uncertain' });
         await writeStateFileAtomic(tempStateFile, uncertainState);
 
         expect(() =>
-          validateBrowserAuthPrerequisites({ baseURL: validBaseURL, stateFile: tempStateFile })
+          validateBrowserAuthPrerequisites(getDefaultPrereqs())
         ).toThrow(/Fixture state is not active/);
       });
 
@@ -3402,11 +3662,82 @@ describe('Identity Fixture Unit Tests (T044 - US4)', () => {
 
         expect(() =>
           validateBrowserAuthPrerequisites({
-            baseURL: validBaseURL,
-            stateFile: tempStateFile,
+            ...getDefaultPrereqs(),
             runId: 'run-bravo',
           })
         ).toThrow(/State file run ID mismatch/);
+      });
+
+      it('rejects state file with mismatched targetPolicy', async () => {
+        const activeState = createActiveState({ targetPolicy: 'isolated' });
+        await writeStateFileAtomic(tempStateFile, activeState);
+
+        expect(() =>
+          validateBrowserAuthPrerequisites({
+            ...getDefaultPrereqs(),
+            targetPolicy: 'shared-development',
+          })
+        ).toThrow(/State file target policy mismatch/);
+      });
+
+      it('rejects state file with mismatched database', async () => {
+        const activeState = createActiveState({ database: 's2_foundation_db_a' });
+        await writeStateFileAtomic(tempStateFile, activeState);
+
+        expect(() =>
+          validateBrowserAuthPrerequisites({
+            ...getDefaultPrereqs(),
+            expectedDb: 's2_foundation_db_b',
+          })
+        ).toThrow(/State file database mismatch/);
+      });
+
+      it('rejects offline VM probe 1: private synthetic state with only status and maintainer (Lead R3 Finding)', async () => {
+        const syntheticState = {
+          status: 'active',
+          maintainer: {
+            id: 'synth-m-1',
+            username: 'synth_maintainer',
+            role: 'SYSTEM_MAINTAINER',
+          },
+          createdUserIds: ['synth-m-1'],
+        };
+        await fs.writeFile(tempStateFile, JSON.stringify(syntheticState, null, 2), { mode: 0o600 });
+
+        expect(() =>
+          validateBrowserAuthPrerequisites({
+            baseURL: validBaseURL,
+            stateFile: tempStateFile,
+            runId: 'any-run-id',
+            targetPolicy: 'isolated',
+            expectedDb: 's2_foundation_synth',
+            username: 'synth_maintainer',
+            password: testPassword,
+          })
+        ).toThrow(/State file run ID mismatch|State file target policy mismatch|State file database mismatch|State file targetEndpoint is required/);
+      });
+
+      it('rejects offline VM probe 2: shared-development state with targetEndpoint production:5432/other (Lead R3 Finding)', async () => {
+        const devEvidence = getDevEvidence('production:5432/other');
+        const maliciousEndpointState = createActiveState({
+          targetPolicy: 'shared-development',
+          database: 's2_assets_dev',
+          targetEndpoint: 'production:5432/other',
+          runtimeEvidence: devEvidence,
+        });
+        await writeStateFileAtomic(tempStateFile, maliciousEndpointState);
+
+        expect(() =>
+          validateBrowserAuthPrerequisites({
+            baseURL: validBaseURL,
+            stateFile: tempStateFile,
+            runId: testRunId,
+            targetPolicy: 'shared-development',
+            expectedDb: 's2_assets_dev',
+            username: `${testBaseUsername}_maintainer`,
+            password: testPassword,
+          })
+        ).toThrow(/Production database target is prohibited in state file/);
       });
 
       it('rejects state file under shared-development policy with wrong database or non-empty roles', async () => {
@@ -3418,26 +3749,82 @@ describe('Identity Fixture Unit Tests (T044 - US4)', () => {
 
         expect(() =>
           validateBrowserAuthPrerequisites({
-            baseURL: validBaseURL,
-            stateFile: tempStateFile,
+            ...getDefaultPrereqs(),
             targetPolicy: 'shared-development',
+            expectedDb: 's2_assets_dev',
           })
         ).toThrow(/State file database mismatch under shared-Development policy/);
 
+        const devEvidence = getDevEvidence('127.0.0.1:5432/s2_assets_dev');
         const rolesDevState = createActiveState({
           targetPolicy: 'shared-development',
           database: 's2_assets_dev',
+          targetEndpoint: '127.0.0.1:5432/s2_assets_dev',
           createdRoleIds: ['SYSTEM_MAINTAINER'],
+          runtimeEvidence: devEvidence,
         });
         await writeStateFileAtomic(tempStateFile, rolesDevState);
 
         expect(() =>
           validateBrowserAuthPrerequisites({
-            baseURL: validBaseURL,
-            stateFile: tempStateFile,
+            ...getDefaultPrereqs(),
             targetPolicy: 'shared-development',
+            expectedDb: 's2_assets_dev',
           })
         ).toThrow(/Inconsistent role ownership: shared-Development policy prohibits creating or tracking roles/);
+      });
+
+      it('rejects shared-development state file missing or invalid runtime evidence', async () => {
+        const noEvidenceDevState = createActiveState({
+          targetPolicy: 'shared-development',
+          database: 's2_assets_dev',
+          targetEndpoint: '127.0.0.1:5432/s2_assets_dev',
+        });
+        await writeStateFileAtomic(tempStateFile, noEvidenceDevState);
+
+        expect(() =>
+          validateBrowserAuthPrerequisites({
+            ...getDefaultPrereqs(),
+            targetPolicy: 'shared-development',
+            expectedDb: 's2_assets_dev',
+          })
+        ).toThrow(/Shared-Development state file requires runtime evidence/);
+      });
+
+      it('rejects shared-development state file with unapproved endpoint host or port', async () => {
+        const devEvidence = getDevEvidence('foreign-host:5432/s2_assets_dev');
+        const foreignHostState = createActiveState({
+          targetPolicy: 'shared-development',
+          database: 's2_assets_dev',
+          targetEndpoint: 'foreign-host:5432/s2_assets_dev',
+          runtimeEvidence: devEvidence,
+        });
+        await writeStateFileAtomic(tempStateFile, foreignHostState);
+
+        expect(() =>
+          validateBrowserAuthPrerequisites({
+            ...getDefaultPrereqs(),
+            targetPolicy: 'shared-development',
+            expectedDb: 's2_assets_dev',
+          })
+        ).toThrow(/Shared Development target host "foreign-host" is not authorized/);
+
+        const devEvidencePort = getDevEvidence('127.0.0.1:5433/s2_assets_dev');
+        const wrongPortState = createActiveState({
+          targetPolicy: 'shared-development',
+          database: 's2_assets_dev',
+          targetEndpoint: '127.0.0.1:5433/s2_assets_dev',
+          runtimeEvidence: devEvidencePort,
+        });
+        await writeStateFileAtomic(tempStateFile, wrongPortState);
+
+        expect(() =>
+          validateBrowserAuthPrerequisites({
+            ...getDefaultPrereqs(),
+            targetPolicy: 'shared-development',
+            expectedDb: 's2_assets_dev',
+          })
+        ).toThrow(/Shared Development target port "5433" is not authorized/);
       });
 
       it('rejects state file missing maintainer descriptor or maintainer role !== SYSTEM_MAINTAINER', async () => {
@@ -3445,7 +3832,7 @@ describe('Identity Fixture Unit Tests (T044 - US4)', () => {
         await writeStateFileAtomic(tempStateFile, noMaintainer);
 
         expect(() =>
-          validateBrowserAuthPrerequisites({ baseURL: validBaseURL, stateFile: tempStateFile })
+          validateBrowserAuthPrerequisites(getDefaultPrereqs())
         ).toThrow(/missing maintainer descriptor/);
 
         const wrongRole = createActiveState({
@@ -3454,8 +3841,26 @@ describe('Identity Fixture Unit Tests (T044 - US4)', () => {
         await writeStateFileAtomic(tempStateFile, wrongRole);
 
         expect(() =>
-          validateBrowserAuthPrerequisites({ baseURL: validBaseURL, stateFile: tempStateFile })
+          validateBrowserAuthPrerequisites(getDefaultPrereqs())
         ).toThrow(/maintainer role must be "SYSTEM_MAINTAINER"/);
+      });
+
+      it('rejects state file missing standard descriptor or with same ID as maintainer', async () => {
+        const noStandard = createActiveState({ standard: undefined as any });
+        await writeStateFileAtomic(tempStateFile, noStandard);
+
+        expect(() =>
+          validateBrowserAuthPrerequisites(getDefaultPrereqs())
+        ).toThrow(/missing standard descriptor/);
+
+        const sameIdState = createActiveState({
+          standard: { id: 'u-maintainer-active-1', username: 'other_username', role: null },
+        });
+        await writeStateFileAtomic(tempStateFile, sameIdState);
+
+        expect(() =>
+          validateBrowserAuthPrerequisites(getDefaultPrereqs())
+        ).toThrow(/maintainer and standard user IDs must be distinct/);
       });
 
       it('rejects state file when maintainer ID is not present in createdUserIds', async () => {
@@ -3466,8 +3871,8 @@ describe('Identity Fixture Unit Tests (T044 - US4)', () => {
         await writeStateFileAtomic(tempStateFile, unownedMaintainer);
 
         expect(() =>
-          validateBrowserAuthPrerequisites({ baseURL: validBaseURL, stateFile: tempStateFile })
-        ).toThrow(/Inconsistent ownership: maintainer ID "outsider-id-123" not found in createdUserIds/);
+          validateBrowserAuthPrerequisites(getDefaultPrereqs())
+        ).toThrow(/Inconsistent ownership: createdUserIds must contain maintainer ID/);
       });
 
       it('rejects arbitrary username that mismatches state maintainer username', async () => {
@@ -3476,63 +3881,77 @@ describe('Identity Fixture Unit Tests (T044 - US4)', () => {
 
         expect(() =>
           validateBrowserAuthPrerequisites({
-            baseURL: validBaseURL,
-            stateFile: tempStateFile,
+            ...getDefaultPrereqs(),
             username: 'arbitrary_bypass_username',
-            password: testPassword,
           })
         ).toThrow(/Browser username mismatch/);
       });
 
-      it('rejects missing or invalid test password (too short or trivial)', async () => {
+      it('successfully loads configuration from configFile and resolves credentials', async () => {
         const activeState = createActiveState();
         await writeStateFileAtomic(tempStateFile, activeState);
 
-        // Missing password
-        expect(() =>
-          validateBrowserAuthPrerequisites({
-            baseURL: validBaseURL,
-            stateFile: tempStateFile,
-          })
-        ).toThrow(/Test password is required/);
+        const configPath = path.join(tempDir, 'browser-test-config.json');
+        await fs.writeFile(
+          configPath,
+          JSON.stringify({
+            FOUNDATION_TEST_RUN_ID: testRunId,
+            FOUNDATION_TARGET_POLICY: 'isolated',
+            POSTGRES_DB: expectedDbName,
+            FOUNDATION_TEST_USERNAME: testBaseUsername,
+            FOUNDATION_TEST_PASSWORD: testPassword,
+            FOUNDATION_FIXTURE_STATE_FILE: tempStateFile,
+            E2E_BASE_URL: validBaseURL,
+          }),
+          { mode: 0o600 }
+        );
 
-        // Short password (<8 characters)
-        expect(() =>
-          validateBrowserAuthPrerequisites({
-            baseURL: validBaseURL,
-            stateFile: tempStateFile,
-            password: 'short',
-          })
-        ).toThrow(/must contain at least 8 non-whitespace characters/);
-
-        // Trivial passwords
-        for (const trivial of ['password', 'test', 'admin', 's2_password']) {
-          expect(() =>
-            validateBrowserAuthPrerequisites({
-              baseURL: validBaseURL,
-              stateFile: tempStateFile,
-              password: trivial,
-            })
-          ).toThrow(/cannot use default or trivial passwords/);
-        }
+        const creds = validateBrowserAuthPrerequisites({ configFile: configPath });
+        expect(creds.username).toBe(`${testBaseUsername}_maintainer`);
+        expect(creds.password).toBe(testPassword);
+        expect(creds.runId).toBe(testRunId);
+        expect(creds.database).toBe(expectedDbName);
+        expect(creds.targetPolicy).toBe('isolated');
       });
 
-      it('successfully validates prerequisites and resolves matching run-owned credentials', async () => {
+      it('successfully validates prerequisites and resolves matching run-owned credentials under isolated policy', async () => {
         const activeState = createActiveState();
         await writeStateFileAtomic(tempStateFile, activeState);
 
-        const creds = validateBrowserAuthPrerequisites({
-          baseURL: validBaseURL,
-          stateFile: tempStateFile,
-          runId: testRunId,
-          password: testPassword,
-        });
+        const creds = validateBrowserAuthPrerequisites(getDefaultPrereqs());
 
         expect(creds.username).toBe(`${testBaseUsername}_maintainer`);
         expect(creds.password).toBe(testPassword);
         expect(creds.runId).toBe(testRunId);
         expect(creds.database).toBe(expectedDbName);
         expect(creds.targetPolicy).toBe('isolated');
+      });
+
+      it('successfully validates prerequisites and resolves matching run-owned credentials under shared-development policy', async () => {
+        const devEvidence = getDevEvidence('127.0.0.1:5432/s2_assets_dev');
+        const devState = createActiveState({
+          targetPolicy: 'shared-development',
+          database: 's2_assets_dev',
+          targetEndpoint: '127.0.0.1:5432/s2_assets_dev',
+          runtimeEvidence: devEvidence,
+        });
+        await writeStateFileAtomic(tempStateFile, devState);
+
+        const creds = validateBrowserAuthPrerequisites({
+          baseURL: validBaseURL,
+          stateFile: tempStateFile,
+          runId: testRunId,
+          targetPolicy: 'shared-development',
+          expectedDb: 's2_assets_dev',
+          username: `${testBaseUsername}_maintainer`,
+          password: testPassword,
+        });
+
+        expect(creds.username).toBe(`${testBaseUsername}_maintainer`);
+        expect(creds.password).toBe(testPassword);
+        expect(creds.runId).toBe(testRunId);
+        expect(creds.database).toBe('s2_assets_dev');
+        expect(creds.targetPolicy).toBe('shared-development');
       });
     });
   });
