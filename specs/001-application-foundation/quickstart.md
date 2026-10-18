@@ -102,9 +102,9 @@ HTTP smoke must pass before T033 can be considered ready; test discovery, mocked
 
 ## 4. T046 direct Playwright readiness; T033 remains separately gated
 
-**Approval required before execution.** These are operator commands, run from Fedora against the isolated test stack already verified in sections 1–3. Node/pnpm/browser tools stay inside Rootless Podman. PR #10's controller remains historical evidence and is excluded from this guide. The [Product Owner direction](https://github.com/9GotStory/s2-assets/pull/10#issuecomment-6247686905) supersedes the earlier planned helper for T046 only.
+**Approval required before execution.** These are operator commands, run from Fedora against the existing persistent `s2-assets-dev` Development Runtime. For T046 follow this section only: do not run the stack startup, preparation, migration, fixture, outage or teardown procedures in sections 1–3/5 against shared Development. Node/pnpm/browser tools stay inside Rootless Podman. PR #10's controller remains historical evidence and is excluded from this guide. The [Product Owner direction](https://github.com/9GotStory/s2-assets/pull/10#issuecomment-6247686905) supersedes the earlier planned helper for T046 only.
 
-Before starting, confirm the private configuration identifies this run's unique Compose project and `s2_foundation_...` database, not persistent development. Reuse T044/T045 ownership and migration/HTTP evidence; this check does not create another app/database or rerun their lifecycle. The approved runner must already exist: immutable ID `2a4778c23106d33f9c9c4d98d49adccd6d6fe968d4554e5ec20b9225e16a0175`, derived from `mcr.microsoft.com/playwright:v1.63.0-noble`. Missing tools/image/cache stop at Human Gate; do not download or build anything.
+Reuse the existing PostgreSQL/API/Web services and verified `s2-assets-dev-app` application network. Confirm application, project, service and UID-1001 ownership labels and running state; keep PostgreSQL on its existing database network. Retain the accepted T044/T045 evidence without rerunning their mutating checks. T046 needs no database credentials or test identities and performs no business-data writes; only its dependency workspace, caches and runner containers are disposable. The approved runner must already exist: immutable ID `2a4778c23106d33f9c9c4d98d49adccd6d6fe968d4554e5ec20b9225e16a0175`, derived from `mcr.microsoft.com/playwright:v1.63.0-noble`. Missing tools/image/cache stop at Human Gate; do not download or build anything.
 
 Use the verified Linux/x64/glibc offline inputs: pnpm store parent containing `v11/files` and `v11/index.db`, and metadata parent containing `v11/metadata` and `v11/metadata-full`. The investigated runtime paths were `/home/multica-agent/.local/share/pnpm/store` and `/home/multica-agent/.cache/pnpm`. Select integrity-verified, quiescent copies of these inputs under operator control; a live mutable cache with unknown provenance is insufficient. No cache writer may run during copying; a nonempty SQLite WAL requires a consistent snapshot before proceeding. Both content and metadata are necessary. Never mount or relabel the shared originals writable. The commands copy only those cache components and five canonical regular files; no working-tree secrets, Git/agent directories, source traversal or symlink targets are copied.
 
@@ -116,22 +116,38 @@ set -euo pipefail
 umask 077
 BASE=9b126bd9cceeb4ef4cd6fa690fd868f380049383
 IMAGE=2a4778c23106d33f9c9c4d98d49adccd6d6fe968d4554e5ec20b9225e16a0175
-: "${COMPOSE_PROJECT_NAME:?Use the verified test project from sections 1–3}"
+DEV_PROJECT=s2-assets-dev
 : "${T046_STORE_SEED:?Set the verified quiescent pnpm store parent}"
 : "${T046_METADATA_SEED:?Set the verified quiescent pnpm metadata parent}"
-case "$COMPOSE_PROJECT_NAME" in ''|s2-assets|s2-assets-dev|default) exit 1;; esac
+test "$(id -u)" = 1001
 test "$(timeout -k 2s 10s podman --events-backend=none info --format '{{.Host.Security.Rootless}}')" = true
 test "$(timeout -k 2s 10s podman --events-backend=none image inspect "$IMAGE" --format '{{.Id}}')" = "$IMAGE"
-WEB_CID=$(timeout -k 2s 10s podman --events-backend=none ps --no-trunc \
-  --filter "label=io.podman.compose.project=$COMPOSE_PROJECT_NAME" \
-  --filter label=io.podman.compose.service=web --format '{{.ID}}')
-[[ "$WEB_CID" =~ ^[0-9a-f]{64}$ ]]
-APP_NET="${COMPOSE_PROJECT_NAME}_default"
+for service in postgres api web; do
+  timeout -k 2s 10s podman --events-backend=none inspect "$DEV_PROJECT-$service" | \
+    jq -e --arg p "$DEV_PROJECT" --arg s "$service" \
+    'length == 1 and .[0].Name == ($p + "-" + $s) and .[0].State.Running == true
+      and .[0].Config.Labels["io.podman.compose.project"] == $p
+      and .[0].Config.Labels["io.podman.compose.service"] == $s
+      and .[0].Config.Labels["io.9gotstory.dev-runtime.application"] == "s2-assets"
+      and .[0].Config.Labels["io.9gotstory.dev-runtime.kind"] == "persistent-development"
+      and .[0].Config.Labels["io.9gotstory.dev-runtime.owner-uid"] == "1001"' >/dev/null
+done
+WEB_CID=$(timeout -k 2s 10s podman --events-backend=none inspect "$DEV_PROJECT-web" --format '{{.Id}}')
+API_CID=$(timeout -k 2s 10s podman --events-backend=none inspect "$DEV_PROJECT-api" --format '{{.Id}}')
+[[ "$WEB_CID" =~ ^[0-9a-f]{64}$ && "$API_CID" =~ ^[0-9a-f]{64}$ ]]
+APP_NET=s2-assets-dev-app
 timeout -k 2s 10s podman --events-backend=none network inspect "$APP_NET" | \
-  jq -e --arg p "$COMPOSE_PROJECT_NAME" --arg cid "$WEB_CID" \
-  'length == 1 and .[0].labels["io.podman.compose.project"] == $p and (.[0].containers | has($cid))' >/dev/null
+  jq -e --arg p "$DEV_PROJECT" --arg web "$WEB_CID" --arg api "$API_CID" \
+  'length == 1 and .[0].name == "s2-assets-dev-app"
+    and .[0].labels["io.podman.compose.project"] == $p
+    and .[0].labels["io.9gotstory.dev-runtime.application"] == "s2-assets"
+    and .[0].labels["io.9gotstory.dev-runtime.owner-uid"] == "1001"
+    and (.[0].containers | has($web) and has($api))' >/dev/null
+APP_NET_ID=$(timeout -k 2s 10s podman --events-backend=none network inspect "$APP_NET" --format '{{.ID}}')
+[[ "$APP_NET_ID" =~ ^[0-9a-f]{64}$ ]]
 timeout -k 2s 10s podman --events-backend=none inspect "$WEB_CID" | \
-  jq -e --arg n "$APP_NET" '.[0].State.Running == true and .[0].Config.Labels["io.9gotstory.dev-runtime.kind"] != "persistent-development" and (.[0].NetworkSettings.Networks[$n].Aliases | index("web") != null)' >/dev/null
+  jq -e --arg n "$APP_NET" --arg id "$APP_NET_ID" \
+  '.[0].NetworkSettings.Networks[$n].NetworkID == $id and (.[0].NetworkSettings.Networks[$n].Aliases | index("web") != null)' >/dev/null
 install -d -m 700 "${XDG_STATE_HOME:-$HOME/.local/state}/s2-assets-t046"
 RUN=$(mktemp -d "${XDG_STATE_HOME:-$HOME/.local/state}/s2-assets-t046/run.XXXXXXXX")
 RUN_ID="s2-t046-$(cat /proc/sys/kernel/random/uuid)"
@@ -153,7 +169,7 @@ git show "$BASE:apps/web/playwright.config.ts"
 git show "$BASE:apps/web/package.json"
 ```
 
-Require successful identity checks and one exact Web CID, with the expected project/network, `web` alias and the previously verified dedicated database. Review canonical configuration as data: `test:e2e` is `playwright test`; Chromium, one worker, 30000/5000 ms timeouts, no retries, `./test-results`, trace retained on failure, failure-only screenshots and video off. Config uses `E2E_BASE_URL`; never import/evaluate it for this readiness check. The current checkout and staged lock must both have SHA-256 `a2aeacebb1b8b098b4c96218731cc137812b887c5966f6e20f8361060a80c467`. The five archived paths at this exact baseline were independently checked as mode-100644 Git blobs; the archive avoids working-tree check/copy races. Reject any different baseline or file identity.
+Require successful ownership/running-state checks for all three existing services and exact Web/API CIDs, with the verified Development network ID and `web` alias. Fail closed on missing, foreign or ambiguous identities; do not provision replacements. Review canonical configuration as data: `test:e2e` is `playwright test`; Chromium, one worker, 30000/5000 ms timeouts, no retries, `./test-results`, trace retained on failure, failure-only screenshots and video off. Config uses `E2E_BASE_URL`; never import/evaluate it for this readiness check. The current checkout and staged lock must both have SHA-256 `a2aeacebb1b8b098b4c96218731cc137812b887c5966f6e20f8361060a80c467`. The five archived paths at this exact baseline were independently checked as mode-100644 Git blobs; the archive avoids working-tree check/copy races. Reject any different baseline or file identity.
 
 Install in a named runner retained until its identity/status and removal are checked with no network. Podman supplies the actual command exit; timeouts and Podman infrastructure failures are failures, not successful installation. Private working cache copies absorb pnpm writes.
 
@@ -189,7 +205,7 @@ Require both command exit **0** and the checked, saved container receipt before 
 printf 'pending\n' > "$RUN/check.status"
 if timeout -k 5s 60s podman --events-backend=none run \
   --name "$RUN_ID-check" --cidfile "$RUN/check.cid" --label "io.s2.t046=$RUN_ID" \
-  --pull=never --network "$APP_NET" --log-driver=none --http-proxy=false \
+  --pull=never --network "$APP_NET_ID" --log-driver=none --http-proxy=false \
   --read-only --read-only-tmpfs=false --timeout=50 --unsetenv-all \
   --tmpfs /runner-tmp:rw,size=16m,noexec,nosuid,nodev \
   -v "$RUN/work:/workspace:ro,Z" -v "$RUN/store:/offline-store:ro,Z" \
@@ -259,7 +275,7 @@ sha256sum -c "$RUN/checkout-lock.sha256"
 (cd "$RUN/work" && sha256sum -c "$RUN/inputs.sha256")
 ```
 
-Record exact CID/image, the two command exits, version/HTTP results, absence results, input hashes and persistent comparison. Keep the first failed command's status; record cleanup failure separately. If either runner remains/has uncertain ownership, retain its name/CID and private directory for recovery and report FAIL/HOLD. Only after both runners are independently ABSENT, hashes/invariance pass and the concise non-secret evidence is retained, delete this exact private directory with `rm -rf -- "$RUN"`. No source/cache original or application/database resource is removed by these T046 commands. Sections 1–3/5 continue to own the test stack lifecycle.
+Record exact CID/image, the two command exits, version/HTTP results, absence results, input hashes and persistent comparison. Keep the first failed command's status; record cleanup failure separately. If either runner remains/has uncertain ownership, retain its name/CID and private directory for recovery and report FAIL/HOLD. Only after both runners are independently ABSENT, hashes/invariance pass and the concise non-secret evidence is retained, delete this exact private directory with `rm -rf -- "$RUN"`. No source/cache original or application/database resource is removed by these T046 commands. Do not run Compose teardown, fixture cleanup, migrations or HTTP outage tests against shared Development; T046 owns only its temporary runner resources.
 
 **Failure, timeout or interruption recovery:** the private recovery directory is under the user's state directory, not temporary shell/runtime storage. Record its printed path before either container command. Its `owner` file restores the invocation ID after the shell exits; exact names remain derivable even if creation did not write a CID. The status files start as `pending`, so missing/interrupted completion cannot imply success. Keep the first observed nonzero status and all available files; never replace them with a cleanup result or rerun a phase in the same directory.
 
@@ -288,7 +304,7 @@ fi
 
 Record both absence results and recheck persistent resources/input hashes using the final commands above. Retain recovery evidence outside any directory selected for deletion; remove the exact private directory only after both containers are confirmed absent and no creation is in flight. Recovery establishes cleanup only, **never readiness PASS**; failed, pending or missing phase evidence remains FAIL/HOLD.
 
-**T033 gate:** T046 does not implement `auth.spec.ts`, run `pnpm --filter web test:e2e`, or complete browser acceptance. After separate T033 authorization, use the unchanged Chromium/single-worker configuration for actual login/dashboard/logout/session-rejection and direct-navigation browser flows, preserving existing failure diagnostics without secrets. A passing readiness report cannot replace that real-browser evidence.
+**T033 gate:** T046 does not implement `auth.spec.ts`, run `pnpm --filter web test:e2e`, or complete browser acceptance. After separate T033 authorization, use the unchanged Chromium/single-worker configuration for actual login/dashboard/logout/session-rejection and direct-navigation browser flows, preserving existing failure diagnostics without secrets. A passing readiness report cannot replace that real-browser evidence. Shared Development browser tests additionally require separately approved dedicated identities, run-owned records and exact ownership-based cleanup that preserves unrelated data. The current fixture tooling rejects the Development database target; do not bypass those guards or change persistent service configuration. Resolve this compatibility boundary under T033 authorization before any fixture/browser writes.
 
 ## 5. Cleanup and later full-workspace acceptance
 
