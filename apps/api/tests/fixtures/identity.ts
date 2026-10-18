@@ -25,6 +25,22 @@ export type TargetPolicy = 'isolated' | 'shared-development';
 export const APPROVED_DEV_PROJECT = 's2-assets-dev';
 export const APPROVED_DEV_DB = 's2_assets_dev';
 export const APPROVED_DEV_HOSTS = ['postgres', '127.0.0.1', 'localhost'];
+export const APPROVED_DEV_PORT = '5432';
+export const APPROVED_E2E_BASE_URLS = [
+  'http://web:5173',
+  'http://127.0.0.1:5173',
+  'http://localhost:5173',
+];
+
+export interface RuntimeEvidence {
+  project: string;
+  service: string;
+  application: string;
+  ownerUid: string;
+  containerId: string;
+  endpoint: string;
+  verifiedAt?: string;
+}
 
 export interface TestIdentityState {
   runId: string;
@@ -40,6 +56,7 @@ export interface TestIdentityState {
   createdSessionIds: string[];
   createdAt: string;
   error?: string;
+  runtimeEvidence?: Partial<RuntimeEvidence>;
 }
 
 export interface IdentitySetupOptions {
@@ -53,6 +70,7 @@ export interface IdentitySetupOptions {
   db?: any;
   targetPolicy?: TargetPolicy;
   runtimeIdentity?: string;
+  runtimeEvidence?: RuntimeEvidence | string;
 }
 
 export interface IdentityCleanupOptions {
@@ -67,6 +85,7 @@ export interface IdentityCleanupOptions {
   statementTimeoutMs?: number;
   targetPolicy?: TargetPolicy;
   runtimeIdentity?: string;
+  runtimeEvidence?: RuntimeEvidence | string;
 }
 
 export interface IdentityCleanupResult {
@@ -78,6 +97,26 @@ export interface IdentityCleanupResult {
   rolesRemoved: number;
   sessionsRemoved: number;
   reason?: string;
+}
+
+export interface BrowserAuthPrerequisitesOptions {
+  baseURL?: string;
+  stateFile?: string;
+  runId?: string;
+  expectedDb?: string;
+  expectedEndpoint?: string;
+  targetPolicy?: TargetPolicy;
+  username?: string;
+  password?: string;
+}
+
+export interface BrowserCredentials {
+  username: string;
+  password: string;
+  runId: string;
+  database: string;
+  targetEndpoint: string;
+  targetPolicy: TargetPolicy;
 }
 
 export const MIN_TIMEOUT_MS = 1;
@@ -281,10 +320,12 @@ export function validateTargetDatabase(
     | {
         targetPolicy?: TargetPolicy;
         runtimeIdentity?: string;
+        runtimeEvidence?: RuntimeEvidence | string;
       }
     | TargetPolicy,
-  legacyRuntimeIdentity?: string
-): { dbName: string; targetEndpoint: string; targetPolicy: TargetPolicy } {
+  legacyRuntimeIdentity?: string,
+  legacyRuntimeEvidence?: RuntimeEvidence | string
+): { dbName: string; targetEndpoint: string; targetPolicy: TargetPolicy; runtimeEvidence?: RuntimeEvidence } {
   if (!databaseUrl || typeof databaseUrl !== 'string' || databaseUrl.trim().length === 0) {
     throw new Error('Database URL is required and must be a non-empty string');
   }
@@ -302,6 +343,10 @@ export function validateTargetDatabase(
     (typeof options === 'string' ? legacyRuntimeIdentity : options?.runtimeIdentity) ??
     process.env.FOUNDATION_DEV_RUNTIME ??
     process.env.DEV_PROJECT;
+
+  const rawRuntimeEvidence: unknown =
+    (typeof options === 'object' && options !== null ? options.runtimeEvidence : legacyRuntimeEvidence) ??
+    process.env.FOUNDATION_RUNTIME_EVIDENCE;
 
   if (targetPolicy !== 'isolated' && targetPolicy !== 'shared-development') {
     throw new Error(
@@ -370,7 +415,33 @@ export function validateTargetDatabase(
     throw new Error('Database name is required in database URL');
   }
 
+  let verifiedEvidence: RuntimeEvidence | undefined;
+
   if (targetPolicy === 'shared-development') {
+    // Reject connection-altering or overriding query parameters
+    const disallowedOverrideParams = ['host', 'port', 'database', 'dbname', 'user', 'options'];
+    for (const param of disallowedOverrideParams) {
+      if (parsedUrl.searchParams.has(param)) {
+        throw new Error(
+          `Connection override parameter "?${param}=" is prohibited in database URL. Failing closed.`
+        );
+      }
+    }
+
+    // Verify host consistency between URL and pg driver
+    if (parsedUrl.hostname.toLowerCase() !== effectiveHost.toLowerCase()) {
+      throw new Error(
+        `Effective host mismatch: URL hostname "${parsedUrl.hostname}" does not match driver host "${effectiveHost}". Failing closed.`
+      );
+    }
+    // Exact port verification: PostgreSQL development service is strictly port 5432
+    const parsedPort = parsedUrl.port || '5432';
+    if (parsedPort !== APPROVED_DEV_PORT || effectivePort !== APPROVED_DEV_PORT) {
+      throw new Error(
+        `Shared Development database port "${effectivePort || parsedPort}" is not authorized for "${APPROVED_DEV_PROJECT}". Expected "${APPROVED_DEV_PORT}". Failing closed.`
+      );
+    }
+
     // Narrowly verified Development Runtime policy strictly bound to approved s2-assets-dev
     if (!runtimeIdentity || runtimeIdentity.trim() !== APPROVED_DEV_PROJECT) {
       throw new Error(
@@ -401,6 +472,76 @@ export function validateTargetDatabase(
         `Shared Development database host "${effectiveHost}" is not an approved endpoint for "${APPROVED_DEV_PROJECT}". Failing closed.`
       );
     }
+
+    // Independently verified runtime evidence validation
+    if (!rawRuntimeEvidence) {
+      throw new Error(
+        `Shared Development policy requires independently verified runtime evidence for "${APPROVED_DEV_PROJECT}". Missing runtime evidence. Failing closed.`
+      );
+    }
+
+    let parsedEvidence: RuntimeEvidence;
+    if (typeof rawRuntimeEvidence === 'string') {
+      const trimmed = rawRuntimeEvidence.trim();
+      if (trimmed.startsWith('{')) {
+        try {
+          parsedEvidence = JSON.parse(trimmed);
+        } catch {
+          throw new Error('Invalid runtime evidence: JSON parsing failed. Failing closed.');
+        }
+      } else {
+        validateOutsideCheckout(trimmed, 'Runtime evidence file');
+        try {
+          const fileStat = fsSync.statSync(trimmed);
+          const mode = (fileStat.mode & 0o777).toString(8);
+          if (mode.slice(-2) !== '00') {
+            throw new Error(`Insecure permissions on runtime evidence file "${trimmed}": mode must be 600 or 400 (got ${mode}). Failing closed.`);
+          }
+          parsedEvidence = JSON.parse(fsSync.readFileSync(trimmed, 'utf-8'));
+        } catch (err: any) {
+          throw new Error(`Failed to read runtime evidence file "${trimmed}": ${err.message}. Failing closed.`);
+        }
+      }
+    } else if (typeof rawRuntimeEvidence === 'object' && rawRuntimeEvidence !== null) {
+      parsedEvidence = rawRuntimeEvidence as RuntimeEvidence;
+    } else {
+      throw new Error('Invalid runtime evidence: must be an object or JSON file path/string. Failing closed.');
+    }
+
+    if (parsedEvidence.project !== APPROVED_DEV_PROJECT) {
+      throw new Error(
+        `Substituted runtime evidence: expected project "${APPROVED_DEV_PROJECT}", got "${parsedEvidence.project}". Failing closed.`
+      );
+    }
+    if (parsedEvidence.service !== 'postgres') {
+      throw new Error(
+        `Substituted runtime evidence: expected service "postgres", got "${parsedEvidence.service}". Failing closed.`
+      );
+    }
+    if (parsedEvidence.application !== 's2-assets') {
+      throw new Error(
+        `Substituted runtime evidence: expected application "s2-assets", got "${parsedEvidence.application}". Failing closed.`
+      );
+    }
+    if (parsedEvidence.ownerUid !== '1001') {
+      throw new Error(
+        `Substituted runtime evidence: expected ownerUid "1001", got "${parsedEvidence.ownerUid}". Failing closed.`
+      );
+    }
+    if (!parsedEvidence.containerId || !/^[0-9a-f]{64}$/.test(parsedEvidence.containerId)) {
+      throw new Error(
+        `Invalid runtime evidence containerId: must be a 64-character hexadecimal SHA. Failing closed.`
+      );
+    }
+
+    const effectiveEndpoint = `${effectiveHost}:${effectivePort}/${dbName}`;
+    if (parsedEvidence.endpoint !== effectiveEndpoint) {
+      throw new Error(
+        `Runtime evidence endpoint mismatch: expected "${effectiveEndpoint}", got "${parsedEvidence.endpoint}". Failing closed.`
+      );
+    }
+
+    verifiedEvidence = parsedEvidence;
   } else {
     // Default-deny isolated target policy
     if (!/^s2_foundation_[a-zA-Z0-9_]+$/.test(dbName)) {
@@ -425,7 +566,7 @@ export function validateTargetDatabase(
   }
 
   const targetEndpoint = `${effectiveHost}:${effectivePort}/${dbName}`;
-  return { dbName, targetEndpoint, targetPolicy };
+  return { dbName, targetEndpoint, targetPolicy, runtimeEvidence: verifiedEvidence };
 }
 
 /**
@@ -611,6 +752,18 @@ export async function readAndValidateStateFile(
       throw new Error(
         'Inconsistent role ownership: shared-Development policy prohibits creating or tracking roles. Failing closed.'
       );
+    }
+    if (state.runtimeEvidence) {
+      if (state.runtimeEvidence.project && state.runtimeEvidence.project !== APPROVED_DEV_PROJECT) {
+        throw new Error(
+          `State file runtime evidence mismatch: expected project "${APPROVED_DEV_PROJECT}", got "${state.runtimeEvidence.project}". Failing closed.`
+        );
+      }
+      if (state.runtimeEvidence.endpoint && state.runtimeEvidence.endpoint !== expectedEndpoint) {
+        throw new Error(
+          `State file runtime evidence endpoint mismatch: expected "${expectedEndpoint}", got "${state.runtimeEvidence.endpoint}". Failing closed.`
+        );
+      }
     }
   }
 
@@ -823,9 +976,14 @@ export async function setupTestIdentities(
     process.env.FOUNDATION_DEV_RUNTIME ??
     process.env.DEV_PROJECT;
 
-  const { dbName, targetEndpoint } = validateTargetDatabase(databaseUrl, expectedDb, {
+  const runtimeEvidence =
+    options.runtimeEvidence ??
+    process.env.FOUNDATION_RUNTIME_EVIDENCE;
+
+  const { dbName, targetEndpoint, runtimeEvidence: verifiedEvidence } = validateTargetDatabase(databaseUrl, expectedDb, {
     targetPolicy,
     runtimeIdentity,
+    runtimeEvidence,
   });
 
   const baseUsername = options.baseUsername ?? process.env.FOUNDATION_TEST_USERNAME;
@@ -939,6 +1097,7 @@ export async function setupTestIdentities(
       createdGrants: [],
       createdSessionIds: [],
       createdAt: new Date().toISOString(),
+      ...(verifiedEvidence ? { runtimeEvidence: verifiedEvidence } : {}),
     };
 
     // Reserve state file atomically with 'wx' and mode 0600
@@ -1049,6 +1208,7 @@ export async function setupTestIdentities(
       createdGrants: [...createdGrants],
       createdSessionIds: [...createdSessionIds],
       createdAt: new Date().toISOString(),
+      ...(verifiedEvidence ? { runtimeEvidence: verifiedEvidence } : {}),
     };
 
     await writeStateFileAtomic(stateFile, preCommitState);
@@ -1115,6 +1275,7 @@ export async function setupTestIdentities(
             createdSessionIds: [...createdSessionIds],
             createdAt: new Date().toISOString(),
             error: primaryError?.message || 'Uncertain commit/rollback outcome',
+            ...(verifiedEvidence ? { runtimeEvidence: verifiedEvidence } : {}),
           };
           await writeStateFileAtomic(stateFile, uncertainState);
         } catch {}
@@ -1174,10 +1335,15 @@ export async function cleanupTestIdentities(
     process.env.FOUNDATION_DEV_RUNTIME ??
     process.env.DEV_PROJECT;
 
+  const runtimeEvidence =
+    options.runtimeEvidence ??
+    process.env.FOUNDATION_RUNTIME_EVIDENCE;
+
   // Target database validation MUST occur before state-file check
-  const { dbName, targetEndpoint } = validateTargetDatabase(databaseUrl, expectedDb, {
+  const { dbName, targetEndpoint, runtimeEvidence: verifiedEvidence } = validateTargetDatabase(databaseUrl, expectedDb, {
     targetPolicy,
     runtimeIdentity,
+    runtimeEvidence,
   });
 
   const baseUsername = options.baseUsername ?? process.env.FOUNDATION_TEST_USERNAME;
@@ -1419,6 +1585,191 @@ export async function cleanupTestIdentities(
       await pool.end().catch(() => {});
     }
   }
+}
+
+/**
+ * Validates browser authentication prerequisites and resolves matching run-owned credentials.
+ * Fails closed if base URL is unapproved, state file is missing/insecure/invalid, or credentials mismatch.
+ */
+export function validateBrowserAuthPrerequisites(
+  options: BrowserAuthPrerequisitesOptions = {}
+): BrowserCredentials {
+  const baseURL = options.baseURL ?? process.env.E2E_BASE_URL ?? process.env.PLAYWRIGHT_BASE_URL;
+  if (!baseURL || typeof baseURL !== 'string' || baseURL.trim().length === 0) {
+    throw new Error('Browser base URL is required. Failing closed.');
+  }
+
+  const normalizedBaseURL = baseURL.replace(/\/+$/, '');
+  if (!APPROVED_E2E_BASE_URLS.includes(normalizedBaseURL)) {
+    throw new Error(
+      `Unapproved browser base URL "${baseURL}". Expected one of: ${APPROVED_E2E_BASE_URLS.join(', ')}. Failing closed.`
+    );
+  }
+
+  const runId = options.runId ?? process.env.FOUNDATION_TEST_RUN_ID;
+
+  let stateFile = options.stateFile ?? process.env.FOUNDATION_FIXTURE_STATE_FILE;
+  if (!stateFile && process.env.FOUNDATION_ENV_FILE && runId) {
+    stateFile = path.join(
+      path.dirname(process.env.FOUNDATION_ENV_FILE),
+      `fixture-state-${runId}.json`
+    );
+  }
+
+  if (!stateFile || typeof stateFile !== 'string' || stateFile.trim().length === 0) {
+    throw new Error('Fixture state file is required for browser authentication. Failing closed.');
+  }
+
+  validateOutsideCheckout(stateFile, 'State file');
+  const stateDir = path.dirname(stateFile);
+  validateOutsideCheckout(stateDir, 'State directory');
+  validatePrivateDirectory(stateDir);
+
+  if (!fsSync.existsSync(stateFile)) {
+    throw new Error(`Fixture state file "${stateFile}" does not exist. Failing closed.`);
+  }
+
+  const st = fsSync.statSync(stateFile);
+  if (!st.isFile()) {
+    throw new Error(`Fixture state file "${stateFile}" is not a regular file. Failing closed.`);
+  }
+
+  const mode = (st.mode & 0o777).toString(8);
+  if (mode.slice(-2) !== '00') {
+    throw new Error(
+      `Insecure permissions on fixture state file "${stateFile}": mode must be 600 or 400 (got ${mode}). Failing closed.`
+    );
+  }
+
+  let rawContent: string;
+  try {
+    rawContent = fsSync.readFileSync(stateFile, 'utf-8');
+  } catch (err: any) {
+    throw new Error(`Failed to read fixture state file "${stateFile}": ${err.message}. Failing closed.`);
+  }
+
+  let state: TestIdentityState;
+  try {
+    state = JSON.parse(rawContent);
+  } catch {
+    throw new Error(`Corrupted fixture state file "${stateFile}": JSON parsing failed. Failing closed.`);
+  }
+
+  if (typeof state !== 'object' || state === null) {
+    throw new Error(`Corrupted fixture state file "${stateFile}": not an object. Failing closed.`);
+  }
+
+  if (state.status !== 'active') {
+    throw new Error(
+      `Fixture state is not active (status: "${state.status}"). Browser execution requires active fixture state. Failing closed.`
+    );
+  }
+
+  if (runId && state.runId !== runId) {
+    throw new Error(
+      `State file run ID mismatch: expected "${runId}", got "${state.runId}". Failing closed.`
+    );
+  }
+
+  const expectedPolicy = options.targetPolicy ?? (process.env.FOUNDATION_TARGET_POLICY as TargetPolicy);
+  if (expectedPolicy && state.targetPolicy !== expectedPolicy) {
+    throw new Error(
+      `State file target policy mismatch: expected "${expectedPolicy}", got "${state.targetPolicy}". Failing closed.`
+    );
+  }
+
+  if (state.targetPolicy === 'shared-development') {
+    if (state.database !== APPROVED_DEV_DB) {
+      throw new Error(
+        `State file database mismatch under shared-Development policy: expected "${APPROVED_DEV_DB}", got "${state.database}". Failing closed.`
+      );
+    }
+    if (state.createdRoleIds && state.createdRoleIds.length > 0) {
+      throw new Error(
+        'Inconsistent role ownership: shared-Development policy prohibits creating or tracking roles. Failing closed.'
+      );
+    }
+  }
+
+  if (options.expectedDb && state.database !== options.expectedDb) {
+    throw new Error(
+      `State file database mismatch: expected "${options.expectedDb}", got "${state.database}". Failing closed.`
+    );
+  }
+
+  if (options.expectedEndpoint && state.targetEndpoint !== options.expectedEndpoint) {
+    throw new Error(
+      `State file target endpoint mismatch: expected "${options.expectedEndpoint}", got "${state.targetEndpoint}". Failing closed.`
+    );
+  }
+
+  if (!state.maintainer || typeof state.maintainer !== 'object') {
+    throw new Error('Corrupted fixture state file: missing maintainer descriptor. Failing closed.');
+  }
+
+  if (!state.maintainer.username || typeof state.maintainer.username !== 'string') {
+    throw new Error('Corrupted fixture state file: missing maintainer username. Failing closed.');
+  }
+
+  if (state.maintainer.role !== 'SYSTEM_MAINTAINER') {
+    throw new Error('Corrupted fixture state file: maintainer role must be "SYSTEM_MAINTAINER". Failing closed.');
+  }
+
+  if (!state.maintainer.id || !state.createdUserIds || !state.createdUserIds.includes(state.maintainer.id)) {
+    throw new Error(
+      `Inconsistent ownership: maintainer ID "${state.maintainer.id}" not found in createdUserIds. Failing closed.`
+    );
+  }
+
+  // Validate username restriction to exact run-owned identity
+  const expectedUsername =
+    options.username ??
+    process.env.E2E_USERNAME ??
+    (process.env.FOUNDATION_TEST_USERNAME
+      ? `${process.env.FOUNDATION_TEST_USERNAME}_maintainer`
+      : undefined);
+
+  if (expectedUsername && state.maintainer.username !== expectedUsername) {
+    throw new Error(
+      `Browser username mismatch: expected "${expectedUsername}", got state maintainer "${state.maintainer.username}". Failing closed.`
+    );
+  }
+
+  const username = state.maintainer.username;
+
+  // Validate password
+  const rawPassword =
+    options.password ??
+    process.env.E2E_PASSWORD ??
+    process.env.FOUNDATION_TEST_PASSWORD;
+
+  if (!rawPassword || typeof rawPassword !== 'string') {
+    throw new Error('Test password is required for browser authentication. Failing closed.');
+  }
+
+  const trimmedPw = rawPassword.trim();
+  if (
+    trimmedPw === 'password' ||
+    trimmedPw === 'test' ||
+    trimmedPw === 'admin' ||
+    trimmedPw === 's2_password'
+  ) {
+    throw new Error('Test password cannot use default or trivial passwords. Failing closed.');
+  }
+
+  const nonWsPassword = rawPassword.replace(/\s/g, '');
+  if (nonWsPassword.length < 8) {
+    throw new Error('Test password must contain at least 8 non-whitespace characters. Failing closed.');
+  }
+
+  return {
+    username,
+    password: rawPassword,
+    runId: state.runId,
+    database: state.database,
+    targetEndpoint: state.targetEndpoint,
+    targetPolicy: state.targetPolicy ?? 'isolated',
+  };
 }
 
 async function main(): Promise<void> {

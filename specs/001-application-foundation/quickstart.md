@@ -309,8 +309,8 @@ Record both absence results and recheck persistent resources/input hashes using 
 ### 4.1 Bounded Shared-Development Runtime Fixture Policy (T033)
 
 The fixture extension provides a default-deny, narrowly verified policy for exactly the approved shared `s2-assets-dev` Development Runtime alongside the established dedicated isolated-test policy (`TargetPolicy = 'isolated' | 'shared-development'`):
-- **Endpoint & Identity Verification**: Explicitly requires `targetPolicy: 'shared-development'`, verified runtime identity `s2-assets-dev` (from `FOUNDATION_DEV_RUNTIME` or `DEV_PROJECT`), database `s2_assets_dev`, expected database `s2_assets_dev`, and approved host (`postgres`, `127.0.0.1`, or `localhost`). A generic allow-shared flag or caller-supplied expected database alone fails closed.
-- **Fail-Closed Safeguards**: Rejects production host indicators (e.g., `production`, `prod`, `rds`, `aws`, `azure`, `cloudsql`, `s2.internal`), connection override query parameters (`?host=...`), driver overrides, and target database mismatches.
+- **Independently Verified Runtime Evidence & Endpoint**: Explicitly requires `targetPolicy: 'shared-development'`, verified runtime identity `s2-assets-dev` (from `FOUNDATION_DEV_RUNTIME` or `DEV_PROJECT`), database `s2_assets_dev`, expected database `s2_assets_dev`, approved host (`postgres`, `127.0.0.1`, or `localhost`), exact authorized port `5432`, and verified `RuntimeEvidence` matching container inspection attributes (`project: "s2-assets-dev"`, `service: "postgres"`, `application: "s2-assets"`, `ownerUid: "1001"`, 64-hex SHA `containerId`, and matching `endpoint`). A generic allow-shared flag or caller-supplied expected database alone fails closed.
+- **Fail-Closed Safeguards**: Rejects production host indicators (e.g., `production`, `prod`, `rds`, `aws`, `azure`, `cloudsql`, `s2.internal`), connection override query parameters (`?host=`, `?port=`, `?database=`, `?dbname=`, `?user=`, `?options=`), driver overrides, port mismatches, and target database mismatches.
 - **Preexisting Role Requirement & Immutability**: Shared-Development setup requires preexisting `SYSTEM_MAINTAINER` role in PostgreSQL and fails closed immediately without inserting or mutating roles if absent (`rolesRemoved: 0`, `createdRoleIds: []`). Fixture setup and cleanup never insert, alter, or delete shared roles under `shared-development`.
 - **Outsider Resource Preservation**: Outsider users, grants, and sessions are strictly preserved across setup, execution, failure, and cleanup.
 
@@ -318,7 +318,7 @@ The fixture extension provides a default-deny, narrowly verified policy for exac
 
 Fixture state is tracked in a mode-600 JSON state file outside checkout in a mode-700 directory:
 1. **Atomic State Updates**: State changes are written atomically via temporary files with sync and rename.
-2. **Exact Run Ownership**: Created users and sessions are uniquely tagged with the invocation's `runId` and verified against database descriptors before cleanup.
+2. **Exact Run Ownership**: Created users and sessions are tracked with exact IDs and usernames in private state files and verified against database descriptors before cleanup (without requiring schema alteration or database columns for run tagging).
 3. **Uncertain State Recovery**: If setup commits but the acknowledgment is interrupted, status transitions to `'uncertain'` with owned IDs preserved. Subsequent cleanup validates ownership and removes owned rows while preserving outsider data.
 4. **Fail-Closed on Tampering**: If a state file claims unowned user IDs, outsider session IDs, or non-empty `createdRoleIds` under `shared-development`, cleanup fails closed and preserves database integrity. Incomplete cleanup retains exact private ownership and recovery evidence.
 
@@ -326,7 +326,7 @@ Fixture state is tracked in a mode-600 JSON state file outside checkout in a mod
 
 - **Zero-Secret Invariant**: Passwords, session cookies, and CSRF tokens must never be written to stdout, logs, diffs, PR comments, or review artifacts.
 - **Sensitive Diagnostics Boundary**: Playwright traces (`trace.zip`), failure screenshots (`test-results/**/*.png`), and video recordings capture live DOM state, cookies, and tokens.
-- **Private Handling**: When browser tests are authorized and executed, store all diagnostics inside a private mode-700 directory (`${XDG_STATE_HOME:-$HOME/.local/state}/s2-assets-t033/`). Never commit traces or screenshots to git and never attach raw diagnostic archives to public issues or PRs. Inspect diagnostics locally in private operator sessions.
+- **Private Handling**: When browser tests are authorized and executed, store all diagnostics inside a private mode-700 directory (`${XDG_STATE_HOME:-$HOME/.local/state}/s2-assets-t033-${RUN_ID}/diagnostics/`). Never commit traces or screenshots to git and never attach raw diagnostic archives to public issues or PRs. Inspect diagnostics locally in private operator sessions.
 
 ### 4.4 Separately Gated Future Execution Commands
 
@@ -335,27 +335,104 @@ Fixture state is tracked in a mode-600 JSON state file outside checkout in a mod
 
 ```bash
 # GATED: Requires explicit Product Owner authorization before running
-set -euo pipefail
+set -uo pipefail
+
 DEV_PROJECT=s2-assets-dev
-IMAGE=2a4778c23106d33f9c9c4d98d49adccd6d6fe968d4554e5ec20b9225e16a0175
+IMAGE="localhost/s2-assets-dev:local"
+RUN_ID="s2-t033-$(cat /proc/sys/kernel/random/uuid)"
+RECOVERY_DIR="${XDG_STATE_HOME:-$HOME/.local/state}/s2-assets-t033-${RUN_ID}"
+mkdir -p -m 700 "$RECOVERY_DIR"
+
+# 1. Independently verify existing persistent development resources
 APP_NET_ID=$(timeout -k 2s 10s podman --events-backend=none network inspect s2-assets-dev-app --format '{{.ID}}')
+PG_CONTAINER_ID=$(timeout -k 2s 10s podman --events-backend=none container inspect s2-assets-dev-postgres --format '{{.ID}}')
+PG_APP_LABEL=$(podman container inspect s2-assets-dev-postgres --format '{{index .Config.Labels "com.multica.application"}}')
+PG_SVC_LABEL=$(podman container inspect s2-assets-dev-postgres --format '{{index .Config.Labels "com.multica.service"}}')
+PG_PROJ_LABEL=$(podman container inspect s2-assets-dev-postgres --format '{{index .Config.Labels "com.multica.project"}}')
 
-# 1. Setup disposable test identities under shared-development policy
-FOUNDATION_TARGET_POLICY=shared-development \
-FOUNDATION_DEV_RUNTIME=s2-assets-dev \
-FOUNDATION_TEST_RUN_ID="s2-t033-$(cat /proc/sys/kernel/random/uuid)" \
-bash scripts/dev.sh test-identity setup
+if [ "$PG_APP_LABEL" != "s2-assets" ] || [ "$PG_SVC_LABEL" != "postgres" ] || [ "$PG_PROJ_LABEL" != "s2-assets-dev" ]; then
+  echo "ERROR: PostgreSQL container failed independent runtime verification" >&2
+  exit 1
+fi
 
-# 2. Execute Chromium E2E auth test suite inside pinned runner container
-podman run --rm --network "$APP_NET_ID" \
-  -v "$PWD:/workspace:ro,Z" \
-  -w /workspace/apps/web \
-  -e E2E_BASE_URL=http://web:5173 \
+# 2. Write verified runtime evidence and lossless runner configuration to private directory
+cat <<EOF > "$RECOVERY_DIR/runtime-evidence.json"
+{
+  "project": "s2-assets-dev",
+  "service": "postgres",
+  "application": "s2-assets",
+  "ownerUid": "1001",
+  "containerId": "${PG_CONTAINER_ID}",
+  "endpoint": "postgres:5432/s2_assets_dev"
+}
+EOF
+chmod 600 "$RECOVERY_DIR/runtime-evidence.json"
+
+BASE_USERNAME="t033_${RUN_ID//-/_}"
+TEST_PASSWORD="$(cat /proc/sys/kernel/random/uuid | tr -d '-')$(cat /proc/sys/kernel/random/uuid | tr -d '-')"
+
+cat <<EOF > "$RECOVERY_DIR/fixture-config.json"
+{
+  "FOUNDATION_TARGET_POLICY": "shared-development",
+  "FOUNDATION_DEV_RUNTIME": "s2-assets-dev",
+  "FOUNDATION_TEST_RUN_ID": "${RUN_ID}",
+  "FOUNDATION_TEST_USERNAME": "${BASE_USERNAME}",
+  "FOUNDATION_TEST_PASSWORD": "${TEST_PASSWORD}",
+  "FOUNDATION_TEST_DATABASE_URL": "postgresql://postgres:postgres@postgres:5432/s2_assets_dev",
+  "POSTGRES_DB": "s2_assets_dev",
+  "FOUNDATION_FIXTURE_STATE_FILE": "/private/fixture-state-${RUN_ID}.json",
+  "FOUNDATION_RUNTIME_EVIDENCE": "/private/runtime-evidence.json",
+  "E2E_BASE_URL": "http://web:5173",
+  "PLAYWRIGHT_BROWSERS_PATH": "/ms-playwright"
+}
+EOF
+chmod 600 "$RECOVERY_DIR/fixture-config.json"
+
+# 3. Setup disposable test identities using accepted dependency workspace
+podman run --rm --network "$APP_NET_ID" --userns=keep-id \
+  -v "$PWD:/work:ro,z" \
+  -v "$RECOVERY_DIR:/private:rw,z" \
+  -v "/home/multica-agent/projects/s2-assets/node_modules:/work/node_modules:ro,z" \
+  -v "/home/multica-agent/projects/s2-assets/apps/api/node_modules:/work/apps/api/node_modules:ro,z" \
+  -v "/home/multica-agent/projects/s2-assets/packages/db/node_modules:/work/packages/db/node_modules:ro,z" \
+  --tmpfs /work/apps/api/node_modules/.vite-temp:rw,mode=1777 \
+  -e FOUNDATION_FIXTURE_CONFIG_FILE=/private/fixture-config.json \
+  -e NODE_ENV=test \
+  -w /work/apps/api \
+  "$IMAGE" node tests/fixtures/identity.ts setup
+
+# 4. Execute Chromium E2E auth test suite and capture exit code safely
+mkdir -p -m 700 "$RECOVERY_DIR/diagnostics"
+TEST_EXIT=0
+
+podman run --rm --network "$APP_NET_ID" --userns=keep-id \
+  -v "$PWD:/work:ro,z" \
+  -v "$RECOVERY_DIR:/private:rw,z" \
+  -v "/home/multica-agent/projects/s2-assets/node_modules:/work/node_modules:ro,z" \
+  -v "/home/multica-agent/projects/s2-assets/apps/web/node_modules:/work/apps/web/node_modules:ro,z" \
+  -e FOUNDATION_FIXTURE_CONFIG_FILE=/private/fixture-config.json \
   -e PLAYWRIGHT_BROWSERS_PATH=/ms-playwright \
-  "$IMAGE" pnpm exec playwright test tests/e2e/auth.spec.ts --project=chromium
+  -e E2E_BASE_URL=http://web:5173 \
+  -w /work/apps/web \
+  "$IMAGE" /work/apps/web/node_modules/.bin/playwright test tests/e2e/auth.spec.ts --project=chromium --output=/private/diagnostics || TEST_EXIT=$?
 
-# 3. Cleanup disposable test identities
-bash scripts/dev.sh test-identity cleanup
+# 5. Guaranteed cleanup: attempt ownership-proven cleanup on failure preserving first failure evidence
+podman run --rm --network "$APP_NET_ID" --userns=keep-id \
+  -v "$PWD:/work:ro,z" \
+  -v "$RECOVERY_DIR:/private:rw,z" \
+  -v "/home/multica-agent/projects/s2-assets/node_modules:/work/node_modules:ro,z" \
+  -v "/home/multica-agent/projects/s2-assets/apps/api/node_modules:/work/apps/api/node_modules:ro,z" \
+  -v "/home/multica-agent/projects/s2-assets/packages/db/node_modules:/work/packages/db/node_modules:ro,z" \
+  --tmpfs /work/apps/api/node_modules/.vite-temp:rw,mode=1777 \
+  -e FOUNDATION_FIXTURE_CONFIG_FILE=/private/fixture-config.json \
+  -e NODE_ENV=test \
+  -w /work/apps/api \
+  "$IMAGE" node tests/fixtures/identity.ts cleanup || true
+
+if [ "$TEST_EXIT" -ne 0 ]; then
+  echo "Browser E2E test failed with exit code $TEST_EXIT; diagnostics captured in $RECOVERY_DIR/diagnostics" >&2
+  exit "$TEST_EXIT"
+fi
 ```
 
 ## 5. Cleanup and later full-workspace acceptance

@@ -14,13 +14,17 @@ import {
   writeStateFileAtomic,
   readAndValidateStateFile,
   parseTimeoutMs,
+  validateBrowserAuthPrerequisites,
   DEFAULT_LOCK_TIMEOUT_MS,
   DEFAULT_STATEMENT_TIMEOUT_MS,
   APPROVED_DEV_PROJECT,
   APPROVED_DEV_DB,
   APPROVED_DEV_HOSTS,
+  APPROVED_DEV_PORT,
+  APPROVED_E2E_BASE_URLS,
   type TestIdentityState,
   type TargetPolicy,
+  type RuntimeEvidence,
 } from '../fixtures/identity.ts';
 import { UserService, isArgon2idHash } from '../../src/services/user.service.ts';
 import { CapabilityService } from '../../src/services/capability.service.ts';
@@ -2522,20 +2526,51 @@ describe('Identity Fixture Unit Tests (T044 - US4)', () => {
     const validDevDbUrl = 'postgresql://postgres:postgres@127.0.0.1:5432/s2_assets_dev';
     const validDevDbName = 's2_assets_dev';
     const devRuntimeIdentity = 's2-assets-dev';
+    const validContainerId = 'a'.repeat(64);
+
+    const getDevEvidence = (endpoint: string = '127.0.0.1:5432/s2_assets_dev'): RuntimeEvidence => ({
+      project: 's2-assets-dev',
+      service: 'postgres',
+      application: 's2-assets',
+      ownerUid: '1001',
+      containerId: validContainerId,
+      endpoint,
+    });
+    const validDevRuntimeEvidence = getDevEvidence();
 
     describe('12.1 Valid Narrowly Scoped Development Policy', () => {
-      it('validates target database successfully for approved dev endpoints and runtime identity', () => {
+      it('validates target database successfully for approved dev endpoints, port, and runtime evidence', () => {
         for (const host of ['127.0.0.1', 'localhost', 'postgres']) {
           const url = `postgresql://postgres:postgres@${host}:5432/s2_assets_dev`;
-          const { dbName, targetEndpoint } = validateTargetDatabase(
+          const evidence = getDevEvidence(`${host}:5432/s2_assets_dev`);
+          const { dbName, targetEndpoint, targetPolicy, runtimeEvidence } = validateTargetDatabase(
             url,
             validDevDbName,
-            'shared-development',
-            devRuntimeIdentity
+            {
+              targetPolicy: 'shared-development',
+              runtimeIdentity: devRuntimeIdentity,
+              runtimeEvidence: evidence,
+            }
           );
           expect(dbName).toBe('s2_assets_dev');
           expect(targetEndpoint).toBe(`${host}:5432/s2_assets_dev`);
+          expect(targetPolicy).toBe('shared-development');
+          expect(runtimeEvidence).toEqual(evidence);
         }
+      });
+
+      it('accepts runtime evidence loaded from an external file outside repository with mode 600', async () => {
+        const evidenceFile = path.join(tempDir, 'runtime-evidence.json');
+        await fs.writeFile(evidenceFile, JSON.stringify(validDevRuntimeEvidence, null, 2), {
+          mode: 0o600,
+        });
+
+        const { targetEndpoint } = validateTargetDatabase(validDevDbUrl, validDevDbName, {
+          targetPolicy: 'shared-development',
+          runtimeIdentity: devRuntimeIdentity,
+          runtimeEvidence: evidenceFile,
+        });
+        expect(targetEndpoint).toBe('127.0.0.1:5432/s2_assets_dev');
       });
 
       it('executes setupTestIdentities under shared-development policy when preexisting SYSTEM_MAINTAINER exists', async () => {
@@ -2552,6 +2587,7 @@ describe('Identity Fixture Unit Tests (T044 - US4)', () => {
           stateFile: tempStateFile,
           targetPolicy: 'shared-development',
           runtimeIdentity: devRuntimeIdentity,
+          runtimeEvidence: validDevRuntimeEvidence,
           db: mockDb,
         });
 
@@ -2563,6 +2599,7 @@ describe('Identity Fixture Unit Tests (T044 - US4)', () => {
         expect(state.createdGrants).toEqual([
           { userId: state.maintainer.id, roleId: 'SYSTEM_MAINTAINER' },
         ]);
+        expect(state.runtimeEvidence).toBeDefined();
 
         // State file validation
         const loadedState = await readAndValidateStateFile(
@@ -2591,6 +2628,7 @@ describe('Identity Fixture Unit Tests (T044 - US4)', () => {
           stateFile: tempStateFile,
           targetPolicy: 'shared-development',
           runtimeIdentity: devRuntimeIdentity,
+          runtimeEvidence: validDevRuntimeEvidence,
           db: mockDb,
         });
 
@@ -2603,6 +2641,7 @@ describe('Identity Fixture Unit Tests (T044 - US4)', () => {
           stateFile: tempStateFile,
           targetPolicy: 'shared-development',
           runtimeIdentity: devRuntimeIdentity,
+          runtimeEvidence: validDevRuntimeEvidence,
           db: mockDb,
         });
 
@@ -2615,7 +2654,7 @@ describe('Identity Fixture Unit Tests (T044 - US4)', () => {
       });
     });
 
-    describe('12.2 Missing/Wrong Policy, Runtime, Endpoint, or Database', () => {
+    describe('12.2 Missing/Wrong Policy, Runtime, Endpoint, Evidence, or Database (R2)', () => {
       it('rejects s2_assets_dev database under default isolated policy', () => {
         expect(() =>
           validateTargetDatabase(validDevDbUrl, validDevDbName, 'isolated')
@@ -2628,33 +2667,121 @@ describe('Identity Fixture Unit Tests (T044 - US4)', () => {
 
       it('rejects shared-development policy if runtimeIdentity is missing or wrong', () => {
         expect(() =>
-          validateTargetDatabase(validDevDbUrl, validDevDbName, 'shared-development', undefined)
+          validateTargetDatabase(validDevDbUrl, validDevDbName, {
+            targetPolicy: 'shared-development',
+            runtimeIdentity: undefined,
+            runtimeEvidence: validDevRuntimeEvidence,
+          })
         ).toThrow(/requires verified runtime identity "s2-assets-dev"/);
 
         expect(() =>
-          validateTargetDatabase(validDevDbUrl, validDevDbName, 'shared-development', 'wrong-runtime')
+          validateTargetDatabase(validDevDbUrl, validDevDbName, {
+            targetPolicy: 'shared-development',
+            runtimeIdentity: 'wrong-runtime',
+            runtimeEvidence: validDevRuntimeEvidence,
+          })
         ).toThrow(/requires verified runtime identity "s2-assets-dev"/);
       });
 
       it('rejects shared-development policy if database name is not s2_assets_dev', () => {
         const otherDbUrl = 'postgresql://postgres:postgres@127.0.0.1:5432/other_db';
         expect(() =>
-          validateTargetDatabase(otherDbUrl, 'other_db', 'shared-development', devRuntimeIdentity)
+          validateTargetDatabase(otherDbUrl, 'other_db', {
+            targetPolicy: 'shared-development',
+            runtimeIdentity: devRuntimeIdentity,
+            runtimeEvidence: getDevEvidence('127.0.0.1:5432/other_db'),
+          })
         ).toThrow(/Shared Development policy is restricted strictly to database "s2_assets_dev"/);
 
         expect(() =>
-          validateTargetDatabase(validDevDbUrl, 'other_expected_db', 'shared-development', devRuntimeIdentity)
+          validateTargetDatabase(validDevDbUrl, 'other_expected_db', {
+            targetPolicy: 'shared-development',
+            runtimeIdentity: devRuntimeIdentity,
+            runtimeEvidence: validDevRuntimeEvidence,
+          })
         ).toThrow(/Shared Development expected database must be "s2_assets_dev"/);
       });
 
       it('rejects shared-development policy if host is not an approved development host', () => {
         const unapprovedHostUrl = 'postgresql://postgres:postgres@remote-host:5432/s2_assets_dev';
         expect(() =>
-          validateTargetDatabase(unapprovedHostUrl, validDevDbName, 'shared-development', devRuntimeIdentity)
+          validateTargetDatabase(unapprovedHostUrl, validDevDbName, {
+            targetPolicy: 'shared-development',
+            runtimeIdentity: devRuntimeIdentity,
+            runtimeEvidence: getDevEvidence('remote-host:5432/s2_assets_dev'),
+          })
         ).toThrow(/is not an approved endpoint/);
       });
 
-      it('fails closed when setup or cleanup is called with missing or invalid runtimeIdentity', async () => {
+      it('rejects shared-development policy when runtime evidence is missing', () => {
+        expect(() =>
+          validateTargetDatabase(validDevDbUrl, validDevDbName, {
+            targetPolicy: 'shared-development',
+            runtimeIdentity: devRuntimeIdentity,
+          })
+        ).toThrow(/Missing runtime evidence/);
+      });
+
+      it('rejects shared-development policy with substituted runtime evidence', () => {
+        // Substituted project
+        expect(() =>
+          validateTargetDatabase(validDevDbUrl, validDevDbName, {
+            targetPolicy: 'shared-development',
+            runtimeIdentity: devRuntimeIdentity,
+            runtimeEvidence: { ...validDevRuntimeEvidence, project: 's2-assets-staging' },
+          })
+        ).toThrow(/Substituted runtime evidence: expected project "s2-assets-dev"/);
+
+        // Substituted service
+        expect(() =>
+          validateTargetDatabase(validDevDbUrl, validDevDbName, {
+            targetPolicy: 'shared-development',
+            runtimeIdentity: devRuntimeIdentity,
+            runtimeEvidence: { ...validDevRuntimeEvidence, service: 'redis' },
+          })
+        ).toThrow(/Substituted runtime evidence: expected service "postgres"/);
+
+        // Substituted application
+        expect(() =>
+          validateTargetDatabase(validDevDbUrl, validDevDbName, {
+            targetPolicy: 'shared-development',
+            runtimeIdentity: devRuntimeIdentity,
+            runtimeEvidence: { ...validDevRuntimeEvidence, application: 'other-app' },
+          })
+        ).toThrow(/Substituted runtime evidence: expected application "s2-assets"/);
+
+        // Substituted ownerUid
+        expect(() =>
+          validateTargetDatabase(validDevDbUrl, validDevDbName, {
+            targetPolicy: 'shared-development',
+            runtimeIdentity: devRuntimeIdentity,
+            runtimeEvidence: { ...validDevRuntimeEvidence, ownerUid: '0' },
+          })
+        ).toThrow(/Substituted runtime evidence: expected ownerUid "1001"/);
+
+        // Invalid containerId (not 64-hex SHA)
+        expect(() =>
+          validateTargetDatabase(validDevDbUrl, validDevDbName, {
+            targetPolicy: 'shared-development',
+            runtimeIdentity: devRuntimeIdentity,
+            runtimeEvidence: { ...validDevRuntimeEvidence, containerId: 'short-id' },
+          })
+        ).toThrow(/Invalid runtime evidence containerId/);
+      });
+
+      it('rejects mismatched effective endpoint against runtime evidence', () => {
+        // Evidence specifies 127.0.0.1:5432/s2_assets_dev but URL points to postgres:5432/s2_assets_dev
+        const postgresUrl = 'postgresql://postgres:postgres@postgres:5432/s2_assets_dev';
+        expect(() =>
+          validateTargetDatabase(postgresUrl, validDevDbName, {
+            targetPolicy: 'shared-development',
+            runtimeIdentity: devRuntimeIdentity,
+            runtimeEvidence: validDevRuntimeEvidence, // has endpoint 127.0.0.1:5432/s2_assets_dev
+          })
+        ).toThrow(/Runtime evidence endpoint mismatch: expected "postgres:5432\/s2_assets_dev", got "127.0.0.1:5432\/s2_assets_dev"/);
+      });
+
+      it('fails closed when setup or cleanup is called with missing or invalid runtimeIdentity or evidence', async () => {
         const mockDb = createMockDb();
         mockDb.roles.push({ id: 'SYSTEM_MAINTAINER', description: 'System maintainer' });
 
@@ -2669,9 +2796,26 @@ describe('Identity Fixture Unit Tests (T044 - US4)', () => {
             stateFile: tempStateFile,
             targetPolicy: 'shared-development',
             runtimeIdentity: 'unauthorized-runtime',
+            runtimeEvidence: validDevRuntimeEvidence,
             db: mockDb,
           })
         ).rejects.toThrow(/requires verified runtime identity "s2-assets-dev"/);
+
+        await expect(
+          setupTestIdentities({
+            nodeEnv: 'test',
+            databaseUrl: validDevDbUrl,
+            expectedDb: validDevDbName,
+            runId: testRunId,
+            baseUsername: testBaseUsername,
+            password: testPassword,
+            stateFile: tempStateFile,
+            targetPolicy: 'shared-development',
+            runtimeIdentity: devRuntimeIdentity,
+            // runtimeEvidence missing
+            db: mockDb,
+          })
+        ).rejects.toThrow(/Missing runtime evidence/);
 
         await expect(
           cleanupTestIdentities({
@@ -2683,13 +2827,14 @@ describe('Identity Fixture Unit Tests (T044 - US4)', () => {
             stateFile: tempStateFile,
             targetPolicy: 'shared-development',
             runtimeIdentity: 'unauthorized-runtime',
+            runtimeEvidence: validDevRuntimeEvidence,
             db: mockDb,
           })
         ).rejects.toThrow(/requires verified runtime identity "s2-assets-dev"/);
       });
     });
 
-    describe('12.3 Production and Connection Overrides', () => {
+    describe('12.3 Production and Connection Overrides (R2 Parser Probes)', () => {
       it('rejects database URLs with production hostnames even when shared-development policy is specified', () => {
         const prodUrls = [
           'postgresql://user:pass@production.rds.amazonaws.com:5432/s2_assets_dev',
@@ -2699,22 +2844,44 @@ describe('Identity Fixture Unit Tests (T044 - US4)', () => {
 
         for (const url of prodUrls) {
           expect(() =>
-            validateTargetDatabase(url, validDevDbName, 'shared-development', devRuntimeIdentity)
-          ).toThrow();
+            validateTargetDatabase(url, validDevDbName, {
+              targetPolicy: 'shared-development',
+              runtimeIdentity: devRuntimeIdentity,
+              runtimeEvidence: validDevRuntimeEvidence,
+            })
+          ).toThrow(/Production database target is prohibited/);
         }
       });
 
-      it('rejects connection override parameters in database URL under shared-development policy', () => {
-        const overrideUrls = [
-          'postgresql://postgres:postgres@127.0.0.1:5432/s2_assets_dev?host=evil.com',
-          'postgresql://postgres:postgres@127.0.0.1:5432/s2_assets_dev?host=production.internal',
-          'postgresql://postgres:postgres@127.0.0.1:5432/s2_assets_dev?sslmode=disable&host=override',
+      it('rejects pure parser probe with unauthorized port 6543 (R2 Lead finding)', () => {
+        const probeUrl = 'postgresql://postgres:postgres@127.0.0.1:6543/s2_assets_dev';
+        expect(() =>
+          validateTargetDatabase(probeUrl, validDevDbName, {
+            targetPolicy: 'shared-development',
+            runtimeIdentity: devRuntimeIdentity,
+            runtimeEvidence: getDevEvidence('127.0.0.1:6543/s2_assets_dev'),
+          })
+        ).toThrow(/database port "6543" is not authorized/);
+      });
+
+      it('rejects connection override parameters (?host=, ?port=, ?options=, etc.) (R2 Lead finding)', () => {
+        const overrideProbes = [
+          'postgresql://postgres:postgres@127.0.0.1:5432/s2_assets_dev?host=postgres',
+          'postgresql://postgres:postgres@postgres:5432/s2_assets_dev?port=6543',
+          'postgresql://postgres:postgres@127.0.0.1:5432/s2_assets_dev?options=-c%20search_path=foo',
+          'postgresql://postgres:postgres@127.0.0.1:5432/s2_assets_dev?database=other_db',
+          'postgresql://postgres:postgres@127.0.0.1:5432/s2_assets_dev?dbname=other_db',
+          'postgresql://postgres:postgres@127.0.0.1:5432/s2_assets_dev?user=other_user',
         ];
 
-        for (const url of overrideUrls) {
+        for (const url of overrideProbes) {
           expect(() =>
-            validateTargetDatabase(url, validDevDbName, 'shared-development', devRuntimeIdentity)
-          ).toThrow();
+            validateTargetDatabase(url, validDevDbName, {
+              targetPolicy: 'shared-development',
+              runtimeIdentity: devRuntimeIdentity,
+              runtimeEvidence: validDevRuntimeEvidence,
+            })
+          ).toThrow(/Connection override parameter "\?[a-zA-Z0-9_-]+=" is prohibited/);
         }
       });
     });
@@ -2735,6 +2902,7 @@ describe('Identity Fixture Unit Tests (T044 - US4)', () => {
             stateFile: tempStateFile,
             targetPolicy: 'shared-development',
             runtimeIdentity: devRuntimeIdentity,
+            runtimeEvidence: validDevRuntimeEvidence,
             db: mockDb,
           })
         ).rejects.toThrow(/Preexisting "SYSTEM_MAINTAINER" role is required under shared-Development policy/);
@@ -2765,6 +2933,7 @@ describe('Identity Fixture Unit Tests (T044 - US4)', () => {
           stateFile: tempStateFile,
           targetPolicy: 'shared-development',
           runtimeIdentity: devRuntimeIdentity,
+          runtimeEvidence: validDevRuntimeEvidence,
           db: mockDb,
         });
 
@@ -2789,6 +2958,7 @@ describe('Identity Fixture Unit Tests (T044 - US4)', () => {
           stateFile: tempStateFile,
           targetPolicy: 'shared-development',
           runtimeIdentity: devRuntimeIdentity,
+          runtimeEvidence: validDevRuntimeEvidence,
           db: mockDb,
         });
 
@@ -2801,6 +2971,7 @@ describe('Identity Fixture Unit Tests (T044 - US4)', () => {
           stateFile: tempStateFile,
           targetPolicy: 'shared-development',
           runtimeIdentity: devRuntimeIdentity,
+          runtimeEvidence: validDevRuntimeEvidence,
           db: mockDb,
         });
 
@@ -2823,6 +2994,7 @@ describe('Identity Fixture Unit Tests (T044 - US4)', () => {
           createdSessionIds: [],
           createdAt: new Date().toISOString(),
           targetPolicy: 'shared-development',
+          runtimeEvidence: validDevRuntimeEvidence,
         };
         await writeStateFileAtomic(tempStateFile, tamperedState);
 
@@ -2848,6 +3020,7 @@ describe('Identity Fixture Unit Tests (T044 - US4)', () => {
             stateFile: tempStateFile,
             targetPolicy: 'shared-development',
             runtimeIdentity: devRuntimeIdentity,
+            runtimeEvidence: validDevRuntimeEvidence,
             db: mockDb,
           })
         ).rejects.toThrow(/Inconsistent role ownership: shared-Development policy prohibits creating or tracking roles/);
@@ -2895,6 +3068,7 @@ describe('Identity Fixture Unit Tests (T044 - US4)', () => {
           stateFile: tempStateFile,
           targetPolicy: 'shared-development',
           runtimeIdentity: devRuntimeIdentity,
+          runtimeEvidence: validDevRuntimeEvidence,
           db: mockDb,
         });
 
@@ -2922,6 +3096,7 @@ describe('Identity Fixture Unit Tests (T044 - US4)', () => {
           stateFile: tempStateFile,
           targetPolicy: 'shared-development',
           runtimeIdentity: devRuntimeIdentity,
+          runtimeEvidence: validDevRuntimeEvidence,
           db: mockDb,
         });
 
@@ -2973,6 +3148,7 @@ describe('Identity Fixture Unit Tests (T044 - US4)', () => {
           createdSessionIds: [],
           createdAt: new Date().toISOString(),
           targetPolicy: 'shared-development',
+          runtimeEvidence: validDevRuntimeEvidence,
         };
         await writeStateFileAtomic(tempStateFile, maliciousState);
 
@@ -2986,6 +3162,7 @@ describe('Identity Fixture Unit Tests (T044 - US4)', () => {
             stateFile: tempStateFile,
             targetPolicy: 'shared-development',
             runtimeIdentity: devRuntimeIdentity,
+            runtimeEvidence: validDevRuntimeEvidence,
             db: mockDb,
           })
         ).rejects.toThrow(/Database ownership mismatch|unprovable user ownership/);
@@ -3020,6 +3197,7 @@ describe('Identity Fixture Unit Tests (T044 - US4)', () => {
             stateFile: tempStateFile,
             targetPolicy: 'shared-development',
             runtimeIdentity: devRuntimeIdentity,
+            runtimeEvidence: validDevRuntimeEvidence,
             db: mockDb,
           })
         ).rejects.toThrow(/Simulated database write error during grant assignment/);
@@ -3085,6 +3263,7 @@ describe('Identity Fixture Unit Tests (T044 - US4)', () => {
           createdSessionIds: [],
           createdAt: new Date().toISOString(),
           targetPolicy: 'shared-development',
+          runtimeEvidence: validDevRuntimeEvidence,
         };
         await writeStateFileAtomic(tempStateFile, uncertainState);
 
@@ -3097,6 +3276,7 @@ describe('Identity Fixture Unit Tests (T044 - US4)', () => {
           stateFile: tempStateFile,
           targetPolicy: 'shared-development',
           runtimeIdentity: devRuntimeIdentity,
+          runtimeEvidence: validDevRuntimeEvidence,
           db: mockDb,
         });
 
@@ -3112,6 +3292,247 @@ describe('Identity Fixture Unit Tests (T044 - US4)', () => {
 
         // State file was cleaned up
         expect(fsSync.existsSync(tempStateFile)).toBe(false);
+      });
+    });
+
+    describe('12.8 Browser Authentication Prerequisites and Credentials Validation (R3)', () => {
+      const validBaseURL = 'http://127.0.0.1:5173';
+
+      const createActiveState = (overrides: Partial<TestIdentityState> = {}): TestIdentityState => ({
+        runId: testRunId,
+        database: expectedDbName,
+        targetEndpoint: `127.0.0.1:5432/${expectedDbName}`,
+        status: 'active',
+        maintainer: {
+          id: 'u-maintainer-active-1',
+          username: `${testBaseUsername}_maintainer`,
+          role: 'SYSTEM_MAINTAINER',
+        },
+        standard: {
+          id: 'u-standard-active-2',
+          username: `${testBaseUsername}_standard`,
+          role: null,
+        },
+        createdUserIds: ['u-maintainer-active-1', 'u-standard-active-2'],
+        createdRoleIds: [],
+        createdGrants: [{ userId: 'u-maintainer-active-1', roleId: 'SYSTEM_MAINTAINER' }],
+        createdSessionIds: [],
+        createdAt: new Date().toISOString(),
+        targetPolicy: 'isolated',
+        ...overrides,
+      });
+
+      it('rejects missing or empty browser base URL', () => {
+        expect(() =>
+          validateBrowserAuthPrerequisites({ baseURL: '' })
+        ).toThrow(/Browser base URL is required/);
+
+        expect(() =>
+          validateBrowserAuthPrerequisites({ baseURL: undefined })
+        ).toThrow(/Browser base URL is required/);
+      });
+
+      it('rejects unapproved browser base URLs', () => {
+        const unapprovedUrls = [
+          'http://evil.com:5173',
+          'http://127.0.0.1:3000',
+          'http://production:5173',
+          'https://s2.example.com',
+          'http://localhost:8080',
+        ];
+
+        for (const url of unapprovedUrls) {
+          expect(() =>
+            validateBrowserAuthPrerequisites({ baseURL: url, stateFile: tempStateFile })
+          ).toThrow(/Unapproved browser base URL/);
+        }
+      });
+
+      it('rejects missing fixture state file', () => {
+        expect(() =>
+          validateBrowserAuthPrerequisites({ baseURL: validBaseURL, stateFile: undefined })
+        ).toThrow(/Fixture state file is required/);
+      });
+
+      it('rejects state file residing inside repository checkout', () => {
+        const repoRoot = findRepoRoot();
+        const insideFile = path.join(repoRoot, 'in-repo-state.json');
+        expect(() =>
+          validateBrowserAuthPrerequisites({ baseURL: validBaseURL, stateFile: insideFile })
+        ).toThrow(/must reside outside repository checkout/);
+      });
+
+      it('rejects non-existent state file', () => {
+        const nonExistent = path.join(tempDir, 'non-existent-state.json');
+        expect(() =>
+          validateBrowserAuthPrerequisites({ baseURL: validBaseURL, stateFile: nonExistent })
+        ).toThrow(/does not exist/);
+      });
+
+      it('rejects state file with insecure permissions (e.g. mode 0644)', async () => {
+        const activeState = createActiveState();
+        await fs.writeFile(tempStateFile, JSON.stringify(activeState, null, 2), {
+          mode: 0o644,
+        });
+
+        expect(() =>
+          validateBrowserAuthPrerequisites({ baseURL: validBaseURL, stateFile: tempStateFile })
+        ).toThrow(/Insecure permissions on fixture state file/);
+      });
+
+      it('rejects state file when status is not active (e.g. initializing or uncertain)', async () => {
+        const initializingState = createActiveState({ status: 'initializing' });
+        await writeStateFileAtomic(tempStateFile, initializingState);
+
+        expect(() =>
+          validateBrowserAuthPrerequisites({ baseURL: validBaseURL, stateFile: tempStateFile })
+        ).toThrow(/Fixture state is not active/);
+
+        const uncertainState = createActiveState({ status: 'uncertain' });
+        await writeStateFileAtomic(tempStateFile, uncertainState);
+
+        expect(() =>
+          validateBrowserAuthPrerequisites({ baseURL: validBaseURL, stateFile: tempStateFile })
+        ).toThrow(/Fixture state is not active/);
+      });
+
+      it('rejects state file with mismatched runId', async () => {
+        const activeState = createActiveState({ runId: 'run-alpha' });
+        await writeStateFileAtomic(tempStateFile, activeState);
+
+        expect(() =>
+          validateBrowserAuthPrerequisites({
+            baseURL: validBaseURL,
+            stateFile: tempStateFile,
+            runId: 'run-bravo',
+          })
+        ).toThrow(/State file run ID mismatch/);
+      });
+
+      it('rejects state file under shared-development policy with wrong database or non-empty roles', async () => {
+        const wrongDbDevState = createActiveState({
+          targetPolicy: 'shared-development',
+          database: 's2_foundation_other',
+        });
+        await writeStateFileAtomic(tempStateFile, wrongDbDevState);
+
+        expect(() =>
+          validateBrowserAuthPrerequisites({
+            baseURL: validBaseURL,
+            stateFile: tempStateFile,
+            targetPolicy: 'shared-development',
+          })
+        ).toThrow(/State file database mismatch under shared-Development policy/);
+
+        const rolesDevState = createActiveState({
+          targetPolicy: 'shared-development',
+          database: 's2_assets_dev',
+          createdRoleIds: ['SYSTEM_MAINTAINER'],
+        });
+        await writeStateFileAtomic(tempStateFile, rolesDevState);
+
+        expect(() =>
+          validateBrowserAuthPrerequisites({
+            baseURL: validBaseURL,
+            stateFile: tempStateFile,
+            targetPolicy: 'shared-development',
+          })
+        ).toThrow(/Inconsistent role ownership: shared-Development policy prohibits creating or tracking roles/);
+      });
+
+      it('rejects state file missing maintainer descriptor or maintainer role !== SYSTEM_MAINTAINER', async () => {
+        const noMaintainer = createActiveState({ maintainer: undefined as any });
+        await writeStateFileAtomic(tempStateFile, noMaintainer);
+
+        expect(() =>
+          validateBrowserAuthPrerequisites({ baseURL: validBaseURL, stateFile: tempStateFile })
+        ).toThrow(/missing maintainer descriptor/);
+
+        const wrongRole = createActiveState({
+          maintainer: { id: 'u1', username: `${testBaseUsername}_maintainer`, role: 'ADMIN' as any },
+        });
+        await writeStateFileAtomic(tempStateFile, wrongRole);
+
+        expect(() =>
+          validateBrowserAuthPrerequisites({ baseURL: validBaseURL, stateFile: tempStateFile })
+        ).toThrow(/maintainer role must be "SYSTEM_MAINTAINER"/);
+      });
+
+      it('rejects state file when maintainer ID is not present in createdUserIds', async () => {
+        const unownedMaintainer = createActiveState({
+          maintainer: { id: 'outsider-id-123', username: `${testBaseUsername}_maintainer`, role: 'SYSTEM_MAINTAINER' },
+          createdUserIds: ['different-id-456'],
+        });
+        await writeStateFileAtomic(tempStateFile, unownedMaintainer);
+
+        expect(() =>
+          validateBrowserAuthPrerequisites({ baseURL: validBaseURL, stateFile: tempStateFile })
+        ).toThrow(/Inconsistent ownership: maintainer ID "outsider-id-123" not found in createdUserIds/);
+      });
+
+      it('rejects arbitrary username that mismatches state maintainer username', async () => {
+        const activeState = createActiveState();
+        await writeStateFileAtomic(tempStateFile, activeState);
+
+        expect(() =>
+          validateBrowserAuthPrerequisites({
+            baseURL: validBaseURL,
+            stateFile: tempStateFile,
+            username: 'arbitrary_bypass_username',
+            password: testPassword,
+          })
+        ).toThrow(/Browser username mismatch/);
+      });
+
+      it('rejects missing or invalid test password (too short or trivial)', async () => {
+        const activeState = createActiveState();
+        await writeStateFileAtomic(tempStateFile, activeState);
+
+        // Missing password
+        expect(() =>
+          validateBrowserAuthPrerequisites({
+            baseURL: validBaseURL,
+            stateFile: tempStateFile,
+          })
+        ).toThrow(/Test password is required/);
+
+        // Short password (<8 characters)
+        expect(() =>
+          validateBrowserAuthPrerequisites({
+            baseURL: validBaseURL,
+            stateFile: tempStateFile,
+            password: 'short',
+          })
+        ).toThrow(/must contain at least 8 non-whitespace characters/);
+
+        // Trivial passwords
+        for (const trivial of ['password', 'test', 'admin', 's2_password']) {
+          expect(() =>
+            validateBrowserAuthPrerequisites({
+              baseURL: validBaseURL,
+              stateFile: tempStateFile,
+              password: trivial,
+            })
+          ).toThrow(/cannot use default or trivial passwords/);
+        }
+      });
+
+      it('successfully validates prerequisites and resolves matching run-owned credentials', async () => {
+        const activeState = createActiveState();
+        await writeStateFileAtomic(tempStateFile, activeState);
+
+        const creds = validateBrowserAuthPrerequisites({
+          baseURL: validBaseURL,
+          stateFile: tempStateFile,
+          runId: testRunId,
+          password: testPassword,
+        });
+
+        expect(creds.username).toBe(`${testBaseUsername}_maintainer`);
+        expect(creds.password).toBe(testPassword);
+        expect(creds.runId).toBe(testRunId);
+        expect(creds.database).toBe(expectedDbName);
+        expect(creds.targetPolicy).toBe('isolated');
       });
     });
   });
