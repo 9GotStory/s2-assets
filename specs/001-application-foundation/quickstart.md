@@ -132,9 +132,11 @@ timeout -k 2s 10s podman --events-backend=none network inspect "$APP_NET" | \
   'length == 1 and .[0].labels["io.podman.compose.project"] == $p and (.[0].containers | has($cid))' >/dev/null
 timeout -k 2s 10s podman --events-backend=none inspect "$WEB_CID" | \
   jq -e --arg n "$APP_NET" '.[0].State.Running == true and .[0].Config.Labels["io.9gotstory.dev-runtime.kind"] != "persistent-development" and (.[0].NetworkSettings.Networks[$n].Aliases | index("web") != null)' >/dev/null
-RUN=$(mktemp -d "${XDG_RUNTIME_DIR:?}/s2-t046.XXXXXXXX")
+install -d -m 700 "${XDG_STATE_HOME:-$HOME/.local/state}/s2-assets-t046"
+RUN=$(mktemp -d "${XDG_STATE_HOME:-$HOME/.local/state}/s2-assets-t046/run.XXXXXXXX")
 RUN_ID="s2-t046-$(cat /proc/sys/kernel/random/uuid)"
 printf '%s\n' "$RUN_ID" > "$RUN/owner"
+printf 'Retain this recovery directory: %s\n' "$RUN"
 timeout -k 2s 10s podman --events-backend=none inspect \
   s2-assets-dev-postgres s2-assets-dev-api s2-assets-dev-web \
   --format '{{.Name}} {{.Id}} {{.State.StartedAt}} {{.RestartCount}}' > "$RUN/dev.before"
@@ -156,6 +158,7 @@ Require successful identity checks and one exact Web CID, with the expected proj
 Install in a named runner retained until its identity/status and removal are checked with no network. Podman supplies the actual command exit; timeouts and Podman infrastructure failures are failures, not successful installation. Private working cache copies absorb pnpm writes.
 
 ```bash
+printf 'pending\n' > "$RUN/install.status"
 if timeout -k 5s 150s podman --events-backend=none run \
   --name "$RUN_ID-install" --cidfile "$RUN/install.cid" --label "io.s2.t046=$RUN_ID" \
   --pull=never --network=none --log-driver=none --http-proxy=false \
@@ -172,11 +175,18 @@ if timeout -k 5s 150s podman --events-backend=none run \
 printf "Offline frozen install exit: %s\n" "$INSTALL_STATUS"
 printf "%s\n" "$INSTALL_STATUS" > "$RUN/install.status"
 test "$INSTALL_STATUS" -eq 0
+cid=$(cat "$RUN/install.cid")
+[[ "$cid" =~ ^[0-9a-f]{64}$ ]]
+proof=$(timeout -k 2s 10s podman --events-backend=none inspect "$cid" \
+  --format '{{.Id}} {{.Name}} {{index .Config.Labels "io.s2.t046"}} {{.State.Status}} {{.State.ExitCode}} {{.State.Running}} {{.HostConfig.LogConfig.Type}} {{.HostConfig.ReadonlyRootfs}}')
+test "$proof" = "$cid $RUN_ID-install $RUN_ID exited 0 false none true"
+printf '%s\n' "$proof" > "$RUN/install.receipt"
 ```
 
-Immediately record the exit code; require **0**. Then run the read-only readiness container on the verified application network only. It prints fixed tool versions and Chromium's version, while HTTP bodies/errors are discarded. `--version` starts no browser session. No Playwright test/config evaluation occurs.
+Require both command exit **0** and the checked, saved container receipt before continuing. A missing/malformed CID, failed inspection, absent container or unexpected terminal/logging/read-only setting fails this phase. Then run the read-only readiness container on the verified application network only. It prints fixed tool versions and Chromium's version, while HTTP bodies/errors are discarded. `--version` starts no browser session. No Playwright test/config evaluation occurs.
 
 ```bash
+printf 'pending\n' > "$RUN/check.status"
 if timeout -k 5s 60s podman --events-backend=none run \
   --name "$RUN_ID-check" --cidfile "$RUN/check.cid" --label "io.s2.t046=$RUN_ID" \
   --pull=never --network "$APP_NET" --log-driver=none --http-proxy=false \
@@ -208,29 +218,37 @@ if timeout -k 5s 60s podman --events-backend=none run \
 printf "Readiness exit: %s\n" "$CHECK_STATUS"
 printf "%s\n" "$CHECK_STATUS" > "$RUN/check.status"
 test "$CHECK_STATUS" -eq 0
+cid=$(cat "$RUN/check.cid")
+[[ "$cid" =~ ^[0-9a-f]{64}$ ]]
+proof=$(timeout -k 2s 10s podman --events-backend=none inspect "$cid" \
+  --format '{{.Id}} {{.Name}} {{index .Config.Labels "io.s2.t046"}} {{.State.Status}} {{.State.ExitCode}} {{.State.Running}} {{.HostConfig.LogConfig.Type}} {{.HostConfig.ReadonlyRootfs}}')
+test "$proof" = "$cid $RUN_ID-check $RUN_ID exited 0 false none true"
+printf '%s\n' "$proof" > "$RUN/check.receipt"
 ```
 
 Require **0**, matching Chromium from the pinned image/package, and both actual HTTP assertions. This is readiness evidence only; image presence, a package listing or test discovery alone cannot pass T046. Do not run `playwright install`, `pnpm dlx`, `playwright test`, or any browser launch here.
 
-**Cleanup and evidence, including failure/interruption:** the two stopped containers remain inspectable after `podman run`, with invocation-specific names, ownership labels and CID files. For a successful run require terminal `exited`/exit `0`, logging `none` and read-only rootfs `true`; record the effective state from the projections below. Check both exact names even if creation was interrupted before writing a CID. Exit **0 means PRESENT**, **1 means ABSENT** and any other existence result/timeout is uncertain. The following fixed two-container cleanup verifies ownership before removing the exact full CID, preserves a CID receipt, then independently confirms absence. A mismatch or uncertain result stops cleanup and retains the private directory. There is no prefix-based deletion or global prune.
+**Successful-run cleanup and evidence:** the two stopped containers remain inspectable after `podman run`, with invocation-specific names, ownership labels and CID files. Both checked receipts are mandatory. The block below rechecks each CID, receipt and effective terminal/logging/read-only state before removal. Unexpected absence or any mismatch fails readiness; never replace it with success. Exit **0 means PRESENT**, **1 means ABSENT** and any other existence result/timeout is uncertain. Remove only the exact verified CID, then independently require absence. Use the separate recovery procedure below after failure/interruption. There is no prefix-based deletion or global prune.
 
 ```bash
 set -euo pipefail
 for phase in install check; do
   name="$RUN_ID-$phase"
+  test "$(cat "$RUN/$phase.status")" = 0
+  cid=$(cat "$RUN/$phase.cid")
+  [[ "$cid" =~ ^[0-9a-f]{64}$ ]]
+  expected="$cid $name $RUN_ID exited 0 false none true"
+  test "$(cat "$RUN/$phase.receipt")" = "$expected"
   if timeout -k 2s 10s podman --events-backend=none container exists "$name"; then
-    cid=$(timeout -k 2s 10s podman --events-backend=none inspect "$name" --format '{{.Id}}')
-    [[ "$cid" =~ ^[0-9a-f]{64}$ ]]
-    test "$(timeout -k 2s 10s podman --events-backend=none inspect "$cid" --format '{{.Name}} {{index .Config.Labels "io.s2.t046"}}')" = "$name $RUN_ID"
-    test ! -e "$RUN/$phase.cid" || test "$(cat "$RUN/$phase.cid")" = "$cid"
-    printf "%s %s\n" "$phase" "$cid" >> "$RUN/removed-cids.txt"
-    timeout -k 2s 10s podman --events-backend=none inspect "$cid" \
-      --format '{{.Id}} {{.State.Status}} {{.State.ExitCode}} {{.HostConfig.LogConfig.Type}} {{.HostConfig.ReadonlyRootfs}}'
+    proof=$(timeout -k 2s 10s podman --events-backend=none inspect "$cid" \
+      --format '{{.Id}} {{.Name}} {{index .Config.Labels "io.s2.t046"}} {{.State.Status}} {{.State.ExitCode}} {{.State.Running}} {{.HostConfig.LogConfig.Type}} {{.HostConfig.ReadonlyRootfs}}')
+    test "$proof" = "$expected"
+    printf '%s\n' "$proof" >> "$RUN/removed-cids.txt"
     timeout -k 2s 15s podman --events-backend=none rm -f -t 1 "$cid"
     if timeout -k 2s 10s podman --events-backend=none container exists "$cid"; then exit 1; else test "$?" -eq 1; fi
   else
-    test "$?" -eq 1
-    # An absent runner without a completed command/CID receipt cannot establish readiness.
+    printf 'Expected phase container is absent or uncertain; readiness failed.\n' >&2
+    exit 1
   fi
 done
 timeout -k 2s 10s podman --events-backend=none inspect \
@@ -242,6 +260,33 @@ sha256sum -c "$RUN/checkout-lock.sha256"
 ```
 
 Record exact CID/image, the two command exits, version/HTTP results, absence results, input hashes and persistent comparison. Keep the first failed command's status; record cleanup failure separately. If either runner remains/has uncertain ownership, retain its name/CID and private directory for recovery and report FAIL/HOLD. Only after both runners are independently ABSENT, hashes/invariance pass and the concise non-secret evidence is retained, delete this exact private directory with `rm -rf -- "$RUN"`. No source/cache original or application/database resource is removed by these T046 commands. Sections 1–3/5 continue to own the test stack lifecycle.
+
+**Failure, timeout or interruption recovery:** the private recovery directory is under the user's state directory, not temporary shell/runtime storage. Record its printed path before either container command. Its `owner` file restores the invocation ID after the shell exits; exact names remain derivable even if creation did not write a CID. The status files start as `pending`, so missing/interrupted completion cannot imply success. Keep the first observed nonzero status and all available files; never replace them with a cleanup result or rerun a phase in the same directory.
+
+In a fresh Bash session, set `RUN` to that recorded directory. If the path was not recorded, list directories under `${XDG_STATE_HOME:-$HOME/.local/state}/s2-assets-t046` and explicitly identify this invocation; do not select or delete by prefix. Run this recovery block separately for `phase=install` and `phase=check`, including after partial successful cleanup. It requires exact ownership before removal but does not require a successful producer state. Failure or uncertain inspection retains the directory and requires Human Gate. If creation could still be in flight, retain everything and report HOLD; immediate absence alone does not establish safe final cleanup.
+
+```bash
+set +x
+set -euo pipefail
+: "${RUN:?Set the recorded private recovery directory}"
+RUN_ID=$(cat "$RUN/owner")
+[[ "$RUN_ID" =~ ^s2-t046-[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$ ]]
+phase=install # Repeat with phase=check.
+name="$RUN_ID-$phase"
+if timeout -k 2s 10s podman --events-backend=none container exists "$name"; then
+  cid=$(timeout -k 2s 10s podman --events-backend=none inspect "$name" --format '{{.Id}}')
+  [[ "$cid" =~ ^[0-9a-f]{64}$ ]]
+  test "$(timeout -k 2s 10s podman --events-backend=none inspect "$cid" --format '{{.Name}} {{index .Config.Labels "io.s2.t046"}}')" = "$name $RUN_ID"
+  test ! -e "$RUN/$phase.cid" || test "$(cat "$RUN/$phase.cid")" = "$cid"
+  printf '%s %s\n' "$phase" "$cid" >> "$RUN/recovery-cids.txt"
+  timeout -k 2s 15s podman --events-backend=none rm -f -t 1 "$cid"
+  if timeout -k 2s 10s podman --events-backend=none container exists "$cid"; then exit 1; else test "$?" -eq 1; fi
+else
+  test "$?" -eq 1
+fi
+```
+
+Record both absence results and recheck persistent resources/input hashes using the final commands above. Retain recovery evidence outside any directory selected for deletion; remove the exact private directory only after both containers are confirmed absent and no creation is in flight. Recovery establishes cleanup only, **never readiness PASS**; failed, pending or missing phase evidence remains FAIL/HOLD.
 
 **T033 gate:** T046 does not implement `auth.spec.ts`, run `pnpm --filter web test:e2e`, or complete browser acceptance. After separate T033 authorization, use the unchanged Chromium/single-worker configuration for actual login/dashboard/logout/session-rejection and direct-navigation browser flows, preserving existing failure diagnostics without secrets. A passing readiness report cannot replace that real-browser evidence.
 
