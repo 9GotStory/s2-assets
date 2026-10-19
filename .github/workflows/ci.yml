@@ -94,37 +94,32 @@ jobs:
             TEST_FAILED=1
           fi
 
-          if podman image exists s2-assets-dev:ci; then
-            echo "Removing development tooling image s2-assets-dev:ci..."
-            if ! podman rmi -f s2-assets-dev:ci; then
-              echo "ERROR: Failed to remove s2-assets-dev:ci" >&2
+          for img in s2-assets-dev:ci s2-assets-api:ci s2-assets-migration:ci; do
+            st=0
+            podman image exists "$img" 2>/dev/null || st=$?
+            if [ "$st" -eq 0 ]; then
+              echo "Removing build image $img..."
+              if ! podman rmi -f "$img"; then
+                echo "ERROR: Failed to remove $img" >&2
+                CLEANUP_ERRORS=$((CLEANUP_ERRORS + 1))
+              fi
+            fi
+          done
+
+          # Verify absence distinguishing confirmed absence (exit 1) from inspection errors (>1) and presence (0)
+          for img in s2-assets-dev:ci s2-assets-api:ci s2-assets-migration:ci; do
+            st=0
+            podman image exists "$img" 2>/dev/null || st=$?
+            if [ "$st" -eq 1 ]; then
+              echo "Confirmed absent: $img"
+            elif [ "$st" -eq 0 ]; then
+              echo "ERROR: Verified absence failed: image $img still exists!" >&2
+              CLEANUP_ERRORS=$((CLEANUP_ERRORS + 1))
+            else
+              echo "ERROR: Inspection failed for image $img (exit code $st)!" >&2
               CLEANUP_ERRORS=$((CLEANUP_ERRORS + 1))
             fi
-          fi
-
-          if podman image exists s2-assets-api:ci; then
-            echo "Removing production API image s2-assets-api:ci..."
-            if ! podman rmi -f s2-assets-api:ci; then
-              echo "ERROR: Failed to remove s2-assets-api:ci" >&2
-              CLEANUP_ERRORS=$((CLEANUP_ERRORS + 1))
-            fi
-          fi
-
-          if podman image exists s2-assets-migration:ci; then
-            echo "Removing migration image s2-assets-migration:ci..."
-            if ! podman rmi -f s2-assets-migration:ci; then
-              echo "ERROR: Failed to remove s2-assets-migration:ci" >&2
-              CLEANUP_ERRORS=$((CLEANUP_ERRORS + 1))
-            fi
-          fi
-
-          # Verify absence
-          if podman image exists s2-assets-dev:ci || podman image exists s2-assets-api:ci || podman image exists s2-assets-migration:ci; then
-            echo "ERROR: Verified absence failed for build images!" >&2
-            CLEANUP_ERRORS=$((CLEANUP_ERRORS + 1))
-          else
-            echo "Verified absence: zero build images remaining."
-          fi
+          done
 
           if [ "$CLEANUP_ERRORS" -gt 0 ]; then
             echo "ERROR: Quality & Build cleanup encountered $CLEANUP_ERRORS failure(s)." >&2
@@ -228,48 +223,67 @@ jobs:
 
           # 1. Identify and remove exact test-created containers
           touch /tmp/integration_baseline_containers.txt
-          podman ps -aq --no-trunc > /tmp/integration_current_containers.txt
-          NEW_CONTAINERS=$(grep -v -F -f /tmp/integration_baseline_containers.txt /tmp/integration_current_containers.txt || true)
-
-          if [ -n "$NEW_CONTAINERS" ]; then
-            echo "Removing exact test-owned containers:"
-            echo "$NEW_CONTAINERS"
-            for CID in $NEW_CONTAINERS; do
-              if ! podman rm -f "$CID"; then
-                echo "ERROR: Failed to remove test container $CID" >&2
-                CLEANUP_ERRORS=$((CLEANUP_ERRORS + 1))
-              fi
-            done
-          else
-            echo "No test-owned containers detected for removal."
-          fi
-
-          # Verified absence check
-          podman ps -aq --no-trunc > /tmp/integration_final_containers.txt
-          LEAKED=$(grep -v -F -f /tmp/integration_baseline_containers.txt /tmp/integration_final_containers.txt || true)
-          if [ -n "$LEAKED" ]; then
-            echo "ERROR: Verified absence failed! Leaked containers remaining:" >&2
-            echo "$LEAKED" >&2
+          if ! podman ps -aq --no-trunc > /tmp/integration_current_containers.txt; then
+            echo "ERROR: Failed to inspect current containers for integration cleanup!" >&2
             CLEANUP_ERRORS=$((CLEANUP_ERRORS + 1))
           else
-            echo "Verified absence: zero test-owned containers remaining."
+            NEW_CONTAINERS=$(grep -v -F -f /tmp/integration_baseline_containers.txt /tmp/integration_current_containers.txt || true)
+            if [ -n "$NEW_CONTAINERS" ]; then
+              echo "Removing exact test-owned containers:"
+              echo "$NEW_CONTAINERS"
+              for CID in $NEW_CONTAINERS; do
+                if ! podman rm -f "$CID"; then
+                  echo "ERROR: Failed to remove test container $CID" >&2
+                  CLEANUP_ERRORS=$((CLEANUP_ERRORS + 1))
+                fi
+              done
+            else
+              echo "No test-owned containers detected for removal."
+            fi
+          fi
+
+          # Verified absence check for containers
+          if ! podman ps -aq --no-trunc > /tmp/integration_final_containers.txt; then
+            echo "ERROR: Failed to inspect final containers for verified absence!" >&2
+            CLEANUP_ERRORS=$((CLEANUP_ERRORS + 1))
+          else
+            LEAKED=$(grep -v -F -f /tmp/integration_baseline_containers.txt /tmp/integration_final_containers.txt || true)
+            if [ -n "$LEAKED" ]; then
+              echo "ERROR: Verified absence failed! Leaked containers remaining:" >&2
+              echo "$LEAKED" >&2
+              CLEANUP_ERRORS=$((CLEANUP_ERRORS + 1))
+            else
+              echo "Verified absence: zero test-owned containers remaining."
+            fi
           fi
 
           # 2. Remove integration runner images
-          if podman image exists s2-assets-integration:ci; then
-            echo "Removing s2-assets-integration:ci..."
-            if ! podman rmi -f s2-assets-integration:ci; then
-              echo "ERROR: Failed to remove s2-assets-integration:ci" >&2
+          for img in s2-assets-integration:ci s2-assets-dev:ci; do
+            st=0
+            podman image exists "$img" 2>/dev/null || st=$?
+            if [ "$st" -eq 0 ]; then
+              echo "Removing integration image $img..."
+              if ! podman rmi -f "$img"; then
+                echo "ERROR: Failed to remove $img" >&2
+                CLEANUP_ERRORS=$((CLEANUP_ERRORS + 1))
+              fi
+            fi
+          done
+
+          # Verified absence check for images distinguishing confirmed absence (exit 1) from inspection errors (>1) and presence (0)
+          for img in s2-assets-integration:ci s2-assets-dev:ci; do
+            st=0
+            podman image exists "$img" 2>/dev/null || st=$?
+            if [ "$st" -eq 1 ]; then
+              echo "Confirmed absent: $img"
+            elif [ "$st" -eq 0 ]; then
+              echo "ERROR: Verified absence failed: image $img still exists!" >&2
+              CLEANUP_ERRORS=$((CLEANUP_ERRORS + 1))
+            else
+              echo "ERROR: Inspection failed for image $img (exit code $st)!" >&2
               CLEANUP_ERRORS=$((CLEANUP_ERRORS + 1))
             fi
-          fi
-          if podman image exists s2-assets-dev:ci; then
-            echo "Removing s2-assets-dev:ci..."
-            if ! podman rmi -f s2-assets-dev:ci; then
-              echo "ERROR: Failed to remove s2-assets-dev:ci" >&2
-              CLEANUP_ERRORS=$((CLEANUP_ERRORS + 1))
-            fi
-          fi
+          done
 
           # 3. Terminate Podman service PID cleanly
           if [ -n "${PODMAN_PID:-}" ]; then
@@ -365,6 +379,7 @@ jobs:
           USERNAME="ci_user_${GITHUB_RUN_ID}"
           PASSWORD="$(openssl rand -base64 16 | tr -d '=+/' | head -c 16)A1!"
           FOUNDATION_ENV_FILE="${ENV_DIR}/foundation.env"
+          FOUNDATION_FIXTURE_STATE_FILE="${ENV_DIR}/fixture-state-${RUN_ID}.json"
           DATABASE_URL="postgresql://${POSTGRES_USER}:${POSTGRES_PASSWORD}@postgres:5432/${POSTGRES_DB}"
 
           cat <<EOF > "$FOUNDATION_ENV_FILE"
@@ -377,12 +392,15 @@ jobs:
           FOUNDATION_TEST_USERNAME=${USERNAME}
           FOUNDATION_TEST_PASSWORD=${PASSWORD}
           FOUNDATION_TEST_DATABASE_URL=${DATABASE_URL}
+          FOUNDATION_FIXTURE_STATE_FILE=${FOUNDATION_FIXTURE_STATE_FILE}
           API_HOST_PORT=3000
           WEB_HOST_PORT=5173
           EOF
           chmod 600 "$FOUNDATION_ENV_FILE"
 
           echo "FOUNDATION_ENV_FILE=$FOUNDATION_ENV_FILE" >> $GITHUB_ENV
+          echo "FOUNDATION_TEST_RUN_ID=$RUN_ID" >> $GITHUB_ENV
+          echo "FOUNDATION_FIXTURE_STATE_FILE=$FOUNDATION_FIXTURE_STATE_FILE" >> $GITHUB_ENV
           echo "COMPOSE_PROJECT_NAME=$COMPOSE_PROJECT_NAME" >> $GITHUB_ENV
           echo "POSTGRES_USER=$POSTGRES_USER" >> $GITHUB_ENV
           echo "POSTGRES_DB=$POSTGRES_DB" >> $GITHUB_ENV
@@ -400,7 +418,7 @@ jobs:
 
           PG_READY=0
           for attempt in {1..30}; do
-            if podman compose --env-file "$FOUNDATION_ENV_FILE" -p "$COMPOSE_PROJECT_NAME" -f deploy/podman/compose.yaml exec -T postgres pg_isready -U "$POSTGRES_USER" -d "$POSTGRES_DB"; then
+            if podman compose --env-file "$FOUNDATION_ENV_FILE" -p "$COMPOSE_PROJECT_NAME" -f deploy/podman/compose.yaml exec -T postgres pg_isready -U "$POSTGRES_USER" -d "$POSTGRES_DB" -t 2; then
               echo "PostgreSQL service ready (attempt ${attempt})"
               PG_READY=1
               break
@@ -427,7 +445,7 @@ jobs:
 
           for attempt in {1..40}; do
             if [ "$API_HEALTH_READY" -eq 0 ]; then
-              HEALTH_STATUS=$(curl -s -o /dev/null -w "%{http_code}" http://127.0.0.1:3000/health || true)
+              HEALTH_STATUS=$(curl -s --connect-timeout 2 --max-time 3 -o /dev/null -w "%{http_code}" http://127.0.0.1:3000/health || true)
               if [ "$HEALTH_STATUS" = "200" ]; then
                 API_HEALTH_READY=1
                 echo "API /health endpoint ready (HTTP 200, attempt ${attempt})"
@@ -435,7 +453,7 @@ jobs:
             fi
 
             if [ "$API_READY_READY" -eq 0 ]; then
-              READY_STATUS=$(curl -s -o /dev/null -w "%{http_code}" http://127.0.0.1:3000/ready || true)
+              READY_STATUS=$(curl -s --connect-timeout 2 --max-time 3 -o /dev/null -w "%{http_code}" http://127.0.0.1:3000/ready || true)
               if [ "$READY_STATUS" = "200" ]; then
                 API_READY_READY=1
                 echo "API /ready endpoint ready (HTTP 200, attempt ${attempt})"
@@ -443,7 +461,7 @@ jobs:
             fi
 
             if [ "$WEB_LOGIN_READY" -eq 0 ]; then
-              WEB_STATUS=$(curl -s -o /dev/null -w "%{http_code}" http://127.0.0.1:5173/login || true)
+              WEB_STATUS=$(curl -s --connect-timeout 2 --max-time 3 -o /dev/null -w "%{http_code}" http://127.0.0.1:5173/login || true)
               if [ "$WEB_STATUS" = "200" ]; then
                 WEB_LOGIN_READY=1
                 echo "Web /login endpoint ready (HTTP 200, attempt ${attempt})"
@@ -501,28 +519,28 @@ jobs:
 
           for attempt in {1..30}; do
             if [ "$API_HEALTH_READY" -eq 0 ]; then
-              HEALTH_STATUS=$(curl -s -o /dev/null -w "%{http_code}" http://127.0.0.1:3000/health || true)
+              HEALTH_STATUS=$(curl -s --connect-timeout 2 --max-time 3 -o /dev/null -w "%{http_code}" http://127.0.0.1:3000/health || true)
               if [ "$HEALTH_STATUS" = "200" ]; then
                 API_HEALTH_READY=1
               fi
             fi
 
             if [ "$API_READY_READY" -eq 0 ]; then
-              READY_STATUS=$(curl -s -o /dev/null -w "%{http_code}" http://127.0.0.1:3000/ready || true)
+              READY_STATUS=$(curl -s --connect-timeout 2 --max-time 3 -o /dev/null -w "%{http_code}" http://127.0.0.1:3000/ready || true)
               if [ "$READY_STATUS" = "200" ]; then
                 API_READY_READY=1
               fi
             fi
 
             if [ "$WEB_LOGIN_READY" -eq 0 ]; then
-              WEB_STATUS=$(curl -s -o /dev/null -w "%{http_code}" http://127.0.0.1:5173/login || true)
+              WEB_STATUS=$(curl -s --connect-timeout 2 --max-time 3 -o /dev/null -w "%{http_code}" http://127.0.0.1:5173/login || true)
               if [ "$WEB_STATUS" = "200" ]; then
                 WEB_LOGIN_READY=1
               fi
             fi
 
             if [ "$WEB_PROXY_READY" -eq 0 ]; then
-              PROXY_STATUS=$(curl -s -o /dev/null -w "%{http_code}" http://127.0.0.1:5173/auth/session-check || true)
+              PROXY_STATUS=$(curl -s --connect-timeout 2 --max-time 3 -o /dev/null -w "%{http_code}" http://127.0.0.1:5173/auth/session-check || true)
               if [ "$PROXY_STATUS" = "401" ]; then
                 WEB_PROXY_READY=1
               fi
@@ -591,7 +609,7 @@ jobs:
               echo "Frozen lockfile integrity verified: $LOCK_AFTER"
             '
 
-          echo "Asserting Playwright 1.63.0 and executing E2E browser tests inside Playwright container..."
+          echo "Asserting Node v24.21.0, pnpm 12.9.1, Playwright 1.63.0, and executing E2E browser tests..."
           podman run --name s2_browser_runner --rm \
             --network "${COMPOSE_PROJECT_NAME}_default" \
             --ipc=host \
@@ -604,10 +622,23 @@ jobs:
             mcr.microsoft.com/playwright:v1.63.0-noble \
             bash -c '
               set -euo pipefail
+              if [ "$(node -v)" != "v24.21.0" ]; then
+                echo "Installing exact Node v24.21.0 in Playwright container..."
+                curl -fsSL https://nodejs.org/dist/v24.21.0/node-v24.21.0-linux-x64.tar.gz | tar -xz --strip-components=1 -C /usr/local
+              fi
+              NODE_VER=$(node -v)
+              echo "Browser container Node version: $NODE_VER"
+              test "$NODE_VER" = "v24.21.0"
+
               corepack enable && corepack prepare pnpm@12.9.1 --activate
+              PNPM_VER=$(pnpm -v)
+              echo "Browser container pnpm version: $PNPM_VER"
+              test "$PNPM_VER" = "12.9.1"
+
               PW_VER=$(pnpm --filter web exec playwright --version)
               echo "Playwright container version: $PW_VER"
               echo "$PW_VER" | grep -Eq "1\.63\.0"
+
               pnpm --filter web run test:e2e
             '
 
@@ -648,11 +679,12 @@ jobs:
 
           # 1. Clean up test identity fixtures
           FIXTURE_STATE_UNCERTAIN=0
-          STATE_FILE=""
-          if [ -n "${FOUNDATION_ENV_FILE:-}" ] && [ -f "${FOUNDATION_ENV_FILE}" ]; then
+          STATE_FILE="${FOUNDATION_FIXTURE_STATE_FILE:-}"
+          if [ -z "$STATE_FILE" ] && [ -n "${FOUNDATION_ENV_FILE:-}" ] && [ -f "${FOUNDATION_ENV_FILE}" ]; then
             ENV_DIR=$(dirname "$FOUNDATION_ENV_FILE")
-            if [ -n "${FOUNDATION_TEST_RUN_ID:-}" ]; then
-              STATE_FILE="${ENV_DIR}/fixture-state-${FOUNDATION_TEST_RUN_ID}.json"
+            RUN_ID=$(grep '^FOUNDATION_TEST_RUN_ID=' "$FOUNDATION_ENV_FILE" | cut -d= -f2- || true)
+            if [ -n "$RUN_ID" ]; then
+              STATE_FILE="${ENV_DIR}/fixture-state-${RUN_ID}.json"
             fi
           fi
 
@@ -664,8 +696,9 @@ jobs:
 
           if [ -n "$STATE_FILE" ] && [ -f "$STATE_FILE" ]; then
             if grep -q '"uncertain"' "$STATE_FILE" 2>/dev/null; then
-              echo "WARNING: Fixture state status is UNCERTAIN: preserving state directory for recovery inspection" >&2
+              echo "ERROR: Fixture state status is UNCERTAIN: preserving state directory for recovery inspection" >&2
               FIXTURE_STATE_UNCERTAIN=1
+              CLEANUP_ERRORS=$((CLEANUP_ERRORS + 1))
             fi
           fi
 
@@ -677,9 +710,11 @@ jobs:
               CLEANUP_ERRORS=$((CLEANUP_ERRORS + 1))
             fi
 
-            # Verify absence of project containers
-            REMAINING_CONTAINERS=$(podman ps -a --filter "name=${COMPOSE_PROJECT_NAME}" --format '{{.Names}}')
-            if [ -n "$REMAINING_CONTAINERS" ]; then
+            # Verify absence of project containers distinguishing confirmed absence from inspection errors
+            if ! REMAINING_CONTAINERS=$(podman ps -a --filter "name=${COMPOSE_PROJECT_NAME}" --format '{{.Names}}' 2>&1); then
+              echo "ERROR: Inspection failed when verifying absence of containers for ${COMPOSE_PROJECT_NAME}!" >&2
+              CLEANUP_ERRORS=$((CLEANUP_ERRORS + 1))
+            elif [ -n "$REMAINING_CONTAINERS" ]; then
               echo "ERROR: Verified absence failed! Project containers still present: $REMAINING_CONTAINERS" >&2
               CLEANUP_ERRORS=$((CLEANUP_ERRORS + 1))
             else
@@ -779,7 +814,9 @@ jobs:
 
           rm -rf /tmp/trivy-scan
 
-          if podman image exists s2-assets-api:ci; then
+          st=0
+          podman image exists s2-assets-api:ci 2>/dev/null || st=$?
+          if [ "$st" -eq 0 ]; then
             echo "Removing production API image s2-assets-api:ci..."
             if ! podman rmi -f s2-assets-api:ci; then
               echo "ERROR: Failed to remove s2-assets-api:ci" >&2
@@ -787,12 +824,17 @@ jobs:
             fi
           fi
 
-          # Verify absence
-          if podman image exists s2-assets-api:ci; then
-            echo "ERROR: Verified absence failed for s2-assets-api:ci!" >&2
+          # Verify absence distinguishing confirmed absence (exit 1) from inspection errors (>1) and presence (0)
+          st=0
+          podman image exists s2-assets-api:ci 2>/dev/null || st=$?
+          if [ "$st" -eq 1 ]; then
+            echo "Confirmed absent: s2-assets-api:ci"
+          elif [ "$st" -eq 0 ]; then
+            echo "ERROR: Verified absence failed: image s2-assets-api:ci still exists!" >&2
             CLEANUP_ERRORS=$((CLEANUP_ERRORS + 1))
           else
-            echo "Verified absence: zero scan images remaining."
+            echo "ERROR: Inspection failed for image s2-assets-api:ci (exit code $st)!" >&2
+            CLEANUP_ERRORS=$((CLEANUP_ERRORS + 1))
           fi
 
           if [ "$CLEANUP_ERRORS" -gt 0 ]; then
