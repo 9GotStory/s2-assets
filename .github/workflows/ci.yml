@@ -491,6 +491,59 @@ jobs:
           echo "Recreating test identity after http-smoke fixture cleanup..."
           bash scripts/dev.sh test-identity setup
 
+          echo "Refreshing and asserting positive readiness for API, Web, and Vite proxy before browser testing..."
+          podman compose --env-file "$FOUNDATION_ENV_FILE" -p "$COMPOSE_PROJECT_NAME" -f deploy/podman/compose.yaml restart api web
+
+          API_HEALTH_READY=0
+          API_READY_READY=0
+          WEB_LOGIN_READY=0
+          WEB_PROXY_READY=0
+
+          for attempt in {1..30}; do
+            if [ "$API_HEALTH_READY" -eq 0 ]; then
+              HEALTH_STATUS=$(curl -s -o /dev/null -w "%{http_code}" http://127.0.0.1:3000/health || true)
+              if [ "$HEALTH_STATUS" = "200" ]; then
+                API_HEALTH_READY=1
+              fi
+            fi
+
+            if [ "$API_READY_READY" -eq 0 ]; then
+              READY_STATUS=$(curl -s -o /dev/null -w "%{http_code}" http://127.0.0.1:3000/ready || true)
+              if [ "$READY_STATUS" = "200" ]; then
+                API_READY_READY=1
+              fi
+            fi
+
+            if [ "$WEB_LOGIN_READY" -eq 0 ]; then
+              WEB_STATUS=$(curl -s -o /dev/null -w "%{http_code}" http://127.0.0.1:5173/login || true)
+              if [ "$WEB_STATUS" = "200" ]; then
+                WEB_LOGIN_READY=1
+              fi
+            fi
+
+            if [ "$WEB_PROXY_READY" -eq 0 ]; then
+              PROXY_STATUS=$(curl -s -o /dev/null -w "%{http_code}" http://127.0.0.1:5173/auth/session-check || true)
+              if [ "$PROXY_STATUS" = "401" ]; then
+                WEB_PROXY_READY=1
+              fi
+            fi
+
+            if [ "$API_HEALTH_READY" -eq 1 ] && [ "$API_READY_READY" -eq 1 ] && [ "$WEB_LOGIN_READY" -eq 1 ] && [ "$WEB_PROXY_READY" -eq 1 ]; then
+              echo "Positive readiness verified for API, Web, and Vite proxy (attempt ${attempt})."
+              break
+            fi
+
+            sleep 1
+          done
+
+          if [ "$API_HEALTH_READY" -ne 1 ] || [ "$API_READY_READY" -ne 1 ] || [ "$WEB_LOGIN_READY" -ne 1 ] || [ "$WEB_PROXY_READY" -ne 1 ]; then
+            echo "ERROR: Service readiness probe failed before browser testing" >&2
+            echo "Status: API health=$API_HEALTH_READY, ready=$API_READY_READY, web login=$WEB_LOGIN_READY, web proxy=$WEB_PROXY_READY" >&2
+            podman compose --env-file "$FOUNDATION_ENV_FILE" -p "$COMPOSE_PROJECT_NAME" -f deploy/podman/compose.yaml logs api
+            podman compose --env-file "$FOUNDATION_ENV_FILE" -p "$COMPOSE_PROJECT_NAME" -f deploy/podman/compose.yaml logs web
+            exit 1
+          fi
+
       - name: Prepare isolated browser workspace and execute Playwright E2E
         id: browser-tests
         run: |
@@ -567,6 +620,14 @@ jobs:
               cp -r /tmp/s2_e2e_runner/apps/web/test-results/* apps/web/test-results/
             fi
           fi
+
+      - name: Dump container diagnostics on failure
+        if: failure()
+        run: |
+          echo "=== API Container Logs ==="
+          podman compose --env-file "$FOUNDATION_ENV_FILE" -p "$COMPOSE_PROJECT_NAME" -f deploy/podman/compose.yaml logs api || true
+          echo "=== Web Container Logs ==="
+          podman compose --env-file "$FOUNDATION_ENV_FILE" -p "$COMPOSE_PROJECT_NAME" -f deploy/podman/compose.yaml logs web || true
 
       - name: Upload Playwright failure artifacts
         if: failure()
