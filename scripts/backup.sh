@@ -17,7 +17,7 @@
 #                  Must resolve to a physical location strictly outside the
 #                  repository tree (including symlinks and traversal cases).
 #                  Parent directory must exist and be writable.
-#                  Target file must not already exist.
+#                  Target file must not already exist in any form.
 #
 # Options:
 #   -h, --help     Display this usage information and exit.
@@ -33,6 +33,11 @@
 #   - Incomplete backups are cleaned up automatically upon command failure or
 #     interruption; pre-existing backups are never removed or overwritten.
 #   - Backup archive is created and published with mode 0600 (private to owner).
+#   - Atomic publication uses exact-filename hard-link semantics (ln -T)
+#     without following directory symlinks or overwriting existing entries.
+#   - Script physical location is resolved across symlinks to preserve the
+#     repository boundary under all invocation modes (direct, relative,
+#     directory symlink, file symlink).
 # ==============================================================================
 
 set -euo pipefail
@@ -163,11 +168,19 @@ if [ -e "${REAL_DEST}" ] || [ -L "${REAL_DEST}" ]; then
   exit 1
 fi
 
-# Determine physical repository root
-SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" 2>/dev/null && pwd -P)"
+# Determine physical script location and canonical repository root
+SCRIPT_SOURCE="${BASH_SOURCE[0]}"
+
+# Resolve the physical script file across symlinks
+if ! SCRIPT_REALPATH="$(realpath -e "${SCRIPT_SOURCE}" 2>/dev/null)"; then
+  echo "ERROR: Unable to resolve physical location of script: ${SCRIPT_SOURCE}" >&2
+  exit 1
+fi
+
+SCRIPT_DIR="$(cd "$(dirname "${SCRIPT_REALPATH}")" 2>/dev/null && pwd -P)"
 REPO_ROOT="$(cd "${SCRIPT_DIR}/.." 2>/dev/null && pwd -P)"
 
-if [ -z "${REPO_ROOT}" ]; then
+if [ -z "${REPO_ROOT}" ] || [ ! -d "${REPO_ROOT}" ]; then
   echo "ERROR: Unable to resolve repository root directory" >&2
   exit 1
 fi
@@ -229,21 +242,24 @@ fi
 # ------------------------------------------------------------------------------
 # 7. Atomic Publication Without Overwrite
 # ------------------------------------------------------------------------------
+# Check for collision immediately prior to publication
 if [ -e "${REAL_DEST}" ] || [ -L "${REAL_DEST}" ]; then
   echo "ERROR: Destination file collision: '${REAL_DEST}' already exists" >&2
   exit 1
 fi
 
-if ln "${TEMP_FILE}" "${REAL_DEST}" 2>/dev/null; then
-  rm -f "${TEMP_FILE}"
-  TEMP_FILE=""
-elif mv -n "${TEMP_FILE}" "${REAL_DEST}" && [ ! -f "${TEMP_FILE}" ]; then
-  TEMP_FILE=""
-else
-  echo "ERROR: Failed to publish backup to '${REAL_DEST}' without overwriting" >&2
+# Atomically publish using exact-filename semantics (-T / --no-target-directory).
+# Refuses to follow or write into directories/symlinks, and atomically fails
+# on any existing destination entry (file, directory, or symlink).
+if ! ln -T "${TEMP_FILE}" "${REAL_DEST}" 2>/dev/null; then
+  echo "ERROR: Failed to publish backup to '${REAL_DEST}': destination already exists or cannot be created" >&2
   exit 1
 fi
 
+rm -f "${TEMP_FILE}"
+TEMP_FILE=""
+
+# Ensure final permissions on the owned archive remain private (mode 0600)
 chmod 0600 "${REAL_DEST}"
 
 # Disarm trap before successful termination
