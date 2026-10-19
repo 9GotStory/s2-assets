@@ -1,0 +1,38 @@
+# s2-assets production API service container (Feature 001, T037).
+#
+# Authority:
+# - specs/001-application-foundation/tasks.md T037
+# - Product Owner Stage B authorization & Stage A feasibility report
+# - TECHNOLOGY.md §5, §9 (Fastify API, rootless Podman, systemd Quadlet)
+#
+# Lifecycle & Migration Gate:
+# - Requisite=api-migration.service: strictly asserts that api-migration.service is ALREADY active.
+#   If the migration gate has not succeeded or is inactive/failed, api.service immediately aborts
+#   startup without attempting to start or re-run migrations.
+# - After=api-migration.service postgres.service ensures proper startup ordering.
+# - API restart (systemctl --user restart api) never launches migrations again because
+#   api-migration.service remains in active (exited) state.
+# - Rollout gate refresh: deployments refresh the migration gate by explicitly running/restarting
+#   api-migration.service before restarting api.service.
+# - Network & Exposure: attaches to s2-assets.network for internal PostgreSQL communication;
+#   exposes port 3000 bound exclusively to host loopback (127.0.0.1:3000:3000) for reverse proxy access.
+# - External inputs: configuration via api.env; secrets via database-url and cookie-secret Podman secrets.
+[Unit]
+Description=s2-assets API service
+Requisite=api-migration.service
+After=api-migration.service postgres.service
+
+[Container]
+Image=localhost/s2-assets-api:t036
+Network=s2-assets.network
+PublishPort=127.0.0.1:3000:3000
+EnvironmentFile=./api.env
+Secret=database-url,type=env,target=DATABASE_URL
+Secret=cookie-secret,type=env,target=COOKIE_SECRET
+
+[Service]
+Restart=always
+RestartSec=5s
+
+[Install]
+WantedBy=default.target

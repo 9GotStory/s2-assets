@@ -1,0 +1,17 @@
+# s2-assets private internal database network (Feature 001, T037).
+#
+# Authority:
+# - specs/001-application-foundation/tasks.md T037
+# - TECHNOLOGY.md §9 (Rootless Podman + systemd Quadlet baseline)
+# - Feature 001 research.md & plan.md (private DB network with no published PostgreSQL port)
+#
+# Rootless Podman Quadlet definition:
+# Creates an internal bridge network shared exclusively by PostgreSQL,
+# the migration runner one-shot unit, and the Fastify API.
+# Internal=true isolates the network from external routing.
+[Unit]
+Description=s2-assets private internal network
+
+[Network]
+NetworkName=s2-assets
+Internal=true

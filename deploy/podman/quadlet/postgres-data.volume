@@ -1,0 +1,14 @@
+# s2-assets persistent PostgreSQL data volume (Feature 001, T037).
+#
+# Authority:
+# - specs/001-application-foundation/tasks.md T037
+# - TECHNOLOGY.md §6 & §9 (PostgreSQL 18 persistent storage baseline)
+# - Feature 001 plan.md (named volume holding database state across container updates)
+#
+# Rootless Podman Quadlet definition:
+# One persistent named volume mounted at /var/lib/postgresql in postgres.container.
+[Unit]
+Description=s2-assets PostgreSQL persistent data volume
+
+[Volume]
+VolumeName=postgres-data
