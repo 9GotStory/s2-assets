@@ -5,27 +5,37 @@
 # - Product Owner Stage B authorization & Stage A feasibility report
 # - TECHNOLOGY.md §6 & §9 (explicit reviewable migrations before API startup)
 #
-# Lifecycle & Dependencies:
-# - Depends strictly on postgres.service (Requires= and After=).
-#   Since postgres.container uses Notify=healthy, this unit activates only after PostgreSQL is ready.
-# - Attaches to s2-assets.network to communicate with the database.
-# - Executes the approved migration command: node src/migrator.ts latest.
-# - Foreground execution under Type=oneshot: exit code from migrator CLI is preserved.
-# - Fail-closed: nonzero exit marks unit failed and prevents API startup.
-# - Retained state: RemainAfterExit=yes keeps successful state active (exited) as a gate for api.service.
-# - Restart=no prevents automatic rerun loops on failure.
-# - External inputs: DATABASE_URL provided via api-migration.env or database-url Podman secret.
+# Scoped Resource Ownership (R3):
+# - ContainerName=s2-assets-api-migration scopes container execution to this project.
+# - Secret=s2-assets-database-url scopes the database connection secret.
+# - Unit Exclusivity: Governed by api-migration.service within this user's systemd session.
+#
+# Lifecycle Contract & Decoupled State (B2):
+# - Dependencies: Wants=postgres.service and After=postgres.service.
+#   Using Wants= rather than Requires= ensures that if postgres.service is subsequently restarted
+#   or stopped for maintenance, systemd does NOT stop api-migration.service or clear its
+#   retained 'active (exited)' state.
+# - Execution: Type=oneshot, RemainAfterExit=yes, Restart=no.
+#   Foreground execution captures the CLI exit code directly:
+#   - Exit 0: transitions to 'active (exited)', unlocking the API migration gate.
+#   - Nonzero exit: transitions to 'failed', failing closed and blocking API startup.
+# - Explicit Activation & Invalidation:
+#   - Initial boot: Not enabled at default.target. Migration is explicitly activated by the operator
+#     or rollout automation via 'systemctl --user start api-migration.service'.
+#   - Rollout refresh: Deploying a new migration/API image invalidates the gate by explicitly
+#     re-executing 'systemctl --user restart api-migration.service' before rolling out api.service.
 [Unit]
 Description=s2-assets database migration one-shot job
-Requires=postgres.service
+Wants=postgres.service
 After=postgres.service
 
 [Container]
+ContainerName=s2-assets-api-migration
 Image=localhost/s2-assets-migration:t037
 Network=s2-assets.network
 Exec=node src/migrator.ts latest
 EnvironmentFile=./api-migration.env
-Secret=database-url,type=env,target=DATABASE_URL
+Secret=s2-assets-database-url,type=env,target=DATABASE_URL
 
 [Service]
 Type=oneshot

@@ -5,10 +5,15 @@
 # - TECHNOLOGY.md §9 (Rootless Podman + systemd Quadlet baseline)
 # - Feature 001 research.md & plan.md (private DB network with no published PostgreSQL port)
 #
-# Rootless Podman Quadlet definition:
-# Creates an internal bridge network shared exclusively by PostgreSQL,
-# the migration runner one-shot unit, and the Fastify API.
-# Internal=true isolates the network from external routing.
+# Scoped Resource Ownership (R3):
+# - NetworkName=s2-assets scopes the bridge network to this project.
+# - Unit Exclusivity: Unique within the user's systemd session as s2-assets-network.service.
+#
+# Network Isolation & Ingress (B1):
+# - Internal=true restricts network traffic strictly to attached containers on this bridge.
+# - PostgreSQL has no host port published (no PublishPort or ExposeHostPort).
+# - Only the API service container publishes its operational port (3000) bound to host
+#   loopback (127.0.0.1) for reverse proxy access, while communicating internally with PostgreSQL.
 [Unit]
 Description=s2-assets private internal network
 
