@@ -19,6 +19,12 @@
 #                  Parent directory must exist and be writable.
 #                  Target file must not already exist in any form.
 #
+# Environment:
+#   BACKUP_DB_USER Explicit PostgreSQL user/role name for authentication
+#                  (mandatory; alternatively accepts PGUSER).
+#                  Must be a valid identifier (alphanumeric, '_', '-') and not
+#                  start with '-'.
+#
 # Options:
 #   -h, --help     Display this usage information and exit.
 #
@@ -45,7 +51,7 @@ umask 077
 
 usage() {
   cat << 'EOF'
-Usage: scripts/backup.sh <container> <database> <destination>
+Usage: [BACKUP_DB_USER=<user>] scripts/backup.sh <container> <database> <destination>
 
 Perform a non-interactive PostgreSQL logical backup from a Rootless Podman container.
 
@@ -53,6 +59,9 @@ Arguments:
   <container>    Running PostgreSQL container name or ID
   <database>     PostgreSQL database name to dump
   <destination>  Target backup file path (must resolve outside repository)
+
+Environment:
+  BACKUP_DB_USER PostgreSQL user for authentication (or PGUSER; required)
 
 Options:
   -h, --help     Show this help message and exit
@@ -75,7 +84,28 @@ DATABASE="$2"
 DESTINATION="$3"
 
 # ------------------------------------------------------------------------------
-# 1. Validate Container Identifier
+# 1. Validate Database User (from BACKUP_DB_USER or PGUSER)
+# ------------------------------------------------------------------------------
+DB_USER="${BACKUP_DB_USER:-${PGUSER:-}}"
+
+if [ -z "${DB_USER}" ]; then
+  echo "ERROR: PostgreSQL user is required. Set BACKUP_DB_USER (or PGUSER) in the environment." >&2
+  exit 1
+fi
+
+if [[ "${DB_USER}" == -* ]]; then
+  echo "ERROR: PostgreSQL user cannot start with '-': ${DB_USER}" >&2
+  exit 1
+fi
+
+# Reject option flags, URIs, key=val conninfo, spaces, or control characters
+if ! [[ "${DB_USER}" =~ ^[a-zA-Z0-9_][a-zA-Z0-9_-]*$ ]]; then
+  echo "ERROR: Invalid database user name: '${DB_USER}'. Must be a valid identifier and not an option or connection string." >&2
+  exit 1
+fi
+
+# ------------------------------------------------------------------------------
+# 2. Validate Container Identifier
 # ------------------------------------------------------------------------------
 if [ -z "${CONTAINER}" ]; then
   echo "ERROR: Container identifier cannot be empty" >&2
@@ -93,7 +123,7 @@ if ! [[ "${CONTAINER}" =~ ^[a-zA-Z0-9][a-zA-Z0-9_.-]*$ ]]; then
 fi
 
 # ------------------------------------------------------------------------------
-# 2. Validate Database Name
+# 3. Validate Database Name
 # ------------------------------------------------------------------------------
 if [ -z "${DATABASE}" ]; then
   echo "ERROR: Database name cannot be empty" >&2
@@ -112,7 +142,7 @@ if ! [[ "${DATABASE}" =~ ^[a-zA-Z0-9_][a-zA-Z0-9_-]*$ ]]; then
 fi
 
 # ------------------------------------------------------------------------------
-# 3. Validate Destination File and Path Boundary
+# 4. Validate Destination File and Path Boundary
 # ------------------------------------------------------------------------------
 if [ -z "${DESTINATION}" ]; then
   echo "ERROR: Destination path cannot be empty" >&2
@@ -193,7 +223,7 @@ if [ "${REAL_DEST_DIR}" = "${REPO_ROOT}" ] || [[ "${REAL_DEST_DIR}" == "${REPO_R
 fi
 
 # ------------------------------------------------------------------------------
-# 4. Prerequisites Check
+# 5. Prerequisites Check
 # ------------------------------------------------------------------------------
 if ! command -v podman >/dev/null 2>&1; then
   echo "ERROR: podman is not installed or not in PATH" >&2
@@ -201,7 +231,7 @@ if ! command -v podman >/dev/null 2>&1; then
 fi
 
 # ------------------------------------------------------------------------------
-# 5. Temporary File and Cleanup Trap
+# 6. Temporary File and Cleanup Trap
 # ------------------------------------------------------------------------------
 TEMP_FILE=""
 
@@ -223,13 +253,14 @@ TEMP_FILE="$(mktemp "${REAL_DEST_DIR}/.backup_${DEST_BASE}.XXXXXX")"
 chmod 0600 "${TEMP_FILE}"
 
 # ------------------------------------------------------------------------------
-# 6. Non-interactive Logical Dump via Rootless Podman
+# 7. Non-interactive Logical Dump via Rootless Podman
 # ------------------------------------------------------------------------------
 # Executes without pseudo-TTY (no -t/--tty) so stdout remains a clean binary stream.
+# -U: Explicit PostgreSQL user for authentication.
 # -F c: Custom-format archive suitable for pg_restore.
 # -w: Never issue a password prompt; fail closed if authentication is required.
 # Stderr is not redirected, keeping diagnostic output separate from the archive.
-if ! podman exec "${CONTAINER}" pg_dump -F c -w -d "${DATABASE}" > "${TEMP_FILE}"; then
+if ! podman exec "${CONTAINER}" pg_dump -U "${DB_USER}" -F c -w -d "${DATABASE}" > "${TEMP_FILE}"; then
   echo "ERROR: PostgreSQL logical backup failed for database '${DATABASE}' in container '${CONTAINER}'" >&2
   exit 1
 fi
@@ -240,7 +271,7 @@ if [ ! -s "${TEMP_FILE}" ]; then
 fi
 
 # ------------------------------------------------------------------------------
-# 7. Atomic Publication Without Overwrite
+# 8. Atomic Publication Without Overwrite
 # ------------------------------------------------------------------------------
 # Check for collision immediately prior to publication
 if [ -e "${REAL_DEST}" ] || [ -L "${REAL_DEST}" ]; then
