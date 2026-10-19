@@ -139,54 +139,21 @@ jobs:
       - name: Checkout repository
         uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
 
-      - name: Setup Rootless Podman socket
-        run: |
-          export XDG_RUNTIME_DIR="/run/user/$(id -u)"
-          sudo mkdir -p "$XDG_RUNTIME_DIR/podman"
-          sudo chown -R "$(id -u):$(id -u)" "$XDG_RUNTIME_DIR"
-          sudo chmod 700 "$XDG_RUNTIME_DIR"
-          podman system service --time=0 "unix://${XDG_RUNTIME_DIR}/podman/podman.sock" &
-          echo "PODMAN_PID=$!" >> $GITHUB_ENV
-          for i in {1..30}; do
-            if [ -S "${XDG_RUNTIME_DIR}/podman/podman.sock" ]; then
-              break
-            fi
-            sleep 0.5
-          done
-          test -S "${XDG_RUNTIME_DIR}/podman/podman.sock"
-          sudo chmod 777 "${XDG_RUNTIME_DIR}/podman/podman.sock"
-          echo "Rootless mode: $(podman info --format '{{.Host.Security.Rootless}}')"
-          curl -s --unix-socket "${XDG_RUNTIME_DIR}/podman/podman.sock" http://d/v5.0.0/libpod/info > /dev/null
-          echo "XDG_RUNTIME_DIR=${XDG_RUNTIME_DIR}" >> $GITHUB_ENV
-          echo "DOCKER_HOST=unix://${XDG_RUNTIME_DIR}/podman/podman.sock" >> $GITHUB_ENV
-
       - name: Pre-pull PostgreSQL test image
         run: |
           podman pull docker.io/library/postgres:18.6-alpine
           podman tag docker.io/library/postgres:18.6-alpine postgres:18.6-alpine
 
-      - name: Build containerized integration runner
+      - name: Build base development tooling image
         run: |
           echo "Building base development tooling image..."
           podman build -f deploy/podman/dev.Containerfile -t s2-assets-dev:ci .
-          echo "Building containerized integration runner with remote podman CLI..."
-          cat << 'EOF' | podman build -t s2-assets-integration:ci -f - .
-          FROM s2-assets-dev:ci
-          USER root
-          RUN apk add --no-cache podman curl bash
-          RUN printf '#!/bin/sh\nexec /usr/bin/podman --remote --url "${CONTAINER_HOST:-unix:///run/user/1001/podman/podman.sock}" "$@"\n' > /usr/local/bin/podman && chmod +x /usr/local/bin/podman
-          EOF
-
-      - name: Record baseline container inventory
-        run: |
-          podman ps -aq --no-trunc > /tmp/integration_baseline_containers.txt
-          echo "Baseline containers count: $(wc -l < /tmp/integration_baseline_containers.txt)"
 
       - name: Frozen dependency installation
         run: |
           echo "Executing frozen dependency installation inside containerized runner..."
           LOCK_BEFORE=$(sha256sum pnpm-lock.yaml | awk '{print $1}')
-          podman run --rm --userns=keep-id -v "$PWD:/work:z" -w /work s2-assets-integration:ci pnpm install --frozen-lockfile
+          podman run --rm --userns=keep-id -v "$PWD:/work:z" -w /work s2-assets-dev:ci pnpm install --frozen-lockfile
           LOCK_AFTER=$(sha256sum pnpm-lock.yaml | awk '{print $1}')
           if [ "$LOCK_BEFORE" != "$LOCK_AFTER" ]; then
             echo "ERROR: Frozen lockfile integrity check failed ($LOCK_BEFORE != $LOCK_AFTER)" >&2
@@ -197,20 +164,8 @@ jobs:
       - name: Run PostgreSQL integration tests
         id: run-integration
         run: |
-          echo "Executing PostgreSQL integration tests inside containerized runner with host network and socket control..."
-          podman run --name s2_integration_runner --rm \
-            --network=host \
-            --userns=keep-id \
-            -v "$PWD:/work:z" \
-            -v "${XDG_RUNTIME_DIR}/podman/podman.sock:${XDG_RUNTIME_DIR}/podman/podman.sock:z" \
-            -w /work \
-            -e DOCKER_HOST="unix://${XDG_RUNTIME_DIR}/podman/podman.sock" \
-            -e CONTAINER_HOST="unix://${XDG_RUNTIME_DIR}/podman/podman.sock" \
-            -e TESTCONTAINERS_RYUK_DISABLED="true" \
-            -e TESTCONTAINERS_HOST_OVERRIDE="127.0.0.1" \
-            -e CI="true" \
-            s2-assets-integration:ci \
-            pnpm --filter api exec vitest run tests/integration
+          echo "Executing PostgreSQL integration tests via private owned endpoint..."
+          bash scripts/verify-foundation.sh integration-ci
 
       - name: Cleanup Podman resources
         if: always()
@@ -221,43 +176,7 @@ jobs:
             TEST_FAILED=1
           fi
 
-          # 1. Identify and remove exact test-created containers
-          touch /tmp/integration_baseline_containers.txt
-          if ! podman ps -aq --no-trunc > /tmp/integration_current_containers.txt; then
-            echo "ERROR: Failed to inspect current containers for integration cleanup!" >&2
-            CLEANUP_ERRORS=$((CLEANUP_ERRORS + 1))
-          else
-            NEW_CONTAINERS=$(grep -v -F -f /tmp/integration_baseline_containers.txt /tmp/integration_current_containers.txt || true)
-            if [ -n "$NEW_CONTAINERS" ]; then
-              echo "Removing exact test-owned containers:"
-              echo "$NEW_CONTAINERS"
-              for CID in $NEW_CONTAINERS; do
-                if ! podman rm -f "$CID"; then
-                  echo "ERROR: Failed to remove test container $CID" >&2
-                  CLEANUP_ERRORS=$((CLEANUP_ERRORS + 1))
-                fi
-              done
-            else
-              echo "No test-owned containers detected for removal."
-            fi
-          fi
-
-          # Verified absence check for containers
-          if ! podman ps -aq --no-trunc > /tmp/integration_final_containers.txt; then
-            echo "ERROR: Failed to inspect final containers for verified absence!" >&2
-            CLEANUP_ERRORS=$((CLEANUP_ERRORS + 1))
-          else
-            LEAKED=$(grep -v -F -f /tmp/integration_baseline_containers.txt /tmp/integration_final_containers.txt || true)
-            if [ -n "$LEAKED" ]; then
-              echo "ERROR: Verified absence failed! Leaked containers remaining:" >&2
-              echo "$LEAKED" >&2
-              CLEANUP_ERRORS=$((CLEANUP_ERRORS + 1))
-            else
-              echo "Verified absence: zero test-owned containers remaining."
-            fi
-          fi
-
-          # 2. Remove integration runner images
+          # 1. Remove integration runner images
           for img in s2-assets-integration:ci s2-assets-dev:ci; do
             st=0
             podman image exists "$img" 2>/dev/null || st=$?
@@ -285,30 +204,6 @@ jobs:
             fi
           done
 
-          # 3. Terminate Podman service PID cleanly
-          if [ -n "${PODMAN_PID:-}" ]; then
-            if kill -0 "$PODMAN_PID" 2>/dev/null; then
-              echo "Stopping Rootless Podman service PID $PODMAN_PID..."
-              kill "$PODMAN_PID"
-              for i in {1..10}; do
-                if ! kill -0 "$PODMAN_PID" 2>/dev/null; then
-                  break
-                fi
-                sleep 0.5
-              done
-              if kill -0 "$PODMAN_PID" 2>/dev/null; then
-                kill -9 "$PODMAN_PID"
-                sleep 0.5
-                if kill -0 "$PODMAN_PID" 2>/dev/null; then
-                  echo "ERROR: Rootless Podman service PID $PODMAN_PID could not be stopped!" >&2
-                  CLEANUP_ERRORS=$((CLEANUP_ERRORS + 1))
-                fi
-              fi
-            fi
-          fi
-
-          rm -f /tmp/integration_baseline_containers.txt /tmp/integration_current_containers.txt /tmp/integration_final_containers.txt
-
           if [ "$CLEANUP_ERRORS" -gt 0 ]; then
             echo "ERROR: Integration cleanup encountered $CLEANUP_ERRORS failure(s)." >&2
             exit 1
@@ -328,25 +223,6 @@ jobs:
     steps:
       - name: Checkout repository
         uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
-
-      - name: Setup Rootless Podman socket
-        run: |
-          export XDG_RUNTIME_DIR="/run/user/$(id -u)"
-          sudo mkdir -p "$XDG_RUNTIME_DIR/podman"
-          sudo chown -R "$(id -u):$(id -u)" "$XDG_RUNTIME_DIR"
-          sudo chmod 700 "$XDG_RUNTIME_DIR"
-          podman system service --time=0 "unix://${XDG_RUNTIME_DIR}/podman/podman.sock" &
-          echo "PODMAN_PID=$!" >> $GITHUB_ENV
-          for i in {1..30}; do
-            if [ -S "${XDG_RUNTIME_DIR}/podman/podman.sock" ]; then
-              break
-            fi
-            sleep 0.5
-          done
-          test -S "${XDG_RUNTIME_DIR}/podman/podman.sock"
-          sudo chmod 777 "${XDG_RUNTIME_DIR}/podman/podman.sock"
-          echo "XDG_RUNTIME_DIR=${XDG_RUNTIME_DIR}" >> $GITHUB_ENV
-          echo "DOCKER_HOST=unix://${XDG_RUNTIME_DIR}/podman/podman.sock" >> $GITHUB_ENV
 
       - name: Pre-pull container images
         run: |
@@ -768,28 +644,6 @@ jobs:
           else
             echo "ERROR: Inspection failed for image s2-assets-browser:ci (exit code $st)!" >&2
             CLEANUP_ERRORS=$((CLEANUP_ERRORS + 1))
-          fi
-
-          # 4. Terminate Podman service PID cleanly
-          if [ -n "${PODMAN_PID:-}" ]; then
-            if kill -0 "$PODMAN_PID" 2>/dev/null; then
-              echo "Stopping Rootless Podman service PID $PODMAN_PID..."
-              kill "$PODMAN_PID"
-              for i in {1..10}; do
-                if ! kill -0 "$PODMAN_PID" 2>/dev/null; then
-                  break
-                fi
-                sleep 0.5
-              done
-              if kill -0 "$PODMAN_PID" 2>/dev/null; then
-                kill -9 "$PODMAN_PID"
-                sleep 0.5
-                if kill -0 "$PODMAN_PID" 2>/dev/null; then
-                  echo "ERROR: Rootless Podman service PID $PODMAN_PID could not be stopped!" >&2
-                  CLEANUP_ERRORS=$((CLEANUP_ERRORS + 1))
-                fi
-              fi
-            fi
           fi
 
           # 4. Clean up directories ONLY if cleanup was completely successful and state is not uncertain

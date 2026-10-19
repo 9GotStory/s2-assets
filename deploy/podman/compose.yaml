@@ -27,7 +27,7 @@ services:
       PORT: "3000"
       DATABASE_URL: postgresql://${POSTGRES_USER:?POSTGRES_USER is required}:${POSTGRES_PASSWORD:?POSTGRES_PASSWORD is required}@postgres:5432/${POSTGRES_DB:?POSTGRES_DB is required}
       COOKIE_SECRET: ${COOKIE_SECRET:?COOKIE_SECRET is required}
-    command: pnpm --filter api run dev
+    command: node --watch apps/api/src/server.ts
     depends_on:
       - postgres
     networks:
@@ -47,7 +47,7 @@ services:
       - "127.0.0.1:${WEB_HOST_PORT:-5173}:5173"
     environment:
       NODE_ENV: development
-    command: pnpm --filter web run dev
+    command: node apps/web/node_modules/vite/bin/vite.js apps/web
     depends_on:
       - api
     networks:
