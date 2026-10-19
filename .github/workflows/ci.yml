@@ -275,7 +275,7 @@ jobs:
           if [ -n "${PODMAN_PID:-}" ]; then
             if kill -0 "$PODMAN_PID" 2>/dev/null; then
               echo "Stopping Rootless Podman service PID $PODMAN_PID..."
-              kill "$PODMAN_PID" 2>/dev/null || true
+              kill "$PODMAN_PID"
               for i in {1..10}; do
                 if ! kill -0 "$PODMAN_PID" 2>/dev/null; then
                   break
@@ -283,7 +283,12 @@ jobs:
                 sleep 0.5
               done
               if kill -0 "$PODMAN_PID" 2>/dev/null; then
-                kill -9 "$PODMAN_PID" 2>/dev/null || true
+                kill -9 "$PODMAN_PID"
+                sleep 0.5
+                if kill -0 "$PODMAN_PID" 2>/dev/null; then
+                  echo "ERROR: Rootless Podman service PID $PODMAN_PID could not be stopped!" >&2
+                  CLEANUP_ERRORS=$((CLEANUP_ERRORS + 1))
+                fi
               fi
             fi
           fi
@@ -544,7 +549,7 @@ jobs:
             -e E2E_PASSWORD="$E2E_PASSWORD" \
             -e CI=true \
             mcr.microsoft.com/playwright:v1.63.0-noble \
-            sh -c '
+            bash -c '
               set -euo pipefail
               PW_VER=$(npx playwright --version)
               echo "Playwright container version: $PW_VER"
@@ -557,7 +562,9 @@ jobs:
         run: |
           if [ -d "/tmp/s2_e2e_runner/apps/web/test-results" ]; then
             mkdir -p apps/web/test-results
-            cp -r /tmp/s2_e2e_runner/apps/web/test-results/* apps/web/test-results/ 2>/dev/null || true
+            if [ -n "$(ls -A /tmp/s2_e2e_runner/apps/web/test-results)" ]; then
+              cp -r /tmp/s2_e2e_runner/apps/web/test-results/* apps/web/test-results/
+            fi
           fi
 
       - name: Upload Playwright failure artifacts
@@ -609,7 +616,7 @@ jobs:
             fi
 
             # Verify absence of project containers
-            REMAINING_CONTAINERS=$(podman ps -a --filter "name=${COMPOSE_PROJECT_NAME}" --format '{{.Names}}' 2>/dev/null || true)
+            REMAINING_CONTAINERS=$(podman ps -a --filter "name=${COMPOSE_PROJECT_NAME}" --format '{{.Names}}')
             if [ -n "$REMAINING_CONTAINERS" ]; then
               echo "ERROR: Verified absence failed! Project containers still present: $REMAINING_CONTAINERS" >&2
               CLEANUP_ERRORS=$((CLEANUP_ERRORS + 1))
@@ -622,7 +629,7 @@ jobs:
           if [ -n "${PODMAN_PID:-}" ]; then
             if kill -0 "$PODMAN_PID" 2>/dev/null; then
               echo "Stopping Rootless Podman service PID $PODMAN_PID..."
-              kill "$PODMAN_PID" 2>/dev/null || true
+              kill "$PODMAN_PID"
               for i in {1..10}; do
                 if ! kill -0 "$PODMAN_PID" 2>/dev/null; then
                   break
@@ -630,7 +637,12 @@ jobs:
                 sleep 0.5
               done
               if kill -0 "$PODMAN_PID" 2>/dev/null; then
-                kill -9 "$PODMAN_PID" 2>/dev/null || true
+                kill -9 "$PODMAN_PID"
+                sleep 0.5
+                if kill -0 "$PODMAN_PID" 2>/dev/null; then
+                  echo "ERROR: Rootless Podman service PID $PODMAN_PID could not be stopped!" >&2
+                  CLEANUP_ERRORS=$((CLEANUP_ERRORS + 1))
+                fi
               fi
             fi
           fi
