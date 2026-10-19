@@ -91,7 +91,7 @@
 
 - [x] T034 [P] Create `scripts/backup.sh` defining non-interactive logical backup without a pseudo-TTY (`podman exec <postgres-container> pg_dump -F c`).
 - [x] T035 [P] Create `scripts/restore.sh` defining restore verification against an isolated test database (`podman exec -i <postgres-container> pg_restore`).
-- [ ] T036 [P] Create `deploy/podman/api.Containerfile` for the API OCI image using Node.js 24.21.0.
+- [x] T036 [P] Create `deploy/podman/api.Containerfile` for the API OCI image using Node.js 24.21.0.
 - [ ] T037 [P] Create production Quadlet definitions `api.container`, `api-migration.container` (one-shot migration responsibility that executes explicit migration command, depends on PostgreSQL, and runs before API service rollout/start without causing API auto-migration), `postgres.container`, `postgres-data.volume`, `s2-assets.network` in `deploy/podman/quadlet/`.
 - [ ] T038 Create explicit CI pipeline in `.github/workflows/ci.yml` verifying frozen dependency installation, workspace lint, typecheck, unit tests, real PostgreSQL integration tests, web/API production build, Playwright E2E, and Trivy scan.
 - [ ] T039 Perform full workspace verification confirming Feature 001 produces the tested static web production artifact and that the Quickstart operates correctly.
