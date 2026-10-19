@@ -353,6 +353,15 @@ jobs:
           podman pull docker.io/library/postgres:18.6-alpine
           podman pull mcr.microsoft.com/playwright:v1.63.0-noble
 
+      - name: Build browser test runner image
+        run: |
+          echo "Building pinned browser test runner image with Node v24.21.0 and pnpm 12.9.1..."
+          cat << 'EOF' | podman build -t s2-assets-browser:ci -f - .
+          FROM mcr.microsoft.com/playwright:v1.63.0-noble
+          RUN curl -fsSL https://nodejs.org/dist/v24.21.0/node-v24.21.0-linux-x64.tar.gz | tar -xz --strip-components=1 -C /usr/local && \
+              corepack enable && corepack prepare pnpm@12.9.1 --activate
+          EOF
+
       - name: Install podman-compose 1.6.0
         run: |
           pip install --user podman-compose==1.6.0
@@ -509,19 +518,17 @@ jobs:
           echo "Recreating test identity after http-smoke fixture cleanup..."
           bash scripts/dev.sh test-identity setup
 
-          echo "Refreshing and asserting positive readiness for API, Web, and Vite proxy before browser testing..."
-          podman compose --env-file "$FOUNDATION_ENV_FILE" -p "$COMPOSE_PROJECT_NAME" -f deploy/podman/compose.yaml restart api web
+          echo "Refreshing API service before browser testing..."
+          podman compose --env-file "$FOUNDATION_ENV_FILE" -p "$COMPOSE_PROJECT_NAME" -f deploy/podman/compose.yaml restart api
 
           API_HEALTH_READY=0
           API_READY_READY=0
-          WEB_LOGIN_READY=0
-          WEB_PROXY_READY=0
-
           for attempt in {1..30}; do
             if [ "$API_HEALTH_READY" -eq 0 ]; then
               HEALTH_STATUS=$(curl -s --connect-timeout 2 --max-time 3 -o /dev/null -w "%{http_code}" http://127.0.0.1:3000/health || true)
               if [ "$HEALTH_STATUS" = "200" ]; then
                 API_HEALTH_READY=1
+                echo "API /health endpoint ready (HTTP 200, attempt ${attempt})"
               fi
             fi
 
@@ -529,13 +536,35 @@ jobs:
               READY_STATUS=$(curl -s --connect-timeout 2 --max-time 3 -o /dev/null -w "%{http_code}" http://127.0.0.1:3000/ready || true)
               if [ "$READY_STATUS" = "200" ]; then
                 API_READY_READY=1
+                echo "API /ready endpoint ready (HTTP 200, attempt ${attempt})"
               fi
             fi
 
+            if [ "$API_HEALTH_READY" -eq 1 ] && [ "$API_READY_READY" -eq 1 ]; then
+              echo "API refreshed and ready (attempt ${attempt})."
+              break
+            fi
+
+            sleep 1
+          done
+
+          if [ "$API_HEALTH_READY" -ne 1 ] || [ "$API_READY_READY" -ne 1 ]; then
+            echo "ERROR: API failed readiness after restart" >&2
+            podman compose --env-file "$FOUNDATION_ENV_FILE" -p "$COMPOSE_PROJECT_NAME" -f deploy/podman/compose.yaml logs api
+            exit 1
+          fi
+
+          echo "Refreshing Web service after API is healthy..."
+          podman compose --env-file "$FOUNDATION_ENV_FILE" -p "$COMPOSE_PROJECT_NAME" -f deploy/podman/compose.yaml restart web
+
+          WEB_LOGIN_READY=0
+          WEB_PROXY_READY=0
+          for attempt in {1..30}; do
             if [ "$WEB_LOGIN_READY" -eq 0 ]; then
               WEB_STATUS=$(curl -s --connect-timeout 2 --max-time 3 -o /dev/null -w "%{http_code}" http://127.0.0.1:5173/login || true)
               if [ "$WEB_STATUS" = "200" ]; then
                 WEB_LOGIN_READY=1
+                echo "Web /login endpoint ready (HTTP 200, attempt ${attempt})"
               fi
             fi
 
@@ -543,10 +572,11 @@ jobs:
               PROXY_STATUS=$(curl -s --connect-timeout 2 --max-time 3 -o /dev/null -w "%{http_code}" http://127.0.0.1:5173/auth/session-check || true)
               if [ "$PROXY_STATUS" = "401" ]; then
                 WEB_PROXY_READY=1
+                echo "Web proxy /auth/session-check ready (HTTP 401, attempt ${attempt})"
               fi
             fi
 
-            if [ "$API_HEALTH_READY" -eq 1 ] && [ "$API_READY_READY" -eq 1 ] && [ "$WEB_LOGIN_READY" -eq 1 ] && [ "$WEB_PROXY_READY" -eq 1 ]; then
+            if [ "$WEB_LOGIN_READY" -eq 1 ] && [ "$WEB_PROXY_READY" -eq 1 ]; then
               echo "Positive readiness verified for API, Web, and Vite proxy (attempt ${attempt})."
               break
             fi
@@ -554,10 +584,9 @@ jobs:
             sleep 1
           done
 
-          if [ "$API_HEALTH_READY" -ne 1 ] || [ "$API_READY_READY" -ne 1 ] || [ "$WEB_LOGIN_READY" -ne 1 ] || [ "$WEB_PROXY_READY" -ne 1 ]; then
-            echo "ERROR: Service readiness probe failed before browser testing" >&2
-            echo "Status: API health=$API_HEALTH_READY, ready=$API_READY_READY, web login=$WEB_LOGIN_READY, web proxy=$WEB_PROXY_READY" >&2
-            podman compose --env-file "$FOUNDATION_ENV_FILE" -p "$COMPOSE_PROJECT_NAME" -f deploy/podman/compose.yaml logs api
+          if [ "$WEB_LOGIN_READY" -ne 1 ] || [ "$WEB_PROXY_READY" -ne 1 ]; then
+            echo "ERROR: Web or Vite proxy readiness probe failed before browser testing" >&2
+            echo "Status: web login=$WEB_LOGIN_READY, web proxy=$WEB_PROXY_READY" >&2
             podman compose --env-file "$FOUNDATION_ENV_FILE" -p "$COMPOSE_PROJECT_NAME" -f deploy/podman/compose.yaml logs web
             exit 1
           fi
@@ -619,18 +648,13 @@ jobs:
             -e E2E_USERNAME="$E2E_USERNAME" \
             -e E2E_PASSWORD="$E2E_PASSWORD" \
             -e CI=true \
-            mcr.microsoft.com/playwright:v1.63.0-noble \
+            s2-assets-browser:ci \
             bash -c '
               set -euo pipefail
-              if [ "$(node -v)" != "v24.21.0" ]; then
-                echo "Installing exact Node v24.21.0 in Playwright container..."
-                curl -fsSL https://nodejs.org/dist/v24.21.0/node-v24.21.0-linux-x64.tar.gz | tar -xz --strip-components=1 -C /usr/local
-              fi
               NODE_VER=$(node -v)
               echo "Browser container Node version: $NODE_VER"
               test "$NODE_VER" = "v24.21.0"
 
-              corepack enable && corepack prepare pnpm@12.9.1 --activate
               PNPM_VER=$(pnpm -v)
               echo "Browser container pnpm version: $PNPM_VER"
               test "$PNPM_VER" = "12.9.1"
@@ -722,7 +746,31 @@ jobs:
             fi
           fi
 
-          # 3. Terminate Podman service PID cleanly
+          # 3. Remove browser test runner image
+          st=0
+          podman image exists s2-assets-browser:ci 2>/dev/null || st=$?
+          if [ "$st" -eq 0 ]; then
+            echo "Removing browser runner image s2-assets-browser:ci..."
+            if ! podman rmi -f s2-assets-browser:ci; then
+              echo "ERROR: Failed to remove s2-assets-browser:ci" >&2
+              CLEANUP_ERRORS=$((CLEANUP_ERRORS + 1))
+            fi
+          fi
+
+          # Verified absence check for browser runner image
+          st=0
+          podman image exists s2-assets-browser:ci 2>/dev/null || st=$?
+          if [ "$st" -eq 1 ]; then
+            echo "Confirmed absent: s2-assets-browser:ci"
+          elif [ "$st" -eq 0 ]; then
+            echo "ERROR: Verified absence failed: image s2-assets-browser:ci still exists!" >&2
+            CLEANUP_ERRORS=$((CLEANUP_ERRORS + 1))
+          else
+            echo "ERROR: Inspection failed for image s2-assets-browser:ci (exit code $st)!" >&2
+            CLEANUP_ERRORS=$((CLEANUP_ERRORS + 1))
+          fi
+
+          # 4. Terminate Podman service PID cleanly
           if [ -n "${PODMAN_PID:-}" ]; then
             if kill -0 "$PODMAN_PID" 2>/dev/null; then
               echo "Stopping Rootless Podman service PID $PODMAN_PID..."
