@@ -119,6 +119,8 @@ jobs:
     name: Playwright E2E Tests
     runs-on: ubuntu-24.04
     timeout-minutes: 25
+    env:
+      PODMAN_COMPOSE_PROVIDER: podman-compose
     steps:
       - name: Checkout repository
         uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
@@ -135,6 +137,29 @@ jobs:
 
       - name: Frozen dependency installation
         run: pnpm install --frozen-lockfile
+
+      - name: Setup Rootless Podman socket
+        run: |
+          export XDG_RUNTIME_DIR="/run/user/$(id -u)"
+          sudo mkdir -p "$XDG_RUNTIME_DIR/podman"
+          sudo chown -R "$(id -u):$(id -u)" "$XDG_RUNTIME_DIR"
+          sudo chmod 700 "$XDG_RUNTIME_DIR"
+          podman system service --time=0 "unix://${XDG_RUNTIME_DIR}/podman/podman.sock" &
+          echo "PODMAN_PID=$!" >> $GITHUB_ENV
+          for i in {1..30}; do
+            if [ -S "${XDG_RUNTIME_DIR}/podman/podman.sock" ]; then
+              break
+            fi
+            sleep 0.5
+          done
+          test -S "${XDG_RUNTIME_DIR}/podman/podman.sock"
+          echo "XDG_RUNTIME_DIR=${XDG_RUNTIME_DIR}" >> $GITHUB_ENV
+          echo "DOCKER_HOST=unix://${XDG_RUNTIME_DIR}/podman/podman.sock" >> $GITHUB_ENV
+
+      - name: Pre-pull container images
+        run: |
+          podman pull docker.io/library/postgres:18.6-alpine
+          podman pull mcr.microsoft.com/playwright:v1.63.0-noble
 
       - name: Install podman-compose 1.6.0
         run: |
@@ -232,7 +257,7 @@ jobs:
             -e E2E_PASSWORD="$E2E_PASSWORD" \
             -e CI=true \
             mcr.microsoft.com/playwright:v1.63.0-noble \
-            sh -c "corepack enable && corepack prepare pnpm@12.9.1 --activate && pnpm --filter web test:e2e"
+            sh -c "(corepack enable && corepack prepare pnpm@12.9.1 --activate || npm install -g pnpm@12.9.1) && pnpm --filter web test:e2e"
 
       - name: Copy test diagnostics on failure
         if: failure()
@@ -256,6 +281,9 @@ jobs:
           bash scripts/dev.sh test-identity cleanup 2>/dev/null || true
           if [ -n "${FOUNDATION_ENV_FILE:-}" ] && [ -n "${COMPOSE_PROJECT_NAME:-}" ]; then
             podman compose --env-file "$FOUNDATION_ENV_FILE" -p "$COMPOSE_PROJECT_NAME" -f deploy/podman/compose.yaml down -v 2>/dev/null || true
+          fi
+          if [ -n "${PODMAN_PID:-}" ]; then
+            kill "$PODMAN_PID" 2>/dev/null || true
           fi
           rm -rf /tmp/s2_ci_env /tmp/s2_e2e_runner
 
