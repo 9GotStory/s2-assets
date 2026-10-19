@@ -259,9 +259,6 @@ fi
 rm -f "${TEMP_FILE}"
 TEMP_FILE=""
 
-# Ensure final permissions on the owned archive remain private (mode 0600)
-chmod 0600 "${REAL_DEST}"
-
 # Disarm trap before successful termination
 trap - EXIT INT TERM HUP
 
