@@ -13,6 +13,7 @@ interface ValidatePrerequisitesOptions {
 /**
  * Validates target endpoint and explicit private credentials before any browser
  * or network operations are attempted. Fails closed on missing or unapproved prerequisites.
+ * Rejects embedded userinfo, query strings, fragments, and non-root paths.
  * Does NOT log or leak sensitive credentials, tokens, or cookies.
  */
 function validateBrowserAuthPrerequisites(options?: ValidatePrerequisitesOptions): BrowserCredentials {
@@ -35,6 +36,12 @@ function validateBrowserAuthPrerequisites(options?: ValidatePrerequisitesOptions
     throw new Error('E2E prerequisite check failed: Target base URL protocol must be http or https.');
   }
 
+  if (parsedUrl.username || parsedUrl.password) {
+    throw new Error(
+      'E2E prerequisite check failed: Target base URL must not contain embedded user credentials.'
+    );
+  }
+
   const approvedHosts = new Set(['localhost', '127.0.0.1', 'web']);
   if (!approvedHosts.has(parsedUrl.hostname.toLowerCase())) {
     throw new Error(
@@ -45,6 +52,24 @@ function validateBrowserAuthPrerequisites(options?: ValidatePrerequisitesOptions
   if (parsedUrl.port !== '5173') {
     throw new Error(
       'E2E prerequisite check failed: Target port must be approved web development port 5173.'
+    );
+  }
+
+  if (parsedUrl.pathname !== '' && parsedUrl.pathname !== '/') {
+    throw new Error(
+      'E2E prerequisite check failed: Target base URL must not contain a non-root path.'
+    );
+  }
+
+  if (parsedUrl.search && parsedUrl.search.length > 0) {
+    throw new Error(
+      'E2E prerequisite check failed: Target base URL must not contain query parameters.'
+    );
+  }
+
+  if (parsedUrl.hash && parsedUrl.hash.length > 0) {
+    throw new Error(
+      'E2E prerequisite check failed: Target base URL must not contain a URL fragment.'
     );
   }
 
@@ -70,6 +95,19 @@ function validateBrowserAuthPrerequisites(options?: ValidatePrerequisitesOptions
   }
 
   return { username, password };
+}
+
+/**
+ * Executes a sensitive browser or network operation and sanitizes any thrown error.
+ * Prevents raw Playwright call logs, passwords, tokens, or cookies from reaching reporters.
+ * Throws a clean generic error without original error message, cause, or parameters.
+ */
+async function safeAction<T>(action: () => Promise<T>, sanitizedMessage: string): Promise<T> {
+  try {
+    return await action();
+  } catch {
+    throw new Error(sanitizedMessage);
+  }
 }
 
 test.describe.serial('Authentication and Session Management E2E', () => {
@@ -105,9 +143,27 @@ test.describe.serial('Authentication and Session Management E2E', () => {
     await page.goto('/login');
     await expect(page.getByRole('heading', { level: 1, name: 'เข้าสู่ระบบ' })).toBeVisible();
 
+    // Derive an incorrect password guaranteed to differ from valid password
+    const invalidPassword = `${credentials.password}_invalid_mismatch`;
+    expect(invalidPassword).not.toBe(credentials.password);
+
     await page.locator('input#username').fill(credentials.username);
-    await page.locator('input#password').fill('wrong_password_attempt');
-    await page.locator('button[type="submit"]').click();
+    await safeAction(
+      () => page.locator('input#password').fill(invalidPassword),
+      'Failed to fill invalid password in login form'
+    );
+
+    const [loginResponse] = await safeAction(
+      () =>
+        Promise.all([
+          page.waitForResponse((resp) => resp.url().includes('/auth/login')),
+          page.locator('button[type="submit"]').click(),
+        ]),
+      'Failed to submit invalid login credentials'
+    );
+
+    // Explicitly assert the login endpoint rejected credentials with HTTP 401
+    expect(loginResponse.status()).toBe(401);
 
     // Alert message must be visible and page must stay on /login
     const alert = page.getByRole('alert');
@@ -128,14 +184,21 @@ test.describe.serial('Authentication and Session Management E2E', () => {
     await page.goto('/login');
     await expect(page.getByRole('heading', { level: 1, name: 'เข้าสู่ระบบ' })).toBeVisible();
 
-    // 2. Authenticate with run-owned credentials and submit
+    // 2. Authenticate with run-owned credentials and submit (wrapped in safeAction)
     await page.locator('input#username').fill(credentials.username);
-    await page.locator('input#password').fill(credentials.password);
+    await safeAction(
+      () => page.locator('input#password').fill(credentials.password),
+      'Failed to fill password in login form'
+    );
 
-    await Promise.all([
-      page.waitForURL('**/dashboard'),
-      page.locator('button[type="submit"]').click(),
-    ]);
+    await safeAction(
+      () =>
+        Promise.all([
+          page.waitForURL('**/dashboard'),
+          page.locator('button[type="submit"]').click(),
+        ]),
+      'Failed to submit login credentials or navigate to dashboard'
+    );
 
     // 3. UI assertions on protected dashboard
     await expect(page.getByRole('heading', { level: 1, name: 'แดชบอร์ด' })).toBeVisible();
@@ -144,7 +207,10 @@ test.describe.serial('Authentication and Session Management E2E', () => {
     await expect(page.getByRole('button', { name: 'ออกจากระบบ' })).toBeVisible();
 
     // 4. Server session verification via browser context request API (sharing cookie jar)
-    const sessionCheckResp = await context.request.get('/auth/session-check');
+    const sessionCheckResp = await safeAction(
+      () => context.request.get('/auth/session-check'),
+      'Failed to verify session check on server'
+    );
     expect(sessionCheckResp.status()).toBe(200);
     const sessionData = await sessionCheckResp.json();
     expect(sessionData.user).toBeDefined();
@@ -175,27 +241,41 @@ test.describe.serial('Authentication and Session Management E2E', () => {
 
     // 8. Assert CSRF participation and rejection of missing/invalid CSRF while session is active
     // 8a. Missing CSRF token header returns HTTP 403 Forbidden
-    const missingCsrfResp = await context.request.post('/auth/logout');
+    const missingCsrfResp = await safeAction(
+      () => context.request.post('/auth/logout'),
+      'Failed to execute logout request without CSRF token'
+    );
     expect(missingCsrfResp.status()).toBe(403);
 
     // 8b. Invalid / forged CSRF token returns HTTP 403 Forbidden
-    const invalidCsrfResp = await context.request.post('/auth/logout', {
-      headers: { 'x-csrf-token': 'invalid_forged_csrf_token_attempt' },
-    });
+    const invalidCsrfResp = await safeAction(
+      () =>
+        context.request.post('/auth/logout', {
+          headers: { 'x-csrf-token': 'invalid_forged_csrf_token_attempt' },
+        }),
+      'Failed to execute logout request with invalid CSRF token'
+    );
     expect(invalidCsrfResp.status()).toBe(403);
 
     // 8c. Verify session remains active on server after rejected CSRF attempts
-    const stillActiveResp = await context.request.get('/auth/session-check');
+    const stillActiveResp = await safeAction(
+      () => context.request.get('/auth/session-check'),
+      'Failed to verify session persistence after CSRF denial'
+    );
     expect(stillActiveResp.status()).toBe(200);
 
     // 9. Legitimate CSRF logout via UI
-    const [logoutResponse] = await Promise.all([
-      page.waitForResponse(
-        (resp) => resp.url().includes('/auth/logout') && resp.status() === 200
-      ),
-      page.waitForURL('**/login'),
-      page.getByRole('button', { name: 'ออกจากระบบ' }).click(),
-    ]);
+    const [logoutResponse] = await safeAction(
+      () =>
+        Promise.all([
+          page.waitForResponse(
+            (resp) => resp.url().includes('/auth/logout') && resp.status() === 200
+          ),
+          page.waitForURL('**/login'),
+          page.getByRole('button', { name: 'ออกจากระบบ' }).click(),
+        ]),
+      'Failed to perform UI logout'
+    );
 
     expect(logoutResponse.status()).toBe(200);
     await expect(page.getByRole('heading', { level: 1, name: 'เข้าสู่ระบบ' })).toBeVisible();
@@ -211,17 +291,21 @@ test.describe.serial('Authentication and Session Management E2E', () => {
     await expect(page.getByRole('heading', { level: 1, name: 'เข้าสู่ระบบ' })).toBeVisible();
 
     // 12. Deliberately re-inject the captured original cookie into the browser context
-    await context.addCookies([
-      {
-        name: capturedSessionCookie.name,
-        value: capturedSessionCookie.value,
-        domain: capturedSessionCookie.domain,
-        path: capturedSessionCookie.path,
-        httpOnly: capturedSessionCookie.httpOnly,
-        secure: capturedSessionCookie.secure,
-        sameSite: capturedSessionCookie.sameSite,
-      },
-    ]);
+    await safeAction(
+      () =>
+        context.addCookies([
+          {
+            name: capturedSessionCookie.name,
+            value: capturedSessionCookie.value,
+            domain: capturedSessionCookie.domain,
+            path: capturedSessionCookie.path,
+            httpOnly: capturedSessionCookie.httpOnly,
+            secure: capturedSessionCookie.secure,
+            sameSite: capturedSessionCookie.sameSite,
+          },
+        ]),
+      'Failed to re-inject session cookie for replay validation'
+    );
 
     // 13. Direct browser navigation with revoked cookie: Dashboard session-check fails -> redirects to /login
     await page.goto('/dashboard');
@@ -229,13 +313,27 @@ test.describe.serial('Authentication and Session Management E2E', () => {
     await expect(page.getByRole('heading', { level: 1, name: 'เข้าสู่ระบบ' })).toBeVisible();
 
     // 14. Server API session-check explicitly denies revoked session with HTTP 401
-    const replayedCheckResp = await context.request.get('/auth/session-check');
+    const replayedCheckResp = await safeAction(
+      () => context.request.get('/auth/session-check'),
+      'Failed to execute session check with replayed cookie'
+    );
     expect(replayedCheckResp.status()).toBe(401);
 
     // 15. Server logout request using revoked cookie is denied with HTTP 401
-    const replayedLogoutResp = await context.request.post('/auth/logout', {
-      headers: { 'x-csrf-token': genuineCsrfToken },
-    });
+    const replayedLogoutResp = await safeAction(
+      () =>
+        context.request.post('/auth/logout', {
+          headers: { 'x-csrf-token': genuineCsrfToken },
+        }),
+      'Failed to execute logout request with replayed cookie'
+    );
     expect(replayedLogoutResp.status()).toBe(401);
   });
 });
+
+export {
+  validateBrowserAuthPrerequisites,
+  safeAction,
+  type BrowserCredentials,
+  type ValidatePrerequisitesOptions,
+};
