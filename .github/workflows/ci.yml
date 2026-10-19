@@ -81,15 +81,28 @@ jobs:
       - name: Setup Rootless Podman socket
         run: |
           export XDG_RUNTIME_DIR="/run/user/$(id -u)"
-          mkdir -p "$XDG_RUNTIME_DIR/podman"
+          sudo mkdir -p "$XDG_RUNTIME_DIR/podman"
+          sudo chown -R "$(id -u):$(id -u)" "$XDG_RUNTIME_DIR"
+          sudo chmod 700 "$XDG_RUNTIME_DIR"
           podman system service --time=0 "unix://${XDG_RUNTIME_DIR}/podman/podman.sock" &
           echo "PODMAN_PID=$!" >> $GITHUB_ENV
-          sleep 2
+          for i in {1..30}; do
+            if [ -S "${XDG_RUNTIME_DIR}/podman/podman.sock" ]; then
+              break
+            fi
+            sleep 0.5
+          done
           test -S "${XDG_RUNTIME_DIR}/podman/podman.sock"
           echo "Rootless mode: $(podman info --format '{{.Host.Security.Rootless}}')"
           curl -s --unix-socket "${XDG_RUNTIME_DIR}/podman/podman.sock" http://d/v5.0.0/libpod/info > /dev/null
+          echo "XDG_RUNTIME_DIR=${XDG_RUNTIME_DIR}" >> $GITHUB_ENV
           echo "DOCKER_HOST=unix://${XDG_RUNTIME_DIR}/podman/podman.sock" >> $GITHUB_ENV
           echo "TESTCONTAINERS_RYUK_DISABLED=true" >> $GITHUB_ENV
+
+      - name: Pre-pull PostgreSQL test image
+        run: |
+          podman pull docker.io/library/postgres:18.6-alpine
+          podman tag docker.io/library/postgres:18.6-alpine postgres:18.6-alpine
 
       - name: Run PostgreSQL integration tests
         run: pnpm --filter api exec vitest run tests/integration
@@ -120,9 +133,18 @@ jobs:
           corepack enable
           corepack prepare pnpm@12.9.1 --activate
 
+      - name: Frozen dependency installation
+        run: pnpm install --frozen-lockfile
+
       - name: Install podman-compose 1.6.0
         run: |
           pip install --user podman-compose==1.6.0
+          mkdir -p "$HOME/.local/bin"
+          cat << 'EOF' > "$HOME/.local/bin/podman-compose"
+          #!/bin/sh
+          exec python3 -m podman_compose --in-pod false "$@"
+          EOF
+          chmod +x "$HOME/.local/bin/podman-compose"
           echo "$HOME/.local/bin" >> $GITHUB_PATH
 
       - name: Configure isolated disposable environment
@@ -202,7 +224,7 @@ jobs:
 
           podman run --rm \
             --network "${COMPOSE_PROJECT_NAME}_default" \
-            --userns=keep-id \
+            --ipc=host \
             -v "${RUNNER_WORKSPACE}:/work:z" \
             -w /work \
             -e E2E_BASE_URL="http://web:5173" \
