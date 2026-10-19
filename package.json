@@ -6,7 +6,13 @@
     "node": "24.21.0"
   },
   "scripts": {
+    "lint": "eslint .",
     "db:migrate": "pnpm --filter db migrate:latest",
     "db:migrate:down": "pnpm --filter db migrate:down"
+  },
+  "devDependencies": {
+    "@eslint/js": "9.39.5",
+    "eslint": "9.39.5",
+    "typescript-eslint": "8.71.2"
   }
 }

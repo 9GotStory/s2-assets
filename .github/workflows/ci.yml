@@ -1,0 +1,321 @@
+name: CI
+
+on:
+  push:
+    branches:
+      - feature/001-application-foundation
+  pull_request:
+    branches:
+      - feature/001-application-foundation
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  quality-and-build:
+    name: Quality & Build
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+
+      - name: Setup Node.js 24.21.0
+        uses: actions/setup-node@1d0ff469b7ec7b3cb9d8673fde0c81c44821de2a # v4.2.0
+        with:
+          node-version: '24.21.0'
+
+      - name: Enable Corepack and pnpm 12.9.1
+        run: |
+          corepack enable
+          corepack prepare pnpm@12.9.1 --activate
+          node --version
+          pnpm --version
+
+      - name: Frozen dependency installation
+        run: pnpm install --frozen-lockfile
+
+      - name: Workspace linting
+        run: pnpm run lint
+
+      - name: All-workspace typecheck
+        run: pnpm -r run typecheck
+
+      - name: API unit tests
+        run: pnpm --filter api exec vitest run tests/unit
+
+      - name: API production build
+        run: pnpm --filter api run build
+
+      - name: Web production build
+        run: pnpm --filter web run build
+
+      - name: Build API OCI container image
+        run: podman build -f deploy/podman/api.Containerfile -t s2-assets-api:ci .
+
+      - name: Build migration container image
+        run: podman build -f deploy/podman/migration.Containerfile -t s2-assets-migration:ci .
+
+  integration:
+    name: PostgreSQL Integration Tests
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+
+      - name: Setup Node.js 24.21.0
+        uses: actions/setup-node@1d0ff469b7ec7b3cb9d8673fde0c81c44821de2a # v4.2.0
+        with:
+          node-version: '24.21.0'
+
+      - name: Enable Corepack and pnpm 12.9.1
+        run: |
+          corepack enable
+          corepack prepare pnpm@12.9.1 --activate
+
+      - name: Frozen dependency installation
+        run: pnpm install --frozen-lockfile
+
+      - name: Setup Rootless Podman socket
+        run: |
+          export XDG_RUNTIME_DIR="/run/user/$(id -u)"
+          mkdir -p "$XDG_RUNTIME_DIR/podman"
+          podman system service --time=0 "unix://${XDG_RUNTIME_DIR}/podman/podman.sock" &
+          echo "PODMAN_PID=$!" >> $GITHUB_ENV
+          sleep 2
+          test -S "${XDG_RUNTIME_DIR}/podman/podman.sock"
+          echo "Rootless mode: $(podman info --format '{{.Host.Security.Rootless}}')"
+          curl -s --unix-socket "${XDG_RUNTIME_DIR}/podman/podman.sock" http://d/v5.0.0/libpod/info > /dev/null
+          echo "DOCKER_HOST=unix://${XDG_RUNTIME_DIR}/podman/podman.sock" >> $GITHUB_ENV
+          echo "TESTCONTAINERS_RYUK_DISABLED=true" >> $GITHUB_ENV
+
+      - name: Run PostgreSQL integration tests
+        run: pnpm --filter api exec vitest run tests/integration
+
+      - name: Cleanup Podman resources
+        if: always()
+        run: |
+          if [ -n "${PODMAN_PID:-}" ]; then
+            kill "$PODMAN_PID" 2>/dev/null || true
+          fi
+          podman ps -a --filter "name=testcontainers" --format '{{.ID}}' | xargs -r podman rm -f 2>/dev/null || true
+
+  browser-e2e:
+    name: Playwright E2E Tests
+    runs-on: ubuntu-24.04
+    timeout-minutes: 25
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+
+      - name: Setup Node.js 24.21.0
+        uses: actions/setup-node@1d0ff469b7ec7b3cb9d8673fde0c81c44821de2a # v4.2.0
+        with:
+          node-version: '24.21.0'
+
+      - name: Enable Corepack and pnpm 12.9.1
+        run: |
+          corepack enable
+          corepack prepare pnpm@12.9.1 --activate
+
+      - name: Install podman-compose 1.6.0
+        run: |
+          pip install --user podman-compose==1.6.0
+          echo "$HOME/.local/bin" >> $GITHUB_PATH
+
+      - name: Configure isolated disposable environment
+        run: |
+          ENV_DIR="/tmp/s2_ci_env"
+          mkdir -m 700 "$ENV_DIR"
+
+          PROJECT_SUFFIX="${GITHUB_RUN_ID}_${GITHUB_RUN_ATTEMPT:-1}"
+          COMPOSE_PROJECT_NAME="s2_ci_${PROJECT_SUFFIX}"
+          POSTGRES_DB="s2_foundation_ci_${PROJECT_SUFFIX}"
+          POSTGRES_USER="s2_ci_user"
+          POSTGRES_PASSWORD=$(openssl rand -hex 16)
+          COOKIE_SECRET=$(openssl rand -hex 32)
+          RUN_ID="ci_${PROJECT_SUFFIX}"
+          USERNAME="ci_user_${GITHUB_RUN_ID}"
+          PASSWORD="$(openssl rand -base64 16 | tr -d '=+/' | head -c 16)A1!"
+          FOUNDATION_ENV_FILE="${ENV_DIR}/foundation.env"
+          DATABASE_URL="postgresql://${POSTGRES_USER}:${POSTGRES_PASSWORD}@postgres:5432/${POSTGRES_DB}"
+
+          cat <<EOF > "$FOUNDATION_ENV_FILE"
+          COMPOSE_PROJECT_NAME=${COMPOSE_PROJECT_NAME}
+          POSTGRES_DB=${POSTGRES_DB}
+          POSTGRES_USER=${POSTGRES_USER}
+          POSTGRES_PASSWORD=${POSTGRES_PASSWORD}
+          COOKIE_SECRET=${COOKIE_SECRET}
+          FOUNDATION_TEST_RUN_ID=${RUN_ID}
+          FOUNDATION_TEST_USERNAME=${USERNAME}
+          FOUNDATION_TEST_PASSWORD=${PASSWORD}
+          FOUNDATION_TEST_DATABASE_URL=${DATABASE_URL}
+          API_HOST_PORT=3000
+          WEB_HOST_PORT=5173
+          EOF
+          chmod 600 "$FOUNDATION_ENV_FILE"
+
+          echo "FOUNDATION_ENV_FILE=$FOUNDATION_ENV_FILE" >> $GITHUB_ENV
+          echo "COMPOSE_PROJECT_NAME=$COMPOSE_PROJECT_NAME" >> $GITHUB_ENV
+          echo "POSTGRES_USER=$POSTGRES_USER" >> $GITHUB_ENV
+          echo "POSTGRES_DB=$POSTGRES_DB" >> $GITHUB_ENV
+          echo "E2E_USERNAME=${USERNAME}_standard" >> $GITHUB_ENV
+          echo "::add-mask::$PASSWORD"
+          echo "E2E_PASSWORD=$PASSWORD" >> $GITHUB_ENV
+
+      - name: Prepare container development tooling
+        run: bash scripts/dev.sh prepare
+
+      - name: Start PostgreSQL and apply migrations
+        run: |
+          podman compose --env-file "$FOUNDATION_ENV_FILE" -p "$COMPOSE_PROJECT_NAME" -f deploy/podman/compose.yaml up -d postgres
+          for attempt in {1..30}; do
+            if podman compose --env-file "$FOUNDATION_ENV_FILE" -p "$COMPOSE_PROJECT_NAME" -f deploy/podman/compose.yaml exec -T postgres pg_isready -U "$POSTGRES_USER" -d "$POSTGRES_DB" >/dev/null 2>&1; then
+              echo "PostgreSQL service ready (attempt ${attempt})"
+              break
+            fi
+            sleep 1
+          done
+          podman compose --env-file "$FOUNDATION_ENV_FILE" -p "$COMPOSE_PROJECT_NAME" -f deploy/podman/compose.yaml run --rm --no-deps -T api pnpm run db:migrate
+
+      - name: Start API and Web services
+        run: |
+          podman compose --env-file "$FOUNDATION_ENV_FILE" -p "$COMPOSE_PROJECT_NAME" -f deploy/podman/compose.yaml up -d api web
+          for attempt in {1..30}; do
+            if curl -s http://127.0.0.1:3000/health >/dev/null 2>&1 && curl -s http://127.0.0.1:5173 >/dev/null 2>&1; then
+              echo "API and Web services verified ready (attempt ${attempt})"
+              break
+            fi
+            sleep 1
+          done
+
+      - name: Setup test identity
+        run: bash scripts/dev.sh test-identity setup
+
+      - name: Execute Playwright E2E browser tests
+        run: |
+          RUNNER_WORKSPACE="/tmp/s2_e2e_runner"
+          mkdir -p "$RUNNER_WORKSPACE"
+          cp -a . "$RUNNER_WORKSPACE"
+
+          podman run --rm \
+            --network "${COMPOSE_PROJECT_NAME}_default" \
+            --userns=keep-id \
+            -v "${RUNNER_WORKSPACE}:/work:z" \
+            -w /work \
+            -e E2E_BASE_URL="http://web:5173" \
+            -e E2E_USERNAME="$E2E_USERNAME" \
+            -e E2E_PASSWORD="$E2E_PASSWORD" \
+            -e CI=true \
+            mcr.microsoft.com/playwright:v1.63.0-noble \
+            sh -c "corepack enable && corepack prepare pnpm@12.9.1 --activate && pnpm --filter web test:e2e"
+
+      - name: Copy test diagnostics on failure
+        if: failure()
+        run: |
+          if [ -d "/tmp/s2_e2e_runner/apps/web/test-results" ]; then
+            mkdir -p apps/web/test-results
+            cp -r /tmp/s2_e2e_runner/apps/web/test-results/* apps/web/test-results/ 2>/dev/null || true
+          fi
+
+      - name: Upload Playwright failure artifacts
+        if: failure()
+        uses: actions/upload-artifact@4cec3d8aa04e39d1a68397de0c4cd6fb9dce8ec1 # v4.6.1
+        with:
+          name: playwright-results
+          path: apps/web/test-results/
+          retention-days: 7
+
+      - name: Cleanup owned browser resources
+        if: always()
+        run: |
+          bash scripts/dev.sh test-identity cleanup 2>/dev/null || true
+          if [ -n "${FOUNDATION_ENV_FILE:-}" ] && [ -n "${COMPOSE_PROJECT_NAME:-}" ]; then
+            podman compose --env-file "$FOUNDATION_ENV_FILE" -p "$COMPOSE_PROJECT_NAME" -f deploy/podman/compose.yaml down -v 2>/dev/null || true
+          fi
+          rm -rf /tmp/s2_ci_env /tmp/s2_e2e_runner
+
+  security-scan:
+    name: Security Scan (Trivy)
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+
+      - name: Setup Node.js 24.21.0
+        uses: actions/setup-node@1d0ff469b7ec7b3cb9d8673fde0c81c44821de2a # v4.2.0
+        with:
+          node-version: '24.21.0'
+
+      - name: Enable Corepack and pnpm 12.9.1
+        run: |
+          corepack enable
+          corepack prepare pnpm@12.9.1 --activate
+
+      - name: Build production API image and export archive
+        run: |
+          podman build -f deploy/podman/api.Containerfile -t s2-assets-api:ci .
+          mkdir -p /tmp/trivy-scan
+          podman save s2-assets-api:ci -o /tmp/trivy-scan/api-image.tar
+
+      - name: Scan dependencies with Trivy 0.76.0
+        run: |
+          podman run --rm \
+            -v "$(pwd):/work:ro,z" \
+            docker.io/aquasec/trivy:0.76.0 \
+            fs \
+            --scanners vuln \
+            --include-dev-deps \
+            --severity HIGH,CRITICAL \
+            --exit-code 1 \
+            /work/pnpm-lock.yaml
+
+      - name: Scan production API image with Trivy 0.76.0
+        run: |
+          podman run --rm \
+            -v "/tmp/trivy-scan/api-image.tar:/api-image.tar:ro,z" \
+            docker.io/aquasec/trivy:0.76.0 \
+            image \
+            --scanners vuln \
+            --severity HIGH,CRITICAL \
+            --exit-code 1 \
+            --skip-dirs /usr/local/lib/node_modules/npm \
+            --input /api-image.tar
+
+      - name: Cleanup security scan artifacts
+        if: always()
+        run: |
+          rm -rf /tmp/trivy-scan
+          podman rmi s2-assets-api:ci 2>/dev/null || true
+
+  ci-gate:
+    name: CI Gate
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    needs:
+      - quality-and-build
+      - integration
+      - browser-e2e
+      - security-scan
+    if: always()
+    steps:
+      - name: Evaluate all required gate results
+        run: |
+          echo "Evaluating required CI checks:"
+          echo "quality-and-build: ${{ needs.quality-and-build.result }}"
+          echo "integration:       ${{ needs.integration.result }}"
+          echo "browser-e2e:       ${{ needs.browser-e2e.result }}"
+          echo "security-scan:     ${{ needs.security-scan.result }}"
+
+          if [ "${{ needs.quality-and-build.result }}" != "success" ] || \
+             [ "${{ needs.integration.result }}" != "success" ] || \
+             [ "${{ needs.browser-e2e.result }}" != "success" ] || \
+             [ "${{ needs.security-scan.result }}" != "success" ]; then
+            echo "ERROR: One or more required CI gates failed. Blocking." >&2
+            exit 1
+          fi
+
+          echo "All required CI gates completed successfully."
