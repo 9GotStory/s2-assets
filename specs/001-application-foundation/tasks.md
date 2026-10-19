@@ -95,7 +95,7 @@
 - [x] T037 [P] Create production Quadlet definitions `api.container`, `api-migration.container` (one-shot migration responsibility that executes explicit migration command, depends on PostgreSQL, and runs before API service rollout/start without causing API auto-migration), `postgres.container`, `postgres-data.volume`, `s2-assets.network` in `deploy/podman/quadlet/`.
 - [x] T038 Create explicit CI pipeline in `.github/workflows/ci.yml` verifying frozen dependency installation, workspace lint, typecheck, unit tests, real PostgreSQL integration tests, web/API production build, Playwright E2E, and Trivy scan.
 - [x] T039 Perform full workspace verification confirming Feature 001 produces the tested static web production artifact and that the Quickstart operates correctly.
-- [ ] T040 Perform explicit boundary verification reviewing the implemented Feature 001 diff against FR-007, SC-005, and Constitution Feature-Bounded Delivery principle, verifying implementation contains no generic transaction framework, no generic audit platform, no event sourcing/event bus, no generic workflow engine, no enterprise IAM/RBAC framework, no speculative shared-services layer, no Asset/Material domain implementation, and no reverse-proxy product selection.
+- [x] T040 Perform explicit boundary verification reviewing the implemented Feature 001 diff against FR-007, SC-005, and Constitution Feature-Bounded Delivery principle, verifying implementation contains no generic transaction framework, no generic audit platform, no event sourcing/event bus, no generic workflow engine, no enterprise IAM/RBAC framework, no speculative shared-services layer, no Asset/Material domain implementation, and no reverse-proxy product selection.
 
 ---
 
