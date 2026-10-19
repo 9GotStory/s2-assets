@@ -148,6 +148,18 @@ jobs:
         run: |
           echo "Building base development tooling image..."
           podman build -f deploy/podman/dev.Containerfile -t s2-assets-dev:ci .
+          podman tag s2-assets-dev:ci s2-assets-dev:local
+
+      - name: Install podman-compose 1.6.0
+        run: |
+          pip install --user podman-compose==1.6.0
+          mkdir -p "$HOME/.local/bin"
+          cat << 'EOF' > "$HOME/.local/bin/podman-compose"
+          #!/bin/sh
+          exec python3 -m podman_compose --in-pod false "$@"
+          EOF
+          chmod +x "$HOME/.local/bin/podman-compose"
+          echo "$HOME/.local/bin" >> $GITHUB_PATH
 
       - name: Frozen dependency installation
         run: |
@@ -160,6 +172,11 @@ jobs:
             exit 1
           fi
           echo "Frozen lockfile integrity verified: $LOCK_AFTER"
+
+      - name: Run verification runner regression test suite
+        run: |
+          echo "Executing verification runner regression tests..."
+          bash scripts/tests/verify-foundation.test.sh
 
       - name: Run PostgreSQL integration tests
         id: run-integration
@@ -177,7 +194,7 @@ jobs:
           fi
 
           # 1. Remove integration runner images
-          for img in s2-assets-integration:ci s2-assets-dev:ci; do
+          for img in s2-assets-integration:ci s2-assets-dev:ci s2-assets-dev:local; do
             st=0
             podman image exists "$img" 2>/dev/null || st=$?
             if [ "$st" -eq 0 ]; then
@@ -190,7 +207,7 @@ jobs:
           done
 
           # Verified absence check for images distinguishing confirmed absence (exit 1) from inspection errors (>1) and presence (0)
-          for img in s2-assets-integration:ci s2-assets-dev:ci; do
+          for img in s2-assets-integration:ci s2-assets-dev:ci s2-assets-dev:local; do
             st=0
             podman image exists "$img" 2>/dev/null || st=$?
             if [ "$st" -eq 1 ]; then

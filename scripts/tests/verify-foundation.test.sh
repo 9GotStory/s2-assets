@@ -2,7 +2,7 @@
 # scripts/tests/verify-foundation.test.sh — Regression test suite for verify-foundation runner
 # Tests: missing provider/socket, foreign ownership, symlink, shared path, forbidden mount/relabel,
 # occupied resource, injected failure & first-exit preservation, failed-run reuse, cleanup failure,
-# and real API/Web signal delivery.
+# permissive socket/dir modes rejection, and real API/Web signal delivery & restart verification.
 
 set -euo pipefail
 
@@ -15,8 +15,25 @@ TEST_ENV_DIR="/tmp/s2_verify_regress_env_$$"
 rm -rf "$TEST_ENV_DIR"
 mkdir -m 700 "$TEST_ENV_DIR"
 
+declare -a CLEANUP_PROJECTS=()
+declare -a CLEANUP_DIRS=()
+CLEANUP_DIRS+=("$TEST_ENV_DIR")
+
 _cleanup_all() {
-  rm -rf "$TEST_ENV_DIR"
+  local exit_code="$?"
+  trap - EXIT INT TERM
+
+  for p in "${CLEANUP_PROJECTS[@]:-}"; do
+    if [ -n "$p" ]; then
+      podman compose -p "$p" -f "$COMPOSE_FILE" down -v >/dev/null 2>&1 || true
+    fi
+  done
+  for d in "${CLEANUP_DIRS[@]:-}"; do
+    if [ -n "$d" ] && [ -d "$d" ]; then
+      rm -rf "$d"
+    fi
+  done
+  exit "$exit_code"
 }
 trap _cleanup_all EXIT INT TERM
 
@@ -69,8 +86,9 @@ EXIT_PROVIDER=$?
 set -e
 _assert_eq "1" "$EXIT_PROVIDER" "Invalid compose provider exits nonzero"
 
-# --- Probe 3: Endpoint socket guards (symlink, foreign owner, shared/default path) ---
-echo "Probe 3: Endpoint socket guards fail closed"
+# --- Probe 3: Endpoint socket & directory guards ---
+echo "Probe 3: Endpoint socket & directory guards fail closed on insecure configurations"
+# shellcheck disable=SC1090
 source "${VERIFY_SCRIPT}" >/dev/null 2>&1 || true
 
 # 3a: Missing socket
@@ -102,9 +120,50 @@ set -e
 _assert_eq "1" "$EXIT_SHARED_1" "Default user podman socket path rejected"
 _assert_eq "1" "$EXIT_SHARED_2" "Default docker socket path rejected"
 
+# 3d: Permissive socket permissions (0666) rejected
+SOCK_0666_DIR="/tmp/s2_sock_0666_$$"
+mkdir -m 700 "$SOCK_0666_DIR"
+CLEANUP_DIRS+=("$SOCK_0666_DIR")
+SOCK_0666="${SOCK_0666_DIR}/perm.sock"
+python3 -c "import socket; s = socket.socket(socket.AF_UNIX); s.bind('${SOCK_0666}')"
+chmod 666 "$SOCK_0666"
+
+set +e
+( _validate_endpoint_socket_guards "$SOCK_0666" "$SOCK_0666_DIR" ) >/dev/null 2>&1
+EXIT_SOCK_0666=$?
+set -e
+_assert_eq "1" "$EXIT_SOCK_0666" "Socket with permissive mode 0666 rejected"
+
+# 3e: Permissive directory permissions (0755) rejected
+DIR_0755="/tmp/s2_dir_0755_$$"
+mkdir -m 755 "$DIR_0755"
+CLEANUP_DIRS+=("$DIR_0755")
+SOCK_IN_0755="${DIR_0755}/perm.sock"
+python3 -c "import socket; s = socket.socket(socket.AF_UNIX); s.bind('${SOCK_IN_0755}')"
+chmod 600 "$SOCK_IN_0755"
+
+set +e
+( _validate_endpoint_socket_guards "$SOCK_IN_0755" "$DIR_0755" ) >/dev/null 2>&1
+EXIT_DIR_0755=$?
+set -e
+_assert_eq "1" "$EXIT_DIR_0755" "Directory with permissive mode 0755 rejected"
+
+# 3f: Properly guarded socket (0600 in 0700 dir, owned by current UID) accepted
+VALID_GUARD_DIR="/tmp/s2_valid_guard_$$"
+mkdir -m 700 "$VALID_GUARD_DIR"
+CLEANUP_DIRS+=("$VALID_GUARD_DIR")
+VALID_SOCK="${VALID_GUARD_DIR}/valid.sock"
+python3 -c "import socket; s = socket.socket(socket.AF_UNIX); s.bind('${VALID_SOCK}')"
+chmod 600 "$VALID_SOCK"
+
+set +e
+( _validate_endpoint_socket_guards "$VALID_SOCK" "$VALID_GUARD_DIR" ) >/dev/null 2>&1
+EXIT_VALID_GUARD=$?
+set -e
+_assert_eq "0" "$EXIT_VALID_GUARD" "Properly guarded socket (0600 in 0700 dir) accepted"
+
 # --- Probe 4: Forbidden mount & relabel checks in CI runner ---
 echo "Probe 4: Forbidden mount relabel (:z/:Z) prohibited on endpoint socket"
-# Verify compose/scripts do not mount endpoint socket with :z or :Z
 if grep -Eq -- '-v[[:space:]]+.*podman\.sock.*:(z|Z)' "${REPO_ROOT}/.github/workflows/ci.yml"; then
   _assert_eq "0" "1" "ci.yml must not mount podman socket with :z or :Z"
 else
@@ -113,7 +172,6 @@ fi
 
 # --- Probe 5: Occupied resource / port collision guard ---
 echo "Probe 5: Occupied port guard fails closed before starting services"
-# Start a dummy listener on port 3995
 python3 -c "
 import socket, time
 s = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
@@ -173,11 +231,14 @@ EXIT_REUSE=$?
 set -e
 _assert_eq "1" "$EXIT_REUSE" "Reuse of failed run ID refused with nonzero exit"
 
-# --- Probe 8: Signal delivery & graceful shutdown coverage ---
-echo "Probe 8: API/Web signal delivery and graceful shutdown verification"
+# --- Probe 8: Signal delivery, graceful shutdown, terminal state, & restart verification ---
+echo "Probe 8: API/Web signal delivery, graceful shutdown, terminal state & restart verification"
+SIG_PROJ="s2_test_sig_$$"
+CLEANUP_PROJECTS+=("$SIG_PROJ")
+
 SIG_ENV="${TEST_ENV_DIR}/sig.env"
 cat <<EOF > "$SIG_ENV"
-COMPOSE_PROJECT_NAME=s2_test_sig_$$
+COMPOSE_PROJECT_NAME=${SIG_PROJ}
 POSTGRES_DB=s2_foundation_sig_$$
 POSTGRES_USER=s2_sig_user
 POSTGRES_PASSWORD=$(openssl rand -hex 16)
@@ -188,9 +249,9 @@ EOF
 chmod 600 "$SIG_ENV"
 
 echo "  Starting isolated containers for signal delivery probe..."
-podman compose --env-file "$SIG_ENV" -p "s2_test_sig_$$" -f "$COMPOSE_FILE" up -d postgres api web >/dev/null 2>&1
+podman compose --env-file "$SIG_ENV" -p "$SIG_PROJ" -f "$COMPOSE_FILE" up -d postgres api web >/dev/null 2>&1
 
-# Wait for API ready
+# Wait for API and Web ready
 API_UP=0
 for _ in {1..30}; do
   if [ "$(curl -s --connect-timeout 1 --max-time 2 -o /dev/null -w "%{http_code}" "http://127.0.0.1:3997/health" || true)" = "200" ]; then
@@ -201,9 +262,19 @@ for _ in {1..30}; do
 done
 _assert_eq "1" "$API_UP" "API reached operational health state"
 
+WEB_UP=0
+for _ in {1..30}; do
+  if [ "$(curl -s --connect-timeout 1 --max-time 2 -o /dev/null -w "%{http_code}" "http://127.0.0.1:5997/login" || true)" = "200" ]; then
+    WEB_UP=1
+    break
+  fi
+  sleep 1
+done
+_assert_eq "1" "$WEB_UP" "Web reached operational login state"
+
 # Measure stop duration
 STOP_START=$(date +%s)
-podman compose --env-file "$SIG_ENV" -p "s2_test_sig_$$" -f "$COMPOSE_FILE" stop api web >/dev/null 2>&1
+podman compose --env-file "$SIG_ENV" -p "$SIG_PROJ" -f "$COMPOSE_FILE" stop api web >/dev/null 2>&1
 STOP_END=$(date +%s)
 STOP_DIFF=$((STOP_END - STOP_START))
 
@@ -213,18 +284,54 @@ else
   _assert_eq "0" "1" "API/Web stop exceeded 10s grace period (${STOP_DIFF}s)"
 fi
 
-API_LOGS=$(podman compose --env-file "$SIG_ENV" -p "s2_test_sig_$$" -f "$COMPOSE_FILE" logs api 2>&1 || true)
+API_LOGS=$(podman compose --env-file "$SIG_ENV" -p "$SIG_PROJ" -f "$COMPOSE_FILE" logs api 2>&1 || true)
 if echo "$API_LOGS" | grep -q "Received termination signal, starting graceful shutdown" && echo "$API_LOGS" | grep -q "Graceful shutdown completed"; then
   _assert_eq "0" "0" "API logs confirm SIGTERM handling and clean exit"
 else
   _assert_eq "0" "1" "API logs missing graceful shutdown message"
 fi
 
-API_STOP_CODE=$(podman ps -a --filter "name=s2_test_sig_$$_api" --format '{{.ExitCode}}' 2>/dev/null | head -n 1 || echo "unknown")
+API_STOP_CODE=$(podman ps -a --filter "name=${SIG_PROJ}.*api" --format '{{.ExitCode}}' 2>/dev/null | head -n 1 || echo "unknown")
+WEB_STOP_CODE=$(podman ps -a --filter "name=${SIG_PROJ}.*web" --format '{{.ExitCode}}' 2>/dev/null | head -n 1 || echo "unknown")
+
 _assert_eq "0" "$API_STOP_CODE" "API container exited with code 0 (not 137 SIGKILL)"
 
+if [ "$WEB_STOP_CODE" = "0" ] || [ "$WEB_STOP_CODE" = "143" ]; then
+  _assert_eq "0" "0" "Web container exited cleanly with code ${WEB_STOP_CODE} (0 or 143)"
+else
+  _assert_eq "0" "1" "Web container exited abnormally with code '${WEB_STOP_CODE}'"
+fi
+
+# Restart services and verify full recovery
+echo "  Restarting API and Web containers to verify recovery..."
+podman compose --env-file "$SIG_ENV" -p "$SIG_PROJ" -f "$COMPOSE_FILE" start api web >/dev/null 2>&1
+
+RESTART_API_UP=0
+for _ in {1..30}; do
+  if [ "$(curl -s --connect-timeout 1 --max-time 2 -o /dev/null -w "%{http_code}" "http://127.0.0.1:3997/health" || true)" = "200" ]; then
+    RESTART_API_UP=1
+    break
+  fi
+  sleep 1
+done
+_assert_eq "1" "$RESTART_API_UP" "Restarted API responds 200 on /health"
+
+RESTART_WEB_UP=0
+for _ in {1..30}; do
+  if [ "$(curl -s --connect-timeout 1 --max-time 2 -o /dev/null -w "%{http_code}" "http://127.0.0.1:5997/login" || true)" = "200" ]; then
+    RESTART_WEB_UP=1
+    break
+  fi
+  sleep 1
+done
+_assert_eq "1" "$RESTART_WEB_UP" "Restarted Web responds 200 on /login"
+
+RESTART_PROXY_CODE=$(curl -s --connect-timeout 1 --max-time 2 -o /dev/null -w "%{http_code}" "http://127.0.0.1:5997/auth/session-check" || true)
+_assert_eq "401" "$RESTART_PROXY_CODE" "Restarted Web reverse-proxy responds 401 on /auth/session-check"
+
 # Teardown probe stack
-podman compose --env-file "$SIG_ENV" -p "s2_test_sig_$$" -f "$COMPOSE_FILE" down -v >/dev/null 2>&1 || true
+echo "  Tearing down signal probe stack..."
+podman compose --env-file "$SIG_ENV" -p "$SIG_PROJ" -f "$COMPOSE_FILE" down -v >/dev/null 2>&1 || true
 
 echo "=== Regression Probes Summary ==="
 echo "Total Passed: ${PASS_COUNT}"
