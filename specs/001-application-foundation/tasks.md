@@ -82,7 +82,7 @@
 ### Implementation for User Story 4
 - [ ] T031 [P] [US4] Implement minimum web UI for login, protected dashboard, and CSRF token handling in `apps/web/src/pages/Login.tsx` and `apps/web/src/pages/Dashboard.tsx`.
 - [ ] T032 [P] [US4] Configure Playwright 1.63.0 E2E test setup in `apps/web/playwright.config.ts`.
-- [ ] T033 [US4] Implement minimum authentication/session Playwright E2E test in `apps/web/tests/e2e/auth.spec.ts` executing inside an isolated Playwright container boundary (`mcr.microsoft.com/playwright:v1.63.0-noble`).
+- [x] T033 [US4] Implement minimum authentication/session Playwright E2E test in `apps/web/tests/e2e/auth.spec.ts` executing inside an isolated Playwright container boundary (`mcr.microsoft.com/playwright:v1.63.0-noble`).
 
 ---
 
