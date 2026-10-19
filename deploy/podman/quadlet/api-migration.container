@@ -10,20 +10,43 @@
 # - Secret=s2-assets-database-url scopes the database connection secret.
 # - Unit Exclusivity: Governed by api-migration.service within this user's systemd session.
 #
-# Lifecycle Contract & Decoupled State (B2):
+# Lifecycle Contract & Fail-Closed PostgreSQL Prerequisite (B2):
 # - Dependencies: Wants=postgres.service and After=postgres.service.
-#   Using Wants= rather than Requires= ensures that if postgres.service is subsequently restarted
-#   or stopped for maintenance, systemd does NOT stop api-migration.service or clear its
-#   retained 'active (exited)' state.
+#   Wants= orders startup after postgres.service without coupling the retained gate state:
+#   if postgres.service is subsequently restarted or stopped for maintenance, systemd does NOT
+#   stop api-migration.service or clear its retained 'active (exited)' state.
+# - Start-Time Fail-Closed Prerequisite:
+#   ExecStartPre=/usr/bin/systemctl --user is-active --quiet postgres.service
+#   Because systemd Wants=/After= permits startup even if the wanted service fails or times out,
+#   ExecStartPre asserts that postgres.service has reached 'active' state (driven by Notify=healthy).
+#   - If postgres.service failed or timed out: ExecStartPre exits non-zero (code 3), failing
+#     the start job immediately, marking api-migration.service as 'failed', and suppressing
+#     ExecStart=. The migration CLI is NEVER executed against an unhealthy/unready database.
+#   - Because api-migration.service is in 'failed' state, api.service's Requisite= check fails closed,
+#     blocking API startup.
+#   - If postgres.service is active: ExecStartPre exits 0 and ExecStart= executes the migration CLI.
 # - Execution: Type=oneshot, RemainAfterExit=yes, Restart=no.
-#   Foreground execution captures the CLI exit code directly:
-#   - Exit 0: transitions to 'active (exited)', unlocking the API migration gate.
-#   - Nonzero exit: transitions to 'failed', failing closed and blocking API startup.
-# - Explicit Activation & Invalidation:
-#   - Initial boot: Not enabled at default.target. Migration is explicitly activated by the operator
-#     or rollout automation via 'systemctl --user start api-migration.service'.
-#   - Rollout refresh: Deploying a new migration/API image invalidates the gate by explicitly
-#     re-executing 'systemctl --user restart api-migration.service' before rolling out api.service.
+#   Foreground execution captures CLI exit status directly:
+#   - Exit 0: transitions to 'active (exited)', satisfying Requisite= for api.service.
+#   - Non-zero exit: transitions to 'failed', blocking api.service.
+#
+# Controlled Release Rollout Protocol (B2):
+# - Paired Artifact Discipline: Every production release pairs an immutable API image
+#   (e.g., localhost/s2-assets-api:<tag/digest>) with its matching migration image
+#   (e.g., localhost/s2-assets-migration:<tag/digest>) built from the exact same commit.
+# - Prohibited: Changing artifact selection (updating Image=) under a retained successful gate.
+#   In systemd, updating Quadlet files and reloading daemons does NOT invalidate an existing
+#   'active (exited)' state; an outdated gate must never permit a new API version to launch.
+# - Rollout Sequence:
+#   1. Invalidate Old Gate: 'systemctl --user stop api-migration.service'
+#      Transitions gate to 'inactive', ensuring api.service cannot start prematurely.
+#   2. Update Image References: Update Image= in api-migration.container and api.container.
+#   3. Reload Daemon: 'systemctl --user daemon-reload'
+#   4. Execute Matching Migration: 'systemctl --user start api-migration.service'
+#      ExecStartPre validates postgres.service active; new migration runs to completion.
+#      Failure / Retry: If migration fails, investigate logs (journalctl --user -u api-migration.service),
+#      resolve the underlying issue, and retry 'systemctl --user start api-migration.service'.
+#   5. Roll Out API: Once migration reaches 'active (exited)', run 'systemctl --user restart api.service'.
 [Unit]
 Description=s2-assets database migration one-shot job
 Wants=postgres.service
@@ -41,3 +64,4 @@ Secret=s2-assets-database-url,type=env,target=DATABASE_URL
 Type=oneshot
 RemainAfterExit=yes
 Restart=no
+ExecStartPre=/usr/bin/systemctl --user is-active --quiet postgres.service

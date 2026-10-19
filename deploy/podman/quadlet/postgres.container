@@ -18,7 +18,8 @@
 #   the final external TCP server.
 # - Using pg_isready with explicit TCP host (-h 127.0.0.1 -p 5432) ensures the healthcheck
 #   CANNOT pass against the temporary socket-only server (which refuses TCP), preventing
-#   Notify=healthy from prematurely triggering the migration job before TCP is operational.
+#   Notify=healthy from prematurely transitioning postgres.service to 'active' before TCP is operational.
+#   This active transition is verified at startup by api-migration.service's ExecStartPre prerequisite.
 # - Note: pg_isready tests connection acceptance only; it does not authenticate credentials or validate schema.
 #
 # Lifecycle & Recovery (B2):
