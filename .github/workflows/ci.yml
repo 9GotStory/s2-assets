@@ -551,10 +551,11 @@ jobs:
             mcr.microsoft.com/playwright:v1.63.0-noble \
             bash -c '
               set -euo pipefail
-              PW_VER=$(npx playwright --version)
+              corepack enable && corepack prepare pnpm@12.9.1 --activate
+              PW_VER=$(pnpm --filter web exec playwright --version)
               echo "Playwright container version: $PW_VER"
               echo "$PW_VER" | grep -Eq "1\.63\.0"
-              (cd apps/web && npx playwright test)
+              pnpm --filter web run test:e2e
             '
 
       - name: Copy test diagnostics on failure
