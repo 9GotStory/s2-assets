@@ -7,8 +7,9 @@
 #
 # Arguments:
 #   <container>        Running PostgreSQL container name or ID in Rootless Podman.
-#                      Must identify the authorized Development PostgreSQL instance:
-#                      's2-assets-dev-postgres' in project 's2-assets-dev'.
+#                      Must strictly identify the authorized Development PostgreSQL instance:
+#                      exactly named 's2-assets-dev-postgres' in project 's2-assets-dev'
+#                      with Compose service 'postgres'.
 #                      Must be alphanumeric with optional '_', '.', or '-'.
 #                      Must not start with '-'.
 #   <target-database>  Isolated target PostgreSQL test database name.
@@ -39,20 +40,22 @@
 #
 # Safety & Verification Contract:
 #   - Restricts execution strictly to the existing Rootless Podman Development
-#     instance: 's2-assets-dev-postgres', project 's2-assets-dev'.
-#   - Validates actual container and Compose project identity via 'podman inspect',
-#     rejecting unverified, foreign, or production instances.
+#     instance: exactly named 's2-assets-dev-postgres', project 's2-assets-dev',
+#     service 'postgres'. Rejects foreign, lookalike, or production containers.
+#   - Re-confirms container identity and target safety immediately before any write.
 #   - Enforces fail-closed validation on all inputs, rejecting option injection,
 #     connection URIs, and ambiguous arguments.
 #   - Protects the live development source database ('s2_assets_dev'), production,
 #     and system databases against accidental mutation.
 #   - Verifies target database ownership and isolation before restore:
-#       1. Non-interactive authentication must succeed (-w / --no-password).
-#       2. Target database must already exist (does NOT auto-create databases).
-#       3. Target database must be owned by the authorized user.
-#       4. Target database must be clean (0 pre-existing user tables); does NOT
-#          auto-drop or delete existing objects.
-#       5. Target database must have no other active connections.
+#       1. PostgreSQL server readiness preflight via pg_isready.
+#       2. Non-interactive authentication and credentials verified fail-closed via psql (-w).
+#       3. Target database must already exist (does NOT auto-create databases).
+#       4. Target database must be owned by the authorized user.
+#       5. Target database must be completely clean (0 user-defined relations,
+#          views, sequences, routines, types, or custom schemas); does NOT auto-drop
+#          or delete existing objects.
+#       6. Target database must have no other active connections.
 #   - Validates backup archive integrity via format verification and 'pg_restore -l'
 #     table-of-contents validation prior to database restoration.
 #   - Preserves backup archives as strictly read-only; never removes or mutates them.
@@ -61,6 +64,7 @@
 #   - Restores using '--single-transaction' (-1) and '--exit-on-error' (-e) to guarantee
 #     that any error halts execution and completely rolls back changes, preventing
 #     partial or corrupt restoration state.
+#   - Fails closed on any query error, empty count, or non-numeric output without masking.
 #   - Never masks errors; non-zero exit codes are propagated immediately.
 # ==============================================================================
 
@@ -87,6 +91,111 @@ Options:
 EOF
 }
 
+# ------------------------------------------------------------------------------
+# Helper Functions: Fail-Closed Query Execution and Numeric Validation
+# ------------------------------------------------------------------------------
+
+# Execute a verification query via psql in the container with strict fail-closed error propagation.
+# Does NOT mask errors. Runs with -X (no .psqlrc), -v ON_ERROR_STOP=1, -w (never prompt), -t -A.
+exec_psql_query() {
+  local container="$1"
+  local user="$2"
+  local db="$3"
+  local sql="$4"
+  local description="$5"
+
+  local query_output=""
+  local query_status=0
+
+  query_output="$(podman exec "${container}" psql -X -v ON_ERROR_STOP=1 -U "${user}" -w -d "${db}" -t -A -c "${sql}" 2>&1)" || query_status=$?
+
+  if [ "${query_status}" -ne 0 ]; then
+    echo "ERROR: Database query failed during ${description} (exit code ${query_status}): ${query_output}" >&2
+    exit 1
+  fi
+
+  printf '%s\n' "${query_output}"
+}
+
+# Assert that a query result is a valid non-negative integer. Rejects empty, whitespace, or non-numeric text.
+assert_valid_count() {
+  local value="$1"
+  local description="$2"
+
+  if [ -z "${value}" ]; then
+    echo "ERROR: Query for ${description} returned empty output, expected a non-negative integer" >&2
+    exit 1
+  fi
+
+  if ! [[ "${value}" =~ ^[0-9]+$ ]]; then
+    echo "ERROR: Query for ${description} returned non-numeric output: '${value}'" >&2
+    exit 1
+  fi
+}
+
+# Validate container running state, exact name, and positive Compose labels
+verify_development_container_identity() {
+  local container="$1"
+  local stage_desc="$2"
+
+  local is_running=""
+  local container_name=""
+  local compose_project=""
+  local compose_service=""
+
+  # 1. Inspect container state: must exist and be currently running
+  if ! is_running="$(podman inspect --format '{{.State.Running}}' "${container}" 2>/dev/null)"; then
+    echo "ERROR: Container '${container}' does not exist or cannot be inspected by Podman (${stage_desc})" >&2
+    exit 1
+  fi
+
+  if [ "${is_running}" != "true" ]; then
+    echo "ERROR: Container '${container}' is not currently running (State.Running = ${is_running}) (${stage_desc})" >&2
+    exit 1
+  fi
+
+  # 2. Inspect exact container name (strip leading slash)
+  container_name="$(podman inspect --format '{{.Name}}' "${container}" 2>/dev/null | sed 's|^/||')"
+
+  # Enforce exact match: must be exactly 's2-assets-dev-postgres' (reject lookalikes)
+  if [ "${container_name}" != "s2-assets-dev-postgres" ]; then
+    echo "ERROR: Container name '${container_name}' does not match authorized Development PostgreSQL instance: expected exactly 's2-assets-dev-postgres' (${stage_desc})" >&2
+    exit 1
+  fi
+
+  # 3. Inspect Compose project label: must be exactly 's2-assets-dev'
+  compose_project="$(podman inspect --format '{{or (index .Config.Labels "com.docker.compose.project") (index .Config.Labels "io.podman.compose.project")}}' "${container}" 2>/dev/null || true)"
+
+  if [ "${compose_project}" != "s2-assets-dev" ]; then
+    echo "ERROR: Container '${container}' Compose project is '${compose_project}', expected exactly 's2-assets-dev' (${stage_desc})" >&2
+    exit 1
+  fi
+
+  # 4. Inspect Compose service label: must be positively present and exactly 'postgres'
+  compose_service="$(podman inspect --format '{{or (index .Config.Labels "com.docker.compose.service") (index .Config.Labels "io.podman.compose.service")}}' "${container}" 2>/dev/null || true)"
+
+  if [ -z "${compose_service}" ]; then
+    echo "ERROR: Container '${container}' is missing required Compose service label (${stage_desc})" >&2
+    exit 1
+  fi
+
+  if [ "${compose_service}" != "postgres" ]; then
+    echo "ERROR: Container '${container}' Compose service is '${compose_service}', expected exactly 'postgres' (${stage_desc})" >&2
+    exit 1
+  fi
+
+  # 5. Reject any production indicator on the inspected container
+  case "${container_name}" in
+    *prod*|*production*)
+      echo "ERROR: Container '${container_name}' indicates a production environment. Restore is restricted to development runtime (${stage_desc})." >&2
+      exit 1
+      ;;
+  esac
+}
+
+# ------------------------------------------------------------------------------
+# Argument Handling & Help Option
+# ------------------------------------------------------------------------------
 if [ "${1:-}" = "-h" ] || [ "${1:-}" = "--help" ]; then
   usage
   exit 0
@@ -132,7 +241,7 @@ if ! [[ "${DB_USER}" =~ ^[a-zA-Z0-9_][a-zA-Z0-9_-]*$ ]]; then
 fi
 
 # ------------------------------------------------------------------------------
-# 2. Validate Container Identifier
+# 2. Validate Container Identifier Argument
 # ------------------------------------------------------------------------------
 if [ -z "${CONTAINER}" ]; then
   echo "ERROR: Container identifier cannot be empty" >&2
@@ -158,7 +267,7 @@ case "${CONTAINER}" in
 esac
 
 # ------------------------------------------------------------------------------
-# 3. Validate Target Database Name
+# 3. Validate Target Database Name Argument
 # ------------------------------------------------------------------------------
 if [ -z "${TARGET_DB}" ]; then
   echo "ERROR: Target database name cannot be empty" >&2
@@ -270,62 +379,24 @@ if ! command -v podman >/dev/null 2>&1; then
 fi
 
 # ------------------------------------------------------------------------------
-# 6. Validate Container & Development Runtime Instance Identity
+# 6. Validate Container & Development Runtime Instance Identity (Preflight)
 # ------------------------------------------------------------------------------
-# Inspect container state: must exist and be currently running
-if ! IS_RUNNING="$(podman inspect --format '{{.State.Running}}' "${CONTAINER}" 2>/dev/null)"; then
-  echo "ERROR: Container '${CONTAINER}' does not exist or cannot be inspected by Podman" >&2
-  exit 1
-fi
-
-if [ "${IS_RUNNING}" != "true" ]; then
-  echo "ERROR: Container '${CONTAINER}' is not currently running (State.Running = ${IS_RUNNING})" >&2
-  exit 1
-fi
-
-# Inspect container name and Compose labels to verify exact development instance
-CONTAINER_NAME="$(podman inspect --format '{{.Name}}' "${CONTAINER}" 2>/dev/null | sed 's|^/||')"
-COMPOSE_PROJECT="$(podman inspect --format '{{or (index .Config.Labels "com.docker.compose.project") (index .Config.Labels "io.podman.compose.project")}}' "${CONTAINER}" 2>/dev/null || true)"
-COMPOSE_SERVICE="$(podman inspect --format '{{or (index .Config.Labels "com.docker.compose.service") (index .Config.Labels "io.podman.compose.service")}}' "${CONTAINER}" 2>/dev/null || true)"
-
-# Check container name: must be 's2-assets-dev-postgres' or match project/service pattern
-if [ "${CONTAINER_NAME}" != "s2-assets-dev-postgres" ] && ! [[ "${CONTAINER_NAME}" =~ ^.*s2-assets-dev.*postgres.*$ ]]; then
-  echo "ERROR: Container name '${CONTAINER_NAME}' does not match authorized Development PostgreSQL instance 's2-assets-dev-postgres'." >&2
-  exit 1
-fi
-
-# Check Compose project: must be 's2-assets-dev'
-if [ "${COMPOSE_PROJECT}" != "s2-assets-dev" ]; then
-  echo "ERROR: Container '${CONTAINER}' belongs to project '${COMPOSE_PROJECT}', expected authorized development project 's2-assets-dev'." >&2
-  exit 1
-fi
-
-# Check Compose service: must be 'postgres'
-if [ -n "${COMPOSE_SERVICE}" ] && [ "${COMPOSE_SERVICE}" != "postgres" ]; then
-  echo "ERROR: Container service is '${COMPOSE_SERVICE}', expected 'postgres'." >&2
-  exit 1
-fi
-
-# Reject any production indicator on the inspected container
-case "${CONTAINER_NAME}" in
-  *prod*|*production*)
-    echo "ERROR: Container '${CONTAINER_NAME}' indicates a production environment. Restore is restricted to development runtime." >&2
-    exit 1
-    ;;
-esac
+verify_development_container_identity "${CONTAINER}" "preflight validation"
 
 # ------------------------------------------------------------------------------
 # 7. Verify Target Database Ownership and Isolation
 # ------------------------------------------------------------------------------
-# 7.1. Non-interactive connectivity and authentication preflight
-if ! podman exec "${CONTAINER}" pg_isready -U "${DB_USER}" -d "${TARGET_DB}" >/dev/null 2>&1; then
-  echo "ERROR: Non-interactive authentication or connectivity preflight failed for user '${DB_USER}' on database '${TARGET_DB}' in container '${CONTAINER}'." >&2
+# 7.1. PostgreSQL server readiness preflight
+# Note: pg_isready verifies PostgreSQL server connection status. Credentials and
+# non-interactive authentication are authoritatively verified by the subsequent psql queries with -w.
+if ! podman exec "${CONTAINER}" pg_isready -d "${TARGET_DB}" >/dev/null 2>&1; then
+  echo "ERROR: PostgreSQL service readiness preflight failed for database '${TARGET_DB}' in container '${CONTAINER}'." >&2
   exit 1
 fi
 
-# 7.2. Verify target database existence and verifiable ownership
-# Connects directly to target database with -w (never prompts for password)
-DB_OWNER="$(podman exec "${CONTAINER}" psql -U "${DB_USER}" -w -d "${TARGET_DB}" -t -A -c "SELECT pg_catalog.pg_get_userbyid(datdba) FROM pg_catalog.pg_database WHERE datname = current_database();" 2>/dev/null || true)"
+# 7.2. Verify target database existence and verifiable ownership fail-closed
+# Connects directly to target database with -w; fails closed on authentication failure or if database does not exist
+DB_OWNER="$(exec_psql_query "${CONTAINER}" "${DB_USER}" "${TARGET_DB}" "SELECT pg_catalog.pg_get_userbyid(datdba) FROM pg_catalog.pg_database WHERE datname = current_database();" "database ownership check")"
 
 if [ -z "${DB_OWNER}" ]; then
   echo "ERROR: Unable to verify ownership for target database '${TARGET_DB}'. Database must already exist and be accessible non-interactively. Automatic database creation is prohibited." >&2
@@ -337,24 +408,34 @@ if [ "${DB_OWNER}" != "${DB_USER}" ]; then
   exit 1
 fi
 
-# 7.3. Verify destination isolation: target database must be clean (0 pre-existing user tables)
-# Script is strictly forbidden from dropping tables or databases automatically
-EXISTING_TABLES="$(podman exec "${CONTAINER}" psql -U "${DB_USER}" -w -d "${TARGET_DB}" -t -A -c "SELECT count(*) FROM pg_catalog.pg_tables WHERE schemaname NOT IN ('pg_catalog', 'information_schema');" 2>/dev/null || true)"
+# 7.3. Verify destination isolation: target database must be completely clean
+# Checks for all user-defined objects: relations (tables, views, materialized views, sequences,
+# foreign tables, partitioned tables), routines (functions, procedures), user types (enums, composite,
+# domains), and non-system custom schemas.
+# Automatic dropping of database objects or databases is strictly prohibited.
+OBJECT_COUNT_SQL="SELECT (
+  (SELECT count(*) FROM pg_catalog.pg_class c JOIN pg_catalog.pg_namespace n ON n.oid = c.relnamespace WHERE n.nspname NOT IN ('pg_catalog', 'information_schema', 'pg_toast') AND c.relkind IN ('r', 'v', 'm', 'S', 'f', 'p'))
+  +
+  (SELECT count(*) FROM pg_catalog.pg_proc p JOIN pg_catalog.pg_namespace n ON n.oid = p.pronamespace WHERE n.nspname NOT IN ('pg_catalog', 'information_schema', 'pg_toast'))
+  +
+  (SELECT count(*) FROM pg_catalog.pg_type t JOIN pg_catalog.pg_namespace n ON n.oid = t.typnamespace WHERE n.nspname NOT IN ('pg_catalog', 'information_schema', 'pg_toast') AND t.typtype IN ('e', 'c', 'd'))
+  +
+  (SELECT count(*) FROM pg_catalog.pg_namespace WHERE nspname NOT IN ('pg_catalog', 'information_schema', 'pg_toast', 'public'))
+);"
 
-if [ -z "${EXISTING_TABLES}" ]; then
-  echo "ERROR: Failed to query existing table count in target database '${TARGET_DB}'" >&2
-  exit 1
-fi
+EXISTING_OBJECTS="$(exec_psql_query "${CONTAINER}" "${DB_USER}" "${TARGET_DB}" "${OBJECT_COUNT_SQL}" "target database cleanliness check")"
+assert_valid_count "${EXISTING_OBJECTS}" "target database object count"
 
-if [ "${EXISTING_TABLES}" -ne 0 ]; then
-  echo "ERROR: Target database '${TARGET_DB}' is not empty (${EXISTING_TABLES} existing user tables found). Target destination must be an isolated, clean test database. Automatic dropping of database objects or databases is prohibited." >&2
+if [ "${EXISTING_OBJECTS}" -ne 0 ]; then
+  echo "ERROR: Target database '${TARGET_DB}' is not empty (${EXISTING_OBJECTS} user-defined object(s) found). Target destination must be an isolated, clean test database. Automatic dropping of database objects or databases is prohibited." >&2
   exit 1
 fi
 
 # 7.4. Verify destination isolation: no competing active client connections
-ACTIVE_CONNECTIONS="$(podman exec "${CONTAINER}" psql -U "${DB_USER}" -w -d "${TARGET_DB}" -t -A -c "SELECT count(*) FROM pg_catalog.pg_stat_activity WHERE datname = current_database() AND pid <> pg_backend_pid();" 2>/dev/null || true)"
+ACTIVE_CONNECTIONS="$(exec_psql_query "${CONTAINER}" "${DB_USER}" "${TARGET_DB}" "SELECT count(*) FROM pg_catalog.pg_stat_activity WHERE datname = current_database() AND pid <> pg_backend_pid();" "active connection check")"
+assert_valid_count "${ACTIVE_CONNECTIONS}" "active connection count"
 
-if [ -n "${ACTIVE_CONNECTIONS}" ] && [ "${ACTIVE_CONNECTIONS}" -ne 0 ]; then
+if [ "${ACTIVE_CONNECTIONS}" -ne 0 ]; then
   echo "ERROR: Target database '${TARGET_DB}' has ${ACTIVE_CONNECTIONS} other active connection(s). Isolation cannot be guaranteed." >&2
   exit 1
 fi
@@ -369,7 +450,25 @@ if ! podman exec -i "${CONTAINER}" pg_restore -l < "${ARCHIVE}" >/dev/null 2>&1;
 fi
 
 # ------------------------------------------------------------------------------
-# 9. Non-interactive Logical Restore via Rootless Podman
+# 9. Immediate Pre-Write Confirmation: Re-verify Container Identity and Target Safety
+# ------------------------------------------------------------------------------
+# Confirms target container and database identity immediately before initiating any write operation
+verify_development_container_identity "${CONTAINER}" "immediate pre-write confirmation"
+
+if [ "${TARGET_DB}" = "s2_assets_dev" ]; then
+  echo "ERROR: Immediate pre-write guard aborted: target database is source development database 's2_assets_dev'." >&2
+  exit 1
+fi
+
+case "${TARGET_DB}" in
+  s2_assets|*prod*|*production*|postgres|template0|template1|template*|default)
+    echo "ERROR: Immediate pre-write guard aborted: prohibited target database '${TARGET_DB}'." >&2
+    exit 1
+    ;;
+esac
+
+# ------------------------------------------------------------------------------
+# 10. Non-interactive Logical Restore via Rootless Podman
 # ------------------------------------------------------------------------------
 # Executes without pseudo-TTY (no -t/--tty); archive is streamed cleanly via stdin (-i).
 # -U: Explicit PostgreSQL user for authentication.
@@ -385,14 +484,16 @@ if ! podman exec -i "${CONTAINER}" pg_restore -U "${DB_USER}" -d "${TARGET_DB}" 
 fi
 
 # ------------------------------------------------------------------------------
-# 10. Post-Restore Verification
+# 11. Post-Restore Verification
 # ------------------------------------------------------------------------------
-RESTORED_TABLES="$(podman exec "${CONTAINER}" psql -U "${DB_USER}" -w -d "${TARGET_DB}" -t -A -c "SELECT count(*) FROM pg_catalog.pg_tables WHERE schemaname NOT IN ('pg_catalog', 'information_schema');" 2>/dev/null || true)"
+RESTORED_CHECK_SQL="SELECT count(*) FROM pg_catalog.pg_class c JOIN pg_catalog.pg_namespace n ON n.oid = c.relnamespace WHERE n.nspname NOT IN ('pg_catalog', 'information_schema', 'pg_toast') AND c.relkind IN ('r', 'v', 'm', 'S', 'f', 'p');"
+RESTORED_OBJECTS="$(exec_psql_query "${CONTAINER}" "${DB_USER}" "${TARGET_DB}" "${RESTORED_CHECK_SQL}" "post-restore object check")"
+assert_valid_count "${RESTORED_OBJECTS}" "restored object count"
 
-if [ -z "${RESTORED_TABLES}" ] || [ "${RESTORED_TABLES}" -eq 0 ]; then
-  echo "ERROR: Post-restore verification failed: target database '${TARGET_DB}' contains no user tables after restore" >&2
+if [ "${RESTORED_OBJECTS}" -eq 0 ]; then
+  echo "ERROR: Post-restore verification failed: target database '${TARGET_DB}' contains 0 user objects after restore" >&2
   exit 1
 fi
 
-echo "PostgreSQL logical restore completed and verified successfully: ${RESTORED_TABLES} table(s) restored into isolated test database '${TARGET_DB}'"
+echo "PostgreSQL logical restore completed and verified successfully: ${RESTORED_OBJECTS} object(s) restored into isolated test database '${TARGET_DB}'"
 exit 0
