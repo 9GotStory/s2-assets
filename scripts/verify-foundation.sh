@@ -11,6 +11,8 @@ COMPOSE_FILE="${REPO_ROOT}/deploy/podman/compose.yaml"
 # Script-level tracking variables for traps and receipts
 CI_RUN_ID=""
 CI_RUN_DIR=""
+CI_RUN_DIR_CREATED=0
+CI_RUN_DIR_INODE=""
 CI_ENDPOINT_SOCK=""
 CI_ENDPOINT_PID=""
 CI_BASELINE_FILE=""
@@ -21,6 +23,7 @@ CI_FIRST_FAILURE=0
 CI_CLEANUP_FAILURE=0
 CI_MUTATION_STARTED=0
 CI_VERIFIED=0
+CI_REUSE_REFUSED=0
 
 TARGETED_RUN_ID=""
 TARGETED_STATE_FILE=""
@@ -30,6 +33,7 @@ TARGETED_CLEANUP_FAILURE=0
 TARGETED_PHASE4_PASSED=0
 TARGETED_API_EXIT=""
 TARGETED_WEB_EXIT=""
+TARGETED_REUSE_REFUSED=0
 
 _fail() {
   echo "$1" >&2
@@ -130,14 +134,28 @@ _validate_port_availability() {
   local name="$2"
 
   if command -v ss >/dev/null 2>&1; then
-    if ss -tlpn 2>/dev/null | grep -Eq "(127\.0\.0\.1|0\.0\.0\.0|\*):${port}[[:space:]]"; then
+    local ss_out ss_code=0
+    ss_out=$(ss -tlpn 2>&1) || ss_code=$?
+    if [ "$ss_code" -ne 0 ]; then
+      _record_targeted_failure 1
+      _fail "ERROR: Port inspection failed: 'ss' exited with code ${ss_code}: ${ss_out}"
+    fi
+    if echo "$ss_out" | grep -Eq "(127\.0\.0\.1|0\.0\.0\.0|\*):${port}[[:space:]]"; then
+      _record_targeted_failure 1
       _fail "ERROR: Port ${port} (${name}) is already occupied on loopback interface"
     fi
   elif command -v lsof >/dev/null 2>&1; then
-    if lsof -i "TCP@127.0.0.1:${port}" -sTCP:LISTEN >/dev/null 2>&1; then
+    local lsof_out lsof_code=0
+    lsof_out=$(lsof -i "TCP@127.0.0.1:${port}" -sTCP:LISTEN 2>&1) || lsof_code=$?
+    if [ "$lsof_code" -eq 0 ]; then
+      _record_targeted_failure 1
       _fail "ERROR: Port ${port} (${name}) is already occupied on loopback interface"
+    elif [ "$lsof_code" -ne 1 ]; then
+      _record_targeted_failure 1
+      _fail "ERROR: Port inspection failed: 'lsof' exited with code ${lsof_code}: ${lsof_out}"
     fi
   else
+    _record_targeted_failure 1
     _fail "ERROR: Neither 'ss' nor 'lsof' is available to inspect port availability; failing closed"
   fi
 }
@@ -161,23 +179,27 @@ _validate_endpoint_socket_guards() {
   local current_uid
   current_uid=$(id -u)
 
-  local sock_owner
-  sock_owner=$(stat -c "%u" "$sock" 2>/dev/null || stat -f "%u" "$sock" 2>/dev/null || echo "unknown")
-  if [ "$sock_owner" != "$current_uid" ]; then
-    _fail "ERROR: Endpoint socket foreign ownership detected: owner=${sock_owner}, expected=${current_uid}"
+  local sock_owner sock_st=0
+  sock_owner=$(stat -c "%u" "$sock" 2>/dev/null || stat -f "%u" "$sock" 2>/dev/null) || sock_st=$?
+  if [ "$sock_st" -ne 0 ] || [ -z "$sock_owner" ] || [ "$sock_owner" != "$current_uid" ]; then
+    _fail "ERROR: Endpoint socket foreign ownership detected: owner=${sock_owner:-unknown}, expected=${current_uid}"
   fi
 
-  local sock_mode
-  sock_mode=$(stat -c "%a" "$sock" 2>/dev/null || stat -f "%OLp" "$sock" 2>/dev/null || true)
-  if [ -n "$sock_mode" ]; then
-    local sock_tail="${sock_mode: -2}"
-    if [ "$sock_tail" != "00" ]; then
-      _fail "ERROR: Insecure permissions on socket ${sock}: mode must be 600 (got ${sock_mode})"
-    fi
+  local sock_mode sock_mode_st=0
+  sock_mode=$(stat -c "%a" "$sock" 2>/dev/null || stat -f "%OLp" "$sock" 2>/dev/null) || sock_mode_st=$?
+  if [ "$sock_mode_st" -ne 0 ] || [ -z "$sock_mode" ]; then
+    _fail "ERROR: Endpoint socket permissions inspection failed: ${sock}"
+  fi
+  local sock_tail="${sock_mode: -2}"
+  if [ "$sock_tail" != "00" ]; then
+    _fail "ERROR: Insecure permissions on socket ${sock}: mode must be 600 (got ${sock_mode})"
   fi
 
   local canonical_sock
-  canonical_sock=$(realpath "$sock" 2>/dev/null || readlink -f "$sock" 2>/dev/null || echo "$sock")
+  canonical_sock=$(realpath "$sock" 2>/dev/null || readlink -f "$sock" 2>/dev/null || true)
+  if [ -z "$canonical_sock" ]; then
+    _fail "ERROR: Failed to canonicalize socket path: ${sock}"
+  fi
   case "$canonical_sock" in
     /run/user/*/podman/podman.sock|/run/podman/podman.sock|/var/run/docker.sock)
       _fail "ERROR: Shared or default podman socket path prohibited: ${canonical_sock}"
@@ -190,19 +212,20 @@ _validate_endpoint_socket_guards() {
     _fail "ERROR: Socket parent directory must not be a symlink: ${sock_dir}"
   fi
 
-  local dir_owner
-  dir_owner=$(stat -c "%u" "$sock_dir" 2>/dev/null || stat -f "%u" "$sock_dir" 2>/dev/null || echo "unknown")
-  if [ "$dir_owner" != "$current_uid" ]; then
-    _fail "ERROR: Socket parent directory foreign ownership detected: owner=${dir_owner}, expected=${current_uid}"
+  local dir_owner dir_st=0
+  dir_owner=$(stat -c "%u" "$sock_dir" 2>/dev/null || stat -f "%u" "$sock_dir" 2>/dev/null) || dir_st=$?
+  if [ "$dir_st" -ne 0 ] || [ -z "$dir_owner" ] || [ "$dir_owner" != "$current_uid" ]; then
+    _fail "ERROR: Socket parent directory foreign ownership detected: owner=${dir_owner:-unknown}, expected=${current_uid}"
   fi
 
-  local dir_mode
-  dir_mode=$(stat -c "%a" "$sock_dir" 2>/dev/null || stat -f "%OLp" "$sock_dir" 2>/dev/null || true)
-  if [ -n "$dir_mode" ]; then
-    local dir_tail="${dir_mode: -2}"
-    if [ "$dir_tail" != "00" ]; then
-      _fail "ERROR: Insecure permissions on socket directory ${sock_dir}: mode must be 700 (got ${dir_mode})"
-    fi
+  local dir_mode dir_mode_st=0
+  dir_mode=$(stat -c "%a" "$sock_dir" 2>/dev/null || stat -f "%OLp" "$sock_dir" 2>/dev/null) || dir_mode_st=$?
+  if [ "$dir_mode_st" -ne 0 ] || [ -z "$dir_mode" ]; then
+    _fail "ERROR: Socket parent directory permissions inspection failed: ${sock_dir}"
+  fi
+  local dir_tail="${dir_mode: -2}"
+  if [ "$dir_tail" != "00" ]; then
+    _fail "ERROR: Insecure permissions on socket directory ${sock_dir}: mode must be 700 (got ${dir_mode})"
   fi
 
   if [ -n "$expected_dir" ]; then
@@ -219,11 +242,14 @@ _validate_endpoint_socket_guards() {
 
 _record_targeted_failure() {
   local code="${1:-1}"
+  if [ "${TARGETED_REUSE_REFUSED:-0}" -eq 1 ]; then
+    return
+  fi
   if [ "$TARGETED_FIRST_FAILURE" -eq 0 ]; then
     TARGETED_FIRST_FAILURE="$code"
     if [ -n "${TARGETED_STATE_FILE:-}" ]; then
       cat <<EOF > "$TARGETED_STATE_FILE"
-{"run_id":"${TARGETED_RUN_ID}","mode":"targeted","status":"failed","exit_code":${TARGETED_FIRST_FAILURE},"timestamp":"$(date -u +%Y-%m-%dT%H:%M:%SZ)"}
+{"run_id":"${TARGETED_RUN_ID}","mode":"targeted","status":"failed","exit_code":${TARGETED_FIRST_FAILURE},"cleanup_failure":${TARGETED_CLEANUP_FAILURE},"timestamp":"$(date -u +%Y-%m-%dT%H:%M:%SZ)"}
 EOF
       chmod 600 "$TARGETED_STATE_FILE"
     fi
@@ -233,6 +259,10 @@ EOF
 _cleanup_targeted() {
   local exit_code="$?"
   trap - EXIT INT TERM
+
+  if [ "${TARGETED_REUSE_REFUSED:-0}" -eq 1 ]; then
+    exit "$exit_code"
+  fi
 
   if [ "$exit_code" -ne 0 ] && [ "$TARGETED_FIRST_FAILURE" -eq 0 ]; then
     _record_targeted_failure "$exit_code"
@@ -263,7 +293,7 @@ _cleanup_targeted() {
   fi
 
   # Record final durable state
-  if [ -n "${TARGETED_STATE_FILE:-}" ]; then
+  if [ "${TARGETED_REUSE_REFUSED:-0}" -eq 0 ] && [ -n "${TARGETED_STATE_FILE:-}" ]; then
     if [ "$TARGETED_FIRST_FAILURE" -eq 0 ] && [ "$TARGETED_CLEANUP_FAILURE" -eq 0 ] && [ "$TARGETED_PHASE4_PASSED" -eq 1 ]; then
       cat <<EOF > "$TARGETED_STATE_FILE"
 {"run_id":"${TARGETED_RUN_ID}","mode":"targeted","status":"passed","api_exit":"${TARGETED_API_EXIT}","web_exit":"${TARGETED_WEB_EXIT}","timestamp":"$(date -u +%Y-%m-%dT%H:%M:%SZ)"}
@@ -312,11 +342,9 @@ _run_targeted() {
   if [ -f "$TARGETED_STATE_FILE" ]; then
     local prev_status
     prev_status=$(grep -o '"status":"[^"]*"' "$TARGETED_STATE_FILE" 2>/dev/null | cut -d'"' -f4 || true)
-    if [ "$prev_status" = "failed" ]; then
-      _fail "ERROR: Run ID ${TARGETED_RUN_ID} previously recorded as failed. Reuse of failed run is refused."
-    fi
-    if [ "$prev_status" = "running" ]; then
-      _fail "ERROR: Run ID ${TARGETED_RUN_ID} already recorded as active or interrupted. Reuse is refused."
+    if [ "$prev_status" = "failed" ] || [ "$prev_status" = "running" ]; then
+      TARGETED_REUSE_REFUSED=1
+      _fail "ERROR: Run ID ${TARGETED_RUN_ID} previously recorded as ${prev_status}. Reuse is refused."
     fi
   fi
 
@@ -332,7 +360,8 @@ EOF
 
   # Phase 2: Prerequisites & Ownership
   echo "--- Phase 2: Prerequisites and Ownership Validation ---"
-  local provider="${PODMAN_COMPOSE_PROVIDER:-podman-compose}"
+  export PODMAN_COMPOSE_PROVIDER="${PODMAN_COMPOSE_PROVIDER:-podman-compose}"
+  local provider="${PODMAN_COMPOSE_PROVIDER}"
   if ! command -v "$provider" >/dev/null 2>&1; then
     _record_targeted_failure 1
     _fail "ERROR: Compose provider '${provider}' is not available"
@@ -350,13 +379,21 @@ EOF
   fi
 
   # Verify no preexisting project resources exist before mutation
-  local pre_c pre_v
-  pre_c=$(podman ps -a --filter "name=${COMPOSE_PROJECT_NAME}" --format '{{.Names}}' 2>/dev/null || true)
+  local pre_c pre_v c_st=0 v_st=0
+  pre_c=$(podman ps -a --filter "name=${COMPOSE_PROJECT_NAME}" --format '{{.Names}}' 2>&1) || c_st=$?
+  if [ "$c_st" -ne 0 ]; then
+    _record_targeted_failure 1
+    _fail "ERROR: Container inventory inspection failed (exit code ${c_st}): ${pre_c}"
+  fi
   if [ -n "$pre_c" ]; then
     _record_targeted_failure 1
     _fail "ERROR: Preexisting containers detected for project ${COMPOSE_PROJECT_NAME}: ${pre_c}"
   fi
-  pre_v=$(podman volume ls --filter "name=${COMPOSE_PROJECT_NAME}" --format '{{.Name}}' 2>/dev/null || true)
+  pre_v=$(podman volume ls --filter "name=${COMPOSE_PROJECT_NAME}" --format '{{.Name}}' 2>&1) || v_st=$?
+  if [ "$v_st" -ne 0 ]; then
+    _record_targeted_failure 1
+    _fail "ERROR: Volume inventory inspection failed (exit code ${v_st}): ${pre_v}"
+  fi
   if [ -n "$pre_v" ]; then
     _record_targeted_failure 1
     _fail "ERROR: Preexisting volumes detected for project ${COMPOSE_PROJECT_NAME}: ${pre_v}"
@@ -488,6 +525,24 @@ EOF
     _fail "ERROR: Web container exited with unexpected code '${web_exit}' (expected 0 or 143)"
   fi
 
+  # Verify neither service was killed by OOM
+  local api_oom web_oom
+  api_oom=$(podman inspect --format '{{.State.OOMKilled}}' $(podman ps -a --filter "name=${COMPOSE_PROJECT_NAME}.*api" -q 2>/dev/null | head -n 1) 2>/dev/null || true)
+  web_oom=$(podman inspect --format '{{.State.OOMKilled}}' $(podman ps -a --filter "name=${COMPOSE_PROJECT_NAME}.*web" -q 2>/dev/null | head -n 1) 2>/dev/null || true)
+  if [ "$api_oom" = "true" ] || [ "$web_oom" = "true" ]; then
+    _record_targeted_failure 1
+    _fail "ERROR: Service container was terminated by OOM killer (api_oom=${api_oom}, web_oom=${web_oom})"
+  fi
+
+  # Positive closure evidence: ports must not respond while stopped
+  local a_closed w_closed
+  a_closed=$(curl -s --connect-timeout 1 --max-time 1 -o /dev/null -w "%{http_code}" "http://127.0.0.1:${API_HOST_PORT}/health" 2>/dev/null || true)
+  w_closed=$(curl -s --connect-timeout 1 --max-time 1 -o /dev/null -w "%{http_code}" "http://127.0.0.1:${WEB_HOST_PORT}/login" 2>/dev/null || true)
+  if [ "$a_closed" = "200" ] || [ "$w_closed" = "200" ]; then
+    _record_targeted_failure 1
+    _fail "ERROR: Services still responding after stop command (API code: ${a_closed}, Web code: ${w_closed})"
+  fi
+
   echo "Testing restart reaching positive readiness..."
   podman compose --env-file "$FOUNDATION_ENV_FILE" -p "$COMPOSE_PROJECT_NAME" -f "$COMPOSE_FILE" start api web
 
@@ -522,11 +577,14 @@ EOF
 
 _record_ci_failure() {
   local code="${1:-1}"
+  if [ "${CI_REUSE_REFUSED:-0}" -eq 1 ]; then
+    return
+  fi
   if [ "$CI_FIRST_FAILURE" -eq 0 ]; then
     CI_FIRST_FAILURE="$code"
     if [ -n "${CI_STATE_FILE:-}" ]; then
       cat <<EOF > "$CI_STATE_FILE"
-{"run_id":"${CI_RUN_ID}","mode":"integration-ci","status":"failed","exit_code":${CI_FIRST_FAILURE},"timestamp":"$(date -u +%Y-%m-%dT%H:%M:%SZ)"}
+{"run_id":"${CI_RUN_ID}","mode":"integration-ci","status":"failed","exit_code":${CI_FIRST_FAILURE},"cleanup_failure":${CI_CLEANUP_FAILURE},"timestamp":"$(date -u +%Y-%m-%dT%H:%M:%SZ)"}
 EOF
       chmod 600 "$CI_STATE_FILE"
     fi
@@ -536,6 +594,10 @@ EOF
 _cleanup_integration_ci() {
   local exit_code="$?"
   trap - EXIT INT TERM
+
+  if [ "${CI_REUSE_REFUSED:-0}" -eq 1 ]; then
+    exit "$exit_code"
+  fi
 
   if [ "$exit_code" -ne 0 ] && [ "$CI_FIRST_FAILURE" -eq 0 ]; then
     _record_ci_failure "$exit_code"
@@ -555,7 +617,7 @@ _cleanup_integration_ci() {
   fi
 
   # 2. Check for leftover testcontainers created during the run
-  # Only remove containers with verified testcontainer label or run label
+  # Only remove containers with verified run label matching this run ID or runner name
   if [ -n "${CI_BASELINE_FILE:-}" ] && [ -f "$CI_BASELINE_FILE" ] && command -v podman >/dev/null 2>&1; then
     if ! podman ps -aq --no-trunc > "${CI_CURRENT_FILE:-/tmp/cur_c.txt}"; then
       echo "ERROR: Failed to inspect current container inventory" >&2
@@ -565,10 +627,9 @@ _cleanup_integration_ci() {
       candidate_cids=$(grep -v -F -f "$CI_BASELINE_FILE" "${CI_CURRENT_FILE:-/tmp/cur_c.txt}" 2>/dev/null || true)
       for cid in $candidate_cids; do
         if [ -z "$cid" ]; then continue; fi
-        local is_testcontainer is_runner
-        is_testcontainer=$(podman inspect "$cid" --format '{{index .Config.Labels "org.testcontainers"}}' 2>/dev/null || true)
+        local is_runner
         is_runner=$(podman inspect "$cid" --format '{{index .Config.Labels "io.9gotstory.s2-assets.integ-run"}}' 2>/dev/null || true)
-        if [ "$is_testcontainer" = "true" ] || [ "$is_runner" = "$CI_RUN_ID" ]; then
+        if [ "$is_runner" = "$CI_RUN_ID" ] || [ "$cid" = "${CI_RUNNER_NAME:-}" ]; then
           echo "Removing verified test-owned container: $cid"
           if ! podman rm -f "$cid" >/dev/null 2>&1; then
             echo "ERROR: Failed to remove test container $cid" >&2
@@ -595,24 +656,24 @@ _cleanup_integration_ci() {
         sleep 0.2
       done
       if [ "$pid_stopped" -ne 1 ]; then
-        echo "WARNING: Endpoint PID did not stop within timeout; sending SIGKILL" >&2
+        echo "ERROR: Endpoint PID did not stop within timeout; terminating" >&2
+        CI_CLEANUP_FAILURE=1
         kill -9 "$CI_ENDPOINT_PID" 2>/dev/null || true
-        sleep 0.5
-        if kill -0 "$CI_ENDPOINT_PID" 2>/dev/null; then
-          echo "ERROR: Endpoint PID $CI_ENDPOINT_PID could not be stopped!" >&2
-          CI_CLEANUP_FAILURE=1
-        fi
       fi
     fi
   fi
 
-  # 4. Remove temporary endpoint directory
-  if [ -n "${CI_RUN_DIR:-}" ] && [ -d "${CI_RUN_DIR:-}" ]; then
-    rm -rf "$CI_RUN_DIR"
+  # 4. Remove temporary endpoint directory ONLY if created by this run
+  if [ "${CI_RUN_DIR_CREATED:-0}" -eq 1 ] && [ -n "${CI_RUN_DIR:-}" ] && [ -d "${CI_RUN_DIR:-}" ]; then
+    local cur_inode
+    cur_inode=$(stat -c "%i" "$CI_RUN_DIR" 2>/dev/null || stat -f "%i" "$CI_RUN_DIR" 2>/dev/null || true)
+    if [ -n "$CI_RUN_DIR_INODE" ] && [ "$cur_inode" = "$CI_RUN_DIR_INODE" ]; then
+      rm -rf "$CI_RUN_DIR"
+    fi
   fi
 
   # 5. Record final durable state
-  if [ -n "${CI_STATE_FILE:-}" ]; then
+  if [ "${CI_REUSE_REFUSED:-0}" -eq 0 ] && [ -n "${CI_STATE_FILE:-}" ]; then
     if [ "$CI_FIRST_FAILURE" -eq 0 ] && [ "$CI_CLEANUP_FAILURE" -eq 0 ] && [ "$CI_VERIFIED" -eq 1 ]; then
       cat <<EOF > "$CI_STATE_FILE"
 {"run_id":"${CI_RUN_ID}","mode":"integration-ci","status":"passed","timestamp":"$(date -u +%Y-%m-%dT%H:%M:%SZ)"}
@@ -650,13 +711,9 @@ _run_integration_ci() {
   if [ -f "$CI_STATE_FILE" ]; then
     local prev_ci_status
     prev_ci_status=$(grep -o '"status":"[^"]*"' "$CI_STATE_FILE" 2>/dev/null | cut -d'"' -f4 || true)
-    if [ "$prev_ci_status" = "failed" ]; then
-      _record_ci_failure 1
-      _fail "ERROR: Integration run ID ${CI_RUN_ID} previously recorded as failed. Reuse of failed run is refused."
-    fi
-    if [ "$prev_ci_status" = "running" ]; then
-      _record_ci_failure 1
-      _fail "ERROR: Integration run ID ${CI_RUN_ID} already recorded as active or interrupted. Reuse is refused."
+    if [ "$prev_ci_status" = "failed" ] || [ "$prev_ci_status" = "running" ]; then
+      CI_REUSE_REFUSED=1
+      _fail "ERROR: Integration run ID ${CI_RUN_ID} previously recorded as ${prev_ci_status}. Reuse is refused."
     fi
   fi
 
@@ -675,6 +732,8 @@ EOF
     _fail "ERROR: Private endpoint directory already exists: ${CI_RUN_DIR}"
   fi
   mkdir -m 700 "$CI_RUN_DIR"
+  CI_RUN_DIR_CREATED=1
+  CI_RUN_DIR_INODE=$(stat -c "%i" "$CI_RUN_DIR" 2>/dev/null || stat -f "%i" "$CI_RUN_DIR" 2>/dev/null || true)
 
   CI_ENDPOINT_SOCK="${CI_RUN_DIR}/podman.sock"
   CI_BASELINE_FILE="${CI_RUN_DIR}/baseline_containers.txt"
@@ -745,7 +804,7 @@ EOF
     -e TESTCONTAINERS_HOST_OVERRIDE="127.0.0.1" \
     -e CI="true" \
     s2-assets-integration:ci \
-    pnpm --filter api exec vitest run tests/integration
+    sh -c 'podman --remote --url "$CONTAINER_HOST" info >/dev/null && pnpm --filter api exec vitest run tests/integration'
 
   CI_VERIFIED=1
   echo "Integration tests completed successfully."
