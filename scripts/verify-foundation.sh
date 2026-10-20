@@ -479,6 +479,29 @@ _cleanup_project_resources() {
 
 # --- Mode: targeted ---
 
+# Pending files are not authoritative receipts. Permission and write failures
+# must leave the canonical running/failed receipt intact. Rename is the final
+# required operation: there is no fallible chmod after publishing PASS.
+_publish_final_receipt() {
+  local state_file="$1" pending="" timestamp st
+  if pending=$(mktemp "${state_file}.pending.XXXXXXXX"); then
+    if timestamp=$(date -u +%Y-%m-%dT%H:%M:%SZ) && chmod 600 "$pending" &&
+      jq -ec --arg timestamp "$timestamp" '.timestamp = $timestamp' > "$pending" &&
+      mv -T -- "$pending" "$state_file"; then
+      return 0
+    else
+      st=$?
+    fi
+  else
+    st=$?
+  fi
+  # Retain the pending file and existing first-failure/cleanup evidence.
+  printf 'receipt_finalization_failed exit=%s pending=%s\n' "$st" "$pending" \
+    >> "${state_file}.cleanup" || echo 'ERROR: Could not persist receipt finalization error' >&2
+  echo "ERROR: Receipt finalization failed (exit $st); canonical receipt was not replaced: $state_file" >&2
+  return 1
+}
+
 _record_targeted_failure() {
   local code="${1:-1}"
   if [ "${TARGETED_REUSE_REFUSED:-0}" -eq 1 ]; then
@@ -518,17 +541,16 @@ _cleanup_targeted() {
   # Record final durable state
   if [ "${TARGETED_REUSE_REFUSED:-0}" -eq 0 ] && [ -n "${TARGETED_STATE_FILE:-}" ]; then
     if [ "$TARGETED_FIRST_FAILURE" -eq 0 ] && [ "$TARGETED_CLEANUP_FAILURE" -eq 0 ] && [ "$TARGETED_PHASE4_PASSED" -eq 1 ]; then
-      cat <<EOF > "$TARGETED_STATE_FILE" || TARGETED_CLEANUP_FAILURE=1
-{"run_id":"${TARGETED_RUN_ID}","mode":"targeted","status":"passed","baseline_sha":"${APPROVED_BASELINE_SHA}","parent_sha":"${APPROVED_PARENT_SHA}","candidate_sha":"${TESTED_SHA}","api_exit":"${TARGETED_API_EXIT}","web_exit":"${TARGETED_WEB_EXIT}","timestamp":"$(date -u +%Y-%m-%dT%H:%M:%SZ)"}
+      _publish_final_receipt "$TARGETED_STATE_FILE" <<EOF || TARGETED_CLEANUP_FAILURE=1
+{"run_id":"${TARGETED_RUN_ID}","mode":"targeted","status":"passed","baseline_sha":"${APPROVED_BASELINE_SHA}","parent_sha":"${APPROVED_PARENT_SHA}","candidate_sha":"${TESTED_SHA}","api_exit":"${TARGETED_API_EXIT}","web_exit":"${TARGETED_WEB_EXIT}"}
 EOF
-      chmod 600 "$TARGETED_STATE_FILE" || TARGETED_CLEANUP_FAILURE=1
-    else
+    fi
+    if [ "$TARGETED_FIRST_FAILURE" -ne 0 ] || [ "$TARGETED_CLEANUP_FAILURE" -ne 0 ] || [ "$TARGETED_PHASE4_PASSED" -ne 1 ]; then
       local final_code="$TARGETED_FIRST_FAILURE"
       if [ "$final_code" -eq 0 ]; then final_code=1; TARGETED_FAILURE_PHASE=cleanup; fi
-      cat <<EOF > "$TARGETED_STATE_FILE" || TARGETED_CLEANUP_FAILURE=1
-{"run_id":"${TARGETED_RUN_ID}","mode":"targeted","status":"failed","baseline_sha":"${APPROVED_BASELINE_SHA}","parent_sha":"${APPROVED_PARENT_SHA}","candidate_sha":"${TESTED_SHA}","failure_phase":"${TARGETED_FAILURE_PHASE}","exit_code":${final_code},"cleanup_failure":${TARGETED_CLEANUP_FAILURE},"timestamp":"$(date -u +%Y-%m-%dT%H:%M:%SZ)"}
+      _publish_final_receipt "$TARGETED_STATE_FILE" <<EOF || TARGETED_CLEANUP_FAILURE=1
+{"run_id":"${TARGETED_RUN_ID}","mode":"targeted","status":"failed","baseline_sha":"${APPROVED_BASELINE_SHA}","parent_sha":"${APPROVED_PARENT_SHA}","candidate_sha":"${TESTED_SHA}","failure_phase":"${TARGETED_FAILURE_PHASE}","exit_code":${final_code},"cleanup_failure":${TARGETED_CLEANUP_FAILURE}}
 EOF
-      chmod 600 "$TARGETED_STATE_FILE" || TARGETED_CLEANUP_FAILURE=1
     fi
   fi
 
@@ -994,17 +1016,16 @@ _cleanup_integration_ci() {
   # 5. Record final durable state
   if [ "${CI_REUSE_REFUSED:-0}" -eq 0 ] && [ -n "${CI_STATE_FILE:-}" ]; then
     if [ "$CI_FIRST_FAILURE" -eq 0 ] && [ "$CI_CLEANUP_FAILURE" -eq 0 ] && [ "$CI_VERIFIED" -eq 1 ]; then
-      cat <<EOF > "$CI_STATE_FILE" || CI_CLEANUP_FAILURE=1
-{"run_id":"${CI_RUN_ID}","mode":"integration-ci","status":"passed","baseline_sha":"${APPROVED_BASELINE_SHA}","parent_sha":"${APPROVED_PARENT_SHA}","candidate_sha":"${TESTED_SHA}","timestamp":"$(date -u +%Y-%m-%dT%H:%M:%SZ)"}
+      _publish_final_receipt "$CI_STATE_FILE" <<EOF || CI_CLEANUP_FAILURE=1
+{"run_id":"${CI_RUN_ID}","mode":"integration-ci","status":"passed","baseline_sha":"${APPROVED_BASELINE_SHA}","parent_sha":"${APPROVED_PARENT_SHA}","candidate_sha":"${TESTED_SHA}"}
 EOF
-      chmod 600 "$CI_STATE_FILE" || CI_CLEANUP_FAILURE=1
-    else
+    fi
+    if [ "$CI_FIRST_FAILURE" -ne 0 ] || [ "$CI_CLEANUP_FAILURE" -ne 0 ] || [ "$CI_VERIFIED" -ne 1 ]; then
       local eff_code="$CI_FIRST_FAILURE"
       if [ "$eff_code" -eq 0 ]; then eff_code=1; fi
-      cat <<EOF > "$CI_STATE_FILE" || CI_CLEANUP_FAILURE=1
-{"run_id":"${CI_RUN_ID}","mode":"integration-ci","status":"failed","baseline_sha":"${APPROVED_BASELINE_SHA}","parent_sha":"${APPROVED_PARENT_SHA}","candidate_sha":"${TESTED_SHA}","exit_code":${eff_code},"cleanup_failure":${CI_CLEANUP_FAILURE},"timestamp":"$(date -u +%Y-%m-%dT%H:%M:%SZ)"}
+      _publish_final_receipt "$CI_STATE_FILE" <<EOF || CI_CLEANUP_FAILURE=1
+{"run_id":"${CI_RUN_ID}","mode":"integration-ci","status":"failed","baseline_sha":"${APPROVED_BASELINE_SHA}","parent_sha":"${APPROVED_PARENT_SHA}","candidate_sha":"${TESTED_SHA}","exit_code":${eff_code},"cleanup_failure":${CI_CLEANUP_FAILURE}}
 EOF
-      chmod 600 "$CI_STATE_FILE" || CI_CLEANUP_FAILURE=1
     fi
   fi
 

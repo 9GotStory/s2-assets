@@ -391,6 +391,55 @@ _assert_eq 1 "$P14_EXIT" 'Directory identity mismatch fails cleanup'
 _require_log "$TEST_ENV_DIR/p14.output" 'Cleanup identity mismatch' 'Directory mismatch branch reached'
 _assert_eq retain "$(cat "$P14_DIR/sentinel")" 'Replacement directory retained'
 _require_failure "$TEST_ENV_DIR/p14.json" 1 1
+
+# P2: a failed final chmod cannot leave a published PASS in either mode.
+# These cases exercise only receipt finalization; all runtime calls are denied.
+for final_mode in targeted integration-ci; do
+  for first_code in 0 47; do
+    FINAL_DIR="$TEST_ENV_DIR/final-chmod-${final_mode}-${first_code}"
+    mkdir -m 700 "$FINAL_DIR"
+    FINAL_STATE="$FINAL_DIR/state.json"
+    echo '{"status":"running"}' > "$FINAL_STATE"
+    echo prior_cleanup_evidence > "${FINAL_STATE}.cleanup"
+    set +e
+    (
+      source "$VERIFY_SCRIPT"
+      _capture_source_identity
+      TARGETED_STATE_FILE="$FINAL_STATE"; TARGETED_RUN_ID=finalization
+      TARGETED_PHASE4_PASSED=1
+      CI_STATE_FILE="$FINAL_STATE"; CI_RUN_ID=finalization; CI_VERIFIED=1
+      if [ "$first_code" -ne 0 ]; then
+        if [ "$final_mode" = targeted ]; then _record_targeted_failure "$first_code"
+        else _record_ci_failure "$first_code"; fi
+        sha256sum "${FINAL_STATE}.first-failure" > "$FINAL_DIR/first-failure.sha256"
+      fi
+      chmod() {
+        if [ ! -f "$FINAL_DIR/chmod-injected" ]; then
+          echo chmod_injected > "$FINAL_DIR/chmod-injected"
+          return 73
+        fi
+        command chmod "$@"
+      }
+      podman() { echo UNEXPECTED; return 97; }
+      if [ "$final_mode" = targeted ]; then _cleanup_targeted
+      else _cleanup_integration_ci; fi
+    ) > "$FINAL_DIR/output" 2>&1
+    FINAL_EXIT=$?
+    set -e
+    expected="$first_code"
+    if [ "$expected" -eq 0 ]; then expected=1; fi
+    _assert_eq "$expected" "$FINAL_EXIT" 'Finalization failure preserves original exit'
+    _assert_eq chmod_injected "$(cat "$FINAL_DIR/chmod-injected")" 'Required chmod failure actually injected'
+    _assert_eq failed "$(jq -r .status "$FINAL_STATE")" 'Canonical receipt cannot remain passed'
+    _require_log "${FINAL_STATE}.cleanup" prior_cleanup_evidence 'Prior cleanup evidence retained'
+    _require_log "${FINAL_STATE}.cleanup" 'receipt_finalization_failed exit=73' 'Finalization error recorded separately'
+    _forbid_log "$FINAL_DIR/output" UNEXPECTED 'Receipt correction invokes no runtime command'
+    if [ "$first_code" -eq 0 ]; then _require_failure "$FINAL_STATE" 1 1
+    else
+      _assert_eq "$(cat "$FINAL_DIR/first-failure.sha256")" "$(sha256sum "${FINAL_STATE}.first-failure")" 'Original failure evidence unchanged'
+    fi
+  done
+done
 CONTROLLED_COMPLETED+=(14)
 
 _assert_eq '9 10 11 12 13 14' "${CONTROLLED_COMPLETED[*]}" 'Complete controlled gate before real verification'
