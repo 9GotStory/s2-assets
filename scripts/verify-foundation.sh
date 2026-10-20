@@ -8,6 +8,9 @@ SCRIPT_DIR=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
 REPO_ROOT=$(cd "${SCRIPT_DIR}/.." && pwd)
 COMPOSE_FILE="${REPO_ROOT}/deploy/podman/compose.yaml"
 
+APPROVED_BASELINE_SHA="98be44f1a85ed1cc7d786ebbd03566cb8d5bc5e6"
+APPROVED_PARENT_SHA="558e4b6fdbed36d109cfcbc796e63e6f918bba2d"
+
 # Script-level tracking variables for traps and receipts
 CI_RUN_ID=""
 CI_RUN_DIR=""
@@ -249,7 +252,7 @@ _record_targeted_failure() {
     TARGETED_FIRST_FAILURE="$code"
     if [ -n "${TARGETED_STATE_FILE:-}" ]; then
       cat <<EOF > "$TARGETED_STATE_FILE"
-{"run_id":"${TARGETED_RUN_ID}","mode":"targeted","status":"failed","exit_code":${TARGETED_FIRST_FAILURE},"cleanup_failure":${TARGETED_CLEANUP_FAILURE},"timestamp":"$(date -u +%Y-%m-%dT%H:%M:%SZ)"}
+{"run_id":"${TARGETED_RUN_ID}","mode":"targeted","status":"failed","baseline_sha":"${APPROVED_BASELINE_SHA}","parent_sha":"${APPROVED_PARENT_SHA}","exit_code":${TARGETED_FIRST_FAILURE},"cleanup_failure":${TARGETED_CLEANUP_FAILURE},"timestamp":"$(date -u +%Y-%m-%dT%H:%M:%SZ)"}
 EOF
       chmod 600 "$TARGETED_STATE_FILE"
     fi
@@ -296,14 +299,14 @@ _cleanup_targeted() {
   if [ "${TARGETED_REUSE_REFUSED:-0}" -eq 0 ] && [ -n "${TARGETED_STATE_FILE:-}" ]; then
     if [ "$TARGETED_FIRST_FAILURE" -eq 0 ] && [ "$TARGETED_CLEANUP_FAILURE" -eq 0 ] && [ "$TARGETED_PHASE4_PASSED" -eq 1 ]; then
       cat <<EOF > "$TARGETED_STATE_FILE"
-{"run_id":"${TARGETED_RUN_ID}","mode":"targeted","status":"passed","api_exit":"${TARGETED_API_EXIT}","web_exit":"${TARGETED_WEB_EXIT}","timestamp":"$(date -u +%Y-%m-%dT%H:%M:%SZ)"}
+{"run_id":"${TARGETED_RUN_ID}","mode":"targeted","status":"passed","baseline_sha":"${APPROVED_BASELINE_SHA}","parent_sha":"${APPROVED_PARENT_SHA}","api_exit":"${TARGETED_API_EXIT}","web_exit":"${TARGETED_WEB_EXIT}","timestamp":"$(date -u +%Y-%m-%dT%H:%M:%SZ)"}
 EOF
       chmod 600 "$TARGETED_STATE_FILE"
     else
       local final_code="$TARGETED_FIRST_FAILURE"
       if [ "$final_code" -eq 0 ]; then final_code=1; fi
       cat <<EOF > "$TARGETED_STATE_FILE"
-{"run_id":"${TARGETED_RUN_ID}","mode":"targeted","status":"failed","exit_code":${final_code},"cleanup_failure":${TARGETED_CLEANUP_FAILURE},"timestamp":"$(date -u +%Y-%m-%dT%H:%M:%SZ)"}
+{"run_id":"${TARGETED_RUN_ID}","mode":"targeted","status":"failed","baseline_sha":"${APPROVED_BASELINE_SHA}","parent_sha":"${APPROVED_PARENT_SHA}","exit_code":${final_code},"cleanup_failure":${TARGETED_CLEANUP_FAILURE},"timestamp":"$(date -u +%Y-%m-%dT%H:%M:%SZ)"}
 EOF
       chmod 600 "$TARGETED_STATE_FILE"
     fi
@@ -348,11 +351,16 @@ _run_targeted() {
     fi
   fi
 
-  # Record initial running state
-  cat <<EOF > "$TARGETED_STATE_FILE"
-{"run_id":"${TARGETED_RUN_ID}","mode":"targeted","status":"running","timestamp":"$(date -u +%Y-%m-%dT%H:%M:%SZ)"}
+  # Record initial running state atomically
+  if ( set -o noclobber; cat <<EOF > "$TARGETED_STATE_FILE"
+{"run_id":"${TARGETED_RUN_ID}","mode":"targeted","status":"running","baseline_sha":"${APPROVED_BASELINE_SHA}","parent_sha":"${APPROVED_PARENT_SHA}","timestamp":"$(date -u +%Y-%m-%dT%H:%M:%SZ)"}
 EOF
-  chmod 600 "$TARGETED_STATE_FILE"
+  ) 2>/dev/null; then
+    chmod 600 "$TARGETED_STATE_FILE"
+  else
+    TARGETED_REUSE_REFUSED=1
+    _fail "ERROR: Run ID ${TARGETED_RUN_ID} state file already exists. Concurrent or duplicate run refused."
+  fi
 
   trap '_cleanup_targeted' EXIT
   trap '_record_targeted_failure 130; exit 130' INT
@@ -525,22 +533,42 @@ EOF
     _fail "ERROR: Web container exited with unexpected code '${web_exit}' (expected 0 or 143)"
   fi
 
-  # Verify neither service was killed by OOM
-  local api_oom web_oom
-  api_oom=$(podman inspect --format '{{.State.OOMKilled}}' $(podman ps -a --filter "name=${COMPOSE_PROJECT_NAME}.*api" -q 2>/dev/null | head -n 1) 2>/dev/null || true)
-  web_oom=$(podman inspect --format '{{.State.OOMKilled}}' $(podman ps -a --filter "name=${COMPOSE_PROJECT_NAME}.*web" -q 2>/dev/null | head -n 1) 2>/dev/null || true)
-  if [ "$api_oom" = "true" ] || [ "$web_oom" = "true" ]; then
+  # Verify neither service was killed by OOM (fail-closed on inspection failure or non-false state)
+  local api_oom web_oom api_oom_st=0 web_oom_st=0 api_cid web_cid
+  api_cid=$(podman ps -a --filter "name=${COMPOSE_PROJECT_NAME}.*api" -q 2>/dev/null | head -n 1 || true)
+  web_cid=$(podman ps -a --filter "name=${COMPOSE_PROJECT_NAME}.*web" -q 2>/dev/null | head -n 1 || true)
+  if [ -z "$api_cid" ] || [ -z "$web_cid" ]; then
     _record_targeted_failure 1
-    _fail "ERROR: Service container was terminated by OOM killer (api_oom=${api_oom}, web_oom=${web_oom})"
+    _fail "ERROR: Could not resolve exact container ID for api or web"
   fi
 
-  # Positive closure evidence: ports must not respond while stopped
+  api_oom=$(podman inspect --format '{{.State.OOMKilled}}' "$api_cid" 2>&1) || api_oom_st=$?
+  if [ "$api_oom_st" -ne 0 ]; then
+    _record_targeted_failure 1
+    _fail "ERROR: OOM inspection failed for API container $api_cid (exit code ${api_oom_st}): ${api_oom}"
+  fi
+  web_oom=$(podman inspect --format '{{.State.OOMKilled}}' "$web_cid" 2>&1) || web_oom_st=$?
+  if [ "$web_oom_st" -ne 0 ]; then
+    _record_targeted_failure 1
+    _fail "ERROR: OOM inspection failed for Web container $web_cid (exit code ${web_oom_st}): ${web_oom}"
+  fi
+
+  if [ "$api_oom" != "false" ] || [ "$web_oom" != "false" ]; then
+    _record_targeted_failure 1
+    _fail "ERROR: Service container was terminated by OOM killer or non-false OOM state (api_oom=${api_oom}, web_oom=${web_oom})"
+  fi
+
+  # Positive closure evidence: ports must not respond while stopped (any HTTP code indicates still open)
   local a_closed w_closed
   a_closed=$(curl -s --connect-timeout 1 --max-time 1 -o /dev/null -w "%{http_code}" "http://127.0.0.1:${API_HOST_PORT}/health" 2>/dev/null || true)
   w_closed=$(curl -s --connect-timeout 1 --max-time 1 -o /dev/null -w "%{http_code}" "http://127.0.0.1:${WEB_HOST_PORT}/login" 2>/dev/null || true)
-  if [ "$a_closed" = "200" ] || [ "$w_closed" = "200" ]; then
+  if [ "$a_closed" != "000" ] && [ -n "$a_closed" ]; then
     _record_targeted_failure 1
-    _fail "ERROR: Services still responding after stop command (API code: ${a_closed}, Web code: ${w_closed})"
+    _fail "ERROR: API port still responding after stop command (HTTP code: ${a_closed})"
+  fi
+  if [ "$w_closed" != "000" ] && [ -n "$w_closed" ]; then
+    _record_targeted_failure 1
+    _fail "ERROR: Web port still responding after stop command (HTTP code: ${w_closed})"
   fi
 
   echo "Testing restart reaching positive readiness..."
@@ -584,7 +612,7 @@ _record_ci_failure() {
     CI_FIRST_FAILURE="$code"
     if [ -n "${CI_STATE_FILE:-}" ]; then
       cat <<EOF > "$CI_STATE_FILE"
-{"run_id":"${CI_RUN_ID}","mode":"integration-ci","status":"failed","exit_code":${CI_FIRST_FAILURE},"cleanup_failure":${CI_CLEANUP_FAILURE},"timestamp":"$(date -u +%Y-%m-%dT%H:%M:%SZ)"}
+{"run_id":"${CI_RUN_ID}","mode":"integration-ci","status":"failed","baseline_sha":"${APPROVED_BASELINE_SHA}","parent_sha":"${APPROVED_PARENT_SHA}","exit_code":${CI_FIRST_FAILURE},"cleanup_failure":${CI_CLEANUP_FAILURE},"timestamp":"$(date -u +%Y-%m-%dT%H:%M:%SZ)"}
 EOF
       chmod 600 "$CI_STATE_FILE"
     fi
@@ -627,8 +655,13 @@ _cleanup_integration_ci() {
       candidate_cids=$(grep -v -F -f "$CI_BASELINE_FILE" "${CI_CURRENT_FILE:-/tmp/cur_c.txt}" 2>/dev/null || true)
       for cid in $candidate_cids; do
         if [ -z "$cid" ]; then continue; fi
-        local is_runner
-        is_runner=$(podman inspect "$cid" --format '{{index .Config.Labels "io.9gotstory.s2-assets.integ-run"}}' 2>/dev/null || true)
+        local is_runner insp_st=0
+        is_runner=$(podman inspect "$cid" --format '{{index .Config.Labels "io.9gotstory.s2-assets.integ-run"}}' 2>&1) || insp_st=$?
+        if [ "$insp_st" -ne 0 ]; then
+          echo "ERROR: Failed to inspect container $cid (exit $insp_st): $is_runner" >&2
+          CI_CLEANUP_FAILURE=1
+          continue
+        fi
         if [ "$is_runner" = "$CI_RUN_ID" ] || [ "$cid" = "${CI_RUNNER_NAME:-}" ]; then
           echo "Removing verified test-owned container: $cid"
           if ! podman rm -f "$cid" >/dev/null 2>&1; then
@@ -664,11 +697,20 @@ _cleanup_integration_ci() {
   fi
 
   # 4. Remove temporary endpoint directory ONLY if created by this run
-  if [ "${CI_RUN_DIR_CREATED:-0}" -eq 1 ] && [ -n "${CI_RUN_DIR:-}" ] && [ -d "${CI_RUN_DIR:-}" ]; then
-    local cur_inode
-    cur_inode=$(stat -c "%i" "$CI_RUN_DIR" 2>/dev/null || stat -f "%i" "$CI_RUN_DIR" 2>/dev/null || true)
-    if [ -n "$CI_RUN_DIR_INODE" ] && [ "$cur_inode" = "$CI_RUN_DIR_INODE" ]; then
-      rm -rf "$CI_RUN_DIR"
+  if [ "${CI_RUN_DIR_CREATED:-0}" -eq 1 ] && [ -n "${CI_RUN_DIR:-}" ]; then
+    if [ -d "$CI_RUN_DIR" ]; then
+      local cur_inode cur_uid st=0
+      cur_inode=$(stat -c "%i" "$CI_RUN_DIR" 2>/dev/null || stat -f "%i" "$CI_RUN_DIR" 2>/dev/null) || st=$?
+      cur_uid=$(stat -c "%u" "$CI_RUN_DIR" 2>/dev/null || stat -f "%u" "$CI_RUN_DIR" 2>/dev/null || true)
+      if [ "$st" -ne 0 ] || [ -z "$cur_inode" ] || [ "$cur_inode" != "$CI_RUN_DIR_INODE" ] || [ "$cur_uid" != "$(id -u)" ]; then
+        echo "ERROR: Cleanup identity mismatch for endpoint directory $CI_RUN_DIR (recorded inode: $CI_RUN_DIR_INODE, current: $cur_inode, current uid: $cur_uid). Retaining directory." >&2
+        CI_CLEANUP_FAILURE=1
+      else
+        rm -rf "$CI_RUN_DIR"
+      fi
+    else
+      echo "ERROR: Expected endpoint directory $CI_RUN_DIR missing before cleanup removal" >&2
+      CI_CLEANUP_FAILURE=1
     fi
   fi
 
@@ -676,14 +718,14 @@ _cleanup_integration_ci() {
   if [ "${CI_REUSE_REFUSED:-0}" -eq 0 ] && [ -n "${CI_STATE_FILE:-}" ]; then
     if [ "$CI_FIRST_FAILURE" -eq 0 ] && [ "$CI_CLEANUP_FAILURE" -eq 0 ] && [ "$CI_VERIFIED" -eq 1 ]; then
       cat <<EOF > "$CI_STATE_FILE"
-{"run_id":"${CI_RUN_ID}","mode":"integration-ci","status":"passed","timestamp":"$(date -u +%Y-%m-%dT%H:%M:%SZ)"}
+{"run_id":"${CI_RUN_ID}","mode":"integration-ci","status":"passed","baseline_sha":"${APPROVED_BASELINE_SHA}","parent_sha":"${APPROVED_PARENT_SHA}","timestamp":"$(date -u +%Y-%m-%dT%H:%M:%SZ)"}
 EOF
       chmod 600 "$CI_STATE_FILE"
     else
       local eff_code="$CI_FIRST_FAILURE"
       if [ "$eff_code" -eq 0 ]; then eff_code=1; fi
       cat <<EOF > "$CI_STATE_FILE"
-{"run_id":"${CI_RUN_ID}","mode":"integration-ci","status":"failed","exit_code":${eff_code},"cleanup_failure":${CI_CLEANUP_FAILURE},"timestamp":"$(date -u +%Y-%m-%dT%H:%M:%SZ)"}
+{"run_id":"${CI_RUN_ID}","mode":"integration-ci","status":"failed","baseline_sha":"${APPROVED_BASELINE_SHA}","parent_sha":"${APPROVED_PARENT_SHA}","exit_code":${eff_code},"cleanup_failure":${CI_CLEANUP_FAILURE},"timestamp":"$(date -u +%Y-%m-%dT%H:%M:%SZ)"}
 EOF
       chmod 600 "$CI_STATE_FILE"
     fi
@@ -717,10 +759,16 @@ _run_integration_ci() {
     fi
   fi
 
-  cat <<EOF > "$CI_STATE_FILE"
-{"run_id":"${CI_RUN_ID}","mode":"integration-ci","status":"running","timestamp":"$(date -u +%Y-%m-%dT%H:%M:%SZ)"}
+  # Record initial running state atomically
+  if ( set -o noclobber; cat <<EOF > "$CI_STATE_FILE"
+{"run_id":"${CI_RUN_ID}","mode":"integration-ci","status":"running","baseline_sha":"${APPROVED_BASELINE_SHA}","parent_sha":"${APPROVED_PARENT_SHA}","timestamp":"$(date -u +%Y-%m-%dT%H:%M:%SZ)"}
 EOF
-  chmod 600 "$CI_STATE_FILE"
+  ) 2>/dev/null; then
+    chmod 600 "$CI_STATE_FILE"
+  else
+    CI_REUSE_REFUSED=1
+    _fail "ERROR: Integration run ID ${CI_RUN_ID} state file already exists. Concurrent or duplicate run refused."
+  fi
 
   trap '_cleanup_integration_ci' EXIT
   trap '_record_ci_failure 130; exit 130' INT

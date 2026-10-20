@@ -411,61 +411,81 @@ podman compose --env-file "$SIG_ENV" -p "$SIG_PROJ" -f "$COMPOSE_FILE" down -v >
 REMAINING_SIG_C=$(podman ps -a --filter "name=${SIG_PROJ}" --format '{{.Names}}' 2>/dev/null || true)
 _assert_eq "" "$REMAINING_SIG_C" "All probe containers removed on teardown"
 
-# --- Probe 9: Preexisting endpoint directory rejected without deletion ---
-echo "Probe 9: Preexisting endpoint directory rejected without deletion"
-PRE_DIR="/tmp/s2_integ_pre_dir_$$"
-mkdir -m 700 "$PRE_DIR"
-SENTINEL_FILE="${PRE_DIR}/sentinel.txt"
-echo "preexisting" > "$SENTINEL_FILE"
-CLEANUP_DIRS+=("$PRE_DIR")
+# --- Probe 9: Preexisting endpoint directory rejected via candidate invocation and preserved by EXIT trap ---
+echo "Probe 9: Preexisting endpoint directory rejected via candidate invocation and preserved by EXIT trap"
+TOKEN="regress_p9_$$"
+COLLISION_DIR="/tmp/s2_integ_sock_ci_integ_${TOKEN}"
+rm -rf "$COLLISION_DIR"
+mkdir -m 700 "$COLLISION_DIR"
+SENTINEL_FILE="${COLLISION_DIR}/preexisting-sentinel"
+echo "not created by candidate run" > "$SENTINEL_FILE"
+CLEANUP_DIRS+=("$COLLISION_DIR")
 
 set +e
-(
-  source "${VERIFY_SCRIPT}" >/dev/null 2>&1 || true
-  CI_RUN_ID="pre_dir_test_$$"
-  CI_RUN_DIR="$PRE_DIR"
-  CI_STATE_FILE="${TEST_ENV_DIR}/.state_pre_dir.json"
-  if [ -d "$CI_RUN_DIR" ]; then
-    _fail "ERROR: Private endpoint directory already exists"
-  fi
-) >/dev/null 2>&1
+GITHUB_RUN_ID="$TOKEN" "${VERIFY_SCRIPT}" integration-ci >/dev/null 2>&1
 EXIT_PRE_DIR=$?
 set -e
-_assert_eq "1" "$EXIT_PRE_DIR" "Preexisting endpoint directory rejected"
-if [ -f "$SENTINEL_FILE" ]; then
-  _assert_eq "preserved" "preserved" "Preexisting endpoint directory and sentinel preserved without deletion"
+
+_assert_eq "1" "$EXIT_PRE_DIR" "Preexisting endpoint directory rejected with exit code 1"
+if [ -d "$COLLISION_DIR" ] && [ -f "$SENTINEL_FILE" ]; then
+  _assert_eq "preserved" "preserved" "Preexisting directory and sentinel preserved by EXIT trap"
 else
-  _assert_eq "preserved" "deleted" "ERROR: Preexisting endpoint directory was deleted"
+  _assert_eq "preserved" "deleted" "ERROR: Preexisting directory was deleted by EXIT trap"
 fi
 
-# --- Probe 10: Unrelated foreign testcontainers session preserved during cleanup ---
-echo "Probe 10: Unrelated container preserved during cleanup"
+# --- Probe 10: Actual-path cleanup preserves foreign Testcontainers session and removes only owned container ---
+echo "Probe 10: Integration cleanup removes only owned container and preserves foreign testcontainer"
+P10_LOG="${TEST_ENV_DIR}/p10_calls.log"
+rm -f "$P10_LOG"
 set +e
 (
   source "${VERIFY_SCRIPT}" >/dev/null 2>&1 || true
-  CI_RUN_ID="our_session_$$"
-  CI_BASELINE_FILE="${TEST_ENV_DIR}/fake_base.txt"
-  CI_CURRENT_FILE="${TEST_ENV_DIR}/fake_cur.txt"
-  CI_STATE_FILE="${TEST_ENV_DIR}/.cleanup_test_state.json"
+  CI_RUN_ID="p10_owned_session_$$"
+  CI_RUNNER_NAME="s2_integ_runner_${CI_RUN_ID}"
+  CI_BASELINE_FILE="${TEST_ENV_DIR}/p10_baseline.txt"
+  CI_CURRENT_FILE="${TEST_ENV_DIR}/p10_current.txt"
+  CI_STATE_FILE="${TEST_ENV_DIR}/.cleanup_p10_state.json"
   CI_VERIFIED=1
-  echo "preexisting" > "$CI_BASELINE_FILE"
-  printf "preexisting\nforeign-container\n" > "$CI_CURRENT_FILE"
-  # Mock podman inspect to simulate foreign container
+  echo "preexisting-container-1" > "$CI_BASELINE_FILE"
+
   podman() {
-    if [ "$1" = "inspect" ]; then
-      echo "foreign-session"
+    echo "$*" >> "$P10_LOG"
+    if [ "$1" = "ps" ] && [ "$2" = "-aq" ]; then
+      printf "preexisting-container-1\nforeign-testcontainer-2\ns2_integ_runner_%s\n" "$CI_RUN_ID"
+      return 0
+    elif [ "$1" = "inspect" ]; then
+      local target="$2"
+      if [ "$target" = "foreign-testcontainer-2" ]; then
+        echo "other-test-session"
+        return 0
+      elif [ "$target" = "s2_integ_runner_${CI_RUN_ID}" ]; then
+        echo "$CI_RUN_ID"
+        return 0
+      fi
       return 0
     elif [ "$1" = "rm" ]; then
-      echo "REMOVED_CONTAINER $2" >&2
       return 0
+    elif [ "$1" = "container" ] && [ "$2" = "exists" ]; then
+      return 1
     fi
     return 0
   }
   _cleanup_integration_ci
 ) >/dev/null 2>&1
-EXIT_CLEANUP_TEST=$?
+EXIT_P10=$?
 set -e
-_assert_eq "0" "$EXIT_CLEANUP_TEST" "Cleanup executes cleanly preserving foreign container"
+
+_assert_eq "0" "$EXIT_P10" "Integration cleanup executes cleanly"
+if grep -q "rm -f.*foreign-testcontainer-2" "$P10_LOG"; then
+  _assert_eq "preserved" "removed" "ERROR: Foreign testcontainer was removed by cleanup!"
+else
+  _assert_eq "preserved" "preserved" "Foreign testcontainer preserved during cleanup"
+fi
+if grep -q "rm -f.*s2_integ_runner_p10_owned_session" "$P10_LOG"; then
+  _assert_eq "removed" "removed" "Owned runner container removed by cleanup"
+else
+  _assert_eq "removed" "missing" "ERROR: Owned runner container was not removed!"
+fi
 
 # --- Probe 11: Container/volume inventory inspection failure (exit 125) fails closed ---
 echo "Probe 11: Inspection failure (exit 125) fails closed without starting services"
@@ -481,9 +501,12 @@ WEB_HOST_PORT=5998
 EOF
 chmod 600 "$INSP_ENV"
 
+P11_LOG="${TEST_ENV_DIR}/p11_calls.log"
+rm -f "$P11_LOG"
 set +e
-INSP_OUT=$(
+(
   podman() {
+    echo "$*" >> "$P11_LOG"
     if [ "$1" = "ps" ] || [ "$1" = "volume" ]; then
       return 125
     fi
@@ -491,7 +514,7 @@ INSP_OUT=$(
   }
   export -f podman 2>/dev/null || true
   FOUNDATION_ENV_FILE="$INSP_ENV" FOUNDATION_VERIFY_RUN_ID="test_insp_run" "${VERIFY_SCRIPT}" targeted 2>&1
-)
+) >/dev/null 2>&1
 EXIT_INSP=$?
 set -e
 _assert_eq "1" "$EXIT_INSP" "Inspection exit 125 causes targeted run to fail closed immediately"
@@ -499,6 +522,176 @@ INSP_STATE="${TEST_ENV_DIR}/.verify-test_insp_run.json"
 if [ -f "$INSP_STATE" ]; then
   INSP_STATUS=$(grep -o '"status":"[^"]*"' "$INSP_STATE" | cut -d'"' -f4 || true)
   _assert_eq "failed" "$INSP_STATUS" "State file records status failed on inspection failure"
+fi
+if grep -q "compose.*up" "$P11_LOG"; then
+  _assert_eq "none" "started" "ERROR: Containers started despite inspection failure!"
+else
+  _assert_eq "none" "none" "No containers started when inspection fails"
+fi
+
+# --- Probe 12: OOM inspection failure (exit 125) fails closed before restart (F1) ---
+echo "Probe 12: OOM inspection failure (exit 125) fails closed before restart"
+OOM_FAIL_ENV="${TEST_ENV_DIR}/oom_fail.env"
+cat <<EOF > "$OOM_FAIL_ENV"
+COMPOSE_PROJECT_NAME=s2_test_oom_fail_$$
+POSTGRES_DB=s2_foundation_test_$$
+POSTGRES_USER=s2_user
+POSTGRES_PASSWORD=$(openssl rand -hex 16)
+COOKIE_SECRET=$(openssl rand -hex 32)
+API_HOST_PORT=3981
+WEB_HOST_PORT=5981
+EOF
+chmod 600 "$OOM_FAIL_ENV"
+
+P12_LOG="${TEST_ENV_DIR}/p12_calls.log"
+rm -f "$P12_LOG"
+set +e
+(
+  podman() {
+    echo "$*" >> "$P12_LOG"
+    if [ "$1" = "compose" ] && [ "$2" = "version" ]; then
+      echo "podman-compose version 1.6.0"
+      return 0
+    elif [ "$1" = "compose" ] && [ "$3" = "logs" ]; then
+      echo "Received termination signal, starting graceful shutdown"
+      echo "Graceful shutdown completed"
+      return 0
+    elif [ "$1" = "ps" ]; then
+      if echo "$*" | grep -q "{{.ExitCode}}"; then
+        if echo "$*" | grep -q ".*web"; then echo "143"; else echo "0"; fi
+        return 0
+      elif echo "$*" | grep -q "\-q"; then
+        if echo "$*" | grep -q ".*web"; then echo "stub-web-cid"; else echo "stub-api-cid"; fi
+        return 0
+      fi
+      return 0
+    elif [ "$1" = "inspect" ] && echo "$*" | grep -q "OOMKilled"; then
+      return 125
+    fi
+    return 0
+  }
+  export -f podman 2>/dev/null || true
+  curl() {
+    echo "000"
+  }
+  export -f curl 2>/dev/null || true
+
+  FOUNDATION_ENV_FILE="$OOM_FAIL_ENV" FOUNDATION_VERIFY_RUN_ID="test_oom_fail" "${VERIFY_SCRIPT}" targeted 2>&1
+) >/dev/null 2>&1
+EXIT_OOM_FAIL=$?
+set -e
+
+_assert_eq "1" "$EXIT_OOM_FAIL" "OOM inspection exit 125 halts targeted run with code 1"
+OOM_FAIL_STATE="${TEST_ENV_DIR}/.verify-test_oom_fail.json"
+if [ -f "$OOM_FAIL_STATE" ]; then
+  OOM_FAIL_STATUS=$(grep -o '"status":"[^"]*"' "$OOM_FAIL_STATE" | cut -d'"' -f4 || true)
+  _assert_eq "failed" "$OOM_FAIL_STATUS" "State file records status failed on OOM inspection failure"
+fi
+if grep -q "start api web" "$P12_LOG"; then
+  _assert_eq "no_restart" "restarted" "ERROR: Services restarted despite OOM inspection failure!"
+else
+  _assert_eq "no_restart" "no_restart" "Restart prevented when OOM inspection fails"
+fi
+
+# --- Probe 13: Stopped port responding HTTP 503 fails closed before restart (F2) ---
+echo "Probe 13: Stopped port responding HTTP 503 fails closed before restart"
+P503_ENV="${TEST_ENV_DIR}/p503.env"
+cat <<EOF > "$P503_ENV"
+COMPOSE_PROJECT_NAME=s2_test_p503_$$
+POSTGRES_DB=s2_foundation_test_$$
+POSTGRES_USER=s2_user
+POSTGRES_PASSWORD=$(openssl rand -hex 16)
+COOKIE_SECRET=$(openssl rand -hex 32)
+API_HOST_PORT=3982
+WEB_HOST_PORT=5982
+EOF
+chmod 600 "$P503_ENV"
+
+P13_LOG="${TEST_ENV_DIR}/p13_calls.log"
+rm -f "$P13_LOG"
+set +e
+(
+  podman() {
+    echo "$*" >> "$P13_LOG"
+    if [ "$1" = "compose" ] && [ "$2" = "version" ]; then
+      echo "podman-compose version 1.6.0"
+      return 0
+    elif [ "$1" = "compose" ] && [ "$3" = "logs" ]; then
+      echo "Received termination signal, starting graceful shutdown"
+      echo "Graceful shutdown completed"
+      return 0
+    elif [ "$1" = "ps" ]; then
+      if echo "$*" | grep -q "{{.ExitCode}}"; then
+        if echo "$*" | grep -q ".*web"; then echo "143"; else echo "0"; fi
+        return 0
+      elif echo "$*" | grep -q "\-q"; then
+        if echo "$*" | grep -q ".*web"; then echo "stub-web-cid"; else echo "stub-api-cid"; fi
+        return 0
+      fi
+      return 0
+    elif [ "$1" = "inspect" ] && echo "$*" | grep -q "OOMKilled"; then
+      echo "false"
+      return 0
+    fi
+    return 0
+  }
+  export -f podman 2>/dev/null || true
+  curl() {
+    echo "503"
+  }
+  export -f curl 2>/dev/null || true
+
+  FOUNDATION_ENV_FILE="$P503_ENV" FOUNDATION_VERIFY_RUN_ID="test_p503" "${VERIFY_SCRIPT}" targeted 2>&1
+) >/dev/null 2>&1
+EXIT_P503=$?
+set -e
+
+_assert_eq "1" "$EXIT_P503" "Stopped port responding 503 halts targeted run with code 1"
+P503_STATE="${TEST_ENV_DIR}/.verify-test_p503.json"
+if [ -f "$P503_STATE" ]; then
+  P503_STATUS=$(grep -o '"status":"[^"]*"' "$P503_STATE" | cut -d'"' -f4 || true)
+  _assert_eq "failed" "$P503_STATUS" "State file records status failed when port responds 503"
+fi
+if grep -q "start api web" "$P13_LOG"; then
+  _assert_eq "no_restart" "restarted" "ERROR: Services restarted despite open port 503!"
+else
+  _assert_eq "no_restart" "no_restart" "Restart prevented when stopped port responds 503"
+fi
+
+# --- Probe 14: Cleanup directory inode mismatch fails cleanup and retains resource (F3) ---
+echo "Probe 14: Cleanup directory inode mismatch fails cleanup and retains resource"
+INODE_DIR="${TEST_ENV_DIR}/mismatched_inode_dir_$$"
+mkdir -m 700 "$INODE_DIR"
+SENTINEL_P14="${INODE_DIR}/p14_sentinel.txt"
+echo "retained probe data" > "$SENTINEL_P14"
+CLEANUP_DIRS+=("$INODE_DIR")
+P14_STATE="${TEST_ENV_DIR}/.verify_p14_state.json"
+
+set +e
+(
+  source "${VERIFY_SCRIPT}" >/dev/null 2>&1 || true
+  CI_RUN_ID="p14_inode_probe_$$"
+  CI_RUN_DIR="$INODE_DIR"
+  CI_RUN_DIR_CREATED=1
+  CI_RUN_DIR_INODE="unmatched_recorded_inode_$$"
+  CI_STATE_FILE="$P14_STATE"
+  CI_VERIFIED=1
+  _cleanup_integration_ci
+) >/dev/null 2>&1
+EXIT_P14=$?
+set -e
+
+_assert_eq "1" "$EXIT_P14" "Cleanup with mismatched inode exits with code 1"
+if [ -d "$INODE_DIR" ] && [ -f "$SENTINEL_P14" ]; then
+  _assert_eq "retained" "retained" "Mismatched directory retained without deletion"
+else
+  _assert_eq "retained" "deleted" "ERROR: Mismatched directory was deleted!"
+fi
+if [ -f "$P14_STATE" ]; then
+  P14_STATUS=$(grep -o '"status":"[^"]*"' "$P14_STATE" | cut -d'"' -f4 || true)
+  P14_CLEANUP_FAIL=$(grep -o '"cleanup_failure":[0-9]*' "$P14_STATE" | cut -d':' -f2 || true)
+  _assert_eq "failed" "$P14_STATUS" "State file records status failed on cleanup mismatch"
+  _assert_eq "1" "$P14_CLEANUP_FAIL" "State file records cleanup_failure=1 on cleanup mismatch"
 fi
 
 echo "=== Regression Probes Summary ==="
