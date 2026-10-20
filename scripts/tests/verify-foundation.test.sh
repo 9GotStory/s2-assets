@@ -415,14 +415,18 @@ for final_mode in targeted integration-ci; do
       fi
       chmod() {
         if [ ! -f "$FINAL_DIR/chmod-injected" ]; then
+          printf '%s\n' "$2" > "$FINAL_DIR/chmod-target" || return 97
+          jq -r .status "$FINAL_STATE" > "$FINAL_DIR/status-at-chmod" || return 97
           echo chmod_injected > "$FINAL_DIR/chmod-injected"
           return 73
         fi
         command chmod "$@"
       }
       podman() { echo UNEXPECTED; return 97; }
-      if [ "$final_mode" = targeted ]; then _cleanup_targeted
-      else _cleanup_integration_ci; fi
+      if [ "$final_mode" = targeted ]; then trap '_cleanup_targeted' EXIT
+      else trap '_cleanup_integration_ci' EXIT; fi
+      # Cleanup must capture this explicit success, not the mode test's status.
+      exit 0
     ) > "$FINAL_DIR/output" 2>&1
     FINAL_EXIT=$?
     set -e
@@ -430,11 +434,20 @@ for final_mode in targeted integration-ci; do
     if [ "$expected" -eq 0 ]; then expected=1; fi
     _assert_eq "$expected" "$FINAL_EXIT" 'Finalization failure preserves original exit'
     _assert_eq chmod_injected "$(cat "$FINAL_DIR/chmod-injected")" 'Required chmod failure actually injected'
+    if [[ "$(cat "$FINAL_DIR/chmod-target")" != "${FINAL_STATE}.pending."* ]]; then
+      _assert_eq final_publication earlier_operation 'One-shot chmod must target the pending final receipt'
+    fi
+    prior_status=running
+    if [ "$first_code" -ne 0 ]; then prior_status=failed; fi
+    _assert_eq "$prior_status" "$(cat "$FINAL_DIR/status-at-chmod")" 'Canonical receipt has the intended state before finalization'
     _assert_eq failed "$(jq -r .status "$FINAL_STATE")" 'Canonical receipt cannot remain passed'
     _require_log "${FINAL_STATE}.cleanup" prior_cleanup_evidence 'Prior cleanup evidence retained'
     _require_log "${FINAL_STATE}.cleanup" 'receipt_finalization_failed exit=73' 'Finalization error recorded separately'
+    _assert_eq 1 "$(grep -Fc 'receipt_finalization_failed exit=73' "${FINAL_STATE}.cleanup")" 'Exactly one final publication failure reached'
     _forbid_log "$FINAL_DIR/output" UNEXPECTED 'Receipt correction invokes no runtime command'
-    if [ "$first_code" -eq 0 ]; then _require_failure "$FINAL_STATE" 1 1
+    if [ "$first_code" -eq 0 ]; then
+      _require_failure "$FINAL_STATE" 1 1
+      _assert_eq false "$(if [ -e "${FINAL_STATE}.first-failure" ]; then echo true; else echo false; fi)" 'No unrelated failure recorded before finalization'
     else
       _assert_eq "$(cat "$FINAL_DIR/first-failure.sha256")" "$(sha256sum "${FINAL_STATE}.first-failure")" 'Original failure evidence unchanged'
     fi
