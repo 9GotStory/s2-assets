@@ -175,10 +175,11 @@ jobs:
           fi
           echo "Frozen lockfile integrity verified: $LOCK_AFTER"
 
-      - name: Run verification runner regression test suite
+      - name: Run controlled regressions before real signal verification
         run: |
-          echo "Executing verification runner regression tests..."
-          bash scripts/tests/verify-foundation.test.sh
+          # `all` enforces the complete controlled 9-14 gate in the same process
+          # before entering any real verification, including Probe 8.
+          bash scripts/tests/verify-foundation.test.sh all
 
       - name: Run PostgreSQL integration tests
         id: run-integration

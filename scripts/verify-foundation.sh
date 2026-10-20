@@ -3,13 +3,27 @@
 # Modes: 'targeted' (local disposable lifecycle & signal verification) or 'integration-ci' (safe private-endpoint CI integration)
 
 set -euo pipefail
+umask 077
 
 SCRIPT_DIR=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
 REPO_ROOT=$(cd "${SCRIPT_DIR}/.." && pwd)
 COMPOSE_FILE="${REPO_ROOT}/deploy/podman/compose.yaml"
 
 APPROVED_BASELINE_SHA="98be44f1a85ed1cc7d786ebbd03566cb8d5bc5e6"
-APPROVED_PARENT_SHA="558e4b6fdbed36d109cfcbc796e63e6f918bba2d"
+# The previous Round-3 candidate's parent was 558e4b6fdbed36d109cfcbc796e63e6f918bba2d.
+# New receipts identify the actual tested checkout; old receipts are never reused.
+APPROVED_PARENT_SHA=""
+TESTED_SHA=""
+OWNER_LABEL="io.9gotstory.s2-assets.verify-run"
+PROJECT_LABEL="io.9gotstory.s2-assets.verify-project"
+SERVICE_LABEL="io.9gotstory.s2-assets.verify-service"
+PROJECT_LOCK_FD=""
+TARGETED_RESOURCES=""
+TARGETED_API_CID=""
+TARGETED_WEB_CID=""
+CI_RUNNER_CID=""
+CI_ENDPOINT_IDENTITY=""
+CI_SOCKET_IDENTITY=""
 
 # Script-level tracking variables for traps and receipts
 CI_RUN_ID=""
@@ -37,6 +51,8 @@ TARGETED_PHASE4_PASSED=0
 TARGETED_API_EXIT=""
 TARGETED_WEB_EXIT=""
 TARGETED_REUSE_REFUSED=0
+TARGETED_PHASE=preflight
+TARGETED_FAILURE_PHASE=""
 
 _fail() {
   echo "$1" >&2
@@ -81,7 +97,8 @@ _validate_foundation_env_file() {
   fi
 
   local file_mode file_tail
-  file_mode=$(stat -c "%a" "$FOUNDATION_ENV_FILE" 2>/dev/null || stat -f "%OLp" "$FOUNDATION_ENV_FILE" 2>/dev/null || true)
+  file_mode=$(stat -c "%a" "$FOUNDATION_ENV_FILE" 2>/dev/null || stat -f "%OLp" "$FOUNDATION_ENV_FILE" 2>/dev/null) || _fail "ERROR: Environment permission inspection failed"
+  [ -n "$file_mode" ] || _fail "ERROR: Empty environment permission inspection"
   if [ -n "$file_mode" ]; then
     file_tail="${file_mode: -2}"
     if [ "$file_tail" != "00" ]; then
@@ -91,7 +108,8 @@ _validate_foundation_env_file() {
 
   ENV_DIR=$(dirname "$FOUNDATION_ENV_FILE")
   local dir_mode dir_tail
-  dir_mode=$(stat -c "%a" "$ENV_DIR" 2>/dev/null || stat -f "%OLp" "$ENV_DIR" 2>/dev/null || true)
+  dir_mode=$(stat -c "%a" "$ENV_DIR" 2>/dev/null || stat -f "%OLp" "$ENV_DIR" 2>/dev/null) || _fail "ERROR: Environment directory permission inspection failed"
+  [ -n "$dir_mode" ] || _fail "ERROR: Empty directory permission inspection"
   if [ -n "$dir_mode" ]; then
     dir_tail="${dir_mode: -2}"
     if [ "$dir_tail" != "00" ]; then
@@ -241,6 +259,224 @@ _validate_endpoint_socket_guards() {
   fi
 }
 
+# Ownership checks use explicit Compose labels, never name-prefix deletion.
+_capture_source_identity() {
+  TESTED_SHA=$(git -C "$REPO_ROOT" rev-parse HEAD)
+  APPROVED_PARENT_SHA=$(git -C "$REPO_ROOT" rev-parse HEAD^)
+  command -v jq >/dev/null || _fail "ERROR: jq is required for checked resource receipts"
+}
+
+_acquire_project() {
+  local project="$1" lock_root lock_file identity
+  lock_root="/tmp/.s2-verify-locks-$(id -u)"
+  if [ ! -e "$lock_root" ] && [ ! -L "$lock_root" ]; then
+    mkdir -m 700 "$lock_root" || return 1
+  fi
+  [ ! -L "$lock_root" ] && [ -d "$lock_root" ] || return 1
+  identity=$(stat -c '%u:%a' "$lock_root") || return 1
+  [ "$identity" = "$(id -u):700" ] || return 1
+  lock_file="${lock_root}/${project}.lock"
+  if [ ! -e "$lock_file" ] && [ ! -L "$lock_file" ]; then
+    (umask 077; set -o noclobber; : > "$lock_file") || return 1
+  fi
+  [ ! -L "$lock_file" ] && [ -f "$lock_file" ] || return 1
+  identity=$(stat -c '%u:%a:%d:%i' "$lock_file") || return 1
+  [[ "$identity" = "$(id -u):600:"* ]] || return 1
+  exec {PROJECT_LOCK_FD}< "$lock_file" || return 1
+  [ "$(stat -Lc '%u:%a:%d:%i' "/proc/${BASHPID}/fd/$PROJECT_LOCK_FD")" = "$identity" ] || return 1
+  flock -n "$PROJECT_LOCK_FD" || return 1
+  # Keep the inode permanently: unlinking lock files permits concurrent owners.
+}
+
+_project_inventory() {
+  local kind="$1"
+  case "$kind" in
+    container) podman ps -aq --no-trunc --filter "label=${PROJECT_LABEL}=${COMPOSE_PROJECT_NAME}" ;;
+    network) podman network ls --no-trunc --filter "label=${PROJECT_LABEL}=${COMPOSE_PROJECT_NAME}" --format '{{.ID}}' ;;
+    volume) podman volume ls --filter "label=${PROJECT_LABEL}=${COMPOSE_PROJECT_NAME}" --format '{{.Name}}' ;;
+    *) return 1 ;;
+  esac
+}
+
+_project_resource() {
+  local kind="$1" id="$2" raw
+  raw=$(podman "$kind" inspect "$id") || return 1
+  # Emit only non-secret fields. Never retain Config.Env or raw inspect output.
+  jq -ce --arg kind "$kind" --arg run "$TARGETED_RUN_ID" \
+    --arg project "$COMPOSE_PROJECT_NAME" --arg owner "$OWNER_LABEL" \
+    --arg pl "$PROJECT_LABEL" --arg sl "$SERVICE_LABEL" '
+    if type != "array" or length != 1 then error("ambiguous inspection") else .[0] end |
+    (if $kind == "container" then .Config.Labels else (.Labels // .labels) end) as $labels |
+    select($labels[$owner] == $run and $labels[$pl] == $project) |
+    if $kind == "container" then
+      select(.Id | test("^[a-f0-9]{64}$")) |
+      select(.Created | type == "string" and length > 0) |
+      select($labels[$sl] == "api" or $labels[$sl] == "web" or $labels[$sl] == "postgres") |
+      {kind:$kind,id:.Id,created:.Created,service:$labels[$sl],run:$run,project:$project}
+    elif $kind == "network" then
+      select(.id | test("^[a-f0-9]{64}$")) |
+      select(.created | type == "string" and length > 0) |
+      select($labels["io.9gotstory.s2-assets.verify-resource"] == "default" or
+        $labels["io.9gotstory.s2-assets.verify-resource"] == "database") |
+      {kind:$kind,id:.id,created:.created,resource:$labels["io.9gotstory.s2-assets.verify-resource"],run:$run,project:$project}
+    else
+      select(.Name | type == "string" and length > 0) |
+      select(.CreatedAt | type == "string" and length > 0) |
+      select($labels["io.9gotstory.s2-assets.verify-resource"] == "postgres-data") |
+      {kind:$kind,id:.Name,created:.CreatedAt,resource:"postgres-data",run:$run,project:$project}
+    end' <<< "$raw"
+}
+
+_reject_project_name_collisions() {
+  local names name kind
+  for kind in container network volume; do
+    case "$kind" in
+      container) names=$(podman ps -a --format '{{.Names}}') || return 1 ;;
+      network) names=$(podman network ls --format '{{.Name}}') || return 1 ;;
+      volume) names=$(podman volume ls --format '{{.Name}}') || return 1 ;;
+    esac
+    for name in $names; do
+      if [[ "$name" = "$COMPOSE_PROJECT_NAME" || "$name" = "${COMPOSE_PROJECT_NAME}_"* || "$name" = "${COMPOSE_PROJECT_NAME}-"* ]]; then
+        echo "ERROR: Existing resource in requested project namespace: $kind $name" >&2
+        return 1
+      fi
+    done
+  done
+}
+
+_verify_project_manifest() {
+  local row kind id current
+  while IFS= read -r row; do
+    [ -n "$row" ] || continue
+    kind=$(jq -r .kind <<< "$row") || return 1
+    id=$(jq -r .id <<< "$row") || return 1
+    current=$(_project_resource "$kind" "$id") || return 1
+    [ "$current" = "$row" ] || return 1
+  done < "$TARGETED_RESOURCES"
+  _capture_project_resources || return 1
+  _require_project_cardinality
+}
+
+_capture_project_resources() {
+  local kind ids id receipt old
+  for kind in container network volume; do
+    ids=$(_project_inventory "$kind") || return 1
+    for id in $ids; do
+      receipt=$(_project_resource "$kind" "$id") || return 1
+      old=$(jq -cs --arg kind "$kind" --arg id "$(jq -r .id <<< "$receipt")" \
+        'map(select(.kind == $kind and .id == $id))' "$TARGETED_RESOURCES") || return 1
+      if [ "$old" = '[]' ]; then
+        printf '%s\n' "$receipt" >> "$TARGETED_RESOURCES" || return 1
+      else
+        [ "$(jq -c '.[0]' <<< "$old")" = "$receipt" ] || return 1
+      fi
+    done
+  done
+}
+
+_require_project_cardinality() {
+  local service ids
+  for service in postgres api web; do
+    ids=$(jq -cs --arg service "$service" 'map(select(.kind == "container" and .service == $service)) |
+      if length == 1 then .[0].id else error("service cardinality") end' "$TARGETED_RESOURCES") || return 1
+    case "$service" in
+      api) TARGETED_API_CID=$(jq -r . <<< "$ids") ;;
+      web) TARGETED_WEB_CID=$(jq -r . <<< "$ids") ;;
+    esac
+  done
+  jq -es 'map(select(.kind == "network")) |
+    length == 2 and (map(.resource) | sort == ["database","default"])' "$TARGETED_RESOURCES" >/dev/null || return 1
+  jq -es 'map(select(.kind == "volume")) | length == 1' "$TARGETED_RESOURCES" >/dev/null
+}
+
+_service_terminal() {
+  local cid="$1" service="$2" receipt raw state
+  receipt=$(_project_resource container "$cid") || return 1
+  [ "$(jq -r .service <<< "$receipt")" = "$service" ] || return 1
+  raw=$(podman container inspect "$cid") || return 1
+  state=$(jq -ce --arg cid "$cid" '
+    select(length == 1 and .[0].Id == $cid) | .[0].State |
+    select(.Running == false and .Status == "exited" and .Pid == 0 and
+      .Paused == false and .Restarting == false and .Dead == false) |
+    {Running,Status,Pid,Paused,Restarting,Dead,ExitCode,FinishedAt}' <<< "$raw") || return 1
+  jq -c --arg cid "$cid" --arg service "$service" '. + {cid:$cid,service:$service}'     <<< "$state" >> "${TARGETED_STATE_FILE}.terminal" || return 1
+  local code
+  code=$(jq -er '.ExitCode | select(type == "number")' <<< "$state") || return 1
+  if [ "$service" = api ]; then [ "$code" = 0 ] || return 1
+  else [ "$code" = 0 ] || [ "$code" = 143 ] || return 1; fi
+  printf '%s\n' "$code"
+}
+
+_require_port_closed() {
+  local port="$1" path="$2" code st=0 listeners
+  code=$(curl -s --connect-timeout 1 --max-time 1 -o /dev/null -w '%{http_code}' \
+    "http://127.0.0.1:${port}/${path}") || st=$?
+  if [ "$code" != 000 ] || [ "$st" -ne 7 ]; then
+    echo "ERROR: Port closure failed for ${port}: HTTP=${code}, curl_exit=${st}" >&2
+    return 1
+  fi
+  listeners=$(ss -H -ltn "sport = :${port}") || return 1
+  [ -z "$listeners" ] || return 1
+  printf 'closed port=%s curl_exit=%s http=%s listeners=0\n' "$port" "$st" "$code" \
+    >> "${TARGETED_STATE_FILE}.terminal"
+}
+
+_cleanup_project_resources() {
+  local failed=0 kind records row id current st ids
+  # Even partial startup must prove labels before adoption or deletion.
+  if ! _capture_project_resources; then
+    echo 'ERROR: Project cleanup ownership inspection failed; retaining resources' >&2
+    return 1
+  fi
+  if [ "$TARGETED_PHASE4_PASSED" -eq 1 ] && ! _require_project_cardinality; then
+    echo 'ERROR: Final project cardinality changed; retaining resources' >&2
+    return 1
+  fi
+  for kind in container network volume; do
+    records=$(jq -cs --arg kind "$kind" 'map(select(.kind == $kind)) | .[]' "$TARGETED_RESOURCES") || return 1
+    while IFS= read -r row; do
+      [ -n "$row" ] || continue
+      id=$(jq -r .id <<< "$row") || return 1
+      current=$(_project_resource "$kind" "$id") || { failed=1; continue; }
+      if [ "$current" != "$row" ]; then
+        echo "ERROR: Cleanup identity changed for $kind $id" >&2
+        failed=1
+        continue
+      fi
+      # Targeted mode preserves its exact data volume, including after failure.
+      if [ "$kind" = volume ]; then
+        printf 'preserved %s\n' "$row" >> "${TARGETED_STATE_FILE}.cleanup" || failed=1
+        continue
+      fi
+      if [ "$kind" = container ]; then
+        podman rm -f "$id" || { failed=1; continue; }
+      else
+        podman network rm "$id" || { failed=1; continue; }
+      fi
+      st=0
+      podman "$kind" exists "$id" || st=$?
+      if [ "$st" != 1 ]; then
+        echo "ERROR: Final absence unverified for $kind $id (exit $st)" >&2
+        failed=1
+      else
+        printf 'absent %s %s\n' "$kind" "$id" >> "${TARGETED_STATE_FILE}.cleanup" || failed=1
+      fi
+    done <<< "$records"
+    ids=$(_project_inventory "$kind") || { failed=1; continue; }
+    if [ "$kind" != volume ] && [ -n "$ids" ]; then failed=1; fi
+  done
+  records=$(jq -cs 'map(select(.kind != "volume")) | .[]' "$TARGETED_RESOURCES") || return 1
+  while IFS= read -r row; do
+    [ -n "$row" ] || continue
+    kind=$(jq -r .kind <<< "$row") || return 1
+    id=$(jq -r .id <<< "$row") || return 1
+    st=0
+    podman "$kind" exists "$id" || st=$?
+    if [ "$st" -ne 1 ]; then failed=1; fi
+  done <<< "$records"
+  [ "$failed" = 0 ]
+}
+
 # --- Mode: targeted ---
 
 _record_targeted_failure() {
@@ -250,11 +486,13 @@ _record_targeted_failure() {
   fi
   if [ "$TARGETED_FIRST_FAILURE" -eq 0 ]; then
     TARGETED_FIRST_FAILURE="$code"
+    TARGETED_FAILURE_PHASE="$TARGETED_PHASE"
     if [ -n "${TARGETED_STATE_FILE:-}" ]; then
-      cat <<EOF > "$TARGETED_STATE_FILE"
-{"run_id":"${TARGETED_RUN_ID}","mode":"targeted","status":"failed","baseline_sha":"${APPROVED_BASELINE_SHA}","parent_sha":"${APPROVED_PARENT_SHA}","exit_code":${TARGETED_FIRST_FAILURE},"cleanup_failure":${TARGETED_CLEANUP_FAILURE},"timestamp":"$(date -u +%Y-%m-%dT%H:%M:%SZ)"}
+      cat <<EOF > "$TARGETED_STATE_FILE" || TARGETED_CLEANUP_FAILURE=1
+{"run_id":"${TARGETED_RUN_ID}","mode":"targeted","status":"failed","baseline_sha":"${APPROVED_BASELINE_SHA}","parent_sha":"${APPROVED_PARENT_SHA}","candidate_sha":"${TESTED_SHA}","failure_phase":"${TARGETED_FAILURE_PHASE}","exit_code":${TARGETED_FIRST_FAILURE},"cleanup_failure":${TARGETED_CLEANUP_FAILURE},"timestamp":"$(date -u +%Y-%m-%dT%H:%M:%SZ)"}
 EOF
-      chmod 600 "$TARGETED_STATE_FILE"
+      chmod 600 "$TARGETED_STATE_FILE" || TARGETED_CLEANUP_FAILURE=1
+      (umask 077; set -o noclobber; cat "$TARGETED_STATE_FILE" > "${TARGETED_STATE_FILE}.first-failure") || TARGETED_CLEANUP_FAILURE=1
     fi
   fi
 }
@@ -262,6 +500,7 @@ EOF
 _cleanup_targeted() {
   local exit_code="$?"
   trap - EXIT INT TERM
+  set +e
 
   if [ "${TARGETED_REUSE_REFUSED:-0}" -eq 1 ]; then
     exit "$exit_code"
@@ -272,43 +511,24 @@ _cleanup_targeted() {
   fi
 
   echo "--- Phase 5: Exact-Owned Cleanup ---"
-  if [ "$TARGETED_MUTATION_STARTED" -eq 1 ] && [ -n "${COMPOSE_PROJECT_NAME:-}" ] && [ -f "${FOUNDATION_ENV_FILE:-}" ]; then
-    echo "Tearing down project containers for ${COMPOSE_PROJECT_NAME} (preserving data volume)..."
-    if ! podman compose --env-file "$FOUNDATION_ENV_FILE" -p "$COMPOSE_PROJECT_NAME" -f "$COMPOSE_FILE" down; then
-      echo "ERROR: podman compose down encountered an error!" >&2
-      TARGETED_CLEANUP_FAILURE=1
-    fi
-
-    local rem_c
-    rem_c=$(podman ps -a --filter "name=${COMPOSE_PROJECT_NAME}" --format '{{.Names}}' 2>/dev/null || true)
-    if [ -n "$rem_c" ]; then
-      echo "ERROR: Project containers remain after teardown: ${rem_c}" >&2
-      TARGETED_CLEANUP_FAILURE=1
-    fi
-
-    local preserved_vol
-    preserved_vol=$(podman volume ls --filter "name=${COMPOSE_PROJECT_NAME}" --format '{{.Name}}' 2>/dev/null || true)
-    if [ -n "$preserved_vol" ]; then
-      echo "Preserved project volume: ${preserved_vol}"
-    fi
-  else
-    echo "No targeted mutations were started; skipping container teardown."
+  if [ "$TARGETED_MUTATION_STARTED" -eq 1 ]; then
+    if ! _cleanup_project_resources; then TARGETED_CLEANUP_FAILURE=1; fi
   fi
 
   # Record final durable state
   if [ "${TARGETED_REUSE_REFUSED:-0}" -eq 0 ] && [ -n "${TARGETED_STATE_FILE:-}" ]; then
     if [ "$TARGETED_FIRST_FAILURE" -eq 0 ] && [ "$TARGETED_CLEANUP_FAILURE" -eq 0 ] && [ "$TARGETED_PHASE4_PASSED" -eq 1 ]; then
-      cat <<EOF > "$TARGETED_STATE_FILE"
-{"run_id":"${TARGETED_RUN_ID}","mode":"targeted","status":"passed","baseline_sha":"${APPROVED_BASELINE_SHA}","parent_sha":"${APPROVED_PARENT_SHA}","api_exit":"${TARGETED_API_EXIT}","web_exit":"${TARGETED_WEB_EXIT}","timestamp":"$(date -u +%Y-%m-%dT%H:%M:%SZ)"}
+      cat <<EOF > "$TARGETED_STATE_FILE" || TARGETED_CLEANUP_FAILURE=1
+{"run_id":"${TARGETED_RUN_ID}","mode":"targeted","status":"passed","baseline_sha":"${APPROVED_BASELINE_SHA}","parent_sha":"${APPROVED_PARENT_SHA}","candidate_sha":"${TESTED_SHA}","api_exit":"${TARGETED_API_EXIT}","web_exit":"${TARGETED_WEB_EXIT}","timestamp":"$(date -u +%Y-%m-%dT%H:%M:%SZ)"}
 EOF
-      chmod 600 "$TARGETED_STATE_FILE"
+      chmod 600 "$TARGETED_STATE_FILE" || TARGETED_CLEANUP_FAILURE=1
     else
       local final_code="$TARGETED_FIRST_FAILURE"
-      if [ "$final_code" -eq 0 ]; then final_code=1; fi
-      cat <<EOF > "$TARGETED_STATE_FILE"
-{"run_id":"${TARGETED_RUN_ID}","mode":"targeted","status":"failed","baseline_sha":"${APPROVED_BASELINE_SHA}","parent_sha":"${APPROVED_PARENT_SHA}","exit_code":${final_code},"cleanup_failure":${TARGETED_CLEANUP_FAILURE},"timestamp":"$(date -u +%Y-%m-%dT%H:%M:%SZ)"}
+      if [ "$final_code" -eq 0 ]; then final_code=1; TARGETED_FAILURE_PHASE=cleanup; fi
+      cat <<EOF > "$TARGETED_STATE_FILE" || TARGETED_CLEANUP_FAILURE=1
+{"run_id":"${TARGETED_RUN_ID}","mode":"targeted","status":"failed","baseline_sha":"${APPROVED_BASELINE_SHA}","parent_sha":"${APPROVED_PARENT_SHA}","candidate_sha":"${TESTED_SHA}","failure_phase":"${TARGETED_FAILURE_PHASE}","exit_code":${final_code},"cleanup_failure":${TARGETED_CLEANUP_FAILURE},"timestamp":"$(date -u +%Y-%m-%dT%H:%M:%SZ)"}
 EOF
-      chmod 600 "$TARGETED_STATE_FILE"
+      chmod 600 "$TARGETED_STATE_FILE" || TARGETED_CLEANUP_FAILURE=1
     fi
   fi
 
@@ -322,6 +542,7 @@ EOF
     exit 1
   fi
 
+  [ "$TARGETED_PHASE4_PASSED" -eq 1 ] || exit 1
   exit 0
 }
 
@@ -330,6 +551,7 @@ _run_targeted() {
 
   # Phase 1: Authority & Baseline
   echo "--- Phase 1: Authority and Baseline Validation ---"
+  _capture_source_identity
   _validate_foundation_env_file
 
   if [ -z "${FOUNDATION_VERIFY_RUN_ID:-}" ]; then
@@ -339,6 +561,7 @@ _run_targeted() {
     _fail "ERROR: FOUNDATION_VERIFY_RUN_ID must be alphanumeric with hyphens or underscores: ${FOUNDATION_VERIFY_RUN_ID}"
   fi
 
+  [ "$FOUNDATION_VERIFY_RUN_ID" != unclaimed ] || _fail "ERROR: Unclaimed run ID is reserved"
   TARGETED_RUN_ID="$FOUNDATION_VERIFY_RUN_ID"
   TARGETED_STATE_FILE="${ENV_DIR}/.verify-${TARGETED_RUN_ID}.json"
 
@@ -353,7 +576,7 @@ _run_targeted() {
 
   # Record initial running state atomically
   if ( set -o noclobber; cat <<EOF > "$TARGETED_STATE_FILE"
-{"run_id":"${TARGETED_RUN_ID}","mode":"targeted","status":"running","baseline_sha":"${APPROVED_BASELINE_SHA}","parent_sha":"${APPROVED_PARENT_SHA}","timestamp":"$(date -u +%Y-%m-%dT%H:%M:%SZ)"}
+{"run_id":"${TARGETED_RUN_ID}","mode":"targeted","status":"running","baseline_sha":"${APPROVED_BASELINE_SHA}","parent_sha":"${APPROVED_PARENT_SHA}","candidate_sha":"${TESTED_SHA}","timestamp":"$(date -u +%Y-%m-%dT%H:%M:%SZ)"}
 EOF
   ) 2>/dev/null; then
     chmod 600 "$TARGETED_STATE_FILE"
@@ -380,31 +603,33 @@ EOF
   fi
 
   local clean_version
-  clean_version=$(podman compose version 2>&1 | sed 's/\x1b\[[0-9;]*[a-zA-Z]//g' || true)
+  clean_version=$(podman compose version 2>&1 | sed 's/\x1b\[[0-9;]*[a-zA-Z]//g')
   if ! echo "${clean_version}" | grep -Eq "^podman-compose version 1\.6\.0[[:space:]]*$"; then
     _record_targeted_failure 1
     _fail "ERROR: Requires podman-compose 1.6.0"
   fi
 
-  # Verify no preexisting project resources exist before mutation
-  local pre_c pre_v c_st=0 v_st=0
-  pre_c=$(podman ps -a --filter "name=${COMPOSE_PROJECT_NAME}" --format '{{.Names}}' 2>&1) || c_st=$?
-  if [ "$c_st" -ne 0 ]; then
+  if ! _acquire_project "$COMPOSE_PROJECT_NAME"; then
     _record_targeted_failure 1
-    _fail "ERROR: Container inventory inspection failed (exit code ${c_st}): ${pre_c}"
+    _fail "ERROR: Exclusive project acquisition refused"
   fi
-  if [ -n "$pre_c" ]; then
+  TARGETED_RESOURCES="${TARGETED_STATE_FILE}.resources"
+  (umask 077; set -o noclobber; : > "$TARGETED_RESOURCES")
+  local kind existing
+  for kind in container network volume; do
+    existing=$(_project_inventory "$kind") || {
+      _record_targeted_failure 1
+      _fail "ERROR: ${kind} inventory inspection failed"
+    }
+    if [ -n "$existing" ]; then
+      _record_targeted_failure 1
+      _fail "ERROR: Preexisting ${kind} resources detected for project"
+    fi
+  done
+
+  if ! _reject_project_name_collisions; then
     _record_targeted_failure 1
-    _fail "ERROR: Preexisting containers detected for project ${COMPOSE_PROJECT_NAME}: ${pre_c}"
-  fi
-  pre_v=$(podman volume ls --filter "name=${COMPOSE_PROJECT_NAME}" --format '{{.Name}}' 2>&1) || v_st=$?
-  if [ "$v_st" -ne 0 ]; then
-    _record_targeted_failure 1
-    _fail "ERROR: Volume inventory inspection failed (exit code ${v_st}): ${pre_v}"
-  fi
-  if [ -n "$pre_v" ]; then
-    _record_targeted_failure 1
-    _fail "ERROR: Preexisting volumes detected for project ${COMPOSE_PROJECT_NAME}: ${pre_v}"
+    _fail "ERROR: Project namespace collision or inspection failure"
   fi
 
   # Injected prerequisite failure hook for testing
@@ -421,6 +646,7 @@ EOF
   echo "--- Phase 3: Affected Verification (Startup, Signals & Readiness) ---"
 
   echo "Starting PostgreSQL container for ${COMPOSE_PROJECT_NAME}..."
+  TARGETED_PHASE=startup
   TARGETED_MUTATION_STARTED=1
   podman compose --env-file "$FOUNDATION_ENV_FILE" -p "$COMPOSE_PROJECT_NAME" -f "$COMPOSE_FILE" up -d postgres
 
@@ -440,6 +666,10 @@ EOF
 
   echo "Starting API and Web containers..."
   podman compose --env-file "$FOUNDATION_ENV_FILE" -p "$COMPOSE_PROJECT_NAME" -f "$COMPOSE_FILE" up -d api web
+  if ! _capture_project_resources || ! _require_project_cardinality; then
+    _record_targeted_failure 1
+    _fail "ERROR: Exact project identity or cardinality verification failed"
+  fi
 
   local api_h_ready=0 api_r_ready=0 web_l_ready=0 web_d_ready=0 web_p_ready=0
   for attempt in {1..40}; do
@@ -488,6 +718,10 @@ EOF
 
   echo "Testing graceful shutdown and signal delivery..."
   local stop_start stop_end stop_duration
+  if ! _verify_project_manifest; then
+    _record_targeted_failure 1
+    _fail "ERROR: Project identity changed before stop"
+  fi
   stop_start=$(date +%s)
   podman compose --env-file "$FOUNDATION_ENV_FILE" -p "$COMPOSE_PROJECT_NAME" -f "$COMPOSE_FILE" stop api web
   stop_end=$(date +%s)
@@ -498,50 +732,30 @@ EOF
     _fail "ERROR: Service stop duration (${stop_duration}s) exceeded 10-second grace period!"
   fi
 
+  TARGETED_PHASE=terminal
   # Check logs for graceful shutdown
   local api_logs
-  api_logs=$(podman compose --env-file "$FOUNDATION_ENV_FILE" -p "$COMPOSE_PROJECT_NAME" -f "$COMPOSE_FILE" logs api 2>&1 || true)
+  api_logs=$(podman logs "$TARGETED_API_CID") || {
+    _record_targeted_failure 1
+    _fail "ERROR: API shutdown log inspection failed"
+  }
   if ! echo "$api_logs" | grep -q "Received termination signal, starting graceful shutdown" || ! echo "$api_logs" | grep -q "Graceful shutdown completed"; then
     _record_targeted_failure 1
     _fail "ERROR: API logs did not capture required graceful shutdown completion messages!"
   fi
   echo "Verified: API received SIGTERM and executed graceful shutdown handlers."
 
-  local api_exit web_exit
-  api_exit=$(podman ps -a --filter "name=${COMPOSE_PROJECT_NAME}.*api" --format '{{.ExitCode}}' 2>/dev/null | tr -d '[:space:]' || true)
-  web_exit=$(podman ps -a --filter "name=${COMPOSE_PROJECT_NAME}.*web" --format '{{.ExitCode}}' 2>/dev/null | tr -d '[:space:]' || true)
-  echo "Container stop exit codes: api='${api_exit}', web='${web_exit}'"
-
-  if [ -z "$api_exit" ] || [ -z "$web_exit" ]; then
+  local api_exit web_exit api_cid="$TARGETED_API_CID" web_cid="$TARGETED_WEB_CID"
+  api_exit=$(_service_terminal "$api_cid" api) || {
     _record_targeted_failure 1
-    _fail "ERROR: Container exit codes could not be determined (blank inspection result)"
-  fi
-  if [ "$api_exit" = "unknown" ] || [ "$web_exit" = "unknown" ]; then
+    _fail "ERROR: API terminal state verification failed"
+  }
+  web_exit=$(_service_terminal "$web_cid" web) || {
     _record_targeted_failure 1
-    _fail "ERROR: Container terminal state is unknown"
-  fi
-  if [ "$api_exit" = "137" ] || [ "$web_exit" = "137" ]; then
-    _record_targeted_failure 1
-    _fail "ERROR: Container was terminated via forced SIGKILL (code 137)!"
-  fi
-  if [ "$api_exit" != "0" ]; then
-    _record_targeted_failure 1
-    _fail "ERROR: API container exited with unexpected non-zero code '${api_exit}' (expected 0)"
-  fi
-  if [ "$web_exit" != "0" ] && [ "$web_exit" != "143" ]; then
-    _record_targeted_failure 1
-    _fail "ERROR: Web container exited with unexpected code '${web_exit}' (expected 0 or 143)"
-  fi
-
-  # Verify neither service was killed by OOM (fail-closed on inspection failure or non-false state)
-  local api_oom web_oom api_oom_st=0 web_oom_st=0 api_cid web_cid
-  api_cid=$(podman ps -a --filter "name=${COMPOSE_PROJECT_NAME}.*api" -q 2>/dev/null | head -n 1 || true)
-  web_cid=$(podman ps -a --filter "name=${COMPOSE_PROJECT_NAME}.*web" -q 2>/dev/null | head -n 1 || true)
-  if [ -z "$api_cid" ] || [ -z "$web_cid" ]; then
-    _record_targeted_failure 1
-    _fail "ERROR: Could not resolve exact container ID for api or web"
-  fi
-
+    _fail "ERROR: Web terminal state verification failed"
+  }
+  TARGETED_PHASE=oom
+  local api_oom web_oom api_oom_st=0 web_oom_st=0
   api_oom=$(podman inspect --format '{{.State.OOMKilled}}' "$api_cid" 2>&1) || api_oom_st=$?
   if [ "$api_oom_st" -ne 0 ]; then
     _record_targeted_failure 1
@@ -553,24 +767,23 @@ EOF
     _fail "ERROR: OOM inspection failed for Web container $web_cid (exit code ${web_oom_st}): ${web_oom}"
   fi
 
+  printf 'api_oom=%s web_oom=%s\n' "$api_oom" "$web_oom" >> "${TARGETED_STATE_FILE}.terminal"
   if [ "$api_oom" != "false" ] || [ "$web_oom" != "false" ]; then
     _record_targeted_failure 1
     _fail "ERROR: Service container was terminated by OOM killer or non-false OOM state (api_oom=${api_oom}, web_oom=${web_oom})"
   fi
 
-  # Positive closure evidence: ports must not respond while stopped (any HTTP code indicates still open)
-  local a_closed w_closed
-  a_closed=$(curl -s --connect-timeout 1 --max-time 1 -o /dev/null -w "%{http_code}" "http://127.0.0.1:${API_HOST_PORT}/health" 2>/dev/null || true)
-  w_closed=$(curl -s --connect-timeout 1 --max-time 1 -o /dev/null -w "%{http_code}" "http://127.0.0.1:${WEB_HOST_PORT}/login" 2>/dev/null || true)
-  if [ "$a_closed" != "000" ] && [ -n "$a_closed" ]; then
+  TARGETED_PHASE=closure
+  if ! _require_port_closed "$API_HOST_PORT" health || ! _require_port_closed "$WEB_HOST_PORT" login; then
     _record_targeted_failure 1
-    _fail "ERROR: API port still responding after stop command (HTTP code: ${a_closed})"
-  fi
-  if [ "$w_closed" != "000" ] && [ -n "$w_closed" ]; then
-    _record_targeted_failure 1
-    _fail "ERROR: Web port still responding after stop command (HTTP code: ${w_closed})"
+    _fail "ERROR: Stopped service closure verification failed"
   fi
 
+  if ! _verify_project_manifest; then
+    _record_targeted_failure 1
+    _fail "ERROR: Project identity changed before restart"
+  fi
+  TARGETED_PHASE=restart
   echo "Testing restart reaching positive readiness..."
   podman compose --env-file "$FOUNDATION_ENV_FILE" -p "$COMPOSE_PROJECT_NAME" -f "$COMPOSE_FILE" start api web
 
@@ -611,17 +824,76 @@ _record_ci_failure() {
   if [ "$CI_FIRST_FAILURE" -eq 0 ]; then
     CI_FIRST_FAILURE="$code"
     if [ -n "${CI_STATE_FILE:-}" ]; then
-      cat <<EOF > "$CI_STATE_FILE"
-{"run_id":"${CI_RUN_ID}","mode":"integration-ci","status":"failed","baseline_sha":"${APPROVED_BASELINE_SHA}","parent_sha":"${APPROVED_PARENT_SHA}","exit_code":${CI_FIRST_FAILURE},"cleanup_failure":${CI_CLEANUP_FAILURE},"timestamp":"$(date -u +%Y-%m-%dT%H:%M:%SZ)"}
+      cat <<EOF > "$CI_STATE_FILE" || CI_CLEANUP_FAILURE=1
+{"run_id":"${CI_RUN_ID}","mode":"integration-ci","status":"failed","baseline_sha":"${APPROVED_BASELINE_SHA}","parent_sha":"${APPROVED_PARENT_SHA}","candidate_sha":"${TESTED_SHA}","exit_code":${CI_FIRST_FAILURE},"cleanup_failure":${CI_CLEANUP_FAILURE},"timestamp":"$(date -u +%Y-%m-%dT%H:%M:%SZ)"}
 EOF
-      chmod 600 "$CI_STATE_FILE"
+      chmod 600 "$CI_STATE_FILE" || CI_CLEANUP_FAILURE=1
+      (umask 077; set -o noclobber; cat "$CI_STATE_FILE" > "${CI_STATE_FILE}.first-failure") || CI_CLEANUP_FAILURE=1
     fi
   fi
+}
+
+_ci_inventory() {
+  case "$1" in
+    container) podman ps -aq --no-trunc ;;
+    network) podman network ls --no-trunc --format '{{.ID}}' ;;
+    volume) podman volume ls --format '{{.Name}}' ;;
+    *) return 1 ;;
+  esac
+}
+
+_ci_runner_receipt() {
+  local raw
+  raw=$(podman container inspect "$1") || return 1
+  jq -ce --arg cid "$1" --arg run "$CI_RUN_ID" --arg name "$CI_RUNNER_NAME" '
+    select(length == 1) | .[0] |
+    select(.Id == $cid and .Name == $name and .Config.Labels["io.9gotstory.s2-assets.integ-run"] == $run) |
+    {id:.Id,name:.Name,created:.Created,state:(.State | {Status,Running,Pid,ExitCode,OOMKilled,Restarting,Dead,Paused,FinishedAt})}' <<< "$raw"
+}
+
+_endpoint_identity() {
+  local pid="$1" started uid
+  # Linux host contract: /proc start time distinguishes reused PIDs.
+  started=$(awk '{print $22}' "/proc/${pid}/stat") || return 1
+  uid=$(stat -c '%u' "/proc/${pid}") || return 1
+  [ "$uid" = "$(id -u)" ] && [[ "$started" =~ ^[0-9]+$ ]] || return 1
+  printf '%s:%s\n' "$uid" "$started"
+}
+
+_stop_owned_endpoint() {
+  local identity state stopped=0 status=0
+  if [ -z "$CI_ENDPOINT_IDENTITY" ]; then
+    echo 'ERROR: Endpoint process identity unavailable; refusing signal' >&2
+    return 1
+  fi
+  if [ -e "/proc/${CI_ENDPOINT_PID}" ]; then
+    identity=$(_endpoint_identity "$CI_ENDPOINT_PID") || return 1
+    [ "$identity" = "$CI_ENDPOINT_IDENTITY" ] || return 1
+    kill -TERM "$CI_ENDPOINT_PID" || return 1
+    for _ in {1..30}; do
+      if [ ! -e "/proc/${CI_ENDPOINT_PID}" ]; then stopped=1; break; fi
+      identity=$(_endpoint_identity "$CI_ENDPOINT_PID") || return 1
+      [ "$identity" = "$CI_ENDPOINT_IDENTITY" ] || return 1
+      state=$(awk '{print $3}' "/proc/${CI_ENDPOINT_PID}/stat") || return 1
+      if [ "$state" = Z ]; then stopped=1; break; fi
+      sleep 0.2
+    done
+    if [ "$stopped" -ne 1 ]; then
+      echo 'ERROR: Endpoint termination timeout; retaining endpoint evidence' >&2
+      return 1
+    fi
+  fi
+  wait "$CI_ENDPOINT_PID" || status=$?
+  [ "$status" = 0 ] || [ "$status" = 143 ] || return 1
+  [ ! -e "/proc/${CI_ENDPOINT_PID}" ] || return 1
+  printf 'endpoint_pid=%s identity=%s wait_exit=%s process_absent=true\n' \
+    "$CI_ENDPOINT_PID" "$CI_ENDPOINT_IDENTITY" "$status" >> "${CI_STATE_FILE}.cleanup"
 }
 
 _cleanup_integration_ci() {
   local exit_code="$?"
   trap - EXIT INT TERM
+  set +e
 
   if [ "${CI_REUSE_REFUSED:-0}" -eq 1 ]; then
     exit "$exit_code"
@@ -633,101 +905,106 @@ _cleanup_integration_ci() {
 
   echo "--- Phase 5: Exact-Owned Cleanup (integration-ci) ---"
 
-  # 1. Remove exact test runner container if started
-  if [ -n "${CI_RUNNER_NAME:-}" ] && command -v podman >/dev/null 2>&1; then
-    if podman container exists "$CI_RUNNER_NAME" 2>/dev/null; then
-      echo "Removing test runner container ${CI_RUNNER_NAME}..."
-      if ! podman rm -f "$CI_RUNNER_NAME" >/dev/null 2>&1; then
-        echo "ERROR: Failed to remove test runner container ${CI_RUNNER_NAME}" >&2
-        CI_CLEANUP_FAILURE=1
-      fi
+  local directory_trusted=1 identity=""
+  if [ "$CI_RUN_DIR_CREATED" -eq 1 ]; then
+    identity=$(stat -c '%d:%i:%u' "$CI_RUN_DIR") || directory_trusted=0
+    if [ -L "$CI_RUN_DIR" ] || [ "$identity" != "$CI_RUN_DIR_INODE" ]; then directory_trusted=0; fi
+    if [ "$directory_trusted" -ne 1 ]; then
+      echo 'ERROR: Cleanup identity mismatch for endpoint directory; retaining it' >&2
+      CI_CLEANUP_FAILURE=1
     fi
   fi
 
-  # 2. Check for leftover testcontainers created during the run
-  # Only remove containers with verified run label matching this run ID or runner name
-  if [ -n "${CI_BASELINE_FILE:-}" ] && [ -f "$CI_BASELINE_FILE" ] && command -v podman >/dev/null 2>&1; then
-    if ! podman ps -aq --no-trunc > "${CI_CURRENT_FILE:-/tmp/cur_c.txt}"; then
-      echo "ERROR: Failed to inspect current container inventory" >&2
-      CI_CLEANUP_FAILURE=1
-    else
-      local candidate_cids
-      candidate_cids=$(grep -v -F -f "$CI_BASELINE_FILE" "${CI_CURRENT_FILE:-/tmp/cur_c.txt}" 2>/dev/null || true)
-      for cid in $candidate_cids; do
-        if [ -z "$cid" ]; then continue; fi
-        local is_runner insp_st=0
-        is_runner=$(podman inspect "$cid" --format '{{index .Config.Labels "io.9gotstory.s2-assets.integ-run"}}' 2>&1) || insp_st=$?
-        if [ "$insp_st" -ne 0 ]; then
-          echo "ERROR: Failed to inspect container $cid (exit $insp_st): $is_runner" >&2
+  # Only a full ID captured by this invocation can authorize runner removal.
+  if [ "$CI_MUTATION_STARTED" -eq 1 ] && [ "$directory_trusted" -eq 1 ]; then
+    if [ -z "$CI_RUNNER_CID" ] && [ -f "${CI_RUN_DIR}/runner.cid" ]; then
+      CI_RUNNER_CID=$(cat "${CI_RUN_DIR}/runner.cid") || CI_CLEANUP_FAILURE=1
+    fi
+    local proof st=0
+    if [[ "$CI_RUNNER_CID" =~ ^[a-f0-9]{64}$ ]]; then
+      proof=$(_ci_runner_receipt "$CI_RUNNER_CID") || CI_CLEANUP_FAILURE=1
+      if [ "$CI_FIRST_FAILURE" -eq 0 ] && [ "$CI_VERIFIED" -eq 1 ]; then
+        if ! jq -e '.state | .Running == false and .Status == "exited" and .Pid == 0 and
+          .ExitCode == 0 and .OOMKilled == false and .Restarting == false and .Dead == false and .Paused == false'           <<< "$proof" >/dev/null; then CI_CLEANUP_FAILURE=1; fi
+      fi
+      if [ "$CI_CLEANUP_FAILURE" -eq 0 ]; then
+        printf '%s\n' "$proof" >> "${CI_STATE_FILE}.cleanup" || CI_CLEANUP_FAILURE=1
+        if ! podman rm -f "$CI_RUNNER_CID"; then CI_CLEANUP_FAILURE=1; fi
+        podman container exists "$CI_RUNNER_CID" || st=$?
+        if [ "$st" -ne 1 ]; then
+          echo "ERROR: Runner final absence unverified (exit $st)" >&2
           CI_CLEANUP_FAILURE=1
-          continue
-        fi
-        if [ "$is_runner" = "$CI_RUN_ID" ] || [ "$cid" = "${CI_RUNNER_NAME:-}" ]; then
-          echo "Removing verified test-owned container: $cid"
-          if ! podman rm -f "$cid" >/dev/null 2>&1; then
-            echo "ERROR: Failed to remove test container $cid" >&2
-            CI_CLEANUP_FAILURE=1
-          fi
         else
-          echo "Preserving non-test / concurrent container: $cid"
+          printf 'absent container %s\n' "$CI_RUNNER_CID" >> "${CI_STATE_FILE}.cleanup" || CI_CLEANUP_FAILURE=1
         fi
-      done
-    fi
-  fi
-
-  # 3. Cleanly stop private rootless endpoint PID
-  if [ -n "${CI_ENDPOINT_PID:-}" ]; then
-    if kill -0 "$CI_ENDPOINT_PID" 2>/dev/null; then
-      echo "Stopping private rootless endpoint PID $CI_ENDPOINT_PID..."
-      kill "$CI_ENDPOINT_PID" 2>/dev/null || true
-      local pid_stopped=0
-      for _ in {1..20}; do
-        if ! kill -0 "$CI_ENDPOINT_PID" 2>/dev/null; then
-          pid_stopped=1
-          break
-        fi
-        sleep 0.2
-      done
-      if [ "$pid_stopped" -ne 1 ]; then
-        echo "ERROR: Endpoint PID did not stop within timeout; terminating" >&2
-        CI_CLEANUP_FAILURE=1
-        kill -9 "$CI_ENDPOINT_PID" 2>/dev/null || true
-      fi
-    fi
-  fi
-
-  # 4. Remove temporary endpoint directory ONLY if created by this run
-  if [ "${CI_RUN_DIR_CREATED:-0}" -eq 1 ] && [ -n "${CI_RUN_DIR:-}" ]; then
-    if [ -d "$CI_RUN_DIR" ]; then
-      local cur_inode cur_uid st=0
-      cur_inode=$(stat -c "%i" "$CI_RUN_DIR" 2>/dev/null || stat -f "%i" "$CI_RUN_DIR" 2>/dev/null) || st=$?
-      cur_uid=$(stat -c "%u" "$CI_RUN_DIR" 2>/dev/null || stat -f "%u" "$CI_RUN_DIR" 2>/dev/null || true)
-      if [ "$st" -ne 0 ] || [ -z "$cur_inode" ] || [ "$cur_inode" != "$CI_RUN_DIR_INODE" ] || [ "$cur_uid" != "$(id -u)" ]; then
-        echo "ERROR: Cleanup identity mismatch for endpoint directory $CI_RUN_DIR (recorded inode: $CI_RUN_DIR_INODE, current: $cur_inode, current uid: $cur_uid). Retaining directory." >&2
-        CI_CLEANUP_FAILURE=1
-      else
-        rm -rf "$CI_RUN_DIR"
       fi
     else
-      echo "ERROR: Expected endpoint directory $CI_RUN_DIR missing before cleanup removal" >&2
+      echo 'ERROR: Runner full ID unavailable; refusing name-based cleanup' >&2
       CI_CLEANUP_FAILURE=1
     fi
+  fi
+
+  # A private socket uses the same engine store. New unproven resources are
+  # retained and prohibit PASS; inventory difference is never ownership proof.
+  if [ "${CI_BASELINE_READY:-0}" -eq 1 ] && [ "$directory_trusted" -eq 1 ]; then
+    local kind current id base found
+    for kind in container network volume; do
+      current=$(_ci_inventory "$kind") || { CI_CLEANUP_FAILURE=1; continue; }
+      base=$(cat "${CI_BASELINE_FILE}.${kind}") || { CI_CLEANUP_FAILURE=1; continue; }
+      for id in $current; do
+        found=0
+        local prior
+        for prior in $base; do
+          if [ "$id" = "$prior" ]; then found=1; break; fi
+        done
+        if [ "$found" -eq 0 ]; then
+          echo "ERROR: Unproven new ${kind} resource retained: ${id}" >&2
+          CI_CLEANUP_FAILURE=1
+        fi
+      done
+      printf '%s\n' "$current" > "${CI_STATE_FILE}.final-${kind}" || CI_CLEANUP_FAILURE=1
+    done
+  fi
+
+  if [ -n "$CI_ENDPOINT_PID" ]; then
+    if ! _stop_owned_endpoint; then CI_CLEANUP_FAILURE=1; fi
+  fi
+
+  if [ "$CI_RUN_DIR_CREATED" -eq 1 ]; then
+    identity=$(stat -c '%d:%i:%u' "$CI_RUN_DIR") || CI_CLEANUP_FAILURE=1
+    if [ -L "$CI_RUN_DIR" ] || [ "$identity" != "$CI_RUN_DIR_INODE" ]; then
+      echo 'ERROR: Cleanup identity mismatch for endpoint directory; retaining it' >&2
+      CI_CLEANUP_FAILURE=1
+    fi
+    # Remove the checked socket only after endpoint termination is proven.
+    # Keep directory and inventories as durable failure/deviation evidence.
+    if [ "$CI_CLEANUP_FAILURE" -eq 0 ] && [ -n "$CI_SOCKET_IDENTITY" ]; then
+      identity=$(stat -c '%d:%i:%u' "$CI_ENDPOINT_SOCK") || CI_CLEANUP_FAILURE=1
+      if [ -L "$CI_ENDPOINT_SOCK" ] || [ "$identity" != "$CI_SOCKET_IDENTITY" ]; then
+        CI_CLEANUP_FAILURE=1
+      elif ! rm -- "$CI_ENDPOINT_SOCK"; then
+        CI_CLEANUP_FAILURE=1
+      fi
+      if [ -e "$CI_ENDPOINT_SOCK" ] || [ -L "$CI_ENDPOINT_SOCK" ]; then CI_CLEANUP_FAILURE=1; fi
+    fi
+    printf 'endpoint_directory_retained=%s cleanup_failure=%s\n' "$CI_RUN_DIR" "$CI_CLEANUP_FAILURE" \
+      >> "${CI_STATE_FILE}.cleanup" || CI_CLEANUP_FAILURE=1
   fi
 
   # 5. Record final durable state
   if [ "${CI_REUSE_REFUSED:-0}" -eq 0 ] && [ -n "${CI_STATE_FILE:-}" ]; then
     if [ "$CI_FIRST_FAILURE" -eq 0 ] && [ "$CI_CLEANUP_FAILURE" -eq 0 ] && [ "$CI_VERIFIED" -eq 1 ]; then
-      cat <<EOF > "$CI_STATE_FILE"
-{"run_id":"${CI_RUN_ID}","mode":"integration-ci","status":"passed","baseline_sha":"${APPROVED_BASELINE_SHA}","parent_sha":"${APPROVED_PARENT_SHA}","timestamp":"$(date -u +%Y-%m-%dT%H:%M:%SZ)"}
+      cat <<EOF > "$CI_STATE_FILE" || CI_CLEANUP_FAILURE=1
+{"run_id":"${CI_RUN_ID}","mode":"integration-ci","status":"passed","baseline_sha":"${APPROVED_BASELINE_SHA}","parent_sha":"${APPROVED_PARENT_SHA}","candidate_sha":"${TESTED_SHA}","timestamp":"$(date -u +%Y-%m-%dT%H:%M:%SZ)"}
 EOF
-      chmod 600 "$CI_STATE_FILE"
+      chmod 600 "$CI_STATE_FILE" || CI_CLEANUP_FAILURE=1
     else
       local eff_code="$CI_FIRST_FAILURE"
       if [ "$eff_code" -eq 0 ]; then eff_code=1; fi
-      cat <<EOF > "$CI_STATE_FILE"
-{"run_id":"${CI_RUN_ID}","mode":"integration-ci","status":"failed","baseline_sha":"${APPROVED_BASELINE_SHA}","parent_sha":"${APPROVED_PARENT_SHA}","exit_code":${eff_code},"cleanup_failure":${CI_CLEANUP_FAILURE},"timestamp":"$(date -u +%Y-%m-%dT%H:%M:%SZ)"}
+      cat <<EOF > "$CI_STATE_FILE" || CI_CLEANUP_FAILURE=1
+{"run_id":"${CI_RUN_ID}","mode":"integration-ci","status":"failed","baseline_sha":"${APPROVED_BASELINE_SHA}","parent_sha":"${APPROVED_PARENT_SHA}","candidate_sha":"${TESTED_SHA}","exit_code":${eff_code},"cleanup_failure":${CI_CLEANUP_FAILURE},"timestamp":"$(date -u +%Y-%m-%dT%H:%M:%SZ)"}
 EOF
-      chmod 600 "$CI_STATE_FILE"
+      chmod 600 "$CI_STATE_FILE" || CI_CLEANUP_FAILURE=1
     fi
   fi
 
@@ -741,13 +1018,16 @@ EOF
     exit 1
   fi
 
+  [ "$CI_VERIFIED" -eq 1 ] || exit 1
   exit 0
 }
 
 _run_integration_ci() {
   echo "=== Running Fixed-Purpose Verification: Mode 'integration-ci' ==="
 
+  _capture_source_identity
   CI_RUN_ID="ci_integ_${GITHUB_RUN_ID:-$$}"
+  [[ "$CI_RUN_ID" =~ ^[a-zA-Z0-9_-]+$ ]] || _fail "ERROR: Invalid integration run ID"
   CI_STATE_FILE="${TMPDIR:-/tmp}/.verify_integ_${CI_RUN_ID}.json"
 
   if [ -f "$CI_STATE_FILE" ]; then
@@ -761,7 +1041,7 @@ _run_integration_ci() {
 
   # Record initial running state atomically
   if ( set -o noclobber; cat <<EOF > "$CI_STATE_FILE"
-{"run_id":"${CI_RUN_ID}","mode":"integration-ci","status":"running","baseline_sha":"${APPROVED_BASELINE_SHA}","parent_sha":"${APPROVED_PARENT_SHA}","timestamp":"$(date -u +%Y-%m-%dT%H:%M:%SZ)"}
+{"run_id":"${CI_RUN_ID}","mode":"integration-ci","status":"running","baseline_sha":"${APPROVED_BASELINE_SHA}","parent_sha":"${APPROVED_PARENT_SHA}","candidate_sha":"${TESTED_SHA}","timestamp":"$(date -u +%Y-%m-%dT%H:%M:%SZ)"}
 EOF
   ) 2>/dev/null; then
     chmod 600 "$CI_STATE_FILE"
@@ -781,7 +1061,7 @@ EOF
   fi
   mkdir -m 700 "$CI_RUN_DIR"
   CI_RUN_DIR_CREATED=1
-  CI_RUN_DIR_INODE=$(stat -c "%i" "$CI_RUN_DIR" 2>/dev/null || stat -f "%i" "$CI_RUN_DIR" 2>/dev/null || true)
+  CI_RUN_DIR_INODE=$(stat -c "%d:%i:%u" "$CI_RUN_DIR")
 
   CI_ENDPOINT_SOCK="${CI_RUN_DIR}/podman.sock"
   CI_BASELINE_FILE="${CI_RUN_DIR}/baseline_containers.txt"
@@ -792,6 +1072,7 @@ EOF
   echo "--- Phase 1 & 2: Private Endpoint Setup & Fail-Closed Mount Guards ---"
   podman system service --time=0 "unix://${CI_ENDPOINT_SOCK}" &
   CI_ENDPOINT_PID=$!
+  CI_ENDPOINT_IDENTITY=$(_endpoint_identity "$CI_ENDPOINT_PID")
 
   local sock_ready=0
   for _ in {1..30}; do
@@ -807,6 +1088,7 @@ EOF
     _fail "ERROR: Private endpoint socket failed to initialize: ${CI_ENDPOINT_SOCK}"
   fi
   chmod 600 "$CI_ENDPOINT_SOCK"
+  CI_SOCKET_IDENTITY=$(stat -c '%d:%i:%u' "$CI_ENDPOINT_SOCK")
 
   # Enforce fail-closed socket and directory guards
   _validate_endpoint_socket_guards "$CI_ENDPOINT_SOCK" "$CI_RUN_DIR"
@@ -820,7 +1102,10 @@ EOF
 
   # Build containerized integration runner without fallback
   echo "Building containerized integration runner..."
-  if ! podman image exists s2-assets-dev:ci 2>/dev/null; then
+  local image_st=0
+  podman image exists s2-assets-dev:ci || image_st=$?
+  if [ "$image_st" -gt 1 ]; then _fail "ERROR: Base image inspection failed ($image_st)"; fi
+  if [ "$image_st" -eq 1 ]; then
     echo "Building base development tooling image s2-assets-dev:ci..."
     podman build -f "${REPO_ROOT}/deploy/podman/dev.Containerfile" -t s2-assets-dev:ci "${REPO_ROOT}"
   fi
@@ -831,13 +1116,19 @@ RUN apk add --no-cache podman curl bash
 RUN printf '#!/bin/sh\nif [ -z "${CONTAINER_HOST:-}" ]; then echo "ERROR: CONTAINER_HOST is required; no fallback permitted" >&2; exit 1; fi\nexec /usr/bin/podman --remote --url "${CONTAINER_HOST}" "$@"\n' > /usr/local/bin/podman && chmod +x /usr/local/bin/podman
 EOF
 
-  # Record baseline containers
-  podman ps -aq --no-trunc > "$CI_BASELINE_FILE"
+  # Record all relevant resource inventories; any inspection error halts startup.
+  local kind runner_exists=0
+  for kind in container network volume; do
+    _ci_inventory "$kind" > "${CI_BASELINE_FILE}.${kind}"
+  done
+  CI_BASELINE_READY=1
+  podman container exists "$CI_RUNNER_NAME" || runner_exists=$?
+  [ "$runner_exists" -eq 1 ] || _fail "ERROR: Runner name occupied or inspection failed"
 
   # Phase 3: Run integration tests with safe mount contract (NO :z or :Z on socket)
   echo "--- Phase 3: Running Integration Tests via Safe Private Endpoint ---"
   CI_MUTATION_STARTED=1
-  podman run --name "$CI_RUNNER_NAME" --rm \
+  podman run --name "$CI_RUNNER_NAME" --cidfile "${CI_RUN_DIR}/runner.cid" \
     --network=host \
     --userns=keep-id \
     -u 1001:1001 \
@@ -854,6 +1145,13 @@ EOF
     s2-assets-integration:ci \
     sh -c 'podman --remote --url "$CONTAINER_HOST" info >/dev/null && pnpm --filter api exec vitest run tests/integration'
 
+  CI_RUNNER_CID=$(cat "${CI_RUN_DIR}/runner.cid")
+  [[ "$CI_RUNNER_CID" =~ ^[a-f0-9]{64}$ ]] || _fail "ERROR: Invalid runner CID"
+  local runner_receipt
+  runner_receipt=$(_ci_runner_receipt "$CI_RUNNER_CID")
+  jq -e '.state | .Running == false and .Status == "exited" and .Pid == 0 and
+    .ExitCode == 0 and .OOMKilled == false and .Restarting == false and .Dead == false and .Paused == false'     <<< "$runner_receipt" >/dev/null
+  printf '%s\n' "$runner_receipt" > "${CI_STATE_FILE}.terminal"
   CI_VERIFIED=1
   echo "Integration tests completed successfully."
 }
