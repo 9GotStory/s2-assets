@@ -40,9 +40,50 @@ _forbid_log() {
   _assert_eq 1 "$st" "$3"
 }
 _require_failure() {
-  local receipt="$1" first="$2" cleanup="$3"
-  _assert_eq true "$(jq -e --argjson code "$first" --argjson cleanup "$cleanup" \
-    '.status == "failed" and .exit_code == $code and .cleanup_failure == $cleanup' "$receipt")" \
+  local receipt="$1" first="$2" cleanup="$3" result jq_status=0
+  result=$(jq -e --argjson code "$first" --argjson cleanup "$cleanup" \
+    '.status == "failed" and .exit_code == $code and .cleanup_failure == $cleanup' "$receipt" 2>/dev/null) || jq_status=$?
+  if [ "$result" != true ]; then
+    printf 'Failure receipt diagnostics (validation exit=%s):\nexpected.status="failed"\nexpected.exit_code=%s\nexpected.cleanup_failure=%s\n' \
+      "$jq_status" "$first" "$cleanup" >&2
+    local data actual data_error="" field
+    if [ ! -e "$receipt" ] && [ ! -L "$receipt" ]; then
+      data_error='missing receipt'
+    elif [ ! -f "$receipt" ]; then
+      data_error='unreadable or non-regular receipt'
+    elif ! data=$(cat -- "$receipt" 2>/dev/null); then
+      data_error='unreadable receipt'
+    elif ! actual=$(jq -sr '
+      def unavailable($reason):
+        "receipt_data=\($reason)",
+        ("status", "exit_code", "cleanup_failure" | "actual.\(.)=<unavailable: \($reason)>");
+      def describe($field; $expected_type):
+        if has($field) | not then "<missing>"
+        elif .[$field] == null then "null"
+        else (.[$field] | type) as $type |
+          (if $type == "object" or $type == "array" then "<value withheld>" else (.[$field] | tojson) end) +
+          (if $type == $expected_type then "" else " <malformed: expected \($expected_type), got \($type)>" end)
+        end;
+      if length == 0 then unavailable("missing JSON value (empty receipt)")
+      elif length != 1 then unavailable("malformed receipt: multiple JSON values")
+      elif (.[0] | type) != "object" then unavailable("malformed receipt: expected JSON object, got \(.[0] | type)")
+      else .[0] |
+        "actual.status=\(describe("status"; "string"))",
+        "actual.exit_code=\(describe("exit_code"; "number"))",
+        "actual.cleanup_failure=\(describe("cleanup_failure"; "number"))"
+      end' <<< "$data" 2>/dev/null); then
+      data_error='malformed JSON receipt'
+    fi
+    if [ -n "$data_error" ]; then
+      printf 'receipt_data=%s\n' "$data_error" >&2
+      for field in status exit_code cleanup_failure; do
+        printf 'actual.%s=<unavailable: %s>\n' "$field" "$data_error" >&2
+      done
+    else
+      printf '%s\n' "$actual" >&2
+    fi
+  fi
+  _assert_eq true "$result" \
     'Mandatory failure receipt has exact exit and cleanup status'
 }
 _new_env() {
