@@ -18,6 +18,7 @@ describe('CapabilityService Unit Tests (T024 - US2)', () => {
       expect(Object.isFrozen(ROLE_CAPABILITY_MAP.SYSTEM_MAINTAINER)).toBe(true);
       expect(Object.isFrozen(ROLE_CAPABILITY_MAP.ADMINISTRATOR)).toBe(true);
       expect(Object.isFrozen(ROLE_CAPABILITY_MAP.READ_ONLY)).toBe(true);
+      expect(Object.isFrozen(ROLE_CAPABILITY_MAP.ASSET_CUSTODIAN)).toBe(true);
 
       // Attempting mutation must fail in strict mode or have no effect
       expect(() => {
@@ -30,14 +31,23 @@ describe('CapabilityService Unit Tests (T024 - US2)', () => {
       expect(ROLE_CAPABILITY_MAP.SYSTEM_MAINTAINER).toEqual(['system:maintain']);
     });
 
-    it('maps ADMINISTRATOR to system:maintain without wildcards or speculative capabilities', () => {
-      expect(ROLE_CAPABILITY_MAP.ADMINISTRATOR).toEqual(['system:maintain']);
+    it('maps ADMINISTRATOR to system:maintain and asset:view without wildcards or registration capabilities', () => {
+      expect(ROLE_CAPABILITY_MAP.ADMINISTRATOR).toEqual(['system:maintain', 'asset:view']);
       expect(ROLE_CAPABILITY_MAP.ADMINISTRATOR).not.toContain('*');
-      expect(ROLE_CAPABILITY_MAP.ADMINISTRATOR).not.toContain('admin:*');
+      expect(ROLE_CAPABILITY_MAP.ADMINISTRATOR).not.toContain('asset:register');
+      expect(ROLE_CAPABILITY_MAP.ADMINISTRATOR).not.toContain('asset:duplicate-check');
     });
 
-    it('maps READ_ONLY to empty array', () => {
-      expect(ROLE_CAPABILITY_MAP.READ_ONLY).toEqual([]);
+    it('maps READ_ONLY to asset:view (no mutation or duplicate-check grants)', () => {
+      expect(ROLE_CAPABILITY_MAP.READ_ONLY).toEqual(['asset:view']);
+    });
+
+    it('maps ASSET_CUSTODIAN to asset:view, asset:duplicate-check, asset:register', () => {
+      expect(ROLE_CAPABILITY_MAP.ASSET_CUSTODIAN).toEqual([
+        'asset:view',
+        'asset:duplicate-check',
+        'asset:register',
+      ]);
     });
 
     it('validates UUIDs correctly with isValidUuid', () => {
@@ -236,7 +246,7 @@ describe('CapabilityService Unit Tests (T024 - US2)', () => {
       expect(roles).toEqual(['READ_ONLY', 'SYSTEM_MAINTAINER']);
 
       const caps = await service.getCapabilities(validUserId);
-      expect(caps).toEqual(['system:maintain']);
+      expect(caps.sort()).toEqual(['asset:view', 'system:maintain'].sort());
     });
 
     it('Case 13: externally injected database clients remain externally owned', async () => {

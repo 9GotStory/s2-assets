@@ -1,5 +1,5 @@
 import React, { useEffect, useState } from 'react';
-import { useNavigate } from 'react-router';
+import { useNavigate, Link } from 'react-router';
 
 export interface SafeUser {
   id: string;
@@ -276,6 +276,50 @@ export const Dashboard: React.FC = () => {
               </>
             )}
           </dl>
+        </section>
+
+        <section
+          aria-labelledby="registry-heading"
+          style={{
+            backgroundColor: '#f9fafb',
+            borderRadius: '6px',
+            padding: '1.25rem',
+            marginBottom: '1.5rem',
+          }}
+        >
+          <h2
+            id="registry-heading"
+            style={{
+              fontSize: '1.125rem',
+              fontWeight: 600,
+              marginTop: 0,
+              marginBottom: '0.5rem',
+              color: '#374151',
+            }}
+          >
+            งานทะเบียนครุภัณฑ์ (Asset Registry)
+          </h2>
+          <p style={{ margin: '0 0 1rem 0', fontSize: '0.875rem', color: '#4b5563' }}>
+            ระบบบันทึกและจัดการข้อมูลครุภัณฑ์รายชิ้น
+          </p>
+          <div>
+            <Link
+              to="/assets/register"
+              id="nav-asset-register"
+              style={{
+                display: 'inline-block',
+                padding: '0.5rem 1rem',
+                backgroundColor: '#2563eb',
+                color: '#ffffff',
+                textDecoration: 'none',
+                borderRadius: '4px',
+                fontSize: '0.875rem',
+                fontWeight: 500,
+              }}
+            >
+              + ลงทะเบียนครุภัณฑ์ใหม่
+            </Link>
+          </div>
         </section>
       </div>
     </main>

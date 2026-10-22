@@ -15,9 +15,11 @@ import { authPlugin, type AuthPluginOptions } from './plugins/auth.ts';
 import { authRoutes } from './routes/auth.routes.ts';
 import { systemRoutes } from './routes/system.routes.ts';
 import { healthRoutes } from './routes/health.routes.ts';
+import { assetRoutes } from './routes/asset.routes.ts';
 import { UserService, type DatabaseClient } from './services/user.service.ts';
 import { SessionService } from './services/session.service.ts';
 import { CapabilityService } from './services/capability.service.ts';
+import { AssetService } from './services/asset.service.ts';
 
 export interface AppOptions {
   config?: Partial<Config>;
@@ -166,8 +168,14 @@ export async function buildApp(options: AppOptions = {}): Promise<FastifyInstanc
     });
     const capabilityService = new CapabilityService({ db: dbClient });
 
+    const assetService = new AssetService({ db: dbClient });
+
     if (!app.hasDecorator('capabilityService')) {
       app.decorate('capabilityService', capabilityService);
+    }
+
+    if (!app.hasDecorator('assetService')) {
+      app.decorate('assetService', assetService);
     }
 
     // 7. Register Auth plugin in effective application scope
@@ -197,6 +205,14 @@ export async function buildApp(options: AppOptions = {}): Promise<FastifyInstanc
     // System routes mounted once under /system
     await app.register(systemRoutes, {
       prefix: '/system',
+      capabilityService,
+      db: dbClient,
+    });
+
+    // Asset registry routes mounted under /assets
+    await app.register(assetRoutes, {
+      prefix: '/assets',
+      assetService,
       capabilityService,
       db: dbClient,
     });
