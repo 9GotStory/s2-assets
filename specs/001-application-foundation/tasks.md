@@ -134,7 +134,7 @@
 
 ### Application bootstrap — independent scopes
 
-- [ ] T041 [P] [US4] Compose the accepted API in `apps/api/src/app.ts` and `apps/api/src/server.ts`, with development/typecheck/build/start commands in `apps/api/package.json`, bounded TypeScript build configuration under `apps/api/`, and focused startup/composition verification in `apps/api/tests/unit/app.test.ts`.
+- [x] T041 [P] [US4] Compose the accepted API in `apps/api/src/app.ts` and `apps/api/src/server.ts`, with development/typecheck/build/start commands in `apps/api/package.json`, bounded TypeScript build configuration under `apps/api/`, and focused startup/composition verification in `apps/api/tests/unit/app.test.ts`.
 
   **Prerequisites**: Accepted T001–T030 modules/configuration and subsequent bounded implementation authorization. No dependency on T042. **Scope**: Validate configuration before listening; factory construction must not listen. Share one owned PostgreSQL pool, preserve injected-client ownership, and release resources on startup failure/SIGTERM/SIGINT. Register the accepted redacted logger/error handling, cookie/CSRF integration, auth and routes in effective application scope and safe signing order. Mount auth once at `/auth`, system once at `/system`, and public `/health`/`/ready` at root; all other unmarked routes remain authenticated and `/system/info` enforces `system:maintain`. Do not expose test-only CSRF routes or broaden exemptions. Supply `dev`, `start:dev`, `typecheck`, `build` and `start`; emitted ESM must handle existing TS imports correctly. Preserve existing dependency/security decisions and tests.
 
