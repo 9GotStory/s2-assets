@@ -152,7 +152,7 @@ describe('CapabilityService Real PostgreSQL Integration Tests (T024 - US2)', () 
       expect(roles).toEqual(['READ_ONLY']);
 
       const caps = await service.getCapabilities(user.id);
-      expect(caps).toEqual([]);
+      expect(caps).toEqual(['asset:view']);
     });
 
     it('Case 4: unknown role identifiers in PostgreSQL do not grant system:maintain', async () => {

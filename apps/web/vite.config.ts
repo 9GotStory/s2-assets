@@ -15,6 +15,15 @@ export default defineConfig({
         target: 'http://api:3000',
         changeOrigin: true,
       },
+      '/assets': {
+        target: 'http://api:3000',
+        changeOrigin: true,
+        bypass: (req) => {
+          if (req.headers.accept?.includes('text/html')) {
+            return '/index.html';
+          }
+        },
+      },
     },
   },
 });

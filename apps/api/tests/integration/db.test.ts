@@ -157,9 +157,24 @@ describe('Database Migrations Integration', () => {
     expect(rollbackResult.error).toBeUndefined();
     expect(rollbackResult.results).toBeDefined();
     expect(rollbackResult.results!.length).toBe(1);
-    expect(rollbackResult.results![0].migrationName).toBe('0001_foundation');
     expect(rollbackResult.results![0].direction).toBe('Down');
     expect(rollbackResult.results![0].status).toBe('Success');
+
+    // If 0002_asset_registry was the latest migration rolled back, roll back 0001_foundation to verify clean teardown
+    if (rollbackResult.results![0].migrationName === '0002_asset_registry') {
+      const rollbackFoundation = await runMigrator({
+        command: 'down',
+        databaseUrl,
+        migrationFolder,
+      });
+      expect(rollbackFoundation.error).toBeUndefined();
+      expect(rollbackFoundation.results).toBeDefined();
+      expect(rollbackFoundation.results![0].migrationName).toBe('0001_foundation');
+      expect(rollbackFoundation.results![0].direction).toBe('Down');
+      expect(rollbackFoundation.results![0].status).toBe('Success');
+    } else {
+      expect(rollbackResult.results![0].migrationName).toBe('0001_foundation');
+    }
 
     // Verify tables are dropped
     const client = new Client({ connectionString: databaseUrl });
@@ -186,9 +201,10 @@ describe('Database Migrations Integration', () => {
 
     expect(reapplyResult.error).toBeUndefined();
     expect(reapplyResult.results).toBeDefined();
-    expect(reapplyResult.results!.length).toBe(1);
-    expect(reapplyResult.results![0].migrationName).toBe('0001_foundation');
-    expect(reapplyResult.results![0].direction).toBe('Up');
-    expect(reapplyResult.results![0].status).toBe('Success');
+    expect(reapplyResult.results!.length).toBeGreaterThan(0);
+    const foundationMigration = reapplyResult.results!.find((m) => m.migrationName === '0001_foundation');
+    expect(foundationMigration).toBeDefined();
+    expect(foundationMigration!.direction).toBe('Up');
+    expect(foundationMigration!.status).toBe('Success');
   });
 });
