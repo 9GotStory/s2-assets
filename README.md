@@ -1,15 +1,15 @@
 # Office Asset & Consumable Management System
 
-> Canonical Blueprint baseline สำหรับพัฒนาระบบครุภัณฑ์สำนักงานและวัสดุสิ้นเปลืองด้วย GitHub Spec Kit, AGY/Antigravity และ Multica
+> Canonical Blueprint baseline สำหรับระบบครุภัณฑ์สำนักงานและวัสดุสิ้นเปลือง; Feature 002 onward uses Matt Pocock Skills with Multica coordination and GitHub Issues tracking.
 
 | Baseline | Value |
 |---|---|
 | Blueprint | **v1.0.2 — FROZEN** |
-| Workflow | **Spec Kit + Human-gated independent delivery** |
+| Workflow | **Matt Pocock Skills from Feature 002 + Human-gated independent delivery** |
 | Technology Direction | **`TECHNOLOGY.md` v1.0.1 — SELECTED BASELINE** |
 | Business Rules | **252 canonical rules** |
 | Delivery decomposition | **14 Feature Briefs** |
-| Spec Kit | **1.1.1 / AGY integration** |
+| Feature 001 tooling (historical) | **Spec Kit 1.1.1 / AGY integration** |
 
 หลักการของโครงการ:
 
@@ -28,7 +28,11 @@ Repository นี้เป็น ready-to-develop business/system baseline ไ�
 3. active Feature Brief ใน `features/`
 4. canonical rules ใน `docs/06-business-rules.md`
 
-Spec Kit artifacts refine delivery details แต่ห้าม silent-redefine business meaning ที่อยู่ใน authority สูงกว่า
+Approved feature specifications and tickets refine delivery details แต่ห้าม silent-redefine business meaning ที่อยู่ใน authority สูงกว่า
+
+Constitution v5.0.0 / `AGENTS.md` select Matt Pocock Skills for Feature 002 onward.
+Spec Kit workflow references in frozen/context documents are historical delivery
+context; business scope, rules and technical authority remain unchanged.
 
 ### Technical Direction
 
@@ -38,11 +42,18 @@ Spec Kit artifacts refine delivery details แต่ห้าม silent-redefine
 - exact minor/patch versions และ Deferred decisions ให้ Plan resolve ตาม environment จริง
 - material technology deviation ต้อง explicit พร้อมเหตุผล/ผลกระทบและ Product Owner decision ก่อน implementation
 - local application development runtime ใช้ **Rootless Podman**
-- Git, Git worktrees, Spec Kit, Multica และ AGY agents อยู่บน host
+- Git, Git worktrees, engineering workflow tooling, Multica และ AGY agents อยู่บน host
 
 ### Project / Delivery Authority
 
-หลัง initialize Spec Kit:
+For Feature 002 onward:
+
+- Constitution v5.0.0 — project-wide engineering principles and feature-scoped workflow
+- approved feature specification/decisions — behavior, acceptance and implementation/testing decisions
+- approved GitHub Issues — bounded delivery tickets
+- implementation + tests — delivered behavior
+
+Feature 001 historical artifact roles remain:
 
 - Constitution — project-wide engineering principles
 - `spec.md` / clarifications — feature behavior และ acceptance
@@ -50,7 +61,7 @@ Spec Kit artifacts refine delivery details แต่ห้าม silent-redefine
 - `tasks.md` — executable delivery decomposition
 - implementation + tests — delivered behavior
 
-Multica Issue/comments/run history เป็น coordination evidence ไม่ใช่ requirement source of truth ใหม่
+Multica Issue/comments/run history เป็น coordination evidence; explicit Product Owner decisions remain authoritative, while agent-generated content cannot redefine business requirements.
 Agent assignment, delegation, mentions และ reviewer routing เป็น runtime coordination และไม่ใช่ repository governance
 
 ---
@@ -68,7 +79,25 @@ Agent assignment, delegation, mentions และ reviewer routing เป็น r
 
 ## 3. Runtime and delivery model
 
-### Before Human Gate
+### Feature 002 onward
+
+```text
+setup-matt-pocock-skills (one-time repository setup)
+→ to-spec
+→ to-tickets
+→ Human Gate
+→ implement / tdd at agreed seams / code-review
+→ independent Lead review
+→ ChatGPT Independent Review
+→ Product Owner acceptance
+```
+
+Use native skill invocation. Specification/ticket publication and bounded
+implementation require applicable Product Owner approval. Multica handles
+delegation and result return; GitHub Issues tracks specifications and tickets.
+The amendment itself authorizes no next skill, publication or dispatch.
+
+### Feature 001 before Human Gate — historical
 
 ใช้ GitHub Spec Kit ผ่าน AGY integration:
 
@@ -103,7 +132,10 @@ Authorized bounded implementation
 
 ---
 
-## 4. Spec Kit integration
+## 4. Feature 001 Spec Kit integration — historical
+
+The following integration record is preserved for Feature 001. Do not run these
+bootstrap commands for Feature 002 or later features.
 
 Repository นี้ใช้ Spec Kit **1.1.1** และ integration **`agy`**
 
@@ -137,7 +169,7 @@ Application runtime และ infrastructure dependencies สำหรับ nor
 ```text
 Fedora Host
 ├── Git / worktrees
-├── GitHub Spec Kit
+├── Engineering workflow tooling (Spec Kit for Feature 001 history)
 ├── Multica
 ├── AGY agents
 │
@@ -172,13 +204,13 @@ Feature sequencing canonical อยู่ที่ `docs/09-feature-map.md`
 13. `material-return-adjustment`
 14. `material-stocktake`
 
-หนึ่ง feature ทำทีละช่วงตาม Spec Kit; ห้ามใช้ feature แรกสร้าง framework เผื่อทุก feature หลัง
+หนึ่ง feature ทำทีละช่วงตาม approved feature-scoped workflow; ห้ามใช้ feature แรกสร้าง framework เผื่อทุก feature หลัง
 
 ---
 
 ## 7. Reading order
 
-### Product Owner / Spec Kit authoring
+### Product Owner / feature authoring
 
 1. `README.md`
 2. `BLUEPRINT.md`
@@ -186,14 +218,14 @@ Feature sequencing canonical อยู่ที่ `docs/09-feature-map.md`
 4. `docs/09-feature-map.md`
 5. active Feature Brief
 6. relevant canonical docs/rules
-7. active Spec Kit artifacts
+7. approved active feature specification, decisions and tickets (historical Spec Kit artifacts for Feature 001)
 
 ### Implementation / review
 
 1. `AGENTS.md`
 2. `CLAUDE.md` เพิ่มเติมสำหรับ implementation executor เมื่อ applicable
 3. relevant Business Authority / Technology Direction
-4. exact active Spec Kit artifacts
+4. exact authorized feature specification, decisions and ticket context
 5. exact diff/tests/evidence for the authorized scope
 
 ใช้ progressive disclosure; ห้าม copy Blueprint ทั้งชุดเข้า feature spec โดยอัตโนมัติ
@@ -233,7 +265,15 @@ Do not add without a current requirement:
 
 ## 10. Current start point
 
-After Spec Kit bootstrap and Constitution are accepted:
+Feature 002 — `asset-registry` uses the accepted Matt Skills setup and the
+Constitution v5.0.0 amendment candidate. Independent Review and Product Owner
+acceptance of the amendment remain pending; `to-spec`, publication, dispatch and
+integration require their applicable authorization. See `AGENTS.md`,
+`docs/agents/issue-tracker.md` and `docs/agents/domain.md`.
+
+### Feature 001 start-point record — historical
+
+After Spec Kit bootstrap and Constitution are accepted (historical sequence):
 
 ```text
 Feature 001 — application-foundation

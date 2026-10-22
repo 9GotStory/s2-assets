@@ -29,7 +29,8 @@ See `docs/agents/domain.md`.
 - read `AGENTS.md`;
 - read the current Constitution;
 - read only the approved artifacts needed by the exact task;
-- check the unresolved Constitution workflow conflict recorded in `AGENTS.md`;
+- follow Constitution v5.0.0's feature-scoped workflow and the authorization gates
+  recorded in `AGENTS.md`;
 - verify the authorized baseline and scope;
 - verify the bounded handoff and active Lead–Developer route in Multica;
 - verify version-sensitive external behavior through Context7 when relevant.

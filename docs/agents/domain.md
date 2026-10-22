@@ -32,5 +32,6 @@ creating them upfront. No new glossary or ADR structure is required for setup.
 Record approved feature decisions by reference. Surface contradictions before
 implementation; do not change frozen business authority, technical direction,
 architectural/security invariants or historical Feature 001 artifacts to
-accommodate a skill or runtime. The Constitution conflict recorded in `AGENTS.md`
-requires separate resolution before further Feature 002 engineering execution.
+accommodate a skill or runtime. Constitution v5.0.0 and `AGENTS.md` define the
+feature-scoped engineering workflow; further execution still requires the
+applicable bounded Product Owner authorization.

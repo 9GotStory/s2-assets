@@ -38,9 +38,9 @@ references; do not duplicate whole trackers or introduce a review ledger.
 - No automatic issue closure, merge, deployment or adjacent task execution.
   Avoid automatic issue-closing directives. Product Owner separately authorizes
   acceptance, closure, integration, scope expansion and destructive operations.
-- Follow `AGENTS.md` and the active Multica issue for the approved route and
-  outstanding Constitution compatibility gate. Setup does not authorize
-  `to-spec`, ticket publication or implementation.
+- Follow Constitution v5.0.0, `AGENTS.md` and the active Multica issue for the
+  feature-scoped workflow, approved route and bounded authorization. Setup and
+  the amendment do not authorize `to-spec`, ticket publication or implementation.
 
 ## Labels
 

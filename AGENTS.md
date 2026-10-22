@@ -45,20 +45,19 @@ Implementation may begin only after the Product Owner explicitly authorizes the
 bounded task or scope. Specification/ticket publication also requires Product
 Owner approval; setup or ticket existence grants no execution authority.
 
-### Constitution compatibility — unresolved
+### Constitution compatibility
 
-`.specify/memory/constitution.md`, Principle VI, still mandates the Spec Kit
-pre-implementation sequence. This conflicts with the selected Feature 002+
-workflow. The Product Owner approved this four-file setup candidate in
-9GOTSTORY-260, comment `01a162f2-4b27-7a56-80dd-00a7dbb5d984`, while explicitly
-reserving the Constitution amendment for separate approval.
+`.specify/memory/constitution.md` v5.0.0, Principle VI, selects Matt Pocock Skills
+for Feature 002 onward and preserves Feature 001 history. The amendment was
+authorized in 9GOTSTORY-260, comment `01a16305-1a94-70fd-b321-78304b158be8`.
+Historical Spec Kit workflow references in canonical context documents do not
+select the workflow for new features; their business and technical authority
+remains unchanged.
 
-This setup does not amend or silently override the Constitution. Stop before
-`to-spec` or later Feature 002 engineering execution until the Product Owner
-approves and the authorized process applies the necessary amendment. Preserve
-all other Constitution principles and Feature 001 history. The proposed
-amendment is delivered through the Multica issue, outside this candidate's
-four-file scope.
+The documentation amendment requires Independent Review and Product Owner
+acceptance. It grants no authorization to invoke `to-spec`, publish tickets,
+dispatch implementation, merge or deploy. Obtain the applicable bounded
+authorization before advancing; preserve all other Constitution principles.
 
 ## Coordination and Handoff
 

@@ -6,6 +6,18 @@ Sync Impact Report:
 - Added sections: None
 - Removed sections: None
 - Deferred/TODOs: None
+
+Sync Impact Report:
+- Version change: 4.0.0 -> 5.0.0
+- Modified principles: VI. Human-Gated Independent Delivery (opening workflow paragraph only)
+- Rationale: select Matt Pocock Skills for Feature 002 onward while preserving Feature 001 history, independent review and Product Owner approval rules
+- Compatibility: no change to Blueprint v1.0.2, canonical Business Rules, Technology Direction, architecture, security, data integrity or runtime requirements
+- Added sections: None
+- Removed sections: None
+- Product Owner workflow decision: 9GOTSTORY-260, comment 01a162a4-fc65-7139-98ea-9211e212a26e
+- Accepted setup: 5332b4fb2b98b4c6b299e647f829ce814cb95a17, acceptance comment 01a162fe-f2fa-7528-82c5-34053e37b356
+- Amendment approval reference: 9GOTSTORY-260, comment 01a16305-1a94-70fd-b321-78304b158be8
+- Deferred/TODOs: no to-spec execution, publication or implementation authorized by this amendment
 -->
 # s2-assets Constitution
 
@@ -44,8 +56,12 @@ Sync Impact Report:
 - Tests MUST NOT weaken or redefine accepted business semantics.
 
 ### VI. Human-Gated Independent Delivery
-Pre-implementation delivery MUST follow the Spec Kit workflow:
-`Specify → Clarify when needed → Plan → Checklist when useful → Tasks → Analyze → Human Gate`
+Feature 001 retains its accepted Spec Kit workflow and historical artifacts.
+For Feature 002 onward, pre-implementation delivery MUST use Matt Pocock Skills:
+`setup-matt-pocock-skills (one-time setup) → to-spec → to-tickets → Human Gate`.
+After that gate, use `implement`, `tdd` at appropriate agreed seams, and
+`code-review` for the explicitly authorized bounded scope. A skill does not grant
+publication, implementation, merge or deployment authority.
 
 After Human Gate, authorized implementation MUST preserve independent authorship
 and review without hardcoding runtime-specific agent topology into repository
@@ -71,4 +87,4 @@ governance.
   - PATCH: Clarification with no change in meaning.
 - **Justified Deviations:** Any justified deviations MUST be explicit, proportionate, and MUST NOT silently override Business Authority or Technology Direction.
 
-**Version**: 4.0.0 | **Ratified**: 2026-10-07 | **Last Amended**: 2026-10-08
+**Version**: 5.0.0 | **Ratified**: 2026-10-07 | **Last Amended**: 2026-10-22
