@@ -1,4 +1,4 @@
-import React, { useEffect, useState } from 'react';
+import React, { useEffect, useState, useRef } from 'react';
 import { useNavigate, Link } from 'react-router';
 
 export interface DuplicateCandidate {
@@ -7,6 +7,14 @@ export interface DuplicateCandidate {
   asset_number: string | null;
   serial_number: string | null;
   recorded_at: string;
+}
+
+export interface DuplicateCandidatesResponse {
+  candidates: DuplicateCandidate[];
+  total_count: number;
+  has_more: boolean;
+  limit: number;
+  offset: number;
 }
 
 export interface RegisterAssetResponse {
@@ -46,11 +54,19 @@ export const AssetRegister: React.FC = () => {
   const [csrfToken, setCsrfToken] = useState<string | null>(null);
   const [isLoadingSession, setIsLoadingSession] = useState(true);
   const [isCheckingDuplicates, setIsCheckingDuplicates] = useState(false);
+  const [isLoadingMoreCandidates, setIsLoadingMoreCandidates] = useState(false);
   const [isSubmitting, setIsSubmitting] = useState(false);
 
   const [candidates, setCandidates] = useState<DuplicateCandidate[]>([]);
+  const [totalCandidateCount, setTotalCandidateCount] = useState(0);
+  const [hasMoreCandidates, setHasMoreCandidates] = useState(false);
+  const [_candidateOffset, setCandidateOffset] = useState(0);
   const [errorMessage, setErrorMessage] = useState<string | null>(null);
   const [isForbidden, setIsForbidden] = useState(false);
+
+  // Sequence and abort controller refs to discard obsolete asynchronous responses (Lead Finding 2)
+  const lookupSeqRef = useRef(0);
+  const abortControllerRef = useRef<AbortController | null>(null);
 
   const navigate = useNavigate();
 
@@ -85,30 +101,82 @@ export const AssetRegister: React.FC = () => {
 
     return () => {
       controller.abort();
+      if (abortControllerRef.current) {
+        abortControllerRef.current.abort();
+      }
     };
   }, [navigate]);
 
-  const handleCheckDuplicates = async () => {
+  const handleIdentifierChange = (
+    field: 'asset_number' | 'serial_number',
+    value: string
+  ) => {
+    lookupSeqRef.current += 1;
+    if (abortControllerRef.current) {
+      abortControllerRef.current.abort();
+      abortControllerRef.current = null;
+    }
+    if (field === 'asset_number') {
+      setAssetNumber(value);
+    } else {
+      setSerialNumber(value);
+    }
+
+    // Immediately reset stale candidates and explicit continuation acknowledgement (Lead Finding 2)
+    setCandidates([]);
+    setTotalCandidateCount(0);
+    setHasMoreCandidates(false);
+    setCandidateOffset(0);
+    setExplicitContinuation(false);
+    setErrorMessage(null);
+  };
+
+  const handleCheckDuplicates = async (
+    offsetToFetch: number = 0,
+    isAppend: boolean = false
+  ) => {
     if (!assetNumber && !serialNumber) {
       setCandidates([]);
+      setTotalCandidateCount(0);
+      setHasMoreCandidates(false);
+      setCandidateOffset(0);
+      setExplicitContinuation(false);
       return;
     }
 
-    setIsCheckingDuplicates(true);
+    if (abortControllerRef.current) {
+      abortControllerRef.current.abort();
+    }
+    const controller = new AbortController();
+    abortControllerRef.current = controller;
+    const currentSeq = ++lookupSeqRef.current;
+
+    if (isAppend) {
+      setIsLoadingMoreCandidates(true);
+    } else {
+      setIsCheckingDuplicates(true);
+    }
     setErrorMessage(null);
 
     try {
       const params = new URLSearchParams();
       if (assetNumber) params.append('asset_number', assetNumber);
       if (serialNumber) params.append('serial_number', serialNumber);
+      params.append('limit', '50');
+      if (offsetToFetch > 0) {
+        params.append('offset', offsetToFetch.toString());
+      }
 
       const response = await fetch(
         `/assets/duplicate-candidates?${params.toString()}`,
         {
           method: 'GET',
           credentials: 'include',
+          signal: controller.signal,
         }
       );
+
+      if (currentSeq !== lookupSeqRef.current) return;
 
       if (response.status === 403) {
         setIsForbidden(true);
@@ -121,15 +189,34 @@ export const AssetRegister: React.FC = () => {
         return;
       }
 
-      const data = await response.json();
-      setCandidates(data.candidates || []);
-      if (!data.candidates || data.candidates.length === 0) {
+      const data: DuplicateCandidatesResponse = await response.json();
+      if (currentSeq !== lookupSeqRef.current) return;
+
+      const newCandidates = data.candidates || [];
+      if (isAppend) {
+        setCandidates((prev) => [...prev, ...newCandidates]);
+      } else {
+        setCandidates(newCandidates);
+      }
+      setTotalCandidateCount(data.total_count ?? newCandidates.length);
+      setHasMoreCandidates(data.has_more ?? false);
+      setCandidateOffset(data.offset ?? offsetToFetch);
+
+      if (!isAppend && newCandidates.length === 0) {
         setExplicitContinuation(false);
       }
-    } catch {
-      setErrorMessage('เกิดข้อผิดพลาดในการเชื่อมต่อเพื่อตรวจสอบข้อมูลซ้ำ');
+    } catch (err: unknown) {
+      if (err instanceof DOMException && err.name === 'AbortError') {
+        return;
+      }
+      if (currentSeq === lookupSeqRef.current) {
+        setErrorMessage('เกิดข้อผิดพลาดในการเชื่อมต่อเพื่อตรวจสอบข้อมูลซ้ำ');
+      }
     } finally {
-      setIsCheckingDuplicates(false);
+      if (currentSeq === lookupSeqRef.current) {
+        setIsCheckingDuplicates(false);
+        setIsLoadingMoreCandidates(false);
+      }
     }
   };
 
@@ -195,6 +282,15 @@ export const AssetRegister: React.FC = () => {
           Array.isArray(errorData.candidates)
         ) {
           setCandidates(errorData.candidates);
+          setTotalCandidateCount(
+            typeof errorData.total_count === 'number'
+              ? errorData.total_count
+              : errorData.candidates.length
+          );
+          setHasMoreCandidates(Boolean(errorData.has_more));
+          setCandidateOffset(
+            typeof errorData.offset === 'number' ? errorData.offset : 0
+          );
           setErrorMessage(
             'พบครุภัณฑ์ที่มีเลขระบุตัวตนตรงกับในระบบ โปรดยืนยันการลงทะเบียนเป็นชิ้นใหม่หากประสงค์จะดำเนินการต่อ'
           );
@@ -455,7 +551,7 @@ export const AssetRegister: React.FC = () => {
                   type="text"
                   id="asset_number"
                   value={assetNumber}
-                  onChange={(e) => setAssetNumber(e.target.value)}
+                  onChange={(e) => handleIdentifierChange('asset_number', e.target.value)}
                   placeholder="เว้นว่างได้หากไม่มี"
                   style={{
                     width: '100%',
@@ -485,7 +581,7 @@ export const AssetRegister: React.FC = () => {
                   type="text"
                   id="serial_number"
                   value={serialNumber}
-                  onChange={(e) => setSerialNumber(e.target.value)}
+                  onChange={(e) => handleIdentifierChange('serial_number', e.target.value)}
                   placeholder="เว้นว่างได้หากไม่มี"
                   style={{
                     width: '100%',
@@ -505,7 +601,7 @@ export const AssetRegister: React.FC = () => {
                 <button
                   type="button"
                   id="check-duplicate-btn"
-                  onClick={handleCheckDuplicates}
+                  onClick={() => handleCheckDuplicates()}
                   disabled={isCheckingDuplicates}
                   style={{
                     padding: '0.375rem 0.75rem',
@@ -551,8 +647,15 @@ export const AssetRegister: React.FC = () => {
                       fontSize: '0.9375rem',
                     }}
                   >
-                    คำเตือน: พบครุภัณฑ์ที่มีเลขระบุตัวตนตรงกันในระบบ (
-                    {candidates.length} รายการ)
+                    {hasMoreCandidates ? (
+                      <>
+                        คำเตือน: พบครุภัณฑ์ที่มีเลขระบุตัวตนตรงกันในระบบ ({totalCandidateCount} รายการ — แสดง {candidates.length} รายการแรก)
+                      </>
+                    ) : (
+                      <>
+                        คำเตือน: พบครุภัณฑ์ที่มีเลขระบุตัวตนตรงกันในระบบ ({totalCandidateCount || candidates.length} รายการ)
+                      </>
+                    )}
                   </span>
                 </div>
                 <p
@@ -623,6 +726,30 @@ export const AssetRegister: React.FC = () => {
                     </tbody>
                   </table>
                 </div>
+
+                {hasMoreCandidates && (
+                  <div style={{ marginBottom: '0.75rem' }}>
+                    <button
+                      type="button"
+                      id="load-more-candidates-btn"
+                      onClick={() => handleCheckDuplicates(candidates.length, true)}
+                      disabled={isLoadingMoreCandidates}
+                      style={{
+                        padding: '0.375rem 0.75rem',
+                        backgroundColor: '#fef3c7',
+                        border: '1px solid #f59e0b',
+                        borderRadius: '4px',
+                        fontSize: '0.8125rem',
+                        color: '#92400e',
+                        cursor: isLoadingMoreCandidates ? 'not-allowed' : 'pointer',
+                      }}
+                    >
+                      {isLoadingMoreCandidates
+                        ? 'กำลังโหลดรายการเพิ่มเติม...'
+                        : `โหลดรายการเพิ่มเติม (${candidates.length}/${totalCandidateCount})`}
+                    </button>
+                  </div>
+                )}
 
                 <label
                   style={{

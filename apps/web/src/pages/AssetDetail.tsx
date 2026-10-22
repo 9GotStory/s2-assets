@@ -181,8 +181,13 @@ export const AssetDetail: React.FC = () => {
     );
   }
 
-  const { asset, history } = assetData;
-  const isLegacy = !asset.name;
+  const { asset, history = [] } = assetData;
+  const registrationFact = history.find((h) => h.action === 'REGISTERED');
+  const isLegacy = Boolean(
+    registrationFact?.payload &&
+      typeof registrationFact.payload === 'object' &&
+      (registrationFact.payload as Record<string, unknown>).is_legacy === true
+  );
 
   return (
     <main

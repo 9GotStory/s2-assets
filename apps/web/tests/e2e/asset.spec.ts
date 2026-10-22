@@ -296,7 +296,7 @@ test.describe.serial('Asset Registry Real SPA -> Composed API -> PostgreSQL Jour
     await expect(page.locator('table')).toContainText('REGISTERED');
   });
 
-  test('Journey 5: browser retries retain action identity across retries (Finding Spec 5)', async ({
+  test('Journey 5: browser retries retain action identity across committed-but-unreceived retries (Finding Spec 5)', async ({
     page,
     context,
   }) => {
@@ -309,18 +309,166 @@ test.describe.serial('Asset Registry Real SPA -> Composed API -> PostgreSQL Jour
     await page.locator('input#name').fill('Persistent Retry Asset');
     await page.locator('input#asset_number').fill('PERSIST-01');
 
-    // First attempt submit
+    let attemptedFirstPost = false;
+    let interceptedRetryToken: string | null = null;
+    let committedResponseStatus: number | null = null;
+    let resolveFirstAbort!: () => void;
+    const firstAbortPromise = new Promise<void>((resolve) => {
+      resolveFirstAbort = resolve;
+    });
+
+    // Route interception: on first POST /assets, execute request on backend (commits to PG),
+    // but abort network connection before browser receives the response
+    await page.route('**/assets', async (route) => {
+      const request = route.request();
+      if (request.method() === 'POST' && !attemptedFirstPost) {
+        attemptedFirstPost = true;
+        const postData = request.postDataJSON();
+        interceptedRetryToken = postData?.retry_token || null;
+
+        // Fetch to backend server: executes in Fastify & commits to PostgreSQL
+        const response = await route.fetch();
+        committedResponseStatus = response.status();
+
+        // Simulate network connection abort before response reaches browser
+        await route.abort('failed');
+        resolveFirstAbort();
+        return;
+      }
+      await route.continue();
+    });
+
+    // First attempt submit -> browser encounters network error
+    await page.locator('button#submit-register-btn').click();
+    await firstAbortPromise;
+
+    // Expect the first backend request to have succeeded (201) and committed
+    expect(attemptedFirstPost).toBe(true);
+    expect(committedResponseStatus).toBe(201);
+    expect(interceptedRetryToken).toBeTruthy();
+
+    // Error message displayed to user, but form stays filled with same retry token
+    await expect(page.locator('div[role="alert"]')).toContainText(
+      'เกิดข้อผิดพลาดในการเชื่อมต่อเซิร์ฟเวอร์ กรุณาลองใหม่อีกครั้ง'
+    );
+    await expect(page.locator('input#name')).toHaveValue('Persistent Retry Asset');
+    await expect(page.locator('input#asset_number')).toHaveValue('PERSIST-01');
+
+    // Verify in database: exactly 1 asset was inserted, retry token was recorded
+    const midCheck = await pool.query(
+      'SELECT id, name, asset_number FROM assets WHERE asset_number = $1',
+      ['PERSIST-01']
+    );
+    expect(midCheck.rows).toHaveLength(1);
+    const initialAssetId = midCheck.rows[0].id;
+
+    const tokenCheck = await pool.query(
+      'SELECT * FROM registration_retry_tokens WHERE token = $1',
+      [interceptedRetryToken]
+    );
+    expect(tokenCheck.rows).toHaveLength(1);
+    expect(tokenCheck.rows[0].response_status).toBe(201);
+
+    // User clicks submit again without modifying form -> reuse same retry token
+    let secondPostToken: string | null = null;
+    page.on('request', (req) => {
+      if (req.url().includes('/assets') && req.method() === 'POST' && attemptedFirstPost) {
+        try {
+          secondPostToken = req.postDataJSON()?.retry_token;
+        } catch {
+          // ignore
+        }
+      }
+    });
+
     await page.locator('button#submit-register-btn').click();
 
-    // Navigates to created asset
+    // Browser now navigates successfully to the created asset detail page
     await page.waitForURL(new RegExp(`${targetBaseUrl}/assets/[0-9a-f-]{36}`));
-    const initialId = page.url().split('/assets/')[1];
+    const finalAssetId = page.url().split('/assets/')[1];
 
-    // Confirm single asset created in database
-    const checkDb = await pool.query('SELECT count(*)::int as count FROM assets WHERE asset_number = $1', [
-      'PERSIST-01',
+    // Verify Stable ID is identical to the one created in the first commit
+    expect(finalAssetId).toBe(initialAssetId);
+    expect(secondPostToken).toBe(interceptedRetryToken);
+
+    // Verify database integrity: still exactly 1 asset, 1 history fact, 1 retry token entry
+    const finalAssetRows = await pool.query(
+      'SELECT * FROM assets WHERE asset_number = $1',
+      ['PERSIST-01']
+    );
+    expect(finalAssetRows.rows).toHaveLength(1);
+
+    const historyRows = await pool.query(
+      'SELECT * FROM asset_history WHERE asset_id = $1',
+      [initialAssetId]
+    );
+    expect(historyRows.rows).toHaveLength(1);
+    expect(historyRows.rows[0].action).toBe('REGISTERED');
+
+    const finalTokenRows = await pool.query(
+      'SELECT * FROM registration_retry_tokens WHERE token = $1',
+      [interceptedRetryToken]
+    );
+    expect(finalTokenRows.rows).toHaveLength(1);
+  });
+
+  test('Journey 6: changing identifier immediately resets stale duplicate candidates and acknowledgement', async ({
+    page,
+    context,
+  }) => {
+    await loginAs(page, context, custodianUserId);
+
+    await page.goto(`${targetBaseUrl}/assets/register`);
+    await expect(page.getByRole('heading', { level: 1, name: 'ลงทะเบียนครุภัณฑ์' })).toBeVisible();
+
+    // Type duplicate asset number and check duplicates
+    await page.locator('input#asset_number').fill('ASSET-2026-001');
+    await page.locator('button#check-duplicate-btn').click();
+
+    // Duplicate warning banner appears
+    const warningRegion = page.locator('div[role="region"][aria-label="การแจ้งเตือนข้อมูลซ้ำ"]');
+    await expect(warningRegion).toBeVisible();
+
+    // Check explicit continuation
+    await page.locator('input#explicit_continuation').check();
+    await expect(page.locator('input#explicit_continuation')).toBeChecked();
+
+    // Now change asset number
+    await page.locator('input#asset_number').fill('ASSET-NEW-UNIQUE-999');
+
+    // Warning banner immediately disappears and continuation is reset
+    await expect(warningRegion).not.toBeVisible();
+    await expect(page.locator('input#explicit_continuation')).not.toBeVisible();
+  });
+
+  test('Journey 7: truthful legacy badge displayed on named legacy records', async ({
+    page,
+    context,
+  }) => {
+    await loginAs(page, context, custodianUserId);
+
+    // 1. Register a named legacy item
+    await page.goto(`${targetBaseUrl}/assets/register`);
+    await page.locator('input#name').fill('โต๊ะทำงานไม้สักทองโบราณ');
+    await page.locator('input#is_legacy').check();
+    await page.locator('textarea#source_reference').fill('เอกสารสำรวจพัสดุตกทอดปี 2540');
+    await page.locator('button#submit-register-btn').click();
+
+    await page.waitForURL(new RegExp(`${targetBaseUrl}/assets/[0-9a-f-]{36}`));
+    const legacyAssetId = page.url().split('/assets/')[1];
+
+    // Detail page shows the truthful name AND the legacy badge
+    await expect(page.locator('#asset-detail-heading')).toHaveText('โต๊ะทำงานไม้สักทองโบราณ');
+    await expect(page.locator('span:has-text("ข้อมูลตกทอด (Legacy)")')).toBeVisible();
+    await expect(page.locator('span:has-text("ปกติ")')).not.toBeVisible();
+
+    // Verify in database: name is preserved, history fact has is_legacy: true
+    const dbAsset = await pool.query('SELECT * FROM assets WHERE id = $1', [legacyAssetId]);
+    expect(dbAsset.rows[0].name).toBe('โต๊ะทำงานไม้สักทองโบราณ');
+
+    const dbHistory = await pool.query('SELECT * FROM asset_history WHERE asset_id = $1', [
+      legacyAssetId,
     ]);
-    expect(checkDb.rows[0].count).toBe(1);
-    expect(initialId).toBeDefined();
+    expect(dbHistory.rows[0].payload.is_legacy).toBe(true);
   });
 });

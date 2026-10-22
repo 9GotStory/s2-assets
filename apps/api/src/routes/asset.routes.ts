@@ -35,6 +35,7 @@ const DuplicateCandidatesQuerySchema = z.object({
   asset_number: z.string().optional(),
   serial_number: z.string().optional(),
   limit: z.coerce.number().int().min(1).max(100).optional(),
+  offset: z.coerce.number().int().min(0).optional(),
 });
 
 export const assetRoutes: FastifyPluginAsync<AssetRoutesOptions> = async (
@@ -72,14 +73,15 @@ export const assetRoutes: FastifyPluginAsync<AssetRoutesOptions> = async (
         });
       }
 
-      const { asset_number, serial_number, limit } = parsedQuery.data;
-      const candidates = await assetService.getDuplicateCandidates(
+      const { asset_number, serial_number, limit, offset } = parsedQuery.data;
+      const result = await assetService.getDuplicateCandidates(
         asset_number,
         serial_number,
         undefined,
-        limit
+        limit,
+        offset
       );
-      return reply.status(200).send({ candidates });
+      return reply.status(200).send(result);
     }
   );
 
@@ -136,6 +138,10 @@ export const assetRoutes: FastifyPluginAsync<AssetRoutesOptions> = async (
             error: 'DUPLICATE_CANDIDATES_FOUND',
             message: err.message,
             candidates: err.candidates,
+            total_count: err.total_count,
+            has_more: err.has_more,
+            limit: err.limit,
+            offset: err.offset,
           });
         }
 

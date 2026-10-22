@@ -273,18 +273,36 @@ describe('AssetService Integration Tests (Seam A - Core Service & Transactions)'
         explicit_continuation: true,
       });
 
-      // Request with limit 2
-      const candidates = await assetService.getDuplicateCandidates('BOUNDED-NUM', null, undefined, 2);
-      expect(candidates).toHaveLength(2);
+      // Request with limit 2, offset 0 -> page 1
+      const page1 = await assetService.getDuplicateCandidates('BOUNDED-NUM', null, undefined, 2, 0);
+      expect(page1.candidates).toHaveLength(2);
+      expect(page1.total_count).toBe(3);
+      expect(page1.has_more).toBe(true);
+      expect(page1.limit).toBe(2);
+      expect(page1.offset).toBe(0);
 
       // Verify deterministic tie-breaker: ordered by recorded_at DESC, id ASC
-      expect(new Date(candidates[0].recorded_at).getTime()).toBeGreaterThanOrEqual(
-        new Date(candidates[1].recorded_at).getTime()
+      expect(new Date(page1.candidates[0].recorded_at).getTime()).toBeGreaterThanOrEqual(
+        new Date(page1.candidates[1].recorded_at).getTime()
       );
 
-      // Empty query returns []
-      expect(await assetService.getDuplicateCandidates('', '')).toEqual([]);
-      expect(await assetService.getDuplicateCandidates(null, null)).toEqual([]);
+      // Request next page: limit 2, offset 2 -> page 2
+      const page2 = await assetService.getDuplicateCandidates('BOUNDED-NUM', null, undefined, 2, 2);
+      expect(page2.candidates).toHaveLength(1);
+      expect(page2.total_count).toBe(3);
+      expect(page2.has_more).toBe(false);
+      expect(page2.offset).toBe(2);
+
+      // Empty query returns empty result with total_count: 0
+      const emptyResult1 = await assetService.getDuplicateCandidates('', '');
+      expect(emptyResult1.candidates).toEqual([]);
+      expect(emptyResult1.total_count).toBe(0);
+      expect(emptyResult1.has_more).toBe(false);
+
+      const emptyResult2 = await assetService.getDuplicateCandidates(null, null);
+      expect(emptyResult2.candidates).toEqual([]);
+      expect(emptyResult2.total_count).toBe(0);
+      expect(emptyResult2.has_more).toBe(false);
     });
 
     it('allows registering a distinct item with explicit continuation', async () => {

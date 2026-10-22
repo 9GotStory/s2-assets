@@ -61,17 +61,40 @@ export class ValidationError extends Error {
   }
 }
 
+export interface DuplicateCandidatesResult {
+  candidates: AssetRecord[];
+  total_count: number;
+  has_more: boolean;
+  limit: number;
+  offset: number;
+}
+
 export class DuplicateCandidateWarningError extends Error {
   statusCode: number;
   code: string;
   candidates: AssetRecord[];
+  total_count: number;
+  has_more: boolean;
+  limit: number;
+  offset: number;
 
-  constructor(message: string, candidates: AssetRecord[]) {
+  constructor(
+    message: string,
+    candidates: AssetRecord[],
+    totalCount: number = candidates.length,
+    hasMore: boolean = false,
+    limit: number = 50,
+    offset: number = 0
+  ) {
     super(message);
     this.name = 'DuplicateCandidateWarningError';
     this.statusCode = 409;
     this.code = 'DUPLICATE_CANDIDATES_FOUND';
     this.candidates = candidates;
+    this.total_count = totalCount;
+    this.has_more = hasMore;
+    this.limit = limit;
+    this.offset = offset;
   }
 }
 
@@ -121,14 +144,15 @@ export class AssetService {
   /**
    * Looks up duplicate candidate records matching nonempty asset_number or serial_number exactly.
    * Returns empty array if both identifiers are absent. (AR-11, D2)
-   * Enforces bounded candidate retrieval with deterministic tie-breaker (TECHNOLOGY.md:135).
+   * Enforces bounded candidate retrieval with deterministic tie-breaker and pagination (TECHNOLOGY.md:135).
    */
   async getDuplicateCandidates(
     assetNumber?: string | null,
     serialNumber?: string | null,
     client?: any,
-    limit: number = 50
-  ): Promise<AssetRecord[]> {
+    limit: number = 50,
+    offset: number = 0
+  ): Promise<DuplicateCandidatesResult> {
     const an =
       assetNumber !== undefined && assetNumber !== null && assetNumber !== ''
         ? assetNumber
@@ -138,24 +162,59 @@ export class AssetService {
         ? serialNumber
         : null;
 
+    const boundedLimit = Math.min(Math.max(1, limit || 50), 100);
+    const boundedOffset = Math.max(0, offset || 0);
+
     if (!an && !sn) {
-      return [];
+      return {
+        candidates: [],
+        total_count: 0,
+        has_more: false,
+        limit: boundedLimit,
+        offset: boundedOffset,
+      };
     }
 
-    const boundedLimit = Math.min(Math.max(1, limit || 50), 100);
     const runner = client || this.db;
     const queryText = `
       SELECT id, asset_number, serial_number, name, category, organization_unit,
-             source_reference, source_notes, registered_by, recorded_at, created_at, updated_at
+             source_reference, source_notes, registered_by, recorded_at, created_at, updated_at,
+             count(*) OVER()::int AS total_count
       FROM assets
       WHERE ($1::varchar IS NOT NULL AND asset_number = $1)
          OR ($2::varchar IS NOT NULL AND serial_number = $2)
       ORDER BY recorded_at DESC, id ASC
-      LIMIT $3;
+      LIMIT $3 OFFSET $4;
     `;
 
-    const res = await runner.query(queryText, [an, sn, boundedLimit]);
-    return res?.rows || [];
+    const res = await runner.query(queryText, [an, sn, boundedLimit, boundedOffset]);
+    let totalCount = 0;
+    if (res?.rows && res.rows.length > 0) {
+      totalCount = res.rows[0].total_count ?? 0;
+    } else if (boundedOffset > 0) {
+      const countRes = await runner.query(
+        `SELECT count(*)::int AS count FROM assets
+         WHERE ($1::varchar IS NOT NULL AND asset_number = $1)
+            OR ($2::varchar IS NOT NULL AND serial_number = $2)`,
+        [an, sn]
+      );
+      totalCount = countRes?.rows?.[0]?.count ?? 0;
+    }
+
+    const candidates: AssetRecord[] = (res?.rows || []).map((row: any) => {
+      const { total_count, ...asset } = row;
+      return asset as AssetRecord;
+    });
+
+    const hasMore = boundedOffset + candidates.length < totalCount;
+
+    return {
+      candidates,
+      total_count: totalCount,
+      has_more: hasMore,
+      limit: boundedLimit,
+      offset: boundedOffset,
+    };
   }
 
   /**
@@ -313,16 +372,20 @@ export class AssetService {
 
       // 2. Duplicate candidate check if explicit continuation is not indicated (D2)
       if (!explicitContinuation && (assetNumber || serialNumber)) {
-        const candidates = await this.getDuplicateCandidates(
+        const dupResult = await this.getDuplicateCandidates(
           assetNumber,
           serialNumber,
           client
         );
-        if (candidates.length > 0) {
+        if (dupResult.candidates.length > 0) {
           await client.query('ROLLBACK');
           throw new DuplicateCandidateWarningError(
             'Exact nonempty identifier matches existing asset records. Explicit continuation required to register a distinct item.',
-            candidates
+            dupResult.candidates,
+            dupResult.total_count,
+            dupResult.has_more,
+            dupResult.limit,
+            dupResult.offset
           );
         }
       }

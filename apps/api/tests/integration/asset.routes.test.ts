@@ -698,6 +698,8 @@ describe('Asset Routes & Security Matrix Integration Tests (Seam A)', () => {
       const dupBody = JSON.parse(dupRes.body);
       expect(dupBody.code).toBe('DUPLICATE_CANDIDATES_FOUND');
       expect(dupBody.candidates).toHaveLength(1);
+      expect(dupBody.total_count).toBe(1);
+      expect(dupBody.has_more).toBe(false);
 
       // 3. Explicit continuation -> 201
       const contRes = await app.inject({
@@ -714,6 +716,53 @@ describe('Asset Routes & Security Matrix Integration Tests (Seam A)', () => {
         },
       });
       expect(contRes.statusCode).toBe(201);
+    });
+
+    it('supports bounded duplicate candidate pagination with limit and offset query parameters', async () => {
+      // Register multiple distinct assets with the same serial number using explicit continuation
+      const sn = 'SN-PAGE-TEST';
+      for (let i = 1; i <= 3; i++) {
+        await app.inject({
+          method: 'POST',
+          url: '/assets',
+          headers: {
+            cookie: custodianUser.cookie,
+            'x-csrf-token': custodianUser.csrf,
+          },
+          payload: {
+            name: `Item ${i}`,
+            serial_number: sn,
+            explicit_continuation: true,
+          },
+        });
+      }
+
+      // Page 1: limit 2, offset 0
+      const page1Res = await app.inject({
+        method: 'GET',
+        url: `/assets/duplicate-candidates?serial_number=${sn}&limit=2&offset=0`,
+        headers: { cookie: custodianUser.cookie },
+      });
+      expect(page1Res.statusCode).toBe(200);
+      const page1 = JSON.parse(page1Res.body);
+      expect(page1.candidates).toHaveLength(2);
+      expect(page1.total_count).toBe(3);
+      expect(page1.has_more).toBe(true);
+      expect(page1.limit).toBe(2);
+      expect(page1.offset).toBe(0);
+
+      // Page 2: limit 2, offset 2
+      const page2Res = await app.inject({
+        method: 'GET',
+        url: `/assets/duplicate-candidates?serial_number=${sn}&limit=2&offset=2`,
+        headers: { cookie: custodianUser.cookie },
+      });
+      expect(page2Res.statusCode).toBe(200);
+      const page2 = JSON.parse(page2Res.body);
+      expect(page2.candidates).toHaveLength(1);
+      expect(page2.total_count).toBe(3);
+      expect(page2.has_more).toBe(false);
+      expect(page2.offset).toBe(2);
     });
 
     it('replays committed response on identical retry token; rejects mismatch', async () => {
