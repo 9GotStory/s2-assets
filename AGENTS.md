@@ -10,27 +10,85 @@ Use this order:
 4. canonical Business Rules
 5. `TECHNOLOGY.md` v1.0.1
 6. `.specify/memory/constitution.md`
-7. active Spec Kit feature artifacts
+7. approved active feature specification, decisions and tickets (historical Spec Kit artifacts for Feature 001)
 8. exact authorized implementation/review scope
 
 A downstream artifact MUST NOT silently override an upstream authority.
 
-## Spec Kit Usage
+## Engineering Workflow — Feature 002 Onward
 
-Use the current upstream `github/spec-kit` process through the AI agent selected
-for the task. Local `.specify/` files are project state/templates, not a second
-workflow system.
+For Feature 002 (`asset-registry`) and subsequent features, Matt Pocock Skills
+are the selected engineering workflow. GitHub Spec Kit remains historical
+context for Feature 001 and is not the selected workflow for new features.
+Preserve Feature 001 implementation and historical artifacts.
 
-Pre-implementation delivery follows:
+Use actual native skill invocation where available:
 
-`Specify → Clarify when needed → Plan → Checklist when useful → Tasks → Analyze → Human Gate`
+- `setup-matt-pocock-skills`: one-time repository setup;
+- `to-spec`: prepare feature specifications;
+- `to-tickets`: decompose approved specifications into actionable GitHub Issues;
+- `implement`: implement one authorized issue or bounded scope;
+- `tdd`: test-driven development at appropriate, agreed seams;
+- `code-review`: review implementation against the specification and engineering
+  standards.
+
+Do not claim successful skill invocation from prompt text, downloaded
+instructions or successful bindings alone. If native invocation is unavailable,
+report the runtime blocker; do not simulate it with a generic prompt.
+
+Matt Skills must preserve Product Owner decisions, the frozen Blueprint,
+relevant Feature Brief, canonical Business Rules, Technology Direction and
+existing architectural/security invariants. They must not redefine business
+requirements or introduce speculative infrastructure.
 
 Implementation may begin only after the Product Owner explicitly authorizes the
-bounded task or scope.
+bounded task or scope. Specification/ticket publication also requires Product
+Owner approval; setup or ticket existence grants no execution authority.
 
-Repository governance defines authority and engineering invariants. Runtime
-agent assignment, delegation, mentions, retries, and reviewer routing belong to
-the active coordination system and MUST NOT be hardcoded here.
+### Constitution compatibility — unresolved
+
+`.specify/memory/constitution.md`, Principle VI, still mandates the Spec Kit
+pre-implementation sequence. This conflicts with the selected Feature 002+
+workflow. The Product Owner approved this four-file setup candidate in
+9GOTSTORY-260, comment `01a162f2-4b27-7a56-80dd-00a7dbb5d984`, while explicitly
+reserving the Constitution amendment for separate approval.
+
+This setup does not amend or silently override the Constitution. Stop before
+`to-spec` or later Feature 002 engineering execution until the Product Owner
+approves and the authorized process applies the necessary amendment. Preserve
+all other Constitution principles and Feature 001 history. The proposed
+amendment is delivered through the Multica issue, outside this candidate's
+four-file scope.
+
+## Coordination and Handoff
+
+Matt Pocock Skills define the engineering workflow. Multica is the authoritative
+mechanism for assigning, delegating, returning and tracking agent work. GitHub
+Issues tracks specifications and delivery tickets. The Product Owner is final
+authority.
+
+The current Product Owner-approved Multica route is recorded here as
+coordination metadata:
+
+`codex-lead-reviewer → agy-developer → codex-lead-reviewer → ChatGPT Independent Review → Product Owner`
+
+- Lead prepares plans, tickets and bounded developer handoffs.
+- Developer implements only authorized work and returns the candidate and
+  verification evidence through Multica.
+- Lead independently reviews the developer's actual candidate.
+- ChatGPT provides an additional independent assessment after Lead PASS.
+- Product Owner grants final acceptance and separately authorizes merging or
+  deployment.
+- A developer's internal `code-review` does not replace independent Lead review.
+- Once a bounded task is approved, normal Lead–Developer handoffs and corrections
+  within that scope do not require repetitive Product Owner intervention.
+- Scope expansion, merge, deployment and destructive operations require explicit
+  authorization. Do not advance to adjacent work automatically.
+
+Verify the active Issue, live identities, existing runs and approved route in
+Multica before dispatch. Do not implement routing logic in the repository or
+treat the recorded route as standing implementation authority. Runtime mentions,
+assignments and retries remain Multica operations.
 
 ## Context Discipline
 
@@ -40,7 +98,8 @@ For implementation or review:
 
 1. read this file;
 2. read the Constitution;
-3. read the exact active task and only relevant spec/plan/research context;
+3. read the exact active task and only relevant approved specification, decisions
+   and ticket context;
 4. read relevant Blueprint, Business Rule, and Technology sections;
 5. inspect the exact diff, tests, and evidence required by the authorized scope.
 
@@ -89,7 +148,8 @@ starting adjacent tasks.
 
 ## Runtime and Git Discipline
 
-- Git repositories, Spec Kit, Multica, and AGY run on the Fedora host.
+- Git repositories, engineering workflow tooling, Multica, and AGY run on the
+  Fedora host.
 - Normal application services and infrastructure run in Rootless Podman.
 - Use the runtime-managed repository/worktree supplied by the active
   coordination system.
