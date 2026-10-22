@@ -68,6 +68,11 @@ export const AssetRegister: React.FC = () => {
   const lookupSeqRef = useRef(0);
   const abortControllerRef = useRef<AbortController | null>(null);
 
+  // Submit sequence and submitted identifier refs to discard obsolete POST responses (Lead Spec Finding 1)
+  const submitSeqRef = useRef(0);
+  const submittedAssetNumberRef = useRef<string | null>(null);
+  const submittedSerialNumberRef = useRef<string | null>(null);
+
   const navigate = useNavigate();
 
   useEffect(() => {
@@ -112,6 +117,7 @@ export const AssetRegister: React.FC = () => {
     value: string
   ) => {
     lookupSeqRef.current += 1;
+    submitSeqRef.current += 1; // Invalidate any in-flight POST submission warnings
     if (abortControllerRef.current) {
       abortControllerRef.current.abort();
       abortControllerRef.current = null;
@@ -121,6 +127,10 @@ export const AssetRegister: React.FC = () => {
     } else {
       setSerialNumber(value);
     }
+
+    // Immediately recover and reset in-flight lookup indicators (Lead Finding Standards P2 / Spec 2)
+    setIsCheckingDuplicates(false);
+    setIsLoadingMoreCandidates(false);
 
     // Immediately reset stale candidates and explicit continuation acknowledgement (Lead Finding 2)
     setCandidates([]);
@@ -136,6 +146,8 @@ export const AssetRegister: React.FC = () => {
     isAppend: boolean = false
   ) => {
     if (!assetNumber && !serialNumber) {
+      setIsCheckingDuplicates(false);
+      setIsLoadingMoreCandidates(false);
       setCandidates([]);
       setTotalCandidateCount(0);
       setHasMoreCandidates(false);
@@ -243,6 +255,12 @@ export const AssetRegister: React.FC = () => {
     setIsSubmitting(true);
     setErrorMessage(null);
 
+    const currentSubmitSeq = ++submitSeqRef.current;
+    const submittedAssetNumber = assetNumber ? assetNumber : null;
+    const submittedSerialNumber = serialNumber ? serialNumber : null;
+    submittedAssetNumberRef.current = submittedAssetNumber;
+    submittedSerialNumberRef.current = submittedSerialNumber;
+
     try {
       const headers: Record<string, string> = {
         'Content-Type': 'application/json',
@@ -254,8 +272,8 @@ export const AssetRegister: React.FC = () => {
       // Aligned API payload (Spec Findings 1, 6, 7, 8)
       const bodyPayload = {
         name: trimmedName || null,
-        asset_number: assetNumber ? assetNumber : null,
-        serial_number: serialNumber ? serialNumber : null,
+        asset_number: submittedAssetNumber,
+        serial_number: submittedSerialNumber,
         source_reference: sourceReference.trim() ? sourceReference.trim() : null,
         is_legacy: isLegacy,
         explicit_continuation: explicitContinuation,
@@ -276,11 +294,28 @@ export const AssetRegister: React.FC = () => {
       }
 
       if (response.status === 409) {
+        // Discard delayed warning if identifiers changed or submit sequence is obsolete (Lead Spec Finding 1)
+        if (
+          currentSubmitSeq !== submitSeqRef.current ||
+          (assetNumber ? assetNumber : null) !== submittedAssetNumberRef.current ||
+          (serialNumber ? serialNumber : null) !== submittedSerialNumberRef.current
+        ) {
+          return;
+        }
+
         const errorData = await response.json().catch(() => null);
         if (
           errorData?.code === 'DUPLICATE_CANDIDATES_FOUND' &&
           Array.isArray(errorData.candidates)
         ) {
+          // Double-check sequence before setting state after await
+          if (
+            currentSubmitSeq !== submitSeqRef.current ||
+            (assetNumber ? assetNumber : null) !== submittedAssetNumberRef.current ||
+            (serialNumber ? serialNumber : null) !== submittedSerialNumberRef.current
+          ) {
+            return;
+          }
           setCandidates(errorData.candidates);
           setTotalCandidateCount(
             typeof errorData.total_count === 'number'

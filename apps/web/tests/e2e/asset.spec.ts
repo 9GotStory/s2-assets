@@ -471,4 +471,119 @@ test.describe.serial('Asset Registry Real SPA -> Composed API -> PostgreSQL Jour
     ]);
     expect(dbHistory.rows[0].payload.is_legacy).toBe(true);
   });
+
+  test('Journey 8: editing identifier during in-flight lookup recovers check button and discards obsolete response', async ({
+    page,
+    context,
+  }) => {
+    await loginAs(page, context, custodianUserId);
+
+    await page.goto(`${targetBaseUrl}/assets/register`);
+    await expect(page.getByRole('heading', { level: 1, name: 'ลงทะเบียนครุภัณฑ์' })).toBeVisible();
+
+    // Fill identifier A
+    await page.locator('input#asset_number').fill('ASSET-2026-001');
+
+    let resolvePendingGet!: () => void;
+    const pendingGetPromise = new Promise<void>((resolve) => {
+      resolvePendingGet = resolve;
+    });
+
+    let interceptedFirstGet = false;
+    await page.route('**/assets/duplicate-candidates*', async (route) => {
+      if (!interceptedFirstGet && route.request().url().includes('asset_number=ASSET-2026-001')) {
+        interceptedFirstGet = true;
+        // Hold the response until identifier is edited
+        await pendingGetPromise;
+      }
+      await route.continue();
+    });
+
+    // Click check duplicate button -> enters in-flight state
+    await page.locator('button#check-duplicate-btn').click();
+    await expect(page.locator('button#check-duplicate-btn')).toHaveText('กำลังตรวจสอบ...');
+    await expect(page.locator('button#check-duplicate-btn')).toBeDisabled();
+
+    // Now edit identifier to B while GET is in-flight
+    await page.locator('input#asset_number').fill('ASSET-NEW-999');
+
+    // Check button should recover immediately and NOT remain stuck on disabled / "กำลังตรวจสอบ..."
+    await expect(page.locator('button#check-duplicate-btn')).toHaveText('🔍 ตรวจสอบข้อมูลซ้ำ');
+    await expect(page.locator('button#check-duplicate-btn')).toBeEnabled();
+
+    // Release the held GET response for A
+    resolvePendingGet();
+
+    // Ensure the stale response for A does not populate candidate table for B
+    await expect(page.locator('div[role="region"][aria-label="การแจ้งเตือนข้อมูลซ้ำ"]')).not.toBeVisible();
+    await expect(page.locator('button#check-duplicate-btn')).toBeEnabled();
+  });
+
+  test('Journey 9: delayed POST warning response cannot populate candidates or permit acknowledgement after identifier change', async ({
+    page,
+    context,
+  }) => {
+    await loginAs(page, context, custodianUserId);
+
+    await page.goto(`${targetBaseUrl}/assets/register`);
+    await expect(page.getByRole('heading', { level: 1, name: 'ลงทะเบียนครุภัณฑ์' })).toBeVisible();
+
+    // Seed duplicate candidate A in DB
+    await pool.query(
+      `INSERT INTO assets (id, name, asset_number, registered_by, recorded_at, created_at, updated_at)
+       VALUES ($1, $2, $3, $4, now(), now(), now())`,
+      [crypto.randomUUID(), 'Existing A Asset', 'ID-A-DUPLICATE', custodianUserId]
+    );
+
+    // Seed duplicate candidate B in DB
+    await pool.query(
+      `INSERT INTO assets (id, name, asset_number, registered_by, recorded_at, created_at, updated_at)
+       VALUES ($1, $2, $3, $4, now(), now(), now())`,
+      [crypto.randomUUID(), 'Existing B Asset', 'ID-B-DUPLICATE', custodianUserId]
+    );
+
+    // Form starts with name and duplicate identifier A (ID-A-DUPLICATE)
+    await page.locator('input#name').fill('Test Asset Cross Stale');
+    await page.locator('input#asset_number').fill('ID-A-DUPLICATE');
+
+    let resolvePostA!: () => void;
+    const postAHoldPromise = new Promise<void>((resolve) => {
+      resolvePostA = resolve;
+    });
+
+    let interceptedPostA = false;
+    await page.route('**/assets', async (route) => {
+      const req = route.request();
+      if (req.method() === 'POST' && !interceptedPostA) {
+        interceptedPostA = true;
+        // Fetch real response (409) from Fastify
+        const response = await route.fetch();
+        expect(response.status()).toBe(409);
+        // Hold response until we edit the identifier
+        await postAHoldPromise;
+        await route.fulfill({ response });
+        return;
+      }
+      await route.continue();
+    });
+
+    const postResponsePromise = page.waitForResponse(
+      (res) => res.url().includes('/assets') && res.request().method() === 'POST'
+    );
+
+    // Submit for A -> triggers POST
+    await page.locator('button#submit-register-btn').click();
+
+    // While POST for A is in flight, edit identifier to B
+    await page.locator('input#asset_number').fill('ID-B-DUPLICATE');
+
+    // Release held 409 response for A and wait for browser to receive it
+    resolvePostA();
+    await postResponsePromise;
+
+    // The obsolete 409 response for A must NOT populate candidates for B!
+    // Warning region must NOT be visible with candidate A
+    await expect(page.locator('div[role="region"][aria-label="การแจ้งเตือนข้อมูลซ้ำ"]')).not.toBeVisible();
+    await expect(page.locator('input#explicit_continuation')).not.toBeVisible();
+  });
 });
