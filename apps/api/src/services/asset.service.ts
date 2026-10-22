@@ -49,6 +49,18 @@ export interface AssetServiceOptions {
   db: pg.Pool | any;
 }
 
+export class ValidationError extends Error {
+  statusCode: number;
+  code: string;
+
+  constructor(message: string) {
+    super(message);
+    this.name = 'ValidationError';
+    this.statusCode = 400;
+    this.code = 'VALIDATION_FAILED';
+  }
+}
+
 export class DuplicateCandidateWarningError extends Error {
   statusCode: number;
   code: string;
@@ -91,16 +103,16 @@ export class AssetService {
   /**
    * Computes a deterministic SHA-256 fingerprint for the normalized registration payload.
    */
-  private computePayloadFingerprint(input: RegisterAssetInput): string {
+  computePayloadFingerprint(input: RegisterAssetInput): string {
     const normalized = {
       name: input.name?.trim() || null,
-      asset_number: input.asset_number?.trim() || null,
-      serial_number: input.serial_number?.trim() || null,
-      category: input.category?.trim() || null,
-      organization_unit: input.organization_unit?.trim() || null,
+      asset_number: input.asset_number ?? null,
+      serial_number: input.serial_number ?? null,
+      category: null,
+      organization_unit: null,
       source_reference: input.source_reference?.trim() || null,
       source_notes: input.source_notes?.trim() || null,
-      is_legacy: Boolean(input.is_legacy),
+      is_legacy: input.is_legacy === true,
     };
     const jsonStr = JSON.stringify(normalized, Object.keys(normalized).sort());
     return crypto.createHash('sha256').update(jsonStr).digest('hex');
@@ -108,20 +120,29 @@ export class AssetService {
 
   /**
    * Looks up duplicate candidate records matching nonempty asset_number or serial_number exactly.
-   * Returns empty array if both identifiers are absent or whitespace. (AR-11, D2)
+   * Returns empty array if both identifiers are absent. (AR-11, D2)
+   * Enforces bounded candidate retrieval with deterministic tie-breaker (TECHNOLOGY.md:135).
    */
   async getDuplicateCandidates(
     assetNumber?: string | null,
     serialNumber?: string | null,
-    client?: any
+    client?: any,
+    limit: number = 50
   ): Promise<AssetRecord[]> {
-    const an = assetNumber?.trim() || null;
-    const sn = serialNumber?.trim() || null;
+    const an =
+      assetNumber !== undefined && assetNumber !== null && assetNumber !== ''
+        ? assetNumber
+        : null;
+    const sn =
+      serialNumber !== undefined && serialNumber !== null && serialNumber !== ''
+        ? serialNumber
+        : null;
 
     if (!an && !sn) {
       return [];
     }
 
+    const boundedLimit = Math.min(Math.max(1, limit || 50), 100);
     const runner = client || this.db;
     const queryText = `
       SELECT id, asset_number, serial_number, name, category, organization_unit,
@@ -129,10 +150,11 @@ export class AssetService {
       FROM assets
       WHERE ($1::varchar IS NOT NULL AND asset_number = $1)
          OR ($2::varchar IS NOT NULL AND serial_number = $2)
-      ORDER BY recorded_at DESC;
+      ORDER BY recorded_at DESC, id ASC
+      LIMIT $3;
     `;
 
-    const res = await runner.query(queryText, [an, sn]);
+    const res = await runner.query(queryText, [an, sn, boundedLimit]);
     return res?.rows || [];
   }
 
@@ -146,28 +168,111 @@ export class AssetService {
     options?: { retryToken?: string }
   ): Promise<AssetRegistrationResult> {
     if (!isValidUuid(actorId)) {
-      throw new Error('Valid actorId UUID is required for asset registration');
+      throw new ValidationError('Valid actorId UUID is required for asset registration');
     }
 
-    const isLegacy = Boolean(input.is_legacy);
+    // Strict boolean type validation (Standards Finding 1)
+    if (input.is_legacy !== undefined && typeof input.is_legacy !== 'boolean') {
+      throw new ValidationError('is_legacy must be a boolean');
+    }
+    if (
+      input.explicit_continuation !== undefined &&
+      typeof input.explicit_continuation !== 'boolean'
+    ) {
+      throw new ValidationError('explicit_continuation must be a boolean');
+    }
+
+    // Strict category restriction - unset in T1 (Spec Finding 6, R2)
+    if (input.category !== undefined && input.category !== null) {
+      throw new ValidationError('Category must remain unset in T1 (R2)');
+    }
+
+    // Strict organization unit restriction - separately gated (Spec Finding 7, D7)
+    if (input.organization_unit !== undefined && input.organization_unit !== null) {
+      throw new ValidationError('Organization unit is not accepted in T1 registration (D7)');
+    }
+
+    // String type validation
+    if (input.name !== undefined && input.name !== null && typeof input.name !== 'string') {
+      throw new ValidationError('name must be a string');
+    }
+    if (
+      input.asset_number !== undefined &&
+      input.asset_number !== null &&
+      typeof input.asset_number !== 'string'
+    ) {
+      throw new ValidationError('asset_number must be a string');
+    }
+    if (
+      input.serial_number !== undefined &&
+      input.serial_number !== null &&
+      typeof input.serial_number !== 'string'
+    ) {
+      throw new ValidationError('serial_number must be a string');
+    }
+    if (
+      input.source_reference !== undefined &&
+      input.source_reference !== null &&
+      typeof input.source_reference !== 'string'
+    ) {
+      throw new ValidationError('source_reference must be a string');
+    }
+    if (
+      input.source_notes !== undefined &&
+      input.source_notes !== null &&
+      typeof input.source_notes !== 'string'
+    ) {
+      throw new ValidationError('source_notes must be a string');
+    }
+
+    const isLegacy = input.is_legacy === true;
     const rawName = input.name?.trim();
 
     if (!isLegacy) {
       if (!rawName || rawName.length === 0) {
-        throw new Error('Truthful item name/description is required for ordinary registration');
+        throw new ValidationError('Truthful item name/description is required for ordinary registration');
       }
     }
 
     const name = rawName && rawName.length > 0 ? rawName : null;
-    const assetNumber = input.asset_number?.trim() || null;
-    const serialNumber = input.serial_number?.trim() || null;
-    const category = input.category?.trim() || null;
-    const orgUnit = input.organization_unit?.trim() || null;
-    const sourceRef = input.source_reference?.trim() || null;
-    const sourceNotes = input.source_notes?.trim() || null;
-    const explicitContinuation = Boolean(input.explicit_continuation);
 
-    const retryToken = options?.retryToken?.trim() || null;
+    // Preserve supplied identifiers without trimming or normalization (Spec Finding 8)
+    const assetNumber =
+      input.asset_number !== undefined &&
+      input.asset_number !== null &&
+      input.asset_number !== ''
+        ? input.asset_number
+        : null;
+    const serialNumber =
+      input.serial_number !== undefined &&
+      input.serial_number !== null &&
+      input.serial_number !== ''
+        ? input.serial_number
+        : null;
+
+    const category = null;
+    const orgUnit = null;
+    const sourceRef =
+      input.source_reference !== undefined &&
+      input.source_reference !== null &&
+      input.source_reference.trim() !== ''
+        ? input.source_reference.trim()
+        : null;
+    const sourceNotes =
+      input.source_notes !== undefined &&
+      input.source_notes !== null &&
+      input.source_notes.trim() !== ''
+        ? input.source_notes.trim()
+        : null;
+
+    const explicitContinuation = input.explicit_continuation === true;
+
+    const retryToken =
+      options?.retryToken !== undefined &&
+      options.retryToken !== null &&
+      options.retryToken.trim() !== ''
+        ? options.retryToken.trim()
+        : null;
     const fingerprint = retryToken ? this.computePayloadFingerprint(input) : null;
 
     // Use a transaction client from the pool to guarantee atomicity
@@ -178,13 +283,17 @@ export class AssetService {
     try {
       await client.query('BEGIN');
 
-      // 1. Check retry token if supplied (D4)
+      // 1. Check and serialize retry token if supplied (D4, Spec Finding 4)
       if (retryToken && fingerprint) {
+        // Acquire transaction-scoped advisory lock to serialize concurrent identical requests
+        await client.query('SELECT pg_advisory_xact_lock(hashtext($1))', [
+          `asset_retry:${actorId}:${retryToken}`,
+        ]);
+
         const tokenRes = await client.query(
           `SELECT payload_fingerprint, response_status, response_body
            FROM registration_retry_tokens
-           WHERE actor_id = $1 AND operation = 'asset:register' AND token = $2
-           FOR UPDATE`,
+           WHERE actor_id = $1 AND operation = 'asset:register' AND token = $2`,
           [actorId, retryToken]
         );
 
@@ -204,7 +313,11 @@ export class AssetService {
 
       // 2. Duplicate candidate check if explicit continuation is not indicated (D2)
       if (!explicitContinuation && (assetNumber || serialNumber)) {
-        const candidates = await this.getDuplicateCandidates(assetNumber, serialNumber, client);
+        const candidates = await this.getDuplicateCandidates(
+          assetNumber,
+          serialNumber,
+          client
+        );
         if (candidates.length > 0) {
           await client.query('ROLLBACK');
           throw new DuplicateCandidateWarningError(
@@ -248,7 +361,6 @@ export class AssetService {
         name,
         asset_number: assetNumber,
         serial_number: serialNumber,
-        organization_unit: orgUnit,
         source_reference: sourceRef,
         source_notes: sourceNotes,
       };
@@ -298,12 +410,32 @@ export class AssetService {
 
       // 5. Store retry token result in same transaction (D4)
       if (retryToken && fingerprint) {
-        await client.query(
-          `INSERT INTO registration_retry_tokens (
-            token, actor_id, operation, payload_fingerprint, response_status, response_body
-          ) VALUES ($1, $2, 'asset:register', $3, 201, $4)`,
-          [retryToken, actorId, fingerprint, JSON.stringify(result)]
-        );
+        try {
+          await client.query(
+            `INSERT INTO registration_retry_tokens (
+              token, actor_id, operation, payload_fingerprint, response_status, response_body
+            ) VALUES ($1, $2, 'asset:register', $3, 201, $4)`,
+            [retryToken, actorId, fingerprint, JSON.stringify(result)]
+          );
+        } catch (insertErr: any) {
+          if (insertErr?.code === '23505') {
+            // Concurrent race edge-case: query the committed token
+            const existingRes = await client.query(
+              `SELECT payload_fingerprint, response_body
+               FROM registration_retry_tokens
+               WHERE actor_id = $1 AND operation = 'asset:register' AND token = $2`,
+              [actorId, retryToken]
+            );
+            if (
+              existingRes.rows.length > 0 &&
+              existingRes.rows[0].payload_fingerprint === fingerprint
+            ) {
+              await client.query('COMMIT');
+              return existingRes.rows[0].response_body as AssetRegistrationResult;
+            }
+          }
+          throw insertErr;
+        }
       }
 
       await client.query('COMMIT');
@@ -356,16 +488,29 @@ export class AssetService {
     );
 
     return {
-      asset: assetRes.rows[0],
+      asset: {
+        id: assetRes.rows[0].id,
+        asset_number: assetRes.rows[0].asset_number,
+        serial_number: assetRes.rows[0].serial_number,
+        name: assetRes.rows[0].name,
+        category: assetRes.rows[0].category,
+        organization_unit: assetRes.rows[0].organization_unit,
+        source_reference: assetRes.rows[0].source_reference,
+        source_notes: assetRes.rows[0].source_notes,
+        registered_by: assetRes.rows[0].registered_by,
+        recorded_at: new Date(assetRes.rows[0].recorded_at).toISOString(),
+        created_at: new Date(assetRes.rows[0].created_at).toISOString(),
+        updated_at: new Date(assetRes.rows[0].updated_at).toISOString(),
+      },
       history: historyRes.rows.map((row: any) => ({
         id: row.id,
         asset_id: row.asset_id,
         action: row.action,
         actor_id: row.actor_id,
         actor_username: row.actor_username,
-        recorded_at: row.recorded_at,
+        recorded_at: new Date(row.recorded_at).toISOString(),
         payload: row.payload,
-        created_at: row.created_at,
+        created_at: new Date(row.created_at).toISOString(),
       })),
     };
   }

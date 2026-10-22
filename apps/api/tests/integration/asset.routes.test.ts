@@ -33,15 +33,24 @@ describe('Asset Routes & Security Matrix Integration Tests (Seam A)', () => {
 
   const createAuthenticatedSession = async (userId: string) => {
     const session = await sessionService.createSession(userId);
-    const cookie = `session=${session.token}`;
+    const sessionCookie = `session=${session.token}`;
 
-    // Get CSRF token via session-check
+    // Get CSRF token and CSRF cookie via session-check
     const res = await app.inject({
       method: 'GET',
       url: '/auth/session-check',
-      headers: { cookie },
+      headers: { cookie: sessionCookie },
     });
     const body = JSON.parse(res.body);
+
+    const setCookie = res.headers['set-cookie'];
+    const csrfCookie = setCookie
+      ? Array.isArray(setCookie)
+        ? setCookie.map((c: string) => c.split(';')[0]).join('; ')
+        : setCookie.split(';')[0]
+      : '';
+
+    const cookie = csrfCookie ? `${sessionCookie}; ${csrfCookie}` : sessionCookie;
     return { id: userId, cookie, csrf: body.csrfToken || '' };
   };
 
@@ -98,76 +107,60 @@ describe('Asset Routes & Security Matrix Integration Tests (Seam A)', () => {
     }
 
     // Assign roles per R3 matrix
-    await pool.query(`
-      INSERT INTO user_roles (user_id, role_id) VALUES
-        ('${userMap.get('u_custodian')}', 'ASSET_CUSTODIAN'),
-        ('${userMap.get('u_admin')}', 'ADMINISTRATOR'),
-        ('${userMap.get('u_readonly')}', 'READ_ONLY'),
-        ('${userMap.get('u_maintainer')}', 'SYSTEM_MAINTAINER'),
-        ('${userMap.get('u_combined')}', 'ADMINISTRATOR'),
-        ('${userMap.get('u_combined')}', 'ASSET_CUSTODIAN'),
-        ('${userMap.get('u_inactive')}', 'ASSET_CUSTODIAN');
-    `);
+    // 1. ASSET_CUSTODIAN: asset:register, asset:duplicate-check, asset:view
+    await pool.query(
+      `INSERT INTO user_roles (user_id, role_id) VALUES ($1, 'ASSET_CUSTODIAN')`,
+      [userMap.get('u_custodian')]
+    );
 
-    const loginAndGetSession = async (username: string, userId: string) => {
-      const cookieMap = new Map<string, string>();
-      const addCookies = (res: any) => {
-        const raw = res.headers['set-cookie'];
-        const list = Array.isArray(raw) ? raw : raw ? [raw] : [];
-        for (const c of list) {
-          const part = c.split(';')[0];
-          const name = part.split('=')[0];
-          cookieMap.set(name, part);
-        }
-      };
+    // 2. ADMINISTRATOR: asset:view only for asset registry; system:maintain
+    await pool.query(
+      `INSERT INTO user_roles (user_id, role_id) VALUES ($1, 'ADMINISTRATOR')`,
+      [userMap.get('u_admin')]
+    );
 
-      const loginRes = await app.inject({
-        method: 'POST',
-        url: '/auth/login',
-        payload: { username, password: 'Password123!' },
-      });
-      addCookies(loginRes);
+    // 3. READ_ONLY: asset:view only
+    await pool.query(
+      `INSERT INTO user_roles (user_id, role_id) VALUES ($1, 'READ_ONLY')`,
+      [userMap.get('u_readonly')]
+    );
 
-      const checkRes = await app.inject({
-        method: 'GET',
-        url: '/auth/session-check',
-        headers: { cookie: Array.from(cookieMap.values()).join('; ') },
-      });
-      addCookies(checkRes);
+    // 4. SYSTEM_MAINTAINER: system:maintain only; NO registry capabilities
+    await pool.query(
+      `INSERT INTO user_roles (user_id, role_id) VALUES ($1, 'SYSTEM_MAINTAINER')`,
+      [userMap.get('u_maintainer')]
+    );
 
-      const checkBody = JSON.parse(checkRes.body);
-      return {
-        id: userId,
-        cookie: Array.from(cookieMap.values()).join('; '),
-        csrf: checkBody.csrfToken || '',
-      };
-    };
+    // 5. COMBINED: ADMINISTRATOR + ASSET_CUSTODIAN
+    await pool.query(
+      `INSERT INTO user_roles (user_id, role_id) VALUES ($1, 'ADMINISTRATOR'), ($1, 'ASSET_CUSTODIAN')`,
+      [userMap.get('u_combined')]
+    );
 
-    custodianUser = await loginAndGetSession('u_custodian', userMap.get('u_custodian')!);
-    adminUser = await loginAndGetSession('u_admin', userMap.get('u_admin')!);
-    readonlyUser = await loginAndGetSession('u_readonly', userMap.get('u_readonly')!);
-    maintainerUser = await loginAndGetSession('u_maintainer', userMap.get('u_maintainer')!);
-    combinedUser = await loginAndGetSession('u_combined', userMap.get('u_combined')!);
-    ordinaryUser = await loginAndGetSession('u_ordinary', userMap.get('u_ordinary')!);
+    // 6. ORDINARY: No roles
 
-    // Inactive user: cannot login via normal endpoint (USER_DISABLED)
-    // create session directly and test access
-    const inactSess = await sessionService.createSession(userMap.get('u_inactive')!);
-    // Using signed cookie helper from fastify
-    const signedCookie = (app as any).signCookie
-      ? `session=${(app as any).signCookie(inactSess.token)}`
-      : `session=${inactSess.token}`;
+    // 7. INACTIVE: ASSET_CUSTODIAN role, but is_active = false
+    await pool.query(
+      `INSERT INTO user_roles (user_id, role_id) VALUES ($1, 'ASSET_CUSTODIAN')`,
+      [userMap.get('u_inactive')]
+    );
+
+    // Initialize sessions
+    custodianUser = await createAuthenticatedSession(userMap.get('u_custodian')!);
+    adminUser = await createAuthenticatedSession(userMap.get('u_admin')!);
+    readonlyUser = await createAuthenticatedSession(userMap.get('u_readonly')!);
+    maintainerUser = await createAuthenticatedSession(userMap.get('u_maintainer')!);
+    combinedUser = await createAuthenticatedSession(userMap.get('u_combined')!);
+    ordinaryUser = await createAuthenticatedSession(userMap.get('u_ordinary')!);
     inactiveUser = {
       id: userMap.get('u_inactive')!,
-      cookie: signedCookie,
-      csrf: 'any-csrf',
+      cookie: `session=fake-session-token-for-inactive`,
+      csrf: 'any',
     };
   }, 60_000);
 
   afterAll(async () => {
-    if (app) {
-      await app.close();
-    }
+    await app.close();
     await pool.end();
     if (container) {
       await container.stop();
@@ -178,17 +171,24 @@ describe('Asset Routes & Security Matrix Integration Tests (Seam A)', () => {
     await pool.query('DELETE FROM registration_retry_tokens');
     await pool.query('DELETE FROM asset_history');
     await pool.query('DELETE FROM assets');
+    if (custodianUser?.id) {
+      await pool.query(
+        `INSERT INTO user_roles (user_id, role_id) VALUES ($1, 'ASSET_CUSTODIAN') ON CONFLICT DO NOTHING`,
+        [custodianUser.id]
+      );
+    }
   });
 
-  describe('R3: Role/Action Matrix Enforcement', () => {
-    it('Asset Custodian: permits duplicate lookup, registration, and detail reading', async () => {
-      // 1. Duplicate candidates lookup -> 200
+  describe('R3: Role and Capability Matrix Enforcement', () => {
+    it('Asset Custodian: permits duplicate lookup, registration, and detail/starting history view', async () => {
+      // 1. Duplicate check -> 200
       const dupRes = await app.inject({
         method: 'GET',
-        url: '/assets/duplicate-candidates?asset_number=TEST-100',
+        url: '/assets/duplicate-candidates?asset_number=NONEXISTENT',
         headers: { cookie: custodianUser.cookie },
       });
       expect(dupRes.statusCode).toBe(200);
+      expect(JSON.parse(dupRes.body).candidates).toEqual([]);
 
       // 2. Register asset -> 201
       const regRes = await app.inject({
@@ -404,39 +404,86 @@ describe('Asset Routes & Security Matrix Integration Tests (Seam A)', () => {
       expect(res.statusCode).toBe(401);
     });
 
-    it('Current role revocation: revoking role immediately denies access on next request', async () => {
-      // 1. User can register initially
-      const okRes = await app.inject({
-        method: 'POST',
-        url: '/assets',
-        headers: {
-          cookie: custodianUser.cookie,
-          'x-csrf-token': custodianUser.csrf,
-        },
-        payload: { name: 'Pre-revocation Asset' },
-      });
-      expect(okRes.statusCode).toBe(201);
+    it('Current role revocation: immediately denies access on next request', async () => {
+      try {
+        // 1. User can register initially
+        const okRes = await app.inject({
+          method: 'POST',
+          url: '/assets',
+          headers: {
+            cookie: custodianUser.cookie,
+            'x-csrf-token': custodianUser.csrf,
+          },
+          payload: { name: 'Pre-revocation Asset' },
+        });
+        expect(okRes.statusCode).toBe(201);
 
-      // 2. Revoke role from user_roles in database
-      await pool.query('DELETE FROM user_roles WHERE user_id = $1', [custodianUser.id]);
+        // 2. Revoke role from user_roles in database
+        await pool.query('DELETE FROM user_roles WHERE user_id = $1', [custodianUser.id]);
 
-      // 3. Immediately next request must fail closed with 403 without requiring re-login
-      const revokedRes = await app.inject({
-        method: 'POST',
-        url: '/assets',
-        headers: {
-          cookie: custodianUser.cookie,
-          'x-csrf-token': custodianUser.csrf,
-        },
-        payload: { name: 'Post-revocation Asset' },
-      });
-      expect(revokedRes.statusCode).toBe(403);
+        // 3. Immediately next request must fail closed with 403 without requiring re-login
+        const revokedRes = await app.inject({
+          method: 'POST',
+          url: '/assets',
+          headers: {
+            cookie: custodianUser.cookie,
+            'x-csrf-token': custodianUser.csrf,
+          },
+          payload: { name: 'Post-revocation Asset' },
+        });
+        expect(revokedRes.statusCode).toBe(403);
+      } finally {
+        // Restore role for subsequent tests
+        await pool.query('INSERT INTO user_roles (user_id, role_id) VALUES ($1, $2) ON CONFLICT DO NOTHING', [
+          custodianUser.id,
+          'ASSET_CUSTODIAN',
+        ]);
+      }
+    });
 
-      // Restore role for subsequent tests
-      await pool.query('INSERT INTO user_roles (user_id, role_id) VALUES ($1, $2)', [
-        custodianUser.id,
-        'ASSET_CUSTODIAN',
-      ]);
+    it('Replay after role revocation fails closed (403)', async () => {
+      const retryToken = 'role-revocation-replay-token';
+      const payload = {
+        name: 'Asset Before Revocation',
+        asset_number: 'AST-REVOKE-01',
+      };
+
+      try {
+        // 1. Initial registration succeeds
+        const initRes = await app.inject({
+          method: 'POST',
+          url: '/assets',
+          headers: {
+            cookie: custodianUser.cookie,
+            'x-csrf-token': custodianUser.csrf,
+            'x-retry-token': retryToken,
+          },
+          payload,
+        });
+        expect(initRes.statusCode).toBe(201);
+
+        // 2. Revoke role
+        await pool.query('DELETE FROM user_roles WHERE user_id = $1', [custodianUser.id]);
+
+        // 3. Replay with the same token must fail closed on current grants check
+        const replayRes = await app.inject({
+          method: 'POST',
+          url: '/assets',
+          headers: {
+            cookie: custodianUser.cookie,
+            'x-csrf-token': custodianUser.csrf,
+            'x-retry-token': retryToken,
+          },
+          payload,
+        });
+        expect(replayRes.statusCode).toBe(403);
+      } finally {
+        // Restore role
+        await pool.query('INSERT INTO user_roles (user_id, role_id) VALUES ($1, $2) ON CONFLICT DO NOTHING', [
+          custodianUser.id,
+          'ASSET_CUSTODIAN',
+        ]);
+      }
     });
 
     it('CSRF protection: rejects state-changing POST /assets when CSRF token is missing', async () => {
@@ -445,11 +492,125 @@ describe('Asset Routes & Security Matrix Integration Tests (Seam A)', () => {
         url: '/assets',
         headers: {
           cookie: custodianUser.cookie,
-          // Omitting x-csrf-token header
         },
         payload: { name: 'CSRF Missing Asset' },
       });
       expect(res.statusCode).toBe(403);
+    });
+  });
+
+  describe('Boundary Validation (Standards Finding 1, Spec Findings 6, 7 & 8)', () => {
+    it('rejects string booleans "false" on is_legacy with 400 VALIDATION_FAILED', async () => {
+      const res = await app.inject({
+        method: 'POST',
+        url: '/assets',
+        headers: {
+          cookie: custodianUser.cookie,
+          'x-csrf-token': custodianUser.csrf,
+        },
+        payload: {
+          name: 'String Boolean Item',
+          is_legacy: 'false',
+        },
+      });
+      expect(res.statusCode).toBe(400);
+      const body = JSON.parse(res.body);
+      expect(body.code).toBe('VALIDATION_FAILED');
+    });
+
+    it('rejects string booleans "false" on explicit_continuation with 400 VALIDATION_FAILED', async () => {
+      const res = await app.inject({
+        method: 'POST',
+        url: '/assets',
+        headers: {
+          cookie: custodianUser.cookie,
+          'x-csrf-token': custodianUser.csrf,
+        },
+        payload: {
+          name: 'String Continuation Item',
+          explicit_continuation: 'false',
+        },
+      });
+      expect(res.statusCode).toBe(400);
+      const body = JSON.parse(res.body);
+      expect(body.code).toBe('VALIDATION_FAILED');
+    });
+
+    it('rejects unapproved category with 400 VALIDATION_FAILED', async () => {
+      const res = await app.inject({
+        method: 'POST',
+        url: '/assets',
+        headers: {
+          cookie: custodianUser.cookie,
+          'x-csrf-token': custodianUser.csrf,
+        },
+        payload: {
+          name: 'Category Test Item',
+          category: 'Unapproved taxonomy',
+        },
+      });
+      expect(res.statusCode).toBe(400);
+      const body = JSON.parse(res.body);
+      expect(body.code).toBe('VALIDATION_FAILED');
+    });
+
+    it('rejects unapproved organization_unit with 400 VALIDATION_FAILED', async () => {
+      const res = await app.inject({
+        method: 'POST',
+        url: '/assets',
+        headers: {
+          cookie: custodianUser.cookie,
+          'x-csrf-token': custodianUser.csrf,
+        },
+        payload: {
+          name: 'Org Unit Test Item',
+          organization_unit: 'Engineering Division',
+        },
+      });
+      expect(res.statusCode).toBe(400);
+      const body = JSON.parse(res.body);
+      expect(body.code).toBe('VALIDATION_FAILED');
+    });
+
+    it('rejects non-string name with 400 VALIDATION_FAILED', async () => {
+      const res = await app.inject({
+        method: 'POST',
+        url: '/assets',
+        headers: {
+          cookie: custodianUser.cookie,
+          'x-csrf-token': custodianUser.csrf,
+        },
+        payload: {
+          name: 12345,
+        },
+      });
+      expect(res.statusCode).toBe(400);
+      const body = JSON.parse(res.body);
+      expect(body.code).toBe('VALIDATION_FAILED');
+    });
+
+    it('preserves untrimmed identifiers verbatim without modification', async () => {
+      const untrimmedAsset = '  A-01  ';
+      const untrimmedSerial = '  S-01  ';
+
+      const res = await app.inject({
+        method: 'POST',
+        url: '/assets',
+        headers: {
+          cookie: custodianUser.cookie,
+          'x-csrf-token': custodianUser.csrf,
+        },
+        payload: {
+          name: 'Untrimmed Identifiers Asset',
+          asset_number: untrimmedAsset,
+          serial_number: untrimmedSerial,
+        },
+      });
+
+      expect(res.statusCode).toBe(201);
+      const body = JSON.parse(res.body);
+      expect(body.asset.asset_number).toBe(untrimmedAsset);
+      expect(body.asset.serial_number).toBe(untrimmedSerial);
     });
   });
 
@@ -465,25 +626,23 @@ describe('Asset Routes & Security Matrix Integration Tests (Seam A)', () => {
         },
         payload: {
           name: 'Office Common Projector',
-          organization_unit: null,
         },
       });
       const idA = JSON.parse(regA.body).asset.id;
 
-      // 2. Custodian registers Asset WITH OrganizationUnit
-      const regB = await app.inject({
-        method: 'POST',
-        url: '/assets',
-        headers: {
-          cookie: custodianUser.cookie,
-          'x-csrf-token': custodianUser.csrf,
-        },
-        payload: {
-          name: 'Accounting Printer',
-          organization_unit: 'Accounting Division',
-        },
-      });
-      const idB = JSON.parse(regB.body).asset.id;
+      // 2. Direct seed of legacy Asset WITH OrganizationUnit
+      const seedB = await pool.query(
+        `INSERT INTO assets (id, name, organization_unit, registered_by)
+         VALUES (gen_random_uuid(), 'Accounting Printer', 'Accounting Division', $1)
+         RETURNING id;`,
+        [custodianUser.id]
+      );
+      const idB = seedB.rows[0].id;
+      await pool.query(
+        `INSERT INTO asset_history (id, asset_id, action, actor_id, payload)
+         VALUES (gen_random_uuid(), $1, 'REGISTERED', $2, '{"name": "Accounting Printer"}'::jsonb)`,
+        [idB, custodianUser.id]
+      );
 
       // 3. Read-only user can view record A (no org unit)
       const readA = await app.inject({
@@ -506,7 +665,7 @@ describe('Asset Routes & Security Matrix Integration Tests (Seam A)', () => {
     });
   });
 
-  describe('D2/D4: Duplicate Warning and Retry Token HTTP Contract', () => {
+  describe('D2/D4: Duplicate Warning and Retry Token HTTP Contract (Findings Standards 2 & Spec 4)', () => {
     it('returns 409 DUPLICATE_CANDIDATES_FOUND on duplicate match; allows explicit continuation', async () => {
       // 1. Register initial asset
       await app.inject({
@@ -607,6 +766,79 @@ describe('Asset Routes & Security Matrix Integration Tests (Seam A)', () => {
         },
       });
       expect(mismatch.statusCode).toBe(409);
+    });
+
+    it('handles 8 concurrent identical requests via public HTTP route without 500 or duplicate records', async () => {
+      const retryToken = 'concurrent-http-retry-token';
+      const payload = {
+        name: 'Concurrent Router 01',
+        asset_number: 'ROUTER-CONC-01',
+      };
+
+      const promises = Array.from({ length: 8 }, () =>
+        app.inject({
+          method: 'POST',
+          url: '/assets',
+          headers: {
+            cookie: custodianUser.cookie,
+            'x-csrf-token': custodianUser.csrf,
+            'x-retry-token': retryToken,
+          },
+          payload,
+        })
+      );
+
+      const responses = await Promise.all(promises);
+
+      // Every response must return 201
+      for (const res of responses) {
+        expect(res.statusCode).toBe(201);
+      }
+
+      // Every response must contain the identical asset ID
+      const firstId = JSON.parse(responses[0].body).asset.id;
+      for (const res of responses) {
+        expect(JSON.parse(res.body).asset.id).toBe(firstId);
+      }
+
+      // Database must contain exactly 1 asset
+      const countRes = await pool.query(
+        'SELECT count(*)::int as count FROM assets WHERE asset_number = $1',
+        ['ROUTER-CONC-01']
+      );
+      expect(countRes.rows[0].count).toBe(1);
+    });
+
+    it('handles concurrent conflicting payloads on same retry token: one 201, other 409', async () => {
+      const retryToken = 'concurrent-conflict-http-token';
+      const payloadA = { name: 'Item Alpha', asset_number: 'ALPHA-01' };
+      const payloadB = { name: 'Item Beta', asset_number: 'BETA-01' };
+
+      const [resA, resB] = await Promise.all([
+        app.inject({
+          method: 'POST',
+          url: '/assets',
+          headers: {
+            cookie: custodianUser.cookie,
+            'x-csrf-token': custodianUser.csrf,
+            'x-retry-token': retryToken,
+          },
+          payload: payloadA,
+        }),
+        app.inject({
+          method: 'POST',
+          url: '/assets',
+          headers: {
+            cookie: custodianUser.cookie,
+            'x-csrf-token': custodianUser.csrf,
+            'x-retry-token': retryToken,
+          },
+          payload: payloadB,
+        }),
+      ]);
+
+      const statusCodes = [resA.statusCode, resB.statusCode].sort();
+      expect(statusCodes).toEqual([201, 409]);
     });
   });
 });

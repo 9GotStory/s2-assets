@@ -3,25 +3,28 @@ import { useParams, useNavigate, Link } from 'react-router';
 
 export interface AssetRecord {
   id: string;
-  item_name: string | null;
   asset_number: string | null;
   serial_number: string | null;
-  category_id: string | null;
+  name: string | null;
+  category: string | null;
   organization_unit: string | null;
   source_reference: string | null;
-  is_legacy: boolean;
-  created_by: string;
+  source_notes: string | null;
+  registered_by: string;
   recorded_at: string;
-  updated_at: string;
+  created_at?: string;
+  updated_at?: string;
 }
 
 export interface HistoryRecord {
   id: string;
   asset_id: string;
-  event_type: string;
-  recorded_at: string;
+  action: string;
   actor_id: string;
-  details: Record<string, unknown>;
+  actor_username?: string;
+  recorded_at: string;
+  payload: Record<string, unknown> | null;
+  created_at?: string;
 }
 
 export interface AssetDetailResponse {
@@ -179,6 +182,7 @@ export const AssetDetail: React.FC = () => {
   }
 
   const { asset, history } = assetData;
+  const isLegacy = !asset.name;
 
   return (
     <main
@@ -202,8 +206,21 @@ export const AssetDetail: React.FC = () => {
         }}
       >
         {/* Navigation & Header */}
-        <div style={{ marginBottom: '1.5rem', borderBottom: '1px solid #e5e7eb', paddingBottom: '1rem' }}>
-          <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '0.75rem' }}>
+        <div
+          style={{
+            marginBottom: '1.5rem',
+            borderBottom: '1px solid #e5e7eb',
+            paddingBottom: '1rem',
+          }}
+        >
+          <div
+            style={{
+              display: 'flex',
+              justifyContent: 'space-between',
+              alignItems: 'center',
+              marginBottom: '0.75rem',
+            }}
+          >
             <Link
               to="/dashboard"
               style={{
@@ -233,7 +250,14 @@ export const AssetDetail: React.FC = () => {
             </Link>
           </div>
 
-          <div style={{ display: 'flex', alignItems: 'center', gap: '0.75rem', flexWrap: 'wrap' }}>
+          <div
+            style={{
+              display: 'flex',
+              alignItems: 'center',
+              gap: '0.75rem',
+              flexWrap: 'wrap',
+            }}
+          >
             <h1
               id="asset-detail-heading"
               style={{
@@ -243,9 +267,9 @@ export const AssetDetail: React.FC = () => {
                 color: '#111827',
               }}
             >
-              {asset.item_name || '(ไม่ระบุชื่อ - ข้อมูลตกทอดตามจริง)'}
+              {asset.name || '(ไม่ระบุชื่อ - ข้อมูลตกทอดตามจริง)'}
             </h1>
-            {asset.is_legacy ? (
+            {isLegacy ? (
               <span
                 style={{
                   padding: '0.25rem 0.5rem',
@@ -273,13 +297,23 @@ export const AssetDetail: React.FC = () => {
               </span>
             )}
           </div>
-          <p style={{ margin: '0.25rem 0 0 0', fontSize: '0.875rem', color: '#6b7280', fontFamily: 'monospace' }}>
+          <p
+            style={{
+              margin: '0.25rem 0 0 0',
+              fontSize: '0.875rem',
+              color: '#6b7280',
+              fontFamily: 'monospace',
+            }}
+          >
             Stable ID: {asset.id}
           </p>
         </div>
 
         {/* Core Asset Details */}
-        <section aria-labelledby="core-info-heading" style={{ marginBottom: '2rem' }}>
+        <section
+          aria-labelledby="core-info-heading"
+          style={{ marginBottom: '2rem' }}
+        >
           <h2
             id="core-info-heading"
             style={{
@@ -305,22 +339,38 @@ export const AssetDetail: React.FC = () => {
               borderRadius: '6px',
             }}
           >
-            <dt style={{ fontWeight: 500, color: '#4b5563' }}>Stable ID (UUID):</dt>
-            <dd style={{ margin: 0, color: '#111827', fontFamily: 'monospace' }}>{asset.id}</dd>
+            <dt style={{ fontWeight: 500, color: '#4b5563' }}>
+              Stable ID (UUID):
+            </dt>
+            <dd style={{ margin: 0, color: '#111827', fontFamily: 'monospace' }}>
+              {asset.id}
+            </dd>
 
-            <dt style={{ fontWeight: 500, color: '#4b5563' }}>ชื่อ/คำอธิบาย:</dt>
+            <dt style={{ fontWeight: 500, color: '#4b5563' }}>
+              ชื่อ/คำอธิบาย:
+            </dt>
             <dd style={{ margin: 0, color: '#111827' }}>
-              {asset.item_name || <span style={{ color: '#9ca3af' }}>ไม่ระบุชื่อ (ข้อมูลตกทอดตามจริง)</span>}
+              {asset.name || (
+                <span style={{ color: '#9ca3af' }}>
+                  ไม่ระบุชื่อ (ข้อมูลตกทอดตามจริง)
+                </span>
+              )}
             </dd>
 
             <dt style={{ fontWeight: 500, color: '#4b5563' }}>เลขครุภัณฑ์:</dt>
             <dd style={{ margin: 0, color: '#111827' }}>
-              {asset.asset_number || <span style={{ color: '#9ca3af' }}>ไม่มีข้อมูล</span>}
+              {asset.asset_number || (
+                <span style={{ color: '#9ca3af' }}>ไม่มีข้อมูล</span>
+              )}
             </dd>
 
-            <dt style={{ fontWeight: 500, color: '#4b5563' }}>หมายเลขซีเรียล:</dt>
+            <dt style={{ fontWeight: 500, color: '#4b5563' }}>
+              หมายเลขซีเรียล:
+            </dt>
             <dd style={{ margin: 0, color: '#111827' }}>
-              {asset.serial_number || <span style={{ color: '#9ca3af' }}>ไม่มีข้อมูล</span>}
+              {asset.serial_number || (
+                <span style={{ color: '#9ca3af' }}>ไม่มีข้อมูล</span>
+              )}
             </dd>
 
             <dt style={{ fontWeight: 500, color: '#4b5563' }}>หมวดหมู่:</dt>
@@ -328,21 +378,32 @@ export const AssetDetail: React.FC = () => {
               🏷️ ยังไม่ระบุหมวดหมู่ (Uncategorized)
             </dd>
 
-            <dt style={{ fontWeight: 500, color: '#4b5563' }}>หน่วยงาน / ส่วนงาน:</dt>
+            <dt style={{ fontWeight: 500, color: '#4b5563' }}>
+              เอกสาร / บันทึกที่มา:
+            </dt>
             <dd style={{ margin: 0, color: '#111827' }}>
-              {asset.organization_unit || <span style={{ color: '#9ca3af' }}>ไม่ระบุ</span>}
+              {asset.source_reference || (
+                <span style={{ color: '#9ca3af' }}>ไม่มีข้อมูล</span>
+              )}
             </dd>
 
-            <dt style={{ fontWeight: 500, color: '#4b5563' }}>เอกสาร / บันทึกที่มา:</dt>
-            <dd style={{ margin: 0, color: '#111827' }}>
-              {asset.source_reference || <span style={{ color: '#9ca3af' }}>ไม่มีข้อมูล</span>}
-            </dd>
-
-            <dt style={{ fontWeight: 500, color: '#4b5563' }}>วันที่บันทึกลงระบบ:</dt>
+            <dt style={{ fontWeight: 500, color: '#4b5563' }}>
+              วันที่บันทึกลงระบบ:
+            </dt>
             <dd style={{ margin: 0, color: '#111827' }}>{asset.recorded_at}</dd>
 
-            <dt style={{ fontWeight: 500, color: '#4b5563' }}>ผู้บันทึก (Actor ID):</dt>
-            <dd style={{ margin: 0, color: '#111827', fontFamily: 'monospace' }}>{asset.created_by}</dd>
+            <dt style={{ fontWeight: 500, color: '#4b5563' }}>
+              ผู้บันทึก (Actor ID):
+            </dt>
+            <dd
+              style={{
+                margin: 0,
+                color: '#111827',
+                fontFamily: 'monospace',
+              }}
+            >
+              {asset.registered_by}
+            </dd>
           </dl>
         </section>
 
@@ -368,27 +429,76 @@ export const AssetDetail: React.FC = () => {
               overflow: 'hidden',
             }}
           >
-            <table style={{ width: '100%', fontSize: '0.875rem', borderCollapse: 'collapse' }}>
+            <table
+              style={{
+                width: '100%',
+                fontSize: '0.875rem',
+                borderCollapse: 'collapse',
+              }}
+            >
               <thead>
-                <tr style={{ backgroundColor: '#f9fafb', borderBottom: '1px solid #e5e7eb', textAlign: 'left' }}>
-                  <th style={{ padding: '0.75rem 1rem', color: '#4b5563' }}>เหตุการณ์</th>
-                  <th style={{ padding: '0.75rem 1rem', color: '#4b5563' }}>เวลาที่บันทึก</th>
-                  <th style={{ padding: '0.75rem 1rem', color: '#4b5563' }}>ผู้ดำเนินงาน (Actor)</th>
-                  <th style={{ padding: '0.75rem 1rem', color: '#4b5563' }}>รายละเอียด</th>
+                <tr
+                  style={{
+                    backgroundColor: '#f9fafb',
+                    borderBottom: '1px solid #e5e7eb',
+                    textAlign: 'left',
+                  }}
+                >
+                  <th style={{ padding: '0.75rem 1rem', color: '#4b5563' }}>
+                    เหตุการณ์
+                  </th>
+                  <th style={{ padding: '0.75rem 1rem', color: '#4b5563' }}>
+                    เวลาที่บันทึก
+                  </th>
+                  <th style={{ padding: '0.75rem 1rem', color: '#4b5563' }}>
+                    ผู้ดำเนินงาน (Actor)
+                  </th>
+                  <th style={{ padding: '0.75rem 1rem', color: '#4b5563' }}>
+                    รายละเอียด
+                  </th>
                 </tr>
               </thead>
               <tbody>
                 {history && history.length > 0 ? (
                   history.map((h) => (
-                    <tr key={h.id} style={{ borderBottom: '1px solid #f3f4f6' }}>
-                      <td style={{ padding: '0.75rem 1rem', fontWeight: 600, color: '#111827' }}>
-                        {h.event_type === 'REGISTERED' ? 'ลงทะเบียนครุภัณฑ์ (REGISTERED)' : h.event_type}
+                    <tr
+                      key={h.id}
+                      style={{ borderBottom: '1px solid #f3f4f6' }}
+                    >
+                      <td
+                        style={{
+                          padding: '0.75rem 1rem',
+                          fontWeight: 600,
+                          color: '#111827',
+                        }}
+                      >
+                        {h.action === 'REGISTERED'
+                          ? 'ลงทะเบียนครุภัณฑ์ (REGISTERED)'
+                          : h.action}
                       </td>
-                      <td style={{ padding: '0.75rem 1rem', color: '#4b5563' }}>{h.recorded_at}</td>
-                      <td style={{ padding: '0.75rem 1rem', fontFamily: 'monospace', color: '#4b5563' }}>
+                      <td
+                        style={{
+                          padding: '0.75rem 1rem',
+                          color: '#4b5563',
+                        }}
+                      >
+                        {h.recorded_at}
+                      </td>
+                      <td
+                        style={{
+                          padding: '0.75rem 1rem',
+                          fontFamily: 'monospace',
+                          color: '#4b5563',
+                        }}
+                      >
                         {h.actor_id}
                       </td>
-                      <td style={{ padding: '0.75rem 1rem', color: '#374151' }}>
+                      <td
+                        style={{
+                          padding: '0.75rem 1rem',
+                          color: '#374151',
+                        }}
+                      >
                         <pre
                           style={{
                             margin: 0,
@@ -402,14 +512,21 @@ export const AssetDetail: React.FC = () => {
                             borderRadius: '4px',
                           }}
                         >
-                          {JSON.stringify(h.details, null, 2)}
+                          {JSON.stringify(h.payload, null, 2)}
                         </pre>
                       </td>
                     </tr>
                   ))
                 ) : (
                   <tr>
-                    <td colSpan={4} style={{ padding: '1rem', textAlign: 'center', color: '#9ca3af' }}>
+                    <td
+                      colSpan={4}
+                      style={{
+                        padding: '1rem',
+                        textAlign: 'center',
+                        color: '#9ca3af',
+                      }}
+                    >
                       ไม่มีประวัติการดำเนินงาน
                     </td>
                   </tr>

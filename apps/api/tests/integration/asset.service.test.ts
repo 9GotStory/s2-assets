@@ -9,6 +9,7 @@ import {
   AssetService,
   DuplicateCandidateWarningError,
   RetryTokenConflictError,
+  ValidationError,
   type RegisterAssetInput,
 } from '../../src/services/asset.service.ts';
 
@@ -80,7 +81,6 @@ describe('AssetService Integration Tests (Seam A - Core Service & Transactions)'
         name: 'Dell Latitude 5420 Laptop',
         asset_number: 'AST-2026-001',
         serial_number: 'SN-ABC123XYZ',
-        organization_unit: 'IT Support',
         source_reference: 'PO-2026-88',
         source_notes: 'Delivered in good condition',
       };
@@ -94,7 +94,8 @@ describe('AssetService Integration Tests (Seam A - Core Service & Transactions)'
       expect(result.asset.name).toBe('Dell Latitude 5420 Laptop');
       expect(result.asset.asset_number).toBe('AST-2026-001');
       expect(result.asset.serial_number).toBe('SN-ABC123XYZ');
-      expect(result.asset.organization_unit).toBe('IT Support');
+      expect(result.asset.organization_unit).toBeNull();
+      expect(result.asset.category).toBeNull();
       expect(result.asset.source_reference).toBe('PO-2026-88');
       expect(result.asset.source_notes).toBe('Delivered in good condition');
       expect(result.asset.registered_by).toBe(testActorId);
@@ -114,20 +115,38 @@ describe('AssetService Integration Tests (Seam A - Core Service & Transactions)'
       expect(readback!.history[0].action).toBe('REGISTERED');
     });
 
+    it('preserves exact supplied identifiers without trimming or normalization (Finding Spec 8)', async () => {
+      const untrimmedAssetNumber = '  A-01  ';
+      const untrimmedSerialNumber = '  S-01  ';
+
+      const result = await assetService.registerAsset(testActorId, {
+        name: 'Untrimmed Hardware Unit',
+        asset_number: untrimmedAssetNumber,
+        serial_number: untrimmedSerialNumber,
+      });
+
+      expect(result.asset.asset_number).toBe(untrimmedAssetNumber);
+      expect(result.asset.serial_number).toBe(untrimmedSerialNumber);
+
+      const readback = await assetService.getAssetById(result.asset.id);
+      expect(readback?.asset.asset_number).toBe(untrimmedAssetNumber);
+      expect(readback?.asset.serial_number).toBe(untrimmedSerialNumber);
+    });
+
     it('rejects ordinary registration when name is missing or blank without legacy flag', async () => {
       await expect(
         assetService.registerAsset(testActorId, {
           name: '',
           asset_number: 'AST-999',
         })
-      ).rejects.toThrow('Truthful item name/description is required for ordinary registration');
+      ).rejects.toThrow(ValidationError);
 
       await expect(
         assetService.registerAsset(testActorId, {
           name: null as any,
           asset_number: 'AST-999',
         })
-      ).rejects.toThrow('Truthful item name/description is required for ordinary registration');
+      ).rejects.toThrow(ValidationError);
     });
 
     it('registers an incomplete legacy item with absent name and identifiers without placeholders', async () => {
@@ -159,6 +178,39 @@ describe('AssetService Integration Tests (Seam A - Core Service & Transactions)'
       expect(checkRes.rows[0].name).toBeNull();
       expect(checkRes.rows[0].asset_number).toBeNull();
       expect(checkRes.rows[0].serial_number).toBeNull();
+    });
+
+    it('enforces strict boolean types on is_legacy and explicit_continuation (Finding Standards 1)', async () => {
+      // String booleans must be rejected rather than cast via Boolean(...)
+      await expect(
+        assetService.registerAsset(testActorId, {
+          name: 'Some Item',
+          is_legacy: 'false' as any,
+        })
+      ).rejects.toThrow(ValidationError);
+
+      await expect(
+        assetService.registerAsset(testActorId, {
+          name: 'Some Item',
+          explicit_continuation: 'false' as any,
+        })
+      ).rejects.toThrow(ValidationError);
+    });
+
+    it('rejects unapproved category and organization_unit population in T1 (Findings Spec 6 & 7)', async () => {
+      await expect(
+        assetService.registerAsset(testActorId, {
+          name: 'Item with category',
+          category: 'Unapproved taxonomy' as any,
+        })
+      ).rejects.toThrow(ValidationError);
+
+      await expect(
+        assetService.registerAsset(testActorId, {
+          name: 'Item with org unit',
+          organization_unit: 'IT Dept' as any,
+        })
+      ).rejects.toThrow(ValidationError);
     });
   });
 
@@ -204,17 +256,31 @@ describe('AssetService Integration Tests (Seam A - Core Service & Transactions)'
       ).rejects.toThrow(DuplicateCandidateWarningError);
     });
 
-    it('returns candidate records from getDuplicateCandidates', async () => {
-      const original = await assetService.registerAsset(testActorId, {
-        name: 'Projector',
-        asset_number: 'PRJ-500',
-        serial_number: 'SN-999',
+    it('returns bounded candidate records with deterministic tie-breaker (Finding Standards 3)', async () => {
+      // Register multiple items with same asset number using explicit continuation
+      const first = await assetService.registerAsset(testActorId, {
+        name: 'Shared Item 1',
+        asset_number: 'BOUNDED-NUM',
+      });
+      const second = await assetService.registerAsset(testActorId, {
+        name: 'Shared Item 2',
+        asset_number: 'BOUNDED-NUM',
+        explicit_continuation: true,
+      });
+      const third = await assetService.registerAsset(testActorId, {
+        name: 'Shared Item 3',
+        asset_number: 'BOUNDED-NUM',
+        explicit_continuation: true,
       });
 
-      const candidates = await assetService.getDuplicateCandidates('PRJ-500', null);
-      expect(candidates).toHaveLength(1);
-      expect(candidates[0].id).toBe(original.asset.id);
-      expect(candidates[0].name).toBe('Projector');
+      // Request with limit 2
+      const candidates = await assetService.getDuplicateCandidates('BOUNDED-NUM', null, undefined, 2);
+      expect(candidates).toHaveLength(2);
+
+      // Verify deterministic tie-breaker: ordered by recorded_at DESC, id ASC
+      expect(new Date(candidates[0].recorded_at).getTime()).toBeGreaterThanOrEqual(
+        new Date(candidates[1].recorded_at).getTime()
+      );
 
       // Empty query returns []
       expect(await assetService.getDuplicateCandidates('', '')).toEqual([]);
@@ -246,7 +312,7 @@ describe('AssetService Integration Tests (Seam A - Core Service & Transactions)'
     });
   });
 
-  describe('D4: Retry token idempotency & atomic transactions', () => {
+  describe('D4: Retry token idempotency & concurrent requests (Findings Standards 2 & Spec 4)', () => {
     it('replays original result when retry token and payload match', async () => {
       const token = 'retry-token-001';
       const input: RegisterAssetInput = {
@@ -269,6 +335,33 @@ describe('AssetService Integration Tests (Seam A - Core Service & Transactions)'
       // Verify only 1 asset was inserted into DB
       const checkRes = await pool.query('SELECT count(*)::int as count FROM assets');
       expect(checkRes.rows[0].count).toBe(1);
+    });
+
+    it('handles concurrent identical requests safely without 500 or duplicate assets', async () => {
+      const token = 'concurrent-identical-token';
+      const input: RegisterAssetInput = {
+        name: 'Concurrent Asset Registration',
+        asset_number: 'CONC-AST-01',
+      };
+
+      // 8 concurrent identical requests with same token
+      const promises = Array.from({ length: 8 }, () =>
+        assetService.registerAsset(testActorId, input, { retryToken: token })
+      );
+
+      const results = await Promise.all(promises);
+
+      // All 8 must succeed and return the exact same asset ID
+      const expectedId = results[0].asset.id;
+      for (const res of results) {
+        expect(res.asset.id).toBe(expectedId);
+      }
+
+      // Exactly 1 asset row in database
+      const countRes = await pool.query('SELECT count(*)::int as count FROM assets WHERE asset_number = $1', [
+        'CONC-AST-01',
+      ]);
+      expect(countRes.rows[0].count).toBe(1);
     });
 
     it('fails with RetryTokenConflictError when same token is reused with different payload', async () => {
@@ -308,8 +401,8 @@ describe('AssetService Integration Tests (Seam A - Core Service & Transactions)'
     });
   });
 
-  describe('Transaction Atomicity', () => {
-    it('rolls back completely if a failure occurs during registration', async () => {
+  describe('Transaction Atomicity & Rollback', () => {
+    it('rolls back completely if a failure occurs during asset registration', async () => {
       // Pass a non-existent actorId to violate foreign key on registered_by
       const invalidActorId = '00000000-0000-0000-0000-000000000999';
 
@@ -328,6 +421,45 @@ describe('AssetService Integration Tests (Seam A - Core Service & Transactions)'
       expect(assets.rows[0].count).toBe(0);
       expect(history.rows[0].count).toBe(0);
       expect(tokens.rows[0].count).toBe(0);
+    });
+
+    it('rolls back completely when mandatory history fact insertion fails', async () => {
+      // Install temporary trigger that forces failure on asset_history insert
+      await pool.query(`
+        CREATE OR REPLACE FUNCTION fail_history_insert() RETURNS trigger AS $$
+        BEGIN
+          RAISE EXCEPTION 'forced history insertion failure';
+        END;
+        $$ LANGUAGE plpgsql;
+
+        CREATE TRIGGER test_fail_history_trigger
+        BEFORE INSERT ON asset_history
+        FOR EACH ROW EXECUTE FUNCTION fail_history_insert();
+      `);
+
+      try {
+        await expect(
+          assetService.registerAsset(testActorId, {
+            name: 'Item With Failed History',
+            asset_number: 'FAIL-HIST-01',
+          })
+        ).rejects.toThrow('forced history insertion failure');
+
+        // Confirm asset was NOT committed
+        const assets = await pool.query(
+          'SELECT count(*)::int as count FROM assets WHERE asset_number = $1',
+          ['FAIL-HIST-01']
+        );
+        expect(assets.rows[0].count).toBe(0);
+
+        const history = await pool.query('SELECT count(*)::int as count FROM asset_history');
+        expect(history.rows[0].count).toBe(0);
+      } finally {
+        await pool.query(`
+          DROP TRIGGER IF EXISTS test_fail_history_trigger ON asset_history;
+          DROP FUNCTION IF EXISTS fail_history_insert();
+        `);
+      }
     });
   });
 });

@@ -1,9 +1,11 @@
 import type { FastifyPluginAsync, FastifyRequest, FastifyReply } from 'fastify';
+import { z } from 'zod';
 import { requireCapability } from '../middleware/authorization.ts';
 import {
   AssetService,
   DuplicateCandidateWarningError,
   RetryTokenConflictError,
+  ValidationError,
   type RegisterAssetInput,
 } from '../services/asset.service.ts';
 import { isValidUuid, type CapabilityService } from '../services/capability.service.ts';
@@ -13,6 +15,27 @@ export interface AssetRoutesOptions {
   capabilityService?: CapabilityService;
   db?: any;
 }
+
+const RegisterAssetSchema = z
+  .object({
+    name: z.string().nullable().optional(),
+    asset_number: z.string().nullable().optional(),
+    serial_number: z.string().nullable().optional(),
+    source_reference: z.string().nullable().optional(),
+    source_notes: z.string().nullable().optional(),
+    is_legacy: z.boolean().optional(),
+    explicit_continuation: z.boolean().optional(),
+    retry_token: z.string().optional(),
+    category: z.null().optional(),
+    organization_unit: z.null().optional(),
+  })
+  .strict();
+
+const DuplicateCandidatesQuerySchema = z.object({
+  asset_number: z.string().optional(),
+  serial_number: z.string().optional(),
+  limit: z.coerce.number().int().min(1).max(100).optional(),
+});
 
 export const assetRoutes: FastifyPluginAsync<AssetRoutesOptions> = async (
   fastify,
@@ -33,13 +56,28 @@ export const assetRoutes: FastifyPluginAsync<AssetRoutesOptions> = async (
       preHandler: [requireCapability('asset:duplicate-check')],
     },
     async (request: FastifyRequest, reply: FastifyReply) => {
-      const { asset_number, serial_number } = (request.query || {}) as {
-        asset_number?: string;
-        serial_number?: string;
-      };
+      const parsedQuery = DuplicateCandidatesQuerySchema.safeParse(
+        request.query || {}
+      );
+      if (!parsedQuery.success) {
+        return reply.status(400).send({
+          statusCode: 400,
+          code: 'VALIDATION_FAILED',
+          error: 'VALIDATION_FAILED',
+          message:
+            'Invalid query parameters: ' +
+            parsedQuery.error.issues
+              .map((i) => `${i.path.join('.')}: ${i.message}`)
+              .join(', '),
+        });
+      }
+
+      const { asset_number, serial_number, limit } = parsedQuery.data;
       const candidates = await assetService.getDuplicateCandidates(
         asset_number,
-        serial_number
+        serial_number,
+        undefined,
+        limit
       );
       return reply.status(200).send({ candidates });
     }
@@ -66,7 +104,22 @@ export const assetRoutes: FastifyPluginAsync<AssetRoutesOptions> = async (
         });
       }
 
-      const body = (request.body || {}) as RegisterAssetInput & { retry_token?: string };
+      // Server boundary validation (Standards Finding 1)
+      const parsed = RegisterAssetSchema.safeParse(request.body || {});
+      if (!parsed.success) {
+        return reply.status(400).send({
+          statusCode: 400,
+          code: 'VALIDATION_FAILED',
+          error: 'VALIDATION_FAILED',
+          message:
+            'Invalid request payload: ' +
+            parsed.error.issues
+              .map((i) => `${i.path.join('.')}: ${i.message}`)
+              .join(', '),
+        });
+      }
+
+      const body = parsed.data as RegisterAssetInput & { retry_token?: string };
       const retryToken =
         (request.headers['x-retry-token'] as string) || body.retry_token;
 
@@ -95,11 +148,11 @@ export const assetRoutes: FastifyPluginAsync<AssetRoutesOptions> = async (
           });
         }
 
-        if (err.message && err.message.includes('required')) {
+        if (err instanceof ValidationError) {
           return reply.status(400).send({
             statusCode: 400,
-            code: 'VALIDATION_ERROR',
-            error: 'VALIDATION_ERROR',
+            code: 'VALIDATION_FAILED',
+            error: 'VALIDATION_FAILED',
             message: err.message,
           });
         }
