@@ -1194,5 +1194,73 @@ describe('Asset Routes & Security Matrix Integration Tests (Seam A)', () => {
       });
       expect(res2.statusCode).toBe(403);
     });
+
+    it('rejects payload with 400 VALIDATION_FAILED when expected-before own properties are omitted', async () => {
+      // Omit expected_name
+      const res = await app.inject({
+        method: 'POST',
+        url: `/assets/${testAssetId}/correct`,
+        headers: {
+          cookie: adminUser.cookie,
+          'x-csrf-token': adminUser.csrf,
+        },
+        payload: {
+          name: 'Some Name',
+          expected_asset_number: 'ROUTE-BASE-01',
+          expected_serial_number: 'SN-BASE-01',
+          reason: 'Missing expected_name',
+        },
+      });
+      expect(res.statusCode).toBe(400);
+      const body = JSON.parse(res.body);
+      expect(body.code).toBe('VALIDATION_FAILED');
+    });
+
+    it('allows no-op correction without reason (200 OK, noop: true)', async () => {
+      const res = await app.inject({
+        method: 'POST',
+        url: `/assets/${testAssetId}/correct`,
+        headers: {
+          cookie: adminUser.cookie,
+          'x-csrf-token': adminUser.csrf,
+        },
+        payload: {
+          name: 'Base Test Asset',
+          asset_number: 'ROUTE-BASE-01',
+          serial_number: 'SN-BASE-01',
+          expected_name: 'Base Test Asset',
+          expected_asset_number: 'ROUTE-BASE-01',
+          expected_serial_number: 'SN-BASE-01',
+        },
+      });
+      expect(res.statusCode).toBe(200);
+      const body = JSON.parse(res.body);
+      expect(body.noop).toBe(true);
+      expect(body.history).toBeNull();
+    });
+
+    it('preserves verbatim spacing in identifiers through route boundary', async () => {
+      const res = await app.inject({
+        method: 'POST',
+        url: `/assets/${testAssetId}/correct`,
+        headers: {
+          cookie: adminUser.cookie,
+          'x-csrf-token': adminUser.csrf,
+        },
+        payload: {
+          name: 'Base Test Asset',
+          asset_number: '  SPACED-NUM  ',
+          serial_number: '  SPACED-SN  ',
+          expected_name: 'Base Test Asset',
+          expected_asset_number: 'ROUTE-BASE-01',
+          expected_serial_number: 'SN-BASE-01',
+          reason: 'Verbatim spacing route test',
+        },
+      });
+      expect(res.statusCode).toBe(200);
+      const body = JSON.parse(res.body);
+      expect(body.asset.asset_number).toBe('  SPACED-NUM  ');
+      expect(body.asset.serial_number).toBe('  SPACED-SN  ');
+    });
   });
 });

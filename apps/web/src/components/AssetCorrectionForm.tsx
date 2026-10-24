@@ -1,4 +1,4 @@
-import React, { useState, useRef } from 'react';
+import React, { useState, useRef, useEffect } from 'react';
 import { useForm } from 'react-hook-form';
 import { z } from 'zod';
 import type { AssetRecord } from '../pages/AssetDetail';
@@ -35,6 +35,13 @@ export const AssetCorrectionForm: React.FC<AssetCorrectionFormProps> = ({
 }) => {
   const retryTokenRef = useRef<string>(crypto.randomUUID());
 
+  // Baseline expected-before state to prevent silent rebasing during edits
+  const [baselineExpected, setBaselineExpected] = useState({
+    name: asset.name,
+    asset_number: asset.asset_number,
+    serial_number: asset.serial_number,
+  });
+
   const [candidates, setCandidates] = useState<DuplicateCandidate[]>([]);
   const [isCheckingDuplicates, setIsCheckingDuplicates] = useState(false);
   const [duplicateCheckError, setDuplicateCheckError] = useState<string | null>(null);
@@ -42,13 +49,20 @@ export const AssetCorrectionForm: React.FC<AssetCorrectionFormProps> = ({
   const [successMessage, setSuccessMessage] = useState<string | null>(null);
   const [isSubmitting, setIsSubmitting] = useState(false);
 
+  // Sequence tracking and AbortControllers
+  const lookupSeqRef = useRef<number>(0);
+  const lookupAbortRef = useRef<AbortController | null>(null);
+  const submitSeqRef = useRef<number>(0);
+  const submitAbortRef = useRef<AbortController | null>(null);
+
   const {
     register,
     handleSubmit,
     setError,
     watch,
     setValue,
-    formState: { errors },
+    reset,
+    formState,
   } = useForm<FormValues>({
     defaultValues: {
       name: asset.name || '',
@@ -59,12 +73,56 @@ export const AssetCorrectionForm: React.FC<AssetCorrectionFormProps> = ({
     },
   });
 
+  const { errors, isDirty } = formState;
+
+  // Rebase baseline only when form is pristine
+  useEffect(() => {
+    if (!isDirty) {
+      setBaselineExpected({
+        name: asset.name,
+        asset_number: asset.asset_number,
+        serial_number: asset.serial_number,
+      });
+      reset({
+        name: asset.name || '',
+        asset_number: asset.asset_number || '',
+        serial_number: asset.serial_number || '',
+        reason: '',
+        explicit_continuation: false,
+      });
+    }
+  }, [asset.name, asset.asset_number, asset.serial_number, isDirty, reset]);
+
+  // Cleanup abort controllers on unmount
+  useEffect(() => {
+    return () => {
+      if (lookupAbortRef.current) {
+        lookupAbortRef.current.abort();
+      }
+      if (submitAbortRef.current) {
+        submitAbortRef.current.abort();
+      }
+    };
+  }, []);
+
   const watchedAssetNumber = watch('asset_number');
   const watchedSerialNumber = watch('serial_number');
 
   // When identifier fields change, reset duplicate candidate warning and explicit continuation
   const handleIdentifierChange = (field: 'asset_number' | 'serial_number', val: string) => {
-    setValue(field, val);
+    setValue(field, val, { shouldDirty: true });
+    lookupSeqRef.current += 1;
+    submitSeqRef.current += 1; // Invalidate any in-flight POST submission warnings
+    if (lookupAbortRef.current) {
+      lookupAbortRef.current.abort();
+      lookupAbortRef.current = null;
+    }
+    if (submitAbortRef.current) {
+      submitAbortRef.current.abort();
+      submitAbortRef.current = null;
+    }
+    setIsCheckingDuplicates(false);
+    setIsSubmitting(false);
     setCandidates([]);
     setDuplicateCheckError(null);
     setValue('explicit_continuation', false);
@@ -72,13 +130,22 @@ export const AssetCorrectionForm: React.FC<AssetCorrectionFormProps> = ({
 
   // Duplicate candidates preview
   const handleCheckDuplicates = async () => {
-    const curAssetNumber = (watchedAssetNumber || '').trim();
-    const curSerialNumber = (watchedSerialNumber || '').trim();
+    const curAssetNumber = watchedAssetNumber || '';
+    const curSerialNumber = watchedSerialNumber || '';
 
     if (!curAssetNumber && !curSerialNumber) {
+      setIsCheckingDuplicates(false);
       setCandidates([]);
       return;
     }
+
+    lookupSeqRef.current += 1;
+    const currentSeq = lookupSeqRef.current;
+    if (lookupAbortRef.current) {
+      lookupAbortRef.current.abort();
+    }
+    const controller = new AbortController();
+    lookupAbortRef.current = controller;
 
     setIsCheckingDuplicates(true);
     setDuplicateCheckError(null);
@@ -91,7 +158,10 @@ export const AssetCorrectionForm: React.FC<AssetCorrectionFormProps> = ({
       const res = await fetch(`/assets/${asset.id}/duplicate-candidates?${params.toString()}`, {
         method: 'GET',
         credentials: 'include',
+        signal: controller.signal,
       });
+
+      if (currentSeq !== lookupSeqRef.current) return;
 
       if (res.status === 403) {
         setDuplicateCheckError('คุณไม่มีสิทธิ์ตรวจสอบข้อมูลซ้ำ (403 Forbidden)');
@@ -106,14 +176,20 @@ export const AssetCorrectionForm: React.FC<AssetCorrectionFormProps> = ({
       }
 
       const data = await res.json();
+      if (currentSeq !== lookupSeqRef.current) return;
+
       setCandidates(data.candidates || []);
       if (!data.candidates || data.candidates.length === 0) {
         setValue('explicit_continuation', false);
       }
-    } catch {
+    } catch (err: unknown) {
+      if (err instanceof DOMException && err.name === 'AbortError') return;
+      if (currentSeq !== lookupSeqRef.current) return;
       setDuplicateCheckError('เกิดข้อผิดพลาดในการเชื่อมต่อเพื่อตรวจสอบข้อมูลซ้ำ');
     } finally {
-      setIsCheckingDuplicates(false);
+      if (currentSeq === lookupSeqRef.current) {
+        setIsCheckingDuplicates(false);
+      }
     }
   };
 
@@ -121,12 +197,32 @@ export const AssetCorrectionForm: React.FC<AssetCorrectionFormProps> = ({
     setSubmitError(null);
     setSuccessMessage(null);
 
+    // Retain exact nonempty identifiers verbatim without trimming
+    const rawAssetNumber = data.asset_number === '' ? null : data.asset_number;
+    const rawSerialNumber = data.serial_number === '' ? null : data.serial_number;
+    const rawName = data.name === '' ? null : data.name;
+    const trimmedReason = (data.reason || '').trim();
+
+    // Check no-op against baseline expected
+    const isNoOp =
+      rawName === (baselineExpected.name ?? null) &&
+      rawAssetNumber === (baselineExpected.asset_number ?? null) &&
+      rawSerialNumber === (baselineExpected.serial_number ?? null);
+
     // 1. Zod client-side validation
     const schema = z.object({
-      name: isLegacy ? z.string() : z.string().trim().min(1, 'กรุณาระบุชื่อหรือคำอธิบายครุภัณฑ์'),
+      name: isLegacy
+        ? z.string()
+        : z
+            .string()
+            .refine((val) => val.trim().length > 0, 'กรุณาระบุชื่อหรือคำอธิบายครุภัณฑ์'),
       asset_number: z.string(),
       serial_number: z.string(),
-      reason: z.string().trim().min(1, 'กรุณาระบุเหตุผลในการแก้ไขข้อมูลครุภัณฑ์'),
+      reason: isNoOp
+        ? z.string()
+        : z
+            .string()
+            .refine((val) => val.trim().length > 0, 'กรุณาระบุเหตุผลในการแก้ไขข้อมูลครุภัณฑ์'),
       explicit_continuation: z.boolean(),
     });
 
@@ -139,36 +235,30 @@ export const AssetCorrectionForm: React.FC<AssetCorrectionFormProps> = ({
       return;
     }
 
-    // AR-08 rule: cannot clear non-null asset_number
-    const trimmedAssetNum = data.asset_number.trim();
-    if (asset.asset_number && asset.asset_number.trim().length > 0 && trimmedAssetNum.length === 0) {
-      setError('asset_number', {
-        type: 'manual',
-        message: 'ไม่สามารถลบเลขครุภัณฑ์ที่มีอยู่แล้วออกได้ตามกฎ AR-08',
-      });
-      return;
-    }
-
     // Check duplicate warning acknowledgement requirement
     if (candidates.length > 0 && !data.explicit_continuation) {
       setSubmitError('พบข้อมูลซ้ำในระบบ โปรดตรวจสอบและยืนยันการบันทึกการแก้ไขก่อนดำเนินการต่อ');
       return;
     }
 
+    submitSeqRef.current += 1;
+    const currentSubmitSeq = submitSeqRef.current;
+    if (submitAbortRef.current) {
+      submitAbortRef.current.abort();
+    }
+    const controller = new AbortController();
+    submitAbortRef.current = controller;
+
     setIsSubmitting(true);
 
-    const trimmedName = data.name.trim();
-    const trimmedSerialNum = data.serial_number.trim();
-    const trimmedReason = data.reason.trim();
-
     const payload = {
-      name: isLegacy && trimmedName.length === 0 ? null : trimmedName,
-      asset_number: trimmedAssetNum.length === 0 ? null : trimmedAssetNum,
-      serial_number: trimmedSerialNum.length === 0 ? null : trimmedSerialNum,
-      expected_name: asset.name,
-      expected_asset_number: asset.asset_number,
-      expected_serial_number: asset.serial_number,
-      reason: trimmedReason,
+      name: isLegacy && (!rawName || rawName.trim().length === 0) ? null : rawName,
+      asset_number: rawAssetNumber,
+      serial_number: rawSerialNumber,
+      expected_name: baselineExpected.name,
+      expected_asset_number: baselineExpected.asset_number,
+      expected_serial_number: baselineExpected.serial_number,
+      reason: isNoOp && trimmedReason.length === 0 ? null : trimmedReason,
       explicit_continuation: data.explicit_continuation,
       retry_token: retryTokenRef.current,
     };
@@ -186,8 +276,11 @@ export const AssetCorrectionForm: React.FC<AssetCorrectionFormProps> = ({
         method: 'POST',
         headers,
         credentials: 'include',
+        signal: controller.signal,
         body: JSON.stringify(payload),
       });
+
+      if (currentSubmitSeq !== submitSeqRef.current) return;
 
       if (res.status === 409) {
         const errJson = await res.json().catch(() => null);
@@ -195,7 +288,10 @@ export const AssetCorrectionForm: React.FC<AssetCorrectionFormProps> = ({
           setSubmitError(
             'ข้อมูลครุภัณฑ์ถูกแก้ไขโดยผู้อื่นแล้ว กรุณารีเฟรชข้อมูลล่าสุดก่อนดำเนินการต่อ (409 Conflict)'
           );
-        } else if (errJson?.code === 'DUPLICATE_WARNING') {
+        } else if (
+          errJson?.code === 'DUPLICATE_WARNING' ||
+          errJson?.code === 'DUPLICATE_CANDIDATES_FOUND'
+        ) {
           setCandidates(errJson.candidates || []);
           setSubmitError(
             'พบข้อมูลครุภัณฑ์ใกล้เคียงกันในระบบ หากประสงค์จะบันทึกข้อมูลนี้ กรุณาทำเครื่องหมายยืนยันด้านล่าง'
@@ -228,15 +324,34 @@ export const AssetCorrectionForm: React.FC<AssetCorrectionFormProps> = ({
       }
 
       const result = await res.json();
+      if (currentSubmitSeq !== submitSeqRef.current) return;
+
       setSuccessMessage('บันทึกการแก้ไขครุภัณฑ์สำเร็จ');
       // Fresh token for future edits
       retryTokenRef.current = crypto.randomUUID();
       setIsSubmitting(false);
 
       if (result?.asset) {
+        setBaselineExpected({
+          name: result.asset.name,
+          asset_number: result.asset.asset_number,
+          serial_number: result.asset.serial_number,
+        });
+        reset({
+          name: result.asset.name || '',
+          asset_number: result.asset.asset_number || '',
+          serial_number: result.asset.serial_number || '',
+          reason: '',
+          explicit_continuation: false,
+        });
         onSuccess(result.asset);
       }
-    } catch {
+    } catch (err: unknown) {
+      if (err instanceof DOMException && err.name === 'AbortError') {
+        setIsSubmitting(false);
+        return;
+      }
+      if (currentSubmitSeq !== submitSeqRef.current) return;
       // Network error: PRESERVE retry token for safe user retry
       setSubmitError(
         'เกิดข้อผิดพลาดในการเชื่อมต่อเครือข่าย ท่านสามารถกดบันทึกซ้ำเพื่อดำเนินการต่อได้อย่างปลอดภัย'
@@ -323,7 +438,7 @@ export const AssetCorrectionForm: React.FC<AssetCorrectionFormProps> = ({
           ชื่อ / คำอธิบายครุภัณฑ์ {!isLegacy && <span style={{ color: '#ef4444' }}>*</span>}
         </label>
         <div style={{ fontSize: '0.75rem', color: '#6b7280', marginBottom: '0.25rem' }}>
-          ค่าปัจจุบัน: {asset.name || '(ไม่ระบุ)'}
+          ค่าปัจจุบัน: {baselineExpected.name || '(ไม่ระบุ)'}
         </div>
         <input
           id="name"
@@ -361,7 +476,7 @@ export const AssetCorrectionForm: React.FC<AssetCorrectionFormProps> = ({
           เลขครุภัณฑ์
         </label>
         <div style={{ fontSize: '0.75rem', color: '#6b7280', marginBottom: '0.25rem' }}>
-          ค่าปัจจุบัน: {asset.asset_number || '(ไม่มีข้อมูล)'}
+          ค่าปัจจุบัน: {baselineExpected.asset_number || '(ไม่มีข้อมูล)'}
         </div>
         <input
           id="asset_number"
@@ -400,7 +515,7 @@ export const AssetCorrectionForm: React.FC<AssetCorrectionFormProps> = ({
           หมายเลขซีเรียล (Serial Number)
         </label>
         <div style={{ fontSize: '0.75rem', color: '#6b7280', marginBottom: '0.25rem' }}>
-          ค่าปัจจุบัน: {asset.serial_number || '(ไม่มีข้อมูล)'}
+          ค่าปัจจุบัน: {baselineExpected.serial_number || '(ไม่มีข้อมูล)'}
         </div>
         <input
           id="serial_number"

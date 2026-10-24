@@ -612,22 +612,6 @@ describe('AssetService Integration Tests (Seam A - Core Service & Transactions)'
       expect(historyRows.rows[0].count).toBe(1); // Only starting REGISTERED fact
     });
 
-    it('enforces AR-08: physical label loss cannot clear a known non-null asset number', async () => {
-      const reg = await assetService.registerAsset(testActorId, {
-        name: 'Label Loss Test Item',
-        asset_number: 'AST-KNOWN-001',
-      });
-
-      await expect(
-        assetService.correctAsset(testActorId, reg.asset.id, {
-          asset_number: null,
-          expected_name: 'Label Loss Test Item',
-          expected_asset_number: 'AST-KNOWN-001',
-          expected_serial_number: null,
-          reason: 'Label was physically damaged or lost',
-        })
-      ).rejects.toThrow('Physical label loss/damage alone cannot clear a known asset number (AR-08)');
-    });
 
     it('enforces truthful name on ordinary assets while allowing null name on legacy assets', async () => {
       // Ordinary asset
@@ -775,6 +759,160 @@ describe('AssetService Integration Tests (Seam A - Core Service & Transactions)'
           { retryToken: token }
         )
       ).rejects.toThrow(RetryTokenConflictError);
+    });
+
+    it('allows legitimate clearing of erroneous asset_number to null without blanket prohibition', async () => {
+      const reg = await assetService.registerAsset(testActorId, {
+        name: 'Asset With Wrong Number',
+        asset_number: 'ERRONEOUS-1234',
+        serial_number: 'SN-CLEAR-01',
+      });
+
+      // Clear the erroneous asset_number by explicitly setting asset_number to null
+      const res = await assetService.correctAsset(testActorId, reg.asset.id, {
+        name: 'Asset With Wrong Number',
+        asset_number: null,
+        serial_number: 'SN-CLEAR-01',
+        expected_name: 'Asset With Wrong Number',
+        expected_asset_number: 'ERRONEOUS-1234',
+        expected_serial_number: 'SN-CLEAR-01',
+        reason: 'แก้ไขเนื่องจากบันทึกเลขครุภัณฑ์ผิดพลาด แท้จริงไม่มีเลขติดตัวเครื่อง',
+      });
+
+      expect(res.asset.asset_number).toBeNull();
+      const dbRow = await pool.query('SELECT asset_number FROM assets WHERE id = $1', [reg.asset.id]);
+      expect(dbRow.rows[0].asset_number).toBeNull();
+    });
+
+    it('allows no-op correction without reason, and writes no metadata, history, or retry ledger', async () => {
+      const reg = await assetService.registerAsset(testActorId, {
+        name: 'No-Op Asset',
+        asset_number: 'NOOP-001',
+        serial_number: 'SN-NOOP-01',
+      });
+
+      const token = crypto.randomUUID();
+      const res = await assetService.correctAsset(
+        testActorId,
+        reg.asset.id,
+        {
+          name: 'No-Op Asset',
+          asset_number: 'NOOP-001',
+          serial_number: 'SN-NOOP-01',
+          expected_name: 'No-Op Asset',
+          expected_asset_number: 'NOOP-001',
+          expected_serial_number: 'SN-NOOP-01',
+        } as any,
+        { retryToken: token }
+      );
+
+      expect(res.noop).toBe(true);
+      expect(res.history).toBeNull();
+
+      // Verify no 'CORRECTED' history fact was inserted
+      const histRes = await pool.query(
+        "SELECT count(*)::int as count FROM asset_history WHERE asset_id = $1 AND action = 'CORRECTED'",
+        [reg.asset.id]
+      );
+      expect(histRes.rows[0].count).toBe(0);
+
+      // Verify no retry ledger entry was written on no-op
+      const tokenRes = await pool.query(
+        'SELECT count(*)::int as count FROM registration_retry_tokens WHERE token = $1',
+        [token]
+      );
+      expect(tokenRes.rows[0].count).toBe(0);
+    });
+
+    it('strictly requires all three expected-before own properties and rejects missing ones', async () => {
+      const reg = await assetService.registerAsset(testActorId, {
+        name: 'Strict Expected Asset',
+        asset_number: 'STRICT-001',
+      });
+
+      // Missing expected_name
+      await expect(
+        assetService.correctAsset(testActorId, reg.asset.id, {
+          name: 'New Name',
+          asset_number: 'STRICT-001',
+          serial_number: null,
+          expected_asset_number: 'STRICT-001',
+          expected_serial_number: null,
+          reason: 'Missing expected_name',
+        } as any)
+      ).rejects.toThrow(ValidationError);
+
+      // Missing expected_asset_number
+      await expect(
+        assetService.correctAsset(testActorId, reg.asset.id, {
+          name: 'New Name',
+          asset_number: 'STRICT-001',
+          serial_number: null,
+          expected_name: 'Strict Expected Asset',
+          expected_serial_number: null,
+          reason: 'Missing expected_asset_number',
+        } as any)
+      ).rejects.toThrow(ValidationError);
+
+      // Missing expected_serial_number
+      await expect(
+        assetService.correctAsset(testActorId, reg.asset.id, {
+          name: 'New Name',
+          asset_number: 'STRICT-001',
+          serial_number: null,
+          expected_name: 'Strict Expected Asset',
+          expected_asset_number: 'STRICT-001',
+          reason: 'Missing expected_serial_number',
+        } as any)
+      ).rejects.toThrow(ValidationError);
+    });
+
+    it('preserves exact nonempty identifiers verbatim without trimming internal or outer spacing', async () => {
+      const reg = await assetService.registerAsset(testActorId, {
+        name: 'Verbatim Asset',
+        asset_number: 'VERBATIM-ORIG',
+      });
+
+      const res = await assetService.correctAsset(testActorId, reg.asset.id, {
+        name: 'Verbatim Asset',
+        asset_number: '  SPACED-NUMBER  ',
+        serial_number: '  SPACED-SN  ',
+        expected_name: 'Verbatim Asset',
+        expected_asset_number: 'VERBATIM-ORIG',
+        expected_serial_number: null,
+        reason: 'Preserve exact identifiers verbatim',
+      });
+
+      expect(res.asset.asset_number).toBe('  SPACED-NUMBER  ');
+      expect(res.asset.serial_number).toBe('  SPACED-SN  ');
+    });
+
+    it('atomic rollback on error guarantees zero partial writes to assets, history, or tokens', async () => {
+      const reg = await assetService.registerAsset(testActorId, {
+        name: 'Rollback Asset',
+        asset_number: 'RB-001',
+      });
+
+      await expect(
+        assetService.correctAsset('invalid-uuid', reg.asset.id, {
+          name: 'Should Not Commit',
+          expected_name: 'Rollback Asset',
+          expected_asset_number: 'RB-001',
+          expected_serial_number: null,
+          reason: 'Testing rollback',
+        } as any)
+      ).rejects.toThrow();
+
+      // Check DB: assets table unchanged
+      const dbAsset = await pool.query('SELECT name FROM assets WHERE id = $1', [reg.asset.id]);
+      expect(dbAsset.rows[0].name).toBe('Rollback Asset');
+
+      // Check DB: no history added
+      const histRes = await pool.query(
+        "SELECT count(*)::int as count FROM asset_history WHERE asset_id = $1 AND action = 'CORRECTED'",
+        [reg.asset.id]
+      );
+      expect(histRes.rows[0].count).toBe(0);
     });
   });
 });

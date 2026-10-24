@@ -35,18 +35,27 @@ export interface AssetDetailResponse {
   can_correct?: boolean;
 }
 
-const pageQueryClient = new QueryClient({
-  defaultOptions: {
-    queries: {
-      retry: false,
-      refetchOnWindowFocus: false,
-    },
-  },
-});
-
 export const AssetDetail: React.FC = () => {
+  const [queryClient] = useState(
+    () =>
+      new QueryClient({
+        defaultOptions: {
+          queries: {
+            retry: false,
+            refetchOnWindowFocus: false,
+          },
+        },
+      })
+  );
+
+  useEffect(() => {
+    return () => {
+      queryClient.clear();
+    };
+  }, [queryClient]);
+
   return (
-    <QueryClientProvider client={pageQueryClient}>
+    <QueryClientProvider client={queryClient}>
       <AssetDetailContent />
     </QueryClientProvider>
   );
@@ -57,7 +66,9 @@ const AssetDetailContent: React.FC = () => {
   const navigate = useNavigate();
 
   const [csrfToken, setCsrfToken] = useState<string | null>(null);
+  const [currentUser, setCurrentUser] = useState<{ id: string; role?: string } | null>(null);
   const [sessionLoading, setSessionLoading] = useState(true);
+  const [refreshError, setRefreshError] = useState<string | null>(null);
 
   useEffect(() => {
     const controller = new AbortController();
@@ -77,6 +88,7 @@ const AssetDetailContent: React.FC = () => {
 
         const data = await sessionRes.json();
         setCsrfToken(data.csrfToken || null);
+        setCurrentUser(data.user || null);
         setSessionLoading(false);
       } catch (err: unknown) {
         if (err instanceof DOMException && err.name === 'AbortError') {
@@ -99,7 +111,7 @@ const AssetDetailContent: React.FC = () => {
     error: assetError,
     refetch,
   } = useQuery<AssetDetailResponse, Error & { status?: number }>({
-    queryKey: ['asset', id],
+    queryKey: ['asset', currentUser?.id, id],
     queryFn: async ({ signal }) => {
       if (!id) {
         const err = new Error('ไม่พบรหัสครุภัณฑ์ที่ต้องการเรียกดู') as Error & { status?: number };
@@ -112,6 +124,13 @@ const AssetDetailContent: React.FC = () => {
         credentials: 'include',
         signal,
       });
+
+      if (res.status === 401) {
+        navigate('/login', { replace: true });
+        const err = new Error('Session expired') as Error & { status?: number };
+        err.status = 401;
+        throw err;
+      }
 
       if (res.status === 403) {
         const err = new Error('คุณไม่มีสิทธิ์เข้าถึงข้อมูลครุภัณฑ์นี้ (403 Forbidden)') as Error & {
@@ -138,7 +157,7 @@ const AssetDetailContent: React.FC = () => {
     enabled: !sessionLoading && !!id,
   });
 
-  if (sessionLoading || isAssetLoading) {
+  if (sessionLoading || (isAssetLoading && !assetData)) {
     return (
       <main
         style={{
@@ -157,7 +176,7 @@ const AssetDetailContent: React.FC = () => {
     );
   }
 
-  if (assetError || !assetData) {
+  if (!assetData) {
     return (
       <main
         style={{
@@ -581,6 +600,49 @@ const AssetDetailContent: React.FC = () => {
           </div>
         </section>
 
+        {refreshError && (
+          <div
+            role="alert"
+            data-testid="refresh-error-banner"
+            style={{
+              padding: '1rem',
+              backgroundColor: '#fef3c7',
+              border: '1px solid #f59e0b',
+              borderRadius: '6px',
+              color: '#92400e',
+              marginBottom: '1.5rem',
+              display: 'flex',
+              justifyContent: 'space-between',
+              alignItems: 'center',
+            }}
+          >
+            <span>{refreshError}</span>
+            <button
+              type="button"
+              id="retry-refresh-btn"
+              onClick={async () => {
+                const res = await refetch();
+                if (!res.isError) {
+                  setRefreshError(null);
+                }
+              }}
+              style={{
+                marginLeft: '1rem',
+                padding: '0.375rem 0.75rem',
+                backgroundColor: '#b45309',
+                color: '#ffffff',
+                border: 'none',
+                borderRadius: '4px',
+                cursor: 'pointer',
+                fontWeight: 600,
+                fontSize: '0.875rem',
+              }}
+            >
+              โหลดข้อมูลใหม่ (Retry)
+            </button>
+          </div>
+        )}
+
         {/* Correction Section (Rendered for Authorized Roles; Read-only notice otherwise) */}
         {can_correct ? (
           <section aria-labelledby="correction-heading">
@@ -589,7 +651,13 @@ const AssetDetailContent: React.FC = () => {
               isLegacy={isLegacy}
               csrfToken={csrfToken}
               onSuccess={async () => {
-                await refetch();
+                setRefreshError(null);
+                const refetchResult = await refetch();
+                if (refetchResult.isError) {
+                  setRefreshError(
+                    'บันทึกการแก้ไขครุภัณฑ์สำเร็จ แต่การดึงข้อมูลล่าสุดล้มเหลว กรุณากดปุ่มเพื่อโหลดข้อมูลใหม่'
+                  );
+                }
               }}
             />
           </section>

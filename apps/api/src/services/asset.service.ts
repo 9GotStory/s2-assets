@@ -44,10 +44,10 @@ export interface CorrectAssetInput {
   name?: string | null;
   asset_number?: string | null;
   serial_number?: string | null;
-  expected_name?: string | null;
-  expected_asset_number?: string | null;
-  expected_serial_number?: string | null;
-  reason: string;
+  expected_name: string | null;
+  expected_asset_number: string | null;
+  expected_serial_number: string | null;
+  reason?: string | null;
   explicit_continuation?: boolean;
 }
 
@@ -634,8 +634,12 @@ export class AssetService {
       throw new ValidationError('Valid assetId UUID is required for asset correction');
     }
 
-    if (typeof input.reason !== 'string' || input.reason.trim().length === 0) {
-      throw new ValidationError('Mandatory non-blank reason is required for correction');
+    if (
+      input.reason !== undefined &&
+      input.reason !== null &&
+      typeof input.reason !== 'string'
+    ) {
+      throw new ValidationError('reason must be a string or null');
     }
 
     if (
@@ -662,26 +666,24 @@ export class AssetService {
     ) {
       throw new ValidationError('serial_number must be a string or null');
     }
+
     if (
-      input.expected_name !== undefined &&
-      input.expected_name !== null &&
-      typeof input.expected_name !== 'string'
+      !Object.prototype.hasOwnProperty.call(input, 'expected_name') ||
+      (input.expected_name !== null && typeof input.expected_name !== 'string')
     ) {
-      throw new ValidationError('expected_name must be a string or null');
+      throw new ValidationError('expected_name must be an own property with string or null value');
     }
     if (
-      input.expected_asset_number !== undefined &&
-      input.expected_asset_number !== null &&
-      typeof input.expected_asset_number !== 'string'
+      !Object.prototype.hasOwnProperty.call(input, 'expected_asset_number') ||
+      (input.expected_asset_number !== null && typeof input.expected_asset_number !== 'string')
     ) {
-      throw new ValidationError('expected_asset_number must be a string or null');
+      throw new ValidationError('expected_asset_number must be an own property with string or null value');
     }
     if (
-      input.expected_serial_number !== undefined &&
-      input.expected_serial_number !== null &&
-      typeof input.expected_serial_number !== 'string'
+      !Object.prototype.hasOwnProperty.call(input, 'expected_serial_number') ||
+      (input.expected_serial_number !== null && typeof input.expected_serial_number !== 'string')
     ) {
-      throw new ValidationError('expected_serial_number must be a string or null');
+      throw new ValidationError('expected_serial_number must be an own property with string or null value');
     }
 
     const explicitContinuation = input.explicit_continuation === true;
@@ -750,7 +752,7 @@ export class AssetService {
       // 3. Expected-before comparison
       const expectedName =
         input.expected_name !== undefined && input.expected_name !== null && input.expected_name !== ''
-          ? input.expected_name.trim()
+          ? input.expected_name
           : null;
       const expectedAssetNumber =
         input.expected_asset_number !== undefined &&
@@ -794,7 +796,7 @@ export class AssetService {
       const newName =
         input.name !== undefined
           ? input.name !== null && input.name.trim() !== ''
-            ? input.name.trim()
+            ? input.name
             : null
           : currentDbName;
 
@@ -842,12 +844,10 @@ export class AssetService {
       }
 
       // 5. Business rules validation:
-      // AR-08: Physical label loss cannot clear known asset number
-      if (currentDbAssetNumber !== null && newAssetNumber === null) {
+      // Mandatory non-blank reason is required when changes occur
+      if (typeof input.reason !== 'string' || input.reason.trim().length === 0) {
         await client.query('ROLLBACK');
-        throw new ValidationError(
-          'Physical label loss/damage alone cannot clear a known asset number (AR-08)'
-        );
+        throw new ValidationError('Mandatory non-blank reason is required for correction');
       }
 
       // Check legacy status from immutable registration starting fact
@@ -1028,53 +1028,75 @@ export class AssetService {
       return null;
     }
 
-    const assetRes = await this.db.query(
-      `SELECT id, asset_number, serial_number, name, category, organization_unit,
-              source_reference, source_notes, registered_by, recorded_at, created_at, updated_at
-       FROM assets
-       WHERE id = $1`,
-      [id.trim()]
-    );
+    const pool = this.db;
+    const client = typeof pool.connect === 'function' ? await pool.connect() : pool;
+    const shouldRelease = typeof pool.connect === 'function';
 
-    if (assetRes.rows.length === 0) {
-      return null;
+    try {
+      await client.query('BEGIN');
+
+      const assetRes = await client.query(
+        `SELECT id, asset_number, serial_number, name, category, organization_unit,
+                source_reference, source_notes, registered_by, recorded_at, created_at, updated_at
+         FROM assets
+         WHERE id = $1`,
+        [id.trim()]
+      );
+
+      if (assetRes.rows.length === 0) {
+        await client.query('COMMIT');
+        return null;
+      }
+
+      const historyRes = await client.query(
+        `SELECT h.id, h.asset_id, h.action, h.actor_id, u.username as actor_username,
+                h.recorded_at, h.payload, h.created_at
+         FROM asset_history h
+         LEFT JOIN users u ON h.actor_id = u.id
+         WHERE h.asset_id = $1
+         ORDER BY h.recorded_at ASC, h.created_at ASC`,
+        [id.trim()]
+      );
+
+      await client.query('COMMIT');
+
+      return {
+        asset: {
+          id: assetRes.rows[0].id,
+          asset_number: assetRes.rows[0].asset_number,
+          serial_number: assetRes.rows[0].serial_number,
+          name: assetRes.rows[0].name,
+          category: assetRes.rows[0].category,
+          organization_unit: assetRes.rows[0].organization_unit,
+          source_reference: assetRes.rows[0].source_reference,
+          source_notes: assetRes.rows[0].source_notes,
+          registered_by: assetRes.rows[0].registered_by,
+          recorded_at: new Date(assetRes.rows[0].recorded_at).toISOString(),
+          created_at: new Date(assetRes.rows[0].created_at).toISOString(),
+          updated_at: new Date(assetRes.rows[0].updated_at).toISOString(),
+        },
+        history: historyRes.rows.map((row: any) => ({
+          id: row.id,
+          asset_id: row.asset_id,
+          action: row.action,
+          actor_id: row.actor_id,
+          actor_username: row.actor_username,
+          recorded_at: new Date(row.recorded_at).toISOString(),
+          payload: row.payload,
+          created_at: new Date(row.created_at).toISOString(),
+        })),
+      };
+    } catch (err) {
+      try {
+        await client.query('ROLLBACK');
+      } catch {
+        // ignore rollback error on closed connection
+      }
+      throw err;
+    } finally {
+      if (shouldRelease) {
+        client.release();
+      }
     }
-
-    const historyRes = await this.db.query(
-      `SELECT h.id, h.asset_id, h.action, h.actor_id, u.username as actor_username,
-              h.recorded_at, h.payload, h.created_at
-       FROM asset_history h
-       LEFT JOIN users u ON h.actor_id = u.id
-       WHERE h.asset_id = $1
-       ORDER BY h.recorded_at ASC, h.created_at ASC`,
-      [id.trim()]
-    );
-
-    return {
-      asset: {
-        id: assetRes.rows[0].id,
-        asset_number: assetRes.rows[0].asset_number,
-        serial_number: assetRes.rows[0].serial_number,
-        name: assetRes.rows[0].name,
-        category: assetRes.rows[0].category,
-        organization_unit: assetRes.rows[0].organization_unit,
-        source_reference: assetRes.rows[0].source_reference,
-        source_notes: assetRes.rows[0].source_notes,
-        registered_by: assetRes.rows[0].registered_by,
-        recorded_at: new Date(assetRes.rows[0].recorded_at).toISOString(),
-        created_at: new Date(assetRes.rows[0].created_at).toISOString(),
-        updated_at: new Date(assetRes.rows[0].updated_at).toISOString(),
-      },
-      history: historyRes.rows.map((row: any) => ({
-        id: row.id,
-        asset_id: row.asset_id,
-        action: row.action,
-        actor_id: row.actor_id,
-        actor_username: row.actor_username,
-        recorded_at: new Date(row.recorded_at).toISOString(),
-        payload: row.payload,
-        created_at: new Date(row.created_at).toISOString(),
-      })),
-    };
   }
 }

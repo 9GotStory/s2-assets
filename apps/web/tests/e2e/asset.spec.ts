@@ -859,4 +859,96 @@ test.describe.serial('Asset Registry Real SPA -> Composed API -> PostgreSQL Jour
     expect(dbHistory.rows).toHaveLength(1);
     expect(dbHistory.rows[0].payload.reason).toBe('แก้ไขชื่อรุ่นให้ตรงกับฉลากสินค้า');
   });
+
+  test('Journey 14: Refresh failure after correction discloses committed success + refresh failure, offering manual retry', async ({
+    page,
+    context,
+  }) => {
+    const testAssetId = crypto.randomUUID();
+    await pool.query(
+      `INSERT INTO assets (id, name, asset_number, serial_number, registered_by, recorded_at, created_at, updated_at)
+       VALUES ($1, $2, $3, $4, $5, now(), now(), now())`,
+      [testAssetId, 'เครื่องตรวจวัดสภาพอากาศ', 'WEA-001', 'SN-WEA-001', custodianUserId]
+    );
+    await pool.query(
+      `INSERT INTO asset_history (id, asset_id, action, actor_id, payload, recorded_at, created_at)
+       VALUES ($1, $2, 'REGISTERED', $3, $4, now(), now())`,
+      [crypto.randomUUID(), testAssetId, custodianUserId, JSON.stringify({ name: 'เครื่องตรวจวัดสภาพอากาศ' })]
+    );
+
+    await loginAs(page, context, custodianUserId);
+    await page.goto(`${targetBaseUrl}/assets/${testAssetId}`);
+    await expect(page.locator('#asset-detail-heading')).toHaveText('เครื่องตรวจวัดสภาพอากาศ');
+
+    let postSucceeded = false;
+    let injectedRefetchError = false;
+
+    await page.route(`**/assets/${testAssetId}`, async (route) => {
+      if (route.request().method() === 'GET' && postSucceeded && !injectedRefetchError) {
+        injectedRefetchError = true;
+        await route.fulfill({
+          status: 500,
+          contentType: 'application/json',
+          body: JSON.stringify({ message: 'Simulated refetch network glitch' }),
+        });
+        return;
+      }
+      await route.continue();
+    });
+
+    await page.locator('#asset-correction-form input#name').fill('เครื่องตรวจวัดสภาพอากาศ IoT (รุ่นใหม่)');
+    await page.locator('#asset-correction-form textarea#reason').fill('อัปเกรดชื่อรุ่น');
+
+    // Submit form
+    postSucceeded = true;
+    await page.locator('button#submit-correct-btn').click();
+
+    // Verify refresh error banner appears offering retry button
+    await expect(page.locator('[data-testid="refresh-error-banner"]')).toBeVisible();
+    await expect(page.locator('[data-testid="refresh-error-banner"]')).toContainText(
+      'บันทึกการแก้ไขครุภัณฑ์สำเร็จ แต่การดึงข้อมูลล่าสุดล้มเหลว'
+    );
+    await expect(page.locator('button#retry-refresh-btn')).toBeVisible();
+
+    // Click retry button -> second GET will not be intercepted with 500
+    await page.locator('button#retry-refresh-btn').click();
+
+    // Verify refresh succeeds and error banner clears
+    await expect(page.locator('[data-testid="refresh-error-banner"]')).not.toBeVisible();
+    await expect(page.locator('#asset-detail-heading')).toHaveText('เครื่องตรวจวัดสภาพอากาศ IoT (รุ่นใหม่)');
+  });
+
+  test('Journey 15: Legitimate clearing of erroneous asset_number in UI without blanket prohibition', async ({
+    page,
+    context,
+  }) => {
+    const testAssetId = crypto.randomUUID();
+    await pool.query(
+      `INSERT INTO assets (id, name, asset_number, serial_number, registered_by, recorded_at, created_at, updated_at)
+       VALUES ($1, $2, $3, $4, $5, now(), now(), now())`,
+      [testAssetId, 'โต๊ะทำงานพับได้', 'WRONG-TAG-999', 'SN-DESK-01', custodianUserId]
+    );
+    await pool.query(
+      `INSERT INTO asset_history (id, asset_id, action, actor_id, payload, recorded_at, created_at)
+       VALUES ($1, $2, 'REGISTERED', $3, $4, now(), now())`,
+      [crypto.randomUUID(), testAssetId, custodianUserId, JSON.stringify({ name: 'โต๊ะทำงานพับได้' })]
+    );
+
+    await loginAs(page, context, custodianUserId);
+    await page.goto(`${targetBaseUrl}/assets/${testAssetId}`);
+
+    // Clear asset_number
+    await page.locator('#asset-correction-form input#asset_number').fill('');
+    await page.locator('#asset-correction-form textarea#reason').fill('ลบเลขครุภัณฑ์เนื่องจากบันทึกผิดพลาด แท้จริงไม่มีเลขติดครุภัณฑ์');
+
+    await page.locator('button#submit-correct-btn').click();
+
+    await expect(page.locator('[data-testid="correction-success-message"]')).toHaveText(
+      'บันทึกการแก้ไขครุภัณฑ์สำเร็จ'
+    );
+
+    // Verify in database: asset_number is NULL
+    const dbAsset = await pool.query('SELECT asset_number FROM assets WHERE id = $1', [testAssetId]);
+    expect(dbAsset.rows[0].asset_number).toBeNull();
+  });
 });
