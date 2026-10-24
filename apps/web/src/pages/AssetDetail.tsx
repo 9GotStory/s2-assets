@@ -1,4 +1,4 @@
-import React, { useEffect, useState } from 'react';
+import React, { useEffect, useState, useCallback } from 'react';
 import { useParams, useNavigate, Link } from 'react-router';
 import { QueryClient, QueryClientProvider, useQuery, useQueryClient } from '@tanstack/react-query';
 import { AssetCorrectionForm } from '../components/AssetCorrectionForm';
@@ -42,7 +42,7 @@ export const AssetDetail: React.FC = () => {
         defaultOptions: {
           queries: {
             retry: false,
-            refetchOnWindowFocus: false,
+            refetchOnWindowFocus: true,
           },
         },
       })
@@ -73,42 +73,65 @@ const AssetDetailContent: React.FC = () => {
   const [isCorrectionRevoked, setIsCorrectionRevoked] = useState(false);
   const [terminalError, setTerminalError] = useState<string | null>(null);
 
-  useEffect(() => {
-    const controller = new AbortController();
-
-    const verifySession = async () => {
+  const verifySession = useCallback(
+    async (signal?: AbortSignal) => {
       try {
         const sessionRes = await fetch('/auth/session-check', {
           method: 'GET',
           credentials: 'include',
-          signal: controller.signal,
+          signal,
         });
 
         if (!sessionRes.ok) {
           queryClient.clear();
+          setCurrentUser(null);
+          setCsrfToken(null);
           navigate('/login', { replace: true });
-          return;
+          return null;
         }
 
         const data = await sessionRes.json();
+        const user = data.user || null;
+        setCurrentUser((prevUser) => {
+          if (prevUser && user && prevUser.id !== user.id) {
+            queryClient.clear();
+          }
+          return user;
+        });
         setCsrfToken(data.csrfToken || null);
-        setCurrentUser(data.user || null);
         setSessionLoading(false);
+        return user;
       } catch (err: unknown) {
         if (err instanceof DOMException && err.name === 'AbortError') {
-          return;
+          return null;
         }
         queryClient.clear();
+        setCurrentUser(null);
+        setCsrfToken(null);
         navigate('/login', { replace: true });
+        return null;
       }
+    },
+    [navigate, queryClient]
+  );
+
+  useEffect(() => {
+    const controller = new AbortController();
+    verifySession(controller.signal);
+
+    const handleFocus = () => {
+      verifySession();
     };
 
-    verifySession();
+    window.addEventListener('focus', handleFocus);
+    document.addEventListener('visibilitychange', handleFocus);
 
     return () => {
       controller.abort();
+      window.removeEventListener('focus', handleFocus);
+      document.removeEventListener('visibilitychange', handleFocus);
     };
-  }, [navigate, queryClient]);
+  }, [verifySession]);
 
   const {
     data: assetData,
@@ -176,6 +199,20 @@ const AssetDetailContent: React.FC = () => {
       queryClient.setQueryData(['asset', currentUser?.id, id], null);
     }
   }, [assetError, currentUser?.id, id, queryClient]);
+
+  const handlePermissionRevoked = useCallback(async () => {
+    setIsCorrectionRevoked(true);
+    const survivingUser = await verifySession();
+    if (!survivingUser) return;
+
+    // Freshly revalidate asset:view read authorization
+    const freshResult = await refetch();
+    if (freshResult.isError) {
+      // Full view revocation: immediately suppress all protected cached content
+      queryClient.clear();
+      setTerminalError(freshResult.error?.message || 'คุณไม่มีสิทธิ์เข้าถึงข้อมูลครุภัณฑ์นี้ (403 Forbidden)');
+    }
+  }, [verifySession, refetch, queryClient]);
 
   if (
     !assetData ||
@@ -652,6 +689,10 @@ const AssetDetailContent: React.FC = () => {
                 const res = await refetch();
                 if (!res.isError) {
                   setRefreshError(null);
+                } else if (res.error?.status === 403 || res.error?.status === 401) {
+                  // Revocation during refresh recovery fails closed!
+                  queryClient.clear();
+                  setTerminalError(res.error.message || 'คุณไม่มีสิทธิ์เข้าถึงข้อมูลครุภัณฑ์นี้ (403 Forbidden)');
                 }
               }}
               style={{
@@ -678,7 +719,7 @@ const AssetDetailContent: React.FC = () => {
               asset={asset}
               isLegacy={isLegacy}
               csrfToken={csrfToken}
-              onPermissionRevoked={() => setIsCorrectionRevoked(true)}
+              onPermissionRevoked={handlePermissionRevoked}
               onSuccess={async () => {
                 setRefreshError(null);
                 const refetchResult = await refetch();

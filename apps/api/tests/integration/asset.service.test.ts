@@ -9,6 +9,7 @@ import {
   AssetService,
   DuplicateCandidateWarningError,
   RetryTokenConflictError,
+  StaleBeforeConflictError,
   ValidationError,
   type RegisterAssetInput,
 } from '../../src/services/asset.service.ts';
@@ -1059,57 +1060,67 @@ describe('AssetService Integration Tests (Seam A - Core Service & Transactions)'
       expect(assetRes.rows[0].name).toBe('Spaced Name ');
     });
 
-    it('guarantees atomic coherent snapshot across assets and history tables during concurrent correction commit', async () => {
+    it('guarantees atomic coherent snapshot across assets and history tables during concurrent correction commit in production getAssetById', async () => {
       const reg = await assetService.registerAsset(testActorId, {
         name: 'Before Snapshot Name',
         asset_number: 'SNAP-001',
       });
 
-      // Client 1 begins repeatable-read read-only transaction (matching getAssetById)
-      const client1 = await pool.connect();
-      try {
-        await client1.query('BEGIN TRANSACTION ISOLATION LEVEL REPEATABLE READ READ ONLY');
+      let interleaveTriggered = false;
+      const originalConnect = pool.connect.bind(pool);
 
-        // Step 1: Client 1 reads asset row -> sees 'Before Snapshot Name'
-        const assetRes = await client1.query(
-          'SELECT id, name FROM assets WHERE id = $1',
-          [reg.asset.id]
-        );
-        expect(assetRes.rows[0].name).toBe('Before Snapshot Name');
+      const interceptedPool = {
+        query: pool.query.bind(pool),
+        connect: async () => {
+          const client = await originalConnect();
+          const origQuery = client.query.bind(client);
 
-        // Step 2: Concurrently, Client 2 commits a correction!
-        const retryToken = crypto.randomUUID();
-        await assetService.correctAsset(
-          testActorId,
-          reg.asset.id,
-          {
-            name: 'After Snapshot Name',
-            expected_name: 'Before Snapshot Name',
-            expected_asset_number: 'SNAP-001',
-            expected_serial_number: null,
-            reason: 'Concurrent correction commit during client 1 read',
-          },
-          { retryToken }
-        );
+          client.query = async function (textOrConfig: any, ...args: any[]) {
+            const result = await origQuery(textOrConfig, ...args);
+            const text = typeof textOrConfig === 'string' ? textOrConfig : textOrConfig?.text || '';
 
-        // Outside world has committed 'After Snapshot Name'
-        const checkRes = await pool.query('SELECT name FROM assets WHERE id = $1', [reg.asset.id]);
-        expect(checkRes.rows[0].name).toBe('After Snapshot Name');
+            // Deterministically interleave right after reading the assets table inside production getAssetById
+            if (text.includes('FROM assets') && !interleaveTriggered) {
+              interleaveTriggered = true;
+              const retryToken = crypto.randomUUID();
+              await assetService.correctAsset(
+                testActorId,
+                reg.asset.id,
+                {
+                  name: 'After Snapshot Name',
+                  expected_name: 'Before Snapshot Name',
+                  expected_asset_number: 'SNAP-001',
+                  expected_serial_number: null,
+                  reason: 'Concurrent correction commit during production getAssetById read',
+                },
+                { retryToken }
+              );
+            }
+            return result;
+          };
+          return client;
+        },
+      };
 
-        // Step 3: Client 1 now reads asset_history within its REPEATABLE READ transaction
-        const historyRes = await client1.query(
-          "SELECT action, payload FROM asset_history WHERE asset_id = $1 ORDER BY recorded_at ASC, created_at ASC",
-          [reg.asset.id]
-        );
+      const testService = new AssetService({ db: interceptedPool });
 
-        await client1.query('COMMIT');
+      // Call actual production getAssetById()
+      const result = await testService.getAssetById(reg.asset.id);
 
-        // In a coherent snapshot, Client 1 must NOT see the newly committed CORRECTED history row!
-        const correctedRows = historyRes.rows.filter((r) => r.action === 'CORRECTED');
-        expect(correctedRows.length).toBe(0);
-      } finally {
-        client1.release();
-      }
+      expect(interleaveTriggered).toBe(true);
+      expect(result).not.toBeNull();
+      // Asset facts must match the snapshot taken at query start
+      expect(result!.asset.name).toBe('Before Snapshot Name');
+
+      // History facts must also match the exact same snapshot (zero CORRECTED rows seen)
+      const correctedHistory = result!.history.filter((h) => h.action === 'CORRECTED');
+      expect(correctedHistory.length).toBe(0);
+
+      // Verify that outside the snapshot, the database did commit 'After Snapshot Name' and the CORRECTED history row
+      const checkOutside = await assetService.getAssetById(reg.asset.id);
+      expect(checkOutside!.asset.name).toBe('After Snapshot Name');
+      const outsideHistory = checkOutside!.history.filter((h) => h.action === 'CORRECTED');
+      expect(outsideHistory.length).toBe(1);
     });
 
     it('rolls back completely when failure occurs during audit history insertion after UPDATE', async () => {
@@ -1317,6 +1328,71 @@ describe('AssetService Integration Tests (Seam A - Core Service & Transactions)'
         [reg.asset.id]
       );
       expect(histRes.rows[0].count).toBe(1);
+    });
+
+    it('handles competing corrections with distinct valid tokens: one commits, competitor rejected with StaleBeforeConflictError, no lost update', async () => {
+      const reg = await assetService.registerAsset(testActorId, {
+        name: 'Distinct Tokens Asset',
+        asset_number: 'DT-001',
+      });
+
+      const tokenA = crypto.randomUUID();
+      const tokenB = crypto.randomUUID();
+
+      const payloadA = {
+        name: 'Winner A Name',
+        expected_name: 'Distinct Tokens Asset',
+        expected_asset_number: 'DT-001',
+        expected_serial_number: null,
+        reason: 'Reason A distinct token',
+      };
+      const payloadB = {
+        name: 'Competitor B Name',
+        expected_name: 'Distinct Tokens Asset',
+        expected_asset_number: 'DT-001',
+        expected_serial_number: null,
+        reason: 'Reason B distinct token',
+      };
+
+      const results = await Promise.allSettled([
+        assetService.correctAsset(testActorId, reg.asset.id, payloadA, { retryToken: tokenA }),
+        assetService.correctAsset(testActorId, reg.asset.id, payloadB, { retryToken: tokenB }),
+      ]);
+
+      const fulfilled = results.filter((r) => r.status === 'fulfilled') as PromiseFulfilledResult<any>[];
+      const rejected = results.filter((r) => r.status === 'rejected') as PromiseRejectedResult[];
+
+      expect(fulfilled.length).toBe(1);
+      expect(rejected.length).toBe(1);
+      expect(rejected[0].reason).toBeInstanceOf(StaleBeforeConflictError);
+
+      // Verify no lost update: DB reflects the fulfilled winner
+      const winnerName = fulfilled[0].value.asset.name;
+      const assetRes = await pool.query('SELECT name FROM assets WHERE id = $1', [reg.asset.id]);
+      expect(assetRes.rows[0].name).toBe(winnerName);
+
+      // Exactly one CORRECTED audit record in database
+      const histRes = await pool.query(
+        "SELECT count(*)::int as count FROM asset_history WHERE asset_id = $1 AND action = 'CORRECTED'",
+        [reg.asset.id]
+      );
+      expect(histRes.rows[0].count).toBe(1);
+
+      // Scoped committed ledger outcome: only the winning token has a committed record
+      const winningToken = winnerName === 'Winner A Name' ? tokenA : tokenB;
+      const losingToken = winnerName === 'Winner A Name' ? tokenB : tokenA;
+
+      const tokenWinRes = await pool.query(
+        'SELECT count(*)::int as count FROM registration_retry_tokens WHERE token = $1',
+        [winningToken]
+      );
+      expect(tokenWinRes.rows[0].count).toBe(1);
+
+      const tokenLoseRes = await pool.query(
+        'SELECT count(*)::int as count FROM registration_retry_tokens WHERE token = $1',
+        [losingToken]
+      );
+      expect(tokenLoseRes.rows[0].count).toBe(0);
     });
   });
 });

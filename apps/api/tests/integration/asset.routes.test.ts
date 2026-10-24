@@ -1313,5 +1313,100 @@ describe('Asset Routes & Security Matrix Integration Tests (Seam A)', () => {
       expect(body.code).toBe('VALIDATION_FAILED');
       expect(body.message).toContain('Correction retry token is required and must be a nonblank string');
     });
+
+    it('handles competing corrections with distinct valid tokens over HTTP: one commits (200), competitor rejected (409 STALE_BEFORE_CONFLICT)', async () => {
+      // Create a fresh asset using custodian (who has asset:register permission)
+      const createRes = await app.inject({
+        method: 'POST',
+        url: '/assets',
+        headers: {
+          cookie: custodianUser.cookie,
+          'x-csrf-token': custodianUser.csrf,
+          'x-retry-token': crypto.randomUUID(),
+        },
+        payload: {
+          name: 'Route Race Asset',
+          asset_number: 'RACE-001',
+          serial_number: 'SN-RACE-001',
+        },
+      });
+      expect(createRes.statusCode).toBe(201);
+      const raceAssetId = JSON.parse(createRes.body).asset.id;
+
+      const tokenA = 'race-token-' + crypto.randomUUID();
+      const tokenB = 'race-token-' + crypto.randomUUID();
+
+      const [resA, resB] = await Promise.all([
+        app.inject({
+          method: 'POST',
+          url: `/assets/${raceAssetId}/correct`,
+          headers: {
+            cookie: adminUser.cookie,
+            'x-csrf-token': adminUser.csrf,
+            'x-retry-token': tokenA,
+          },
+          payload: {
+            name: 'Route Winner A',
+            expected_name: 'Route Race Asset',
+            expected_asset_number: 'RACE-001',
+            expected_serial_number: 'SN-RACE-001',
+            reason: 'Route race contestant A',
+          },
+        }),
+        app.inject({
+          method: 'POST',
+          url: `/assets/${raceAssetId}/correct`,
+          headers: {
+            cookie: adminUser.cookie,
+            'x-csrf-token': adminUser.csrf,
+            'x-retry-token': tokenB,
+          },
+          payload: {
+            name: 'Route Winner B',
+            expected_name: 'Route Race Asset',
+            expected_asset_number: 'RACE-001',
+            expected_serial_number: 'SN-RACE-001',
+            reason: 'Route race contestant B',
+          },
+        }),
+      ]);
+
+      const statusCodes = [resA.statusCode, resB.statusCode].sort();
+      expect(statusCodes).toEqual([200, 409]);
+
+      const winnerRes = resA.statusCode === 200 ? resA : resB;
+      const loserRes = resA.statusCode === 409 ? resA : resB;
+      const winningToken = resA.statusCode === 200 ? tokenA : tokenB;
+      const losingToken = resA.statusCode === 409 ? tokenA : tokenB;
+
+      const winnerBody = JSON.parse(winnerRes.body);
+      const loserBody = JSON.parse(loserRes.body);
+
+      expect(loserBody.code).toBe('STALE_BEFORE_CONFLICT');
+
+      // Verify no lost update in database
+      const dbAsset = await pool.query('SELECT name FROM assets WHERE id = $1', [raceAssetId]);
+      expect(dbAsset.rows[0].name).toBe(winnerBody.asset.name);
+
+      // Exactly one CORRECTED audit record in database
+      const histRes = await pool.query(
+        "SELECT count(*)::int as count FROM asset_history WHERE asset_id = $1 AND action = 'CORRECTED'",
+        [raceAssetId]
+      );
+      expect(histRes.rows[0].count).toBe(1);
+
+      // Exactly one scoped committed token ledger entry
+      const tokenWinRes = await pool.query(
+        'SELECT count(*)::int as count FROM registration_retry_tokens WHERE token = $1',
+        [winningToken]
+      );
+      expect(tokenWinRes.rows[0].count).toBe(1);
+
+      const tokenLoseRes = await pool.query(
+        'SELECT count(*)::int as count FROM registration_retry_tokens WHERE token = $1',
+        [losingToken]
+      );
+      expect(tokenLoseRes.rows[0].count).toBe(0);
+    });
   });
 });
