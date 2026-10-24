@@ -890,4 +890,309 @@ describe('Asset Routes & Security Matrix Integration Tests (Seam A)', () => {
       expect(statusCodes).toEqual([201, 409]);
     });
   });
+
+  describe('T2: Asset Correction HTTP Routes & Security Matrix (P1–P3, Seam A)', () => {
+    let testAssetId: string;
+
+    beforeEach(async () => {
+      // Create a base asset using custodian
+      const regRes = await app.inject({
+        method: 'POST',
+        url: '/assets',
+        headers: {
+          cookie: custodianUser.cookie,
+          'x-csrf-token': custodianUser.csrf,
+        },
+        payload: {
+          name: 'Base Test Asset',
+          asset_number: 'ROUTE-BASE-01',
+          serial_number: 'SN-BASE-01',
+        },
+      });
+      expect(regRes.statusCode).toBe(201);
+      testAssetId = JSON.parse(regRes.body).asset.id;
+    });
+
+    it('P1 Security Matrix: Administrator and Custodian can correct, others are denied (403/401)', async () => {
+      const payload = {
+        name: 'Corrected by Admin',
+        expected_name: 'Base Test Asset',
+        expected_asset_number: 'ROUTE-BASE-01',
+        expected_serial_number: 'SN-BASE-01',
+        reason: 'Admin correction check',
+      };
+
+      // 1. Administrator -> allowed (200)
+      const adminRes = await app.inject({
+        method: 'POST',
+        url: `/assets/${testAssetId}/correct`,
+        headers: {
+          cookie: adminUser.cookie,
+          'x-csrf-token': adminUser.csrf,
+        },
+        payload,
+      });
+      expect(adminRes.statusCode).toBe(200);
+      const adminBody = JSON.parse(adminRes.body);
+      expect(adminBody.asset.name).toBe('Corrected by Admin');
+      expect(adminBody.history.action).toBe('CORRECTED');
+
+      // 2. Asset Custodian (via PATCH) -> allowed (200)
+      const custodianRes = await app.inject({
+        method: 'PATCH',
+        url: `/assets/${testAssetId}`,
+        headers: {
+          cookie: custodianUser.cookie,
+          'x-csrf-token': custodianUser.csrf,
+        },
+        payload: {
+          name: 'Corrected by Custodian',
+          expected_name: 'Corrected by Admin',
+          expected_asset_number: 'ROUTE-BASE-01',
+          expected_serial_number: 'SN-BASE-01',
+          reason: 'Custodian correction check',
+        },
+      });
+      expect(custodianRes.statusCode).toBe(200);
+      expect(JSON.parse(custodianRes.body).asset.name).toBe('Corrected by Custodian');
+
+      // 3. Read-only user -> 403 Forbidden
+      const readOnlyRes = await app.inject({
+        method: 'POST',
+        url: `/assets/${testAssetId}/correct`,
+        headers: {
+          cookie: readonlyUser.cookie,
+          'x-csrf-token': readonlyUser.csrf,
+        },
+        payload: {
+          name: 'Readonly Attempt',
+          expected_name: 'Corrected by Custodian',
+          expected_asset_number: 'ROUTE-BASE-01',
+          expected_serial_number: 'SN-BASE-01',
+          reason: 'Unauthorized attempt',
+        },
+      });
+      expect(readOnlyRes.statusCode).toBe(403);
+
+      // 4. System maintainer -> 403 Forbidden
+      const maintainerRes = await app.inject({
+        method: 'POST',
+        url: `/assets/${testAssetId}/correct`,
+        headers: {
+          cookie: maintainerUser.cookie,
+          'x-csrf-token': maintainerUser.csrf,
+        },
+        payload: {
+          name: 'Maintainer Attempt',
+          expected_name: 'Corrected by Custodian',
+          expected_asset_number: 'ROUTE-BASE-01',
+          expected_serial_number: 'SN-BASE-01',
+          reason: 'Unauthorized attempt',
+        },
+      });
+      expect(maintainerRes.statusCode).toBe(403);
+
+      // 5. Unauthenticated -> 401 Unauthorized or 403 CSRF/Auth rejection
+      const unauthRes = await app.inject({
+        method: 'POST',
+        url: `/assets/${testAssetId}/correct`,
+        payload: {
+          name: 'Unauth Attempt',
+          expected_name: 'Corrected by Custodian',
+          expected_asset_number: 'ROUTE-BASE-01',
+          expected_serial_number: 'SN-BASE-01',
+          reason: 'Unauthorized attempt',
+        },
+      });
+      expect([401, 403]).toContain(unauthRes.statusCode);
+    });
+
+    it('requires valid CSRF token on correction mutation', async () => {
+      const res = await app.inject({
+        method: 'POST',
+        url: `/assets/${testAssetId}/correct`,
+        headers: {
+          cookie: adminUser.cookie,
+          'x-csrf-token': 'bad-or-missing-csrf-token',
+        },
+        payload: {
+          name: 'CSRF Test',
+          expected_name: 'Base Test Asset',
+          expected_asset_number: 'ROUTE-BASE-01',
+          expected_serial_number: 'SN-BASE-01',
+          reason: 'CSRF failure test',
+        },
+      });
+      expect(res.statusCode).toBe(403);
+    });
+
+    it('validates strict schema and rejects unexpected fields with 400 VALIDATION_FAILED', async () => {
+      const res = await app.inject({
+        method: 'POST',
+        url: `/assets/${testAssetId}/correct`,
+        headers: {
+          cookie: adminUser.cookie,
+          'x-csrf-token': adminUser.csrf,
+        },
+        payload: {
+          name: 'Unexpected Field Test',
+          expected_name: 'Base Test Asset',
+          expected_asset_number: 'ROUTE-BASE-01',
+          expected_serial_number: 'SN-BASE-01',
+          reason: 'Try injecting category and is_legacy',
+          category: 'COMPUTERS',
+          is_legacy: true,
+        },
+      });
+      expect(res.statusCode).toBe(400);
+      expect(JSON.parse(res.body).code).toBe('VALIDATION_FAILED');
+    });
+
+    it('rejects conflicting retry token headers and body with 400', async () => {
+      const res = await app.inject({
+        method: 'POST',
+        url: `/assets/${testAssetId}/correct`,
+        headers: {
+          cookie: adminUser.cookie,
+          'x-csrf-token': adminUser.csrf,
+          'x-retry-token': 'header-token-123',
+        },
+        payload: {
+          name: 'Conflict Token',
+          expected_name: 'Base Test Asset',
+          expected_asset_number: 'ROUTE-BASE-01',
+          expected_serial_number: 'SN-BASE-01',
+          reason: 'Conflicting tokens',
+          retry_token: 'body-token-456',
+        },
+      });
+      expect(res.statusCode).toBe(400);
+      expect(JSON.parse(res.body).message).toContain('Conflicting retry token');
+    });
+
+    it('protects correction candidate preview GET /assets/:id/duplicate-candidates with asset:correct', async () => {
+      // 1. Administrator (has asset:correct) can call
+      const adminRes = await app.inject({
+        method: 'GET',
+        url: `/assets/${testAssetId}/duplicate-candidates?asset_number=ROUTE-BASE-01`,
+        headers: {
+          cookie: adminUser.cookie,
+        },
+      });
+      expect(adminRes.statusCode).toBe(200);
+      const body = JSON.parse(adminRes.body);
+      // Because it self-excludes testAssetId, candidates count is 0
+      expect(body.candidates).toEqual([]);
+      expect(body.total_count).toBe(0);
+
+      // 2. Read-only user cannot call (403)
+      const readOnlyRes = await app.inject({
+        method: 'GET',
+        url: `/assets/${testAssetId}/duplicate-candidates?asset_number=ROUTE-BASE-01`,
+        headers: {
+          cookie: readonlyUser.cookie,
+        },
+      });
+      expect(readOnlyRes.statusCode).toBe(403);
+    });
+
+    it('handles idempotent retries over HTTP with Idempotency-Key header', async () => {
+      const retryToken = 'http-correct-token-' + crypto.randomUUID();
+      const payload = {
+        name: 'HTTP Idempotency Name',
+        expected_name: 'Base Test Asset',
+        expected_asset_number: 'ROUTE-BASE-01',
+        expected_serial_number: 'SN-BASE-01',
+        reason: 'HTTP token idempotency test',
+      };
+
+      // First call
+      const res1 = await app.inject({
+        method: 'POST',
+        url: `/assets/${testAssetId}/correct`,
+        headers: {
+          cookie: adminUser.cookie,
+          'x-csrf-token': adminUser.csrf,
+          'idempotency-key': retryToken,
+        },
+        payload,
+      });
+      expect(res1.statusCode).toBe(200);
+      const body1 = JSON.parse(res1.body);
+      const historyId1 = body1.history.id;
+
+      // Replay call with same token
+      const res2 = await app.inject({
+        method: 'POST',
+        url: `/assets/${testAssetId}/correct`,
+        headers: {
+          cookie: adminUser.cookie,
+          'x-csrf-token': adminUser.csrf,
+          'idempotency-key': retryToken,
+        },
+        payload,
+      });
+      expect(res2.statusCode).toBe(200);
+      const body2 = JSON.parse(res2.body);
+      expect(body2.history.id).toBe(historyId1);
+    });
+
+    it('dynamically enforces role revocation on retry attempt (403)', async () => {
+      // Dedicated admin for revocation test
+      const ephemeralPassword = await UserService.hashPassword('Password123!');
+      const ephemeralUserRes = await pool.query(`
+        INSERT INTO users (username, password_hash, is_active)
+        VALUES ('u_revocation_test', '${ephemeralPassword}', true)
+        RETURNING id;
+      `);
+      const ephemeralUserId = ephemeralUserRes.rows[0].id;
+      await pool.query(
+        "INSERT INTO user_roles (user_id, role_id) VALUES ($1, 'ADMINISTRATOR')",
+        [ephemeralUserId]
+      );
+      const ephemeralSession = await createAuthenticatedSession(ephemeralUserId);
+
+      // Perform first correction
+      const retryToken = 'revocation-token-' + crypto.randomUUID();
+      const res1 = await app.inject({
+        method: 'POST',
+        url: `/assets/${testAssetId}/correct`,
+        headers: {
+          cookie: ephemeralSession.cookie,
+          'x-csrf-token': ephemeralSession.csrf,
+          'idempotency-key': retryToken,
+        },
+        payload: {
+          name: 'Before Revocation',
+          expected_name: 'Base Test Asset',
+          expected_asset_number: 'ROUTE-BASE-01',
+          expected_serial_number: 'SN-BASE-01',
+          reason: 'Test revocation',
+        },
+      });
+      expect(res1.statusCode).toBe(200);
+
+      // Revoke ADMINISTRATOR role in PostgreSQL
+      await pool.query('DELETE FROM user_roles WHERE user_id = $1', [ephemeralUserId]);
+
+      // Attempt retry with same token -> Must be denied with 403 Forbidden!
+      const res2 = await app.inject({
+        method: 'POST',
+        url: `/assets/${testAssetId}/correct`,
+        headers: {
+          cookie: ephemeralSession.cookie,
+          'x-csrf-token': ephemeralSession.csrf,
+          'idempotency-key': retryToken,
+        },
+        payload: {
+          name: 'Before Revocation',
+          expected_name: 'Base Test Asset',
+          expected_asset_number: 'ROUTE-BASE-01',
+          expected_serial_number: 'SN-BASE-01',
+          reason: 'Test revocation',
+        },
+      });
+      expect(res2.statusCode).toBe(403);
+    });
+  });
 });

@@ -1,5 +1,7 @@
 import React, { useEffect, useState } from 'react';
 import { useParams, useNavigate, Link } from 'react-router';
+import { QueryClient, QueryClientProvider, useQuery } from '@tanstack/react-query';
+import { AssetCorrectionForm } from '../components/AssetCorrectionForm';
 
 export interface AssetRecord {
   id: string;
@@ -30,23 +32,38 @@ export interface HistoryRecord {
 export interface AssetDetailResponse {
   asset: AssetRecord;
   history: HistoryRecord[];
+  can_correct?: boolean;
 }
 
+const pageQueryClient = new QueryClient({
+  defaultOptions: {
+    queries: {
+      retry: false,
+      refetchOnWindowFocus: false,
+    },
+  },
+});
+
 export const AssetDetail: React.FC = () => {
+  return (
+    <QueryClientProvider client={pageQueryClient}>
+      <AssetDetailContent />
+    </QueryClientProvider>
+  );
+};
+
+const AssetDetailContent: React.FC = () => {
   const { id } = useParams<{ id: string }>();
   const navigate = useNavigate();
 
-  const [assetData, setAssetData] = useState<AssetDetailResponse | null>(null);
-  const [isLoading, setIsLoading] = useState(true);
-  const [errorStatus, setErrorStatus] = useState<number | null>(null);
-  const [errorMessage, setErrorMessage] = useState<string | null>(null);
+  const [csrfToken, setCsrfToken] = useState<string | null>(null);
+  const [sessionLoading, setSessionLoading] = useState(true);
 
   useEffect(() => {
     const controller = new AbortController();
 
-    const fetchAssetDetail = async () => {
+    const verifySession = async () => {
       try {
-        // Verify session first
         const sessionRes = await fetch('/auth/session-check', {
           method: 'GET',
           credentials: 'include',
@@ -58,61 +75,70 @@ export const AssetDetail: React.FC = () => {
           return;
         }
 
-        if (!id) {
-          setErrorStatus(400);
-          setErrorMessage('ไม่พบรหัสครุภัณฑ์ที่ต้องการเรียกดู');
-          setIsLoading(false);
-          return;
-        }
-
-        const res = await fetch(`/assets/${id}`, {
-          method: 'GET',
-          credentials: 'include',
-          signal: controller.signal,
-        });
-
-        if (res.status === 403) {
-          setErrorStatus(403);
-          setErrorMessage('คุณไม่มีสิทธิ์เข้าถึงข้อมูลครุภัณฑ์นี้ (403 Forbidden)');
-          setIsLoading(false);
-          return;
-        }
-
-        if (res.status === 404) {
-          setErrorStatus(404);
-          setErrorMessage('ไม่พบข้อมูลครุภัณฑ์ตามรหัสที่ระบุ');
-          setIsLoading(false);
-          return;
-        }
-
-        if (!res.ok) {
-          setErrorStatus(res.status);
-          setErrorMessage('เกิดข้อผิดพลาดในการดึงข้อมูลครุภัณฑ์');
-          setIsLoading(false);
-          return;
-        }
-
-        const data: AssetDetailResponse = await res.json();
-        setAssetData(data);
-        setIsLoading(false);
+        const data = await sessionRes.json();
+        setCsrfToken(data.csrfToken || null);
+        setSessionLoading(false);
       } catch (err: unknown) {
         if (err instanceof DOMException && err.name === 'AbortError') {
           return;
         }
-        setErrorStatus(500);
-        setErrorMessage('เกิดข้อผิดพลาดในการเชื่อมต่อเซิร์ฟเวอร์');
-        setIsLoading(false);
+        navigate('/login', { replace: true });
       }
     };
 
-    fetchAssetDetail();
+    verifySession();
 
     return () => {
       controller.abort();
     };
-  }, [id, navigate]);
+  }, [navigate]);
 
-  if (isLoading) {
+  const {
+    data: assetData,
+    isLoading: isAssetLoading,
+    error: assetError,
+    refetch,
+  } = useQuery<AssetDetailResponse, Error & { status?: number }>({
+    queryKey: ['asset', id],
+    queryFn: async ({ signal }) => {
+      if (!id) {
+        const err = new Error('ไม่พบรหัสครุภัณฑ์ที่ต้องการเรียกดู') as Error & { status?: number };
+        err.status = 400;
+        throw err;
+      }
+
+      const res = await fetch(`/assets/${id}`, {
+        method: 'GET',
+        credentials: 'include',
+        signal,
+      });
+
+      if (res.status === 403) {
+        const err = new Error('คุณไม่มีสิทธิ์เข้าถึงข้อมูลครุภัณฑ์นี้ (403 Forbidden)') as Error & {
+          status?: number;
+        };
+        err.status = 403;
+        throw err;
+      }
+
+      if (res.status === 404) {
+        const err = new Error('ไม่พบข้อมูลครุภัณฑ์ตามรหัสที่ระบุ') as Error & { status?: number };
+        err.status = 404;
+        throw err;
+      }
+
+      if (!res.ok) {
+        const err = new Error('เกิดข้อผิดพลาดในการดึงข้อมูลครุภัณฑ์') as Error & { status?: number };
+        err.status = res.status;
+        throw err;
+      }
+
+      return res.json();
+    },
+    enabled: !sessionLoading && !!id,
+  });
+
+  if (sessionLoading || isAssetLoading) {
     return (
       <main
         style={{
@@ -131,7 +157,7 @@ export const AssetDetail: React.FC = () => {
     );
   }
 
-  if (errorStatus || !assetData) {
+  if (assetError || !assetData) {
     return (
       <main
         style={{
@@ -163,7 +189,7 @@ export const AssetDetail: React.FC = () => {
               fontWeight: 500,
             }}
           >
-            {errorMessage || 'เกิดข้อผิดพลาด'}
+            {assetError?.message || 'เกิดข้อผิดพลาด'}
           </div>
           <Link
             to="/dashboard"
@@ -181,7 +207,7 @@ export const AssetDetail: React.FC = () => {
     );
   }
 
-  const { asset, history = [] } = assetData;
+  const { asset, history = [], can_correct = false } = assetData;
   const registrationFact = history.find((h) => h.action === 'REGISTERED');
   const isLegacy = Boolean(
     registrationFact?.payload &&
@@ -412,8 +438,8 @@ export const AssetDetail: React.FC = () => {
           </dl>
         </section>
 
-        {/* Timeline Starting History */}
-        <section aria-labelledby="history-heading">
+        {/* Timeline Starting and Correction History */}
+        <section aria-labelledby="history-heading" style={{ marginBottom: '2rem' }}>
           <h2
             id="history-heading"
             style={{
@@ -479,6 +505,8 @@ export const AssetDetail: React.FC = () => {
                       >
                         {h.action === 'REGISTERED'
                           ? 'ลงทะเบียนครุภัณฑ์ (REGISTERED)'
+                          : h.action === 'CORRECTED'
+                          ? 'แก้ไขข้อมูลครุภัณฑ์ (CORRECTED)'
                           : h.action}
                       </td>
                       <td
@@ -504,6 +532,18 @@ export const AssetDetail: React.FC = () => {
                           color: '#374151',
                         }}
                       >
+                        {h.action === 'CORRECTED' &&
+                          typeof (h.payload as any)?.reason === 'string' && (
+                            <div
+                              style={{
+                                marginBottom: '0.375rem',
+                                fontWeight: 500,
+                                color: '#111827',
+                              }}
+                            >
+                              เหตุผล: {(h.payload as any).reason}
+                            </div>
+                          )}
                         <pre
                           style={{
                             margin: 0,
@@ -540,6 +580,35 @@ export const AssetDetail: React.FC = () => {
             </table>
           </div>
         </section>
+
+        {/* Correction Section (Rendered for Authorized Roles; Read-only notice otherwise) */}
+        {can_correct ? (
+          <section aria-labelledby="correction-heading">
+            <AssetCorrectionForm
+              asset={asset}
+              isLegacy={isLegacy}
+              csrfToken={csrfToken}
+              onSuccess={async () => {
+                await refetch();
+              }}
+            />
+          </section>
+        ) : (
+          <div
+            data-testid="read-only-notice"
+            style={{
+              padding: '0.75rem 1rem',
+              backgroundColor: '#f3f4f6',
+              border: '1px solid #e5e7eb',
+              borderRadius: '6px',
+              color: '#6b7280',
+              fontSize: '0.875rem',
+              textAlign: 'center',
+            }}
+          >
+            ผู้ใช้ปัจจุบันมีสิทธิ์อ่านอย่างเดียว ไม่สามารถแก้ไขข้อมูลครุภัณฑ์ได้
+          </div>
+        )}
       </div>
     </main>
   );

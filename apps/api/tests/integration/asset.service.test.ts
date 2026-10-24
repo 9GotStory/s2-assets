@@ -480,4 +480,301 @@ describe('AssetService Integration Tests (Seam A - Core Service & Transactions)'
       }
     });
   });
+
+  describe('T2: Asset Correction, Idempotency & History (P1–P3, Seam A)', () => {
+    it('successfully corrects metadata while preserving Stable ID, provenance, and original history fact', async () => {
+      // 1. Register an asset
+      const reg = await assetService.registerAsset(testActorId, {
+        name: 'Initial Name',
+        asset_number: 'AST-INIT-001',
+        serial_number: 'SN-INIT-001',
+        source_reference: 'REF-001',
+        source_notes: 'Notes 001',
+      });
+      const assetId = reg.asset.id;
+      const originalRecordedAt = reg.asset.recorded_at;
+
+      // 2. Correct metadata
+      const correction = await assetService.correctAsset(testActorId, assetId, {
+        name: 'Corrected Laptop Name',
+        asset_number: 'AST-CORR-001',
+        serial_number: 'SN-CORR-001',
+        expected_name: 'Initial Name',
+        expected_asset_number: 'AST-INIT-001',
+        expected_serial_number: 'SN-INIT-001',
+        reason: 'Typo in original inventory tag registration',
+      });
+
+      expect(correction.noop).toBe(false);
+      expect(correction.asset.id).toBe(assetId); // Stable ID preserved
+      expect(correction.asset.name).toBe('Corrected Laptop Name');
+      expect(correction.asset.asset_number).toBe('AST-CORR-001');
+      expect(correction.asset.serial_number).toBe('SN-CORR-001');
+      expect(correction.asset.source_reference).toBe('REF-001'); // Provenance preserved
+      expect(correction.asset.source_notes).toBe('Notes 001');
+      expect(correction.asset.recorded_at).toBe(originalRecordedAt); // Initial recorded_at preserved
+
+      // 3. Verify history fact created
+      expect(correction.history).toBeDefined();
+      expect(correction.history?.action).toBe('CORRECTED');
+      expect(correction.history?.actor_id).toBe(testActorId);
+      expect(correction.history?.payload).toEqual({
+        reason: 'Typo in original inventory tag registration',
+        changes: {
+          name: { before: 'Initial Name', after: 'Corrected Laptop Name' },
+          asset_number: { before: 'AST-INIT-001', after: 'AST-CORR-001' },
+          serial_number: { before: 'SN-INIT-001', after: 'SN-CORR-001' },
+        },
+      });
+
+      // 4. Verify detail query returns both starting fact and correction fact
+      const detail = await assetService.getAssetById(assetId);
+      expect(detail).not.toBeNull();
+      expect(detail?.history.length).toBe(2);
+      expect(detail?.history[0].action).toBe('REGISTERED');
+      expect(detail?.history[1].action).toBe('CORRECTED');
+    });
+
+    it('requires a mandatory non-blank reason for any correction', async () => {
+      const reg = await assetService.registerAsset(testActorId, {
+        name: 'Reason Test Item',
+        asset_number: 'AST-RSN-001',
+      });
+
+      await expect(
+        assetService.correctAsset(testActorId, reg.asset.id, {
+          name: 'New Name',
+          expected_name: 'Reason Test Item',
+          expected_asset_number: 'AST-RSN-001',
+          expected_serial_number: null,
+          reason: '',
+        })
+      ).rejects.toThrow('Mandatory non-blank reason is required for correction');
+
+      await expect(
+        assetService.correctAsset(testActorId, reg.asset.id, {
+          name: 'New Name',
+          expected_name: 'Reason Test Item',
+          expected_asset_number: 'AST-RSN-001',
+          expected_serial_number: null,
+          reason: '   ',
+        })
+      ).rejects.toThrow('Mandatory non-blank reason is required for correction');
+    });
+
+    it('detects and rejects stale expected-before conflicts (optimistic locking)', async () => {
+      const reg = await assetService.registerAsset(testActorId, {
+        name: 'Stale Check Item',
+        asset_number: 'AST-STALE-001',
+      });
+
+      // Provide outdated expected_name
+      await expect(
+        assetService.correctAsset(testActorId, reg.asset.id, {
+          name: 'Updated Name',
+          expected_name: 'Wrong Old Name',
+          expected_asset_number: 'AST-STALE-001',
+          expected_serial_number: null,
+          reason: 'Attempt update with stale before state',
+        })
+      ).rejects.toThrow('Current asset state differs from expected before values');
+    });
+
+    it('handles no-op submission without creating history or modifying timestamps', async () => {
+      const reg = await assetService.registerAsset(testActorId, {
+        name: 'No-Op Asset',
+        asset_number: 'AST-NOOP-001',
+        serial_number: 'SN-NOOP-001',
+      });
+
+      const initialUpdatedAt = reg.asset.updated_at;
+
+      // Submit identical values
+      const res = await assetService.correctAsset(testActorId, reg.asset.id, {
+        name: 'No-Op Asset',
+        asset_number: 'AST-NOOP-001',
+        serial_number: 'SN-NOOP-001',
+        expected_name: 'No-Op Asset',
+        expected_asset_number: 'AST-NOOP-001',
+        expected_serial_number: 'SN-NOOP-001',
+        reason: 'Attempted change with identical values',
+      });
+
+      expect(res.noop).toBe(true);
+      expect(res.history).toBeNull();
+      expect(res.asset.updated_at).toBe(initialUpdatedAt);
+
+      // Verify no new row in asset_history
+      const historyRows = await pool.query(
+        'SELECT count(*)::int as count FROM asset_history WHERE asset_id = $1',
+        [reg.asset.id]
+      );
+      expect(historyRows.rows[0].count).toBe(1); // Only starting REGISTERED fact
+    });
+
+    it('enforces AR-08: physical label loss cannot clear a known non-null asset number', async () => {
+      const reg = await assetService.registerAsset(testActorId, {
+        name: 'Label Loss Test Item',
+        asset_number: 'AST-KNOWN-001',
+      });
+
+      await expect(
+        assetService.correctAsset(testActorId, reg.asset.id, {
+          asset_number: null,
+          expected_name: 'Label Loss Test Item',
+          expected_asset_number: 'AST-KNOWN-001',
+          expected_serial_number: null,
+          reason: 'Label was physically damaged or lost',
+        })
+      ).rejects.toThrow('Physical label loss/damage alone cannot clear a known asset number (AR-08)');
+    });
+
+    it('enforces truthful name on ordinary assets while allowing null name on legacy assets', async () => {
+      // Ordinary asset
+      const ordinary = await assetService.registerAsset(testActorId, {
+        name: 'Ordinary Item',
+        asset_number: 'AST-ORD-01',
+      });
+      await expect(
+        assetService.correctAsset(testActorId, ordinary.asset.id, {
+          name: '',
+          expected_name: 'Ordinary Item',
+          expected_asset_number: 'AST-ORD-01',
+          expected_serial_number: null,
+          reason: 'Try to clear ordinary name',
+        })
+      ).rejects.toThrow('Truthful item name/description is required for ordinary assets');
+
+      // Legacy asset
+      const legacy = await assetService.registerAsset(testActorId, {
+        name: 'Initial Legacy Name',
+        asset_number: 'AST-LEG-01',
+        is_legacy: true,
+      });
+      const correctedLegacy = await assetService.correctAsset(testActorId, legacy.asset.id, {
+        name: null,
+        expected_name: 'Initial Legacy Name',
+        expected_asset_number: 'AST-LEG-01',
+        expected_serial_number: null,
+        reason: 'Genuine absence of name in legacy paper record',
+      });
+      expect(correctedLegacy.asset.name).toBeNull();
+    });
+
+    it('self-excludes current asset during duplicate check', async () => {
+      const reg = await assetService.registerAsset(testActorId, {
+        name: 'Item Self Dup',
+        asset_number: 'AST-SELF-01',
+        serial_number: 'SN-SELF-01',
+      });
+
+      // Correcting name while keeping same asset_number does not trigger duplicate warning against itself
+      const res = await assetService.correctAsset(testActorId, reg.asset.id, {
+        name: 'Corrected Name Only',
+        asset_number: 'AST-SELF-01',
+        serial_number: 'SN-SELF-01',
+        expected_name: 'Item Self Dup',
+        expected_asset_number: 'AST-SELF-01',
+        expected_serial_number: 'SN-SELF-01',
+        reason: 'Change name only',
+        explicit_continuation: false,
+      });
+
+      expect(res.asset.name).toBe('Corrected Name Only');
+      expect(res.asset.asset_number).toBe('AST-SELF-01');
+    });
+
+    it('warns on duplicate identifiers on ANOTHER asset and requires explicit continuation', async () => {
+      // Asset A
+      await assetService.registerAsset(testActorId, {
+        name: 'Existing Asset A',
+        asset_number: 'AST-COLLIDE-99',
+      });
+
+      // Asset B
+      const assetB = await assetService.registerAsset(testActorId, {
+        name: 'Asset B',
+        asset_number: 'AST-DISTINCT-01',
+      });
+
+      // Try correcting Asset B's asset_number to match Asset A's without explicit continuation
+      await expect(
+        assetService.correctAsset(testActorId, assetB.asset.id, {
+          asset_number: 'AST-COLLIDE-99',
+          expected_name: 'Asset B',
+          expected_asset_number: 'AST-DISTINCT-01',
+          expected_serial_number: null,
+          reason: 'Correcting to existing number',
+          explicit_continuation: false,
+        })
+      ).rejects.toThrow(DuplicateCandidateWarningError);
+
+      // Now with explicit_continuation: true, correction proceeds
+      const res = await assetService.correctAsset(testActorId, assetB.asset.id, {
+        asset_number: 'AST-COLLIDE-99',
+        expected_name: 'Asset B',
+        expected_asset_number: 'AST-DISTINCT-01',
+        expected_serial_number: null,
+        reason: 'Confirmed distinct physical item sharing number',
+        explicit_continuation: true,
+      });
+
+      expect(res.asset.asset_number).toBe('AST-COLLIDE-99');
+    });
+
+    it('supports idempotent retries with scoped retry tokens and replaying matching committed results', async () => {
+      const reg = await assetService.registerAsset(testActorId, {
+        name: 'Original Laptop',
+        asset_number: 'AST-RETRY-01',
+        serial_number: 'SN-RETRY-01',
+      });
+
+      const token = 'correct-retry-token-' + crypto.randomUUID();
+      const input = {
+        name: 'Corrected Laptop Retry',
+        expected_name: 'Original Laptop',
+        expected_asset_number: 'AST-RETRY-01',
+        expected_serial_number: 'SN-RETRY-01',
+        reason: 'Correct typo with token',
+      };
+
+      // 1. First execution
+      const firstRes = await assetService.correctAsset(testActorId, reg.asset.id, input, {
+        retryToken: token,
+      });
+      expect(firstRes.asset.name).toBe('Corrected Laptop Retry');
+      expect(firstRes.history).toBeDefined();
+      const historyId = firstRes.history?.id;
+
+      // 2. Replay with identical token and payload
+      // Note: In DB, name is now 'Corrected Laptop Retry', but input has expected_name: 'Original Laptop'.
+      // The replay must succeed and return the committed result without checking expected-before against the updated DB!
+      const replayRes = await assetService.correctAsset(testActorId, reg.asset.id, input, {
+        retryToken: token,
+      });
+
+      expect(replayRes.asset.name).toBe('Corrected Laptop Retry');
+      expect(replayRes.history?.id).toBe(historyId);
+
+      // Verify only ONE correction history fact exists in database
+      const countRes = await pool.query(
+        "SELECT count(*)::int as count FROM asset_history WHERE asset_id = $1 AND action = 'CORRECTED'",
+        [reg.asset.id]
+      );
+      expect(countRes.rows[0].count).toBe(1);
+
+      // 3. Replay with SAME token but DIFFERENT payload must fail with RetryTokenConflictError
+      await expect(
+        assetService.correctAsset(
+          testActorId,
+          reg.asset.id,
+          {
+            ...input,
+            name: 'Completely Different Name',
+          },
+          { retryToken: token }
+        )
+      ).rejects.toThrow(RetryTokenConflictError);
+    });
+  });
 });

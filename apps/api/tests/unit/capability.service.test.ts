@@ -31,8 +31,12 @@ describe('CapabilityService Unit Tests (T024 - US2)', () => {
       expect(ROLE_CAPABILITY_MAP.SYSTEM_MAINTAINER).toEqual(['system:maintain']);
     });
 
-    it('maps ADMINISTRATOR to system:maintain and asset:view without wildcards or registration capabilities', () => {
-      expect(ROLE_CAPABILITY_MAP.ADMINISTRATOR).toEqual(['system:maintain', 'asset:view']);
+    it('maps ADMINISTRATOR to system:maintain, asset:view, asset:correct without wildcards or registration capabilities', () => {
+      expect(ROLE_CAPABILITY_MAP.ADMINISTRATOR).toEqual([
+        'system:maintain',
+        'asset:view',
+        'asset:correct',
+      ]);
       expect(ROLE_CAPABILITY_MAP.ADMINISTRATOR).not.toContain('*');
       expect(ROLE_CAPABILITY_MAP.ADMINISTRATOR).not.toContain('asset:register');
       expect(ROLE_CAPABILITY_MAP.ADMINISTRATOR).not.toContain('asset:duplicate-check');
@@ -40,13 +44,15 @@ describe('CapabilityService Unit Tests (T024 - US2)', () => {
 
     it('maps READ_ONLY to asset:view (no mutation or duplicate-check grants)', () => {
       expect(ROLE_CAPABILITY_MAP.READ_ONLY).toEqual(['asset:view']);
+      expect(ROLE_CAPABILITY_MAP.READ_ONLY).not.toContain('asset:correct');
     });
 
-    it('maps ASSET_CUSTODIAN to asset:view, asset:duplicate-check, asset:register', () => {
+    it('maps ASSET_CUSTODIAN to asset:view, asset:duplicate-check, asset:register, asset:correct', () => {
       expect(ROLE_CAPABILITY_MAP.ASSET_CUSTODIAN).toEqual([
         'asset:view',
         'asset:duplicate-check',
         'asset:register',
+        'asset:correct',
       ]);
     });
 
@@ -62,6 +68,10 @@ describe('CapabilityService Unit Tests (T024 - US2)', () => {
 
     it('validates known capabilities with isKnownCapability', () => {
       expect(isKnownCapability('system:maintain')).toBe(true);
+      expect(isKnownCapability('asset:view')).toBe(true);
+      expect(isKnownCapability('asset:duplicate-check')).toBe(true);
+      expect(isKnownCapability('asset:register')).toBe(true);
+      expect(isKnownCapability('asset:correct')).toBe(true);
       expect(isKnownCapability('unknown:capability')).toBe(false);
       expect(isKnownCapability('*')).toBe(false);
       expect(isKnownCapability('')).toBe(false);
