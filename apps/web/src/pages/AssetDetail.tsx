@@ -1,6 +1,6 @@
 import React, { useEffect, useState } from 'react';
 import { useParams, useNavigate, Link } from 'react-router';
-import { QueryClient, QueryClientProvider, useQuery } from '@tanstack/react-query';
+import { QueryClient, QueryClientProvider, useQuery, useQueryClient } from '@tanstack/react-query';
 import { AssetCorrectionForm } from '../components/AssetCorrectionForm';
 
 export interface AssetRecord {
@@ -64,11 +64,14 @@ export const AssetDetail: React.FC = () => {
 const AssetDetailContent: React.FC = () => {
   const { id } = useParams<{ id: string }>();
   const navigate = useNavigate();
+  const queryClient = useQueryClient();
 
   const [csrfToken, setCsrfToken] = useState<string | null>(null);
   const [currentUser, setCurrentUser] = useState<{ id: string; role?: string } | null>(null);
   const [sessionLoading, setSessionLoading] = useState(true);
   const [refreshError, setRefreshError] = useState<string | null>(null);
+  const [isCorrectionRevoked, setIsCorrectionRevoked] = useState(false);
+  const [terminalError, setTerminalError] = useState<string | null>(null);
 
   useEffect(() => {
     const controller = new AbortController();
@@ -82,6 +85,7 @@ const AssetDetailContent: React.FC = () => {
         });
 
         if (!sessionRes.ok) {
+          queryClient.clear();
           navigate('/login', { replace: true });
           return;
         }
@@ -94,6 +98,7 @@ const AssetDetailContent: React.FC = () => {
         if (err instanceof DOMException && err.name === 'AbortError') {
           return;
         }
+        queryClient.clear();
         navigate('/login', { replace: true });
       }
     };
@@ -103,7 +108,7 @@ const AssetDetailContent: React.FC = () => {
     return () => {
       controller.abort();
     };
-  }, [navigate]);
+  }, [navigate, queryClient]);
 
   const {
     data: assetData,
@@ -129,6 +134,7 @@ const AssetDetailContent: React.FC = () => {
         navigate('/login', { replace: true });
         const err = new Error('Session expired') as Error & { status?: number };
         err.status = 401;
+        setTerminalError('Session expired');
         throw err;
       }
 
@@ -137,12 +143,14 @@ const AssetDetailContent: React.FC = () => {
           status?: number;
         };
         err.status = 403;
+        setTerminalError(err.message);
         throw err;
       }
 
       if (res.status === 404) {
         const err = new Error('ไม่พบข้อมูลครุภัณฑ์ตามรหัสที่ระบุ') as Error & { status?: number };
         err.status = 404;
+        setTerminalError(err.message);
         throw err;
       }
 
@@ -157,26 +165,45 @@ const AssetDetailContent: React.FC = () => {
     enabled: !sessionLoading && !!id,
   });
 
-  if (sessionLoading || (isAssetLoading && !assetData)) {
-    return (
-      <main
-        style={{
-          display: 'flex',
-          justifyContent: 'center',
-          alignItems: 'center',
-          minHeight: '100vh',
-          backgroundColor: '#f5f5f5',
-          fontFamily: 'system-ui, -apple-system, sans-serif',
-        }}
-      >
-        <div role="status" aria-live="polite" style={{ color: '#4b5563' }}>
-          กำลังโหลดข้อมูลครุภัณฑ์...
-        </div>
-      </main>
-    );
-  }
+  useEffect(() => {
+    if (
+      assetError &&
+      (assetError.status === 401 ||
+        assetError.status === 403 ||
+        assetError.status === 404)
+    ) {
+      setTerminalError(assetError.message);
+      queryClient.setQueryData(['asset', currentUser?.id, id], null);
+    }
+  }, [assetError, currentUser?.id, id, queryClient]);
 
-  if (!assetData) {
+  if (
+    !assetData ||
+    terminalError ||
+    (assetError &&
+      (assetError.status === 401 ||
+        assetError.status === 403 ||
+        assetError.status === 404))
+  ) {
+    if (!terminalError && !assetError && (sessionLoading || isAssetLoading || !assetData)) {
+      return (
+        <main
+          style={{
+            display: 'flex',
+            justifyContent: 'center',
+            alignItems: 'center',
+            minHeight: '100vh',
+            backgroundColor: '#f5f5f5',
+            fontFamily: 'system-ui, -apple-system, sans-serif',
+          }}
+        >
+          <div role="status" aria-live="polite" style={{ color: '#4b5563' }}>
+            กำลังโหลดข้อมูลครุภัณฑ์...
+          </div>
+        </main>
+      );
+    }
+
     return (
       <main
         style={{
@@ -208,7 +235,7 @@ const AssetDetailContent: React.FC = () => {
               fontWeight: 500,
             }}
           >
-            {assetError?.message || 'เกิดข้อผิดพลาด'}
+            {terminalError || assetError?.message || 'เกิดข้อผิดพลาดในการโหลดข้อมูล'}
           </div>
           <Link
             to="/dashboard"
@@ -226,7 +253,8 @@ const AssetDetailContent: React.FC = () => {
     );
   }
 
-  const { asset, history = [], can_correct = false } = assetData;
+  const { asset, history = [] } = assetData;
+  const can_correct = Boolean(assetData.can_correct && !isCorrectionRevoked);
   const registrationFact = history.find((h) => h.action === 'REGISTERED');
   const isLegacy = Boolean(
     registrationFact?.payload &&
@@ -650,6 +678,7 @@ const AssetDetailContent: React.FC = () => {
               asset={asset}
               isLegacy={isLegacy}
               csrfToken={csrfToken}
+              onPermissionRevoked={() => setIsCorrectionRevoked(true)}
               onSuccess={async () => {
                 setRefreshError(null);
                 const refetchResult = await refetch();
@@ -657,7 +686,9 @@ const AssetDetailContent: React.FC = () => {
                   setRefreshError(
                     'บันทึกการแก้ไขครุภัณฑ์สำเร็จ แต่การดึงข้อมูลล่าสุดล้มเหลว กรุณากดปุ่มเพื่อโหลดข้อมูลใหม่'
                   );
+                  return false;
                 }
+                return true;
               }}
             />
           </section>

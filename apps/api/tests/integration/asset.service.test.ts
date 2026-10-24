@@ -503,7 +503,7 @@ describe('AssetService Integration Tests (Seam A - Core Service & Transactions)'
         expected_asset_number: 'AST-INIT-001',
         expected_serial_number: 'SN-INIT-001',
         reason: 'Typo in original inventory tag registration',
-      });
+      }, { retryToken: crypto.randomUUID() });
 
       expect(correction.noop).toBe(false);
       expect(correction.asset.id).toBe(assetId); // Stable ID preserved
@@ -542,23 +542,33 @@ describe('AssetService Integration Tests (Seam A - Core Service & Transactions)'
       });
 
       await expect(
-        assetService.correctAsset(testActorId, reg.asset.id, {
-          name: 'New Name',
-          expected_name: 'Reason Test Item',
-          expected_asset_number: 'AST-RSN-001',
-          expected_serial_number: null,
-          reason: '',
-        })
+        assetService.correctAsset(
+          testActorId,
+          reg.asset.id,
+          {
+            name: 'New Name',
+            expected_name: 'Reason Test Item',
+            expected_asset_number: 'AST-RSN-001',
+            expected_serial_number: null,
+            reason: '',
+          },
+          { retryToken: crypto.randomUUID() }
+        )
       ).rejects.toThrow('Mandatory non-blank reason is required for correction');
 
       await expect(
-        assetService.correctAsset(testActorId, reg.asset.id, {
-          name: 'New Name',
-          expected_name: 'Reason Test Item',
-          expected_asset_number: 'AST-RSN-001',
-          expected_serial_number: null,
-          reason: '   ',
-        })
+        assetService.correctAsset(
+          testActorId,
+          reg.asset.id,
+          {
+            name: 'New Name',
+            expected_name: 'Reason Test Item',
+            expected_asset_number: 'AST-RSN-001',
+            expected_serial_number: null,
+            reason: '   ',
+          },
+          { retryToken: crypto.randomUUID() }
+        )
       ).rejects.toThrow('Mandatory non-blank reason is required for correction');
     });
 
@@ -570,13 +580,18 @@ describe('AssetService Integration Tests (Seam A - Core Service & Transactions)'
 
       // Provide outdated expected_name
       await expect(
-        assetService.correctAsset(testActorId, reg.asset.id, {
-          name: 'Updated Name',
-          expected_name: 'Wrong Old Name',
-          expected_asset_number: 'AST-STALE-001',
-          expected_serial_number: null,
-          reason: 'Attempt update with stale before state',
-        })
+        assetService.correctAsset(
+          testActorId,
+          reg.asset.id,
+          {
+            name: 'Updated Name',
+            expected_name: 'Wrong Old Name',
+            expected_asset_number: 'AST-STALE-001',
+            expected_serial_number: null,
+            reason: 'Attempt update with stale before state',
+          },
+          { retryToken: crypto.randomUUID() }
+        )
       ).rejects.toThrow('Current asset state differs from expected before values');
     });
 
@@ -590,15 +605,20 @@ describe('AssetService Integration Tests (Seam A - Core Service & Transactions)'
       const initialUpdatedAt = reg.asset.updated_at;
 
       // Submit identical values
-      const res = await assetService.correctAsset(testActorId, reg.asset.id, {
-        name: 'No-Op Asset',
-        asset_number: 'AST-NOOP-001',
-        serial_number: 'SN-NOOP-001',
-        expected_name: 'No-Op Asset',
-        expected_asset_number: 'AST-NOOP-001',
-        expected_serial_number: 'SN-NOOP-001',
-        reason: 'Attempted change with identical values',
-      });
+      const res = await assetService.correctAsset(
+        testActorId,
+        reg.asset.id,
+        {
+          name: 'No-Op Asset',
+          asset_number: 'AST-NOOP-001',
+          serial_number: 'SN-NOOP-001',
+          expected_name: 'No-Op Asset',
+          expected_asset_number: 'AST-NOOP-001',
+          expected_serial_number: 'SN-NOOP-001',
+          reason: 'Attempted change with identical values',
+        },
+        { retryToken: crypto.randomUUID() }
+      );
 
       expect(res.noop).toBe(true);
       expect(res.history).toBeNull();
@@ -620,13 +640,18 @@ describe('AssetService Integration Tests (Seam A - Core Service & Transactions)'
         asset_number: 'AST-ORD-01',
       });
       await expect(
-        assetService.correctAsset(testActorId, ordinary.asset.id, {
-          name: '',
-          expected_name: 'Ordinary Item',
-          expected_asset_number: 'AST-ORD-01',
-          expected_serial_number: null,
-          reason: 'Try to clear ordinary name',
-        })
+        assetService.correctAsset(
+          testActorId,
+          ordinary.asset.id,
+          {
+            name: '',
+            expected_name: 'Ordinary Item',
+            expected_asset_number: 'AST-ORD-01',
+            expected_serial_number: null,
+            reason: 'Try to clear ordinary name',
+          },
+          { retryToken: crypto.randomUUID() }
+        )
       ).rejects.toThrow('Truthful item name/description is required for ordinary assets');
 
       // Legacy asset
@@ -635,13 +660,18 @@ describe('AssetService Integration Tests (Seam A - Core Service & Transactions)'
         asset_number: 'AST-LEG-01',
         is_legacy: true,
       });
-      const correctedLegacy = await assetService.correctAsset(testActorId, legacy.asset.id, {
-        name: null,
-        expected_name: 'Initial Legacy Name',
-        expected_asset_number: 'AST-LEG-01',
-        expected_serial_number: null,
-        reason: 'Genuine absence of name in legacy paper record',
-      });
+      const correctedLegacy = await assetService.correctAsset(
+        testActorId,
+        legacy.asset.id,
+        {
+          name: null,
+          expected_name: 'Initial Legacy Name',
+          expected_asset_number: 'AST-LEG-01',
+          expected_serial_number: null,
+          reason: 'Genuine absence of name in legacy paper record',
+        },
+        { retryToken: crypto.randomUUID() }
+      );
       expect(correctedLegacy.asset.name).toBeNull();
     });
 
@@ -653,16 +683,21 @@ describe('AssetService Integration Tests (Seam A - Core Service & Transactions)'
       });
 
       // Correcting name while keeping same asset_number does not trigger duplicate warning against itself
-      const res = await assetService.correctAsset(testActorId, reg.asset.id, {
-        name: 'Corrected Name Only',
-        asset_number: 'AST-SELF-01',
-        serial_number: 'SN-SELF-01',
-        expected_name: 'Item Self Dup',
-        expected_asset_number: 'AST-SELF-01',
-        expected_serial_number: 'SN-SELF-01',
-        reason: 'Change name only',
-        explicit_continuation: false,
-      });
+      const res = await assetService.correctAsset(
+        testActorId,
+        reg.asset.id,
+        {
+          name: 'Corrected Name Only',
+          asset_number: 'AST-SELF-01',
+          serial_number: 'SN-SELF-01',
+          expected_name: 'Item Self Dup',
+          expected_asset_number: 'AST-SELF-01',
+          expected_serial_number: 'SN-SELF-01',
+          reason: 'Change name only',
+          explicit_continuation: false,
+        },
+        { retryToken: crypto.randomUUID() }
+      );
 
       expect(res.asset.name).toBe('Corrected Name Only');
       expect(res.asset.asset_number).toBe('AST-SELF-01');
@@ -683,25 +718,35 @@ describe('AssetService Integration Tests (Seam A - Core Service & Transactions)'
 
       // Try correcting Asset B's asset_number to match Asset A's without explicit continuation
       await expect(
-        assetService.correctAsset(testActorId, assetB.asset.id, {
+        assetService.correctAsset(
+          testActorId,
+          assetB.asset.id,
+          {
+            asset_number: 'AST-COLLIDE-99',
+            expected_name: 'Asset B',
+            expected_asset_number: 'AST-DISTINCT-01',
+            expected_serial_number: null,
+            reason: 'Correcting to existing number',
+            explicit_continuation: false,
+          },
+          { retryToken: crypto.randomUUID() }
+        )
+      ).rejects.toThrow(DuplicateCandidateWarningError);
+
+      // Now with explicit_continuation: true, correction proceeds
+      const res = await assetService.correctAsset(
+        testActorId,
+        assetB.asset.id,
+        {
           asset_number: 'AST-COLLIDE-99',
           expected_name: 'Asset B',
           expected_asset_number: 'AST-DISTINCT-01',
           expected_serial_number: null,
-          reason: 'Correcting to existing number',
-          explicit_continuation: false,
-        })
-      ).rejects.toThrow(DuplicateCandidateWarningError);
-
-      // Now with explicit_continuation: true, correction proceeds
-      const res = await assetService.correctAsset(testActorId, assetB.asset.id, {
-        asset_number: 'AST-COLLIDE-99',
-        expected_name: 'Asset B',
-        expected_asset_number: 'AST-DISTINCT-01',
-        expected_serial_number: null,
-        reason: 'Confirmed distinct physical item sharing number',
-        explicit_continuation: true,
-      });
+          reason: 'Confirmed distinct physical item sharing number',
+          explicit_continuation: true,
+        },
+        { retryToken: crypto.randomUUID() }
+      );
 
       expect(res.asset.asset_number).toBe('AST-COLLIDE-99');
     });
@@ -769,15 +814,20 @@ describe('AssetService Integration Tests (Seam A - Core Service & Transactions)'
       });
 
       // Clear the erroneous asset_number by explicitly setting asset_number to null
-      const res = await assetService.correctAsset(testActorId, reg.asset.id, {
-        name: 'Asset With Wrong Number',
-        asset_number: null,
-        serial_number: 'SN-CLEAR-01',
-        expected_name: 'Asset With Wrong Number',
-        expected_asset_number: 'ERRONEOUS-1234',
-        expected_serial_number: 'SN-CLEAR-01',
-        reason: 'แก้ไขเนื่องจากบันทึกเลขครุภัณฑ์ผิดพลาด แท้จริงไม่มีเลขติดตัวเครื่อง',
-      });
+      const res = await assetService.correctAsset(
+        testActorId,
+        reg.asset.id,
+        {
+          name: 'Asset With Wrong Number',
+          asset_number: null,
+          serial_number: 'SN-CLEAR-01',
+          expected_name: 'Asset With Wrong Number',
+          expected_asset_number: 'ERRONEOUS-1234',
+          expected_serial_number: 'SN-CLEAR-01',
+          reason: 'แก้ไขเนื่องจากบันทึกเลขครุภัณฑ์ผิดพลาด แท้จริงไม่มีเลขติดตัวเครื่อง',
+        },
+        { retryToken: crypto.randomUUID() }
+      );
 
       expect(res.asset.asset_number).toBeNull();
       const dbRow = await pool.query('SELECT asset_number FROM assets WHERE id = $1', [reg.asset.id]);
@@ -830,40 +880,57 @@ describe('AssetService Integration Tests (Seam A - Core Service & Transactions)'
         asset_number: 'STRICT-001',
       });
 
+      const token = crypto.randomUUID();
+
       // Missing expected_name
       await expect(
-        assetService.correctAsset(testActorId, reg.asset.id, {
-          name: 'New Name',
-          asset_number: 'STRICT-001',
-          serial_number: null,
-          expected_asset_number: 'STRICT-001',
-          expected_serial_number: null,
-          reason: 'Missing expected_name',
-        } as any)
+        assetService.correctAsset(
+          testActorId,
+          reg.asset.id,
+          {
+            name: 'New Name',
+            asset_number: 'STRICT-001',
+            serial_number: null,
+            expected_asset_number: 'STRICT-001',
+            expected_serial_number: null,
+            reason: 'Missing expected_name',
+          } as any,
+          { retryToken: token }
+        )
       ).rejects.toThrow(ValidationError);
 
       // Missing expected_asset_number
       await expect(
-        assetService.correctAsset(testActorId, reg.asset.id, {
-          name: 'New Name',
-          asset_number: 'STRICT-001',
-          serial_number: null,
-          expected_name: 'Strict Expected Asset',
-          expected_serial_number: null,
-          reason: 'Missing expected_asset_number',
-        } as any)
+        assetService.correctAsset(
+          testActorId,
+          reg.asset.id,
+          {
+            name: 'New Name',
+            asset_number: 'STRICT-001',
+            serial_number: null,
+            expected_name: 'Strict Expected Asset',
+            expected_serial_number: null,
+            reason: 'Missing expected_asset_number',
+          } as any,
+          { retryToken: token }
+        )
       ).rejects.toThrow(ValidationError);
 
       // Missing expected_serial_number
       await expect(
-        assetService.correctAsset(testActorId, reg.asset.id, {
-          name: 'New Name',
-          asset_number: 'STRICT-001',
-          serial_number: null,
-          expected_name: 'Strict Expected Asset',
-          expected_asset_number: 'STRICT-001',
-          reason: 'Missing expected_serial_number',
-        } as any)
+        assetService.correctAsset(
+          testActorId,
+          reg.asset.id,
+          {
+            name: 'New Name',
+            asset_number: 'STRICT-001',
+            serial_number: null,
+            expected_name: 'Strict Expected Asset',
+            expected_asset_number: 'STRICT-001',
+            reason: 'Missing expected_serial_number',
+          } as any,
+          { retryToken: token }
+        )
       ).rejects.toThrow(ValidationError);
     });
 
@@ -873,46 +940,383 @@ describe('AssetService Integration Tests (Seam A - Core Service & Transactions)'
         asset_number: 'VERBATIM-ORIG',
       });
 
-      const res = await assetService.correctAsset(testActorId, reg.asset.id, {
-        name: 'Verbatim Asset',
-        asset_number: '  SPACED-NUMBER  ',
-        serial_number: '  SPACED-SN  ',
-        expected_name: 'Verbatim Asset',
-        expected_asset_number: 'VERBATIM-ORIG',
-        expected_serial_number: null,
-        reason: 'Preserve exact identifiers verbatim',
-      });
+      const res = await assetService.correctAsset(
+        testActorId,
+        reg.asset.id,
+        {
+          name: 'Verbatim Asset',
+          asset_number: '  SPACED-NUMBER  ',
+          serial_number: '  SPACED-SN  ',
+          expected_name: 'Verbatim Asset',
+          expected_asset_number: 'VERBATIM-ORIG',
+          expected_serial_number: null,
+          reason: 'Preserve exact identifiers verbatim',
+        },
+        { retryToken: crypto.randomUUID() }
+      );
 
       expect(res.asset.asset_number).toBe('  SPACED-NUMBER  ');
       expect(res.asset.serial_number).toBe('  SPACED-SN  ');
     });
 
-    it('atomic rollback on error guarantees zero partial writes to assets, history, or tokens', async () => {
+    it('strictly requires a nonblank retryToken in options and rejects missing/blank token with ValidationError', async () => {
       const reg = await assetService.registerAsset(testActorId, {
-        name: 'Rollback Asset',
-        asset_number: 'RB-001',
+        name: 'Token Required Asset',
+        asset_number: 'TR-001',
       });
 
+      // Missing options
       await expect(
-        assetService.correctAsset('invalid-uuid', reg.asset.id, {
-          name: 'Should Not Commit',
-          expected_name: 'Rollback Asset',
-          expected_asset_number: 'RB-001',
+        assetService.correctAsset(testActorId, reg.asset.id, {
+          name: 'Updated Name',
+          expected_name: 'Token Required Asset',
+          expected_asset_number: 'TR-001',
           expected_serial_number: null,
-          reason: 'Testing rollback',
-        } as any)
-      ).rejects.toThrow();
+          reason: 'Testing token requirement',
+        })
+      ).rejects.toThrow(/retry token/i);
 
-      // Check DB: assets table unchanged
-      const dbAsset = await pool.query('SELECT name FROM assets WHERE id = $1', [reg.asset.id]);
-      expect(dbAsset.rows[0].name).toBe('Rollback Asset');
+      // Empty string token
+      await expect(
+        assetService.correctAsset(
+          testActorId,
+          reg.asset.id,
+          {
+            name: 'Updated Name',
+            expected_name: 'Token Required Asset',
+            expected_asset_number: 'TR-001',
+            expected_serial_number: null,
+            reason: 'Testing token requirement',
+          },
+          { retryToken: '' }
+        )
+      ).rejects.toThrow(/retry token/i);
 
-      // Check DB: no history added
+      // Whitespace-only token
+      await expect(
+        assetService.correctAsset(
+          testActorId,
+          reg.asset.id,
+          {
+            name: 'Updated Name',
+            expected_name: 'Token Required Asset',
+            expected_asset_number: 'TR-001',
+            expected_serial_number: null,
+            reason: 'Testing token requirement',
+          },
+          { retryToken: '   ' }
+        )
+      ).rejects.toThrow(/retry token/i);
+    });
+
+    it('rejects whitespace-different payload under committed token and leaves exactly one audit entry', async () => {
+      const reg = await assetService.registerAsset(testActorId, {
+        name: 'Original WS Asset',
+        asset_number: 'WS-001',
+      });
+
+      const retryToken = crypto.randomUUID();
+      // First correction with trailing space in name
+      const res1 = await assetService.correctAsset(
+        testActorId,
+        reg.asset.id,
+        {
+          name: 'Spaced Name ',
+          expected_name: 'Original WS Asset',
+          expected_asset_number: 'WS-001',
+          expected_serial_number: null,
+          reason: 'First correction with trailing space',
+        },
+        { retryToken }
+      );
+      expect(res1.asset.name).toBe('Spaced Name ');
+
+      // Second correction with same token but without trailing space (different payload)
+      await expect(
+        assetService.correctAsset(
+          testActorId,
+          reg.asset.id,
+          {
+            name: 'Spaced Name',
+            expected_name: 'Original WS Asset',
+            expected_asset_number: 'WS-001',
+            expected_serial_number: null,
+            reason: 'First correction with trailing space',
+          },
+          { retryToken }
+        )
+      ).rejects.toThrow(RetryTokenConflictError);
+
+      // Verify exactly one CORRECTED history record exists
+      const historyRes = await pool.query(
+        "SELECT id, action, payload FROM asset_history WHERE asset_id = $1 AND action = 'CORRECTED'",
+        [reg.asset.id]
+      );
+      expect(historyRes.rows.length).toBe(1);
+
+      // Verify database name is still the verbatim first name 'Spaced Name '
+      const assetRes = await pool.query('SELECT name FROM assets WHERE id = $1', [reg.asset.id]);
+      expect(assetRes.rows[0].name).toBe('Spaced Name ');
+    });
+
+    it('guarantees atomic coherent snapshot across assets and history tables during concurrent correction commit', async () => {
+      const reg = await assetService.registerAsset(testActorId, {
+        name: 'Before Snapshot Name',
+        asset_number: 'SNAP-001',
+      });
+
+      // Client 1 begins repeatable-read read-only transaction (matching getAssetById)
+      const client1 = await pool.connect();
+      try {
+        await client1.query('BEGIN TRANSACTION ISOLATION LEVEL REPEATABLE READ READ ONLY');
+
+        // Step 1: Client 1 reads asset row -> sees 'Before Snapshot Name'
+        const assetRes = await client1.query(
+          'SELECT id, name FROM assets WHERE id = $1',
+          [reg.asset.id]
+        );
+        expect(assetRes.rows[0].name).toBe('Before Snapshot Name');
+
+        // Step 2: Concurrently, Client 2 commits a correction!
+        const retryToken = crypto.randomUUID();
+        await assetService.correctAsset(
+          testActorId,
+          reg.asset.id,
+          {
+            name: 'After Snapshot Name',
+            expected_name: 'Before Snapshot Name',
+            expected_asset_number: 'SNAP-001',
+            expected_serial_number: null,
+            reason: 'Concurrent correction commit during client 1 read',
+          },
+          { retryToken }
+        );
+
+        // Outside world has committed 'After Snapshot Name'
+        const checkRes = await pool.query('SELECT name FROM assets WHERE id = $1', [reg.asset.id]);
+        expect(checkRes.rows[0].name).toBe('After Snapshot Name');
+
+        // Step 3: Client 1 now reads asset_history within its REPEATABLE READ transaction
+        const historyRes = await client1.query(
+          "SELECT action, payload FROM asset_history WHERE asset_id = $1 ORDER BY recorded_at ASC, created_at ASC",
+          [reg.asset.id]
+        );
+
+        await client1.query('COMMIT');
+
+        // In a coherent snapshot, Client 1 must NOT see the newly committed CORRECTED history row!
+        const correctedRows = historyRes.rows.filter((r) => r.action === 'CORRECTED');
+        expect(correctedRows.length).toBe(0);
+      } finally {
+        client1.release();
+      }
+    });
+
+    it('rolls back completely when failure occurs during audit history insertion after UPDATE', async () => {
+      const reg = await assetService.registerAsset(testActorId, {
+        name: 'Rollback Audit Asset',
+        asset_number: 'RBA-001',
+      });
+
+      // Install temporary trigger that fails during audit insertion
+      await pool.query(`
+        CREATE OR REPLACE FUNCTION test_fail_audit_insert() RETURNS trigger AS $$
+        BEGIN
+          IF NEW.action = 'CORRECTED' AND NEW.payload->>'reason' = 'FAIL_AUDIT_INSERTION_NOW' THEN
+            RAISE EXCEPTION 'simulated failure during audit insertion';
+          END IF;
+          RETURN NEW;
+        END;
+        $$ LANGUAGE plpgsql;
+      `);
+      await pool.query(`
+        CREATE TRIGGER trg_test_fail_audit
+        BEFORE INSERT ON asset_history
+        FOR EACH ROW EXECUTE FUNCTION test_fail_audit_insert();
+      `);
+
+      const retryToken = crypto.randomUUID();
+      try {
+        await expect(
+          assetService.correctAsset(
+            testActorId,
+            reg.asset.id,
+            {
+              name: 'Should Be Rolled Back',
+              expected_name: 'Rollback Audit Asset',
+              expected_asset_number: 'RBA-001',
+              expected_serial_number: null,
+              reason: 'FAIL_AUDIT_INSERTION_NOW',
+            },
+            { retryToken }
+          )
+        ).rejects.toThrow(/simulated failure during audit insertion/);
+
+        // Check DB: assets table was updated in SQL, but transaction rollback restored it!
+        const dbAsset = await pool.query('SELECT name FROM assets WHERE id = $1', [reg.asset.id]);
+        expect(dbAsset.rows[0].name).toBe('Rollback Audit Asset');
+
+        // Check DB: zero CORRECTED history rows
+        const histRes = await pool.query(
+          "SELECT count(*)::int as count FROM asset_history WHERE asset_id = $1 AND action = 'CORRECTED'",
+          [reg.asset.id]
+        );
+        expect(histRes.rows[0].count).toBe(0);
+
+        // Check DB: zero retry token rows
+        const tokenRes = await pool.query(
+          'SELECT count(*)::int as count FROM registration_retry_tokens WHERE token = $1',
+          [retryToken]
+        );
+        expect(tokenRes.rows[0].count).toBe(0);
+      } finally {
+        await pool.query('DROP TRIGGER IF EXISTS trg_test_fail_audit ON asset_history;');
+        await pool.query('DROP FUNCTION IF EXISTS test_fail_audit_insert();');
+      }
+    });
+
+    it('rolls back completely when failure occurs during retry token ledger insertion', async () => {
+      const reg = await assetService.registerAsset(testActorId, {
+        name: 'Rollback Ledger Asset',
+        asset_number: 'RBL-001',
+      });
+
+      const failToken = 'FAIL_LEDGER_TEST_TOKEN';
+      // Install temporary trigger that fails during retry ledger insertion
+      await pool.query(`
+        CREATE OR REPLACE FUNCTION test_fail_ledger_insert() RETURNS trigger AS $$
+        BEGIN
+          IF NEW.token = 'FAIL_LEDGER_TEST_TOKEN' THEN
+            RAISE EXCEPTION 'simulated failure during retry ledger insertion';
+          END IF;
+          RETURN NEW;
+        END;
+        $$ LANGUAGE plpgsql;
+      `);
+      await pool.query(`
+        CREATE TRIGGER trg_test_fail_ledger
+        BEFORE INSERT ON registration_retry_tokens
+        FOR EACH ROW EXECUTE FUNCTION test_fail_ledger_insert();
+      `);
+
+      try {
+        await expect(
+          assetService.correctAsset(
+            testActorId,
+            reg.asset.id,
+            {
+              name: 'Should Be Rolled Back',
+              expected_name: 'Rollback Ledger Asset',
+              expected_asset_number: 'RBL-001',
+              expected_serial_number: null,
+              reason: 'Testing ledger failure rollback',
+            },
+            { retryToken: failToken }
+          )
+        ).rejects.toThrow(/simulated failure during retry ledger insertion/);
+
+        // Check DB: assets table was updated in SQL, but rollback restored it!
+        const dbAsset = await pool.query('SELECT name FROM assets WHERE id = $1', [reg.asset.id]);
+        expect(dbAsset.rows[0].name).toBe('Rollback Ledger Asset');
+
+        // Check DB: zero CORRECTED history rows
+        const histRes = await pool.query(
+          "SELECT count(*)::int as count FROM asset_history WHERE asset_id = $1 AND action = 'CORRECTED'",
+          [reg.asset.id]
+        );
+        expect(histRes.rows[0].count).toBe(0);
+
+        // Check DB: zero retry token rows
+        const tokenRes = await pool.query(
+          'SELECT count(*)::int as count FROM registration_retry_tokens WHERE token = $1',
+          [failToken]
+        );
+        expect(tokenRes.rows[0].count).toBe(0);
+      } finally {
+        await pool.query('DROP TRIGGER IF EXISTS trg_test_fail_ledger ON registration_retry_tokens;');
+        await pool.query('DROP FUNCTION IF EXISTS test_fail_ledger_insert();');
+      }
+    });
+
+    it('handles concurrent identical correction requests safely returning identical response with exactly one audit row and one ledger row', async () => {
+      const reg = await assetService.registerAsset(testActorId, {
+        name: 'Concurrent Identical Asset',
+        asset_number: 'CI-001',
+      });
+
+      const sharedToken = crypto.randomUUID();
+      const payload = {
+        name: 'Updated Name Concurrently',
+        expected_name: 'Concurrent Identical Asset',
+        expected_asset_number: 'CI-001',
+        expected_serial_number: null,
+        reason: 'Concurrent test reason',
+      };
+
+      const [res1, res2] = await Promise.all([
+        assetService.correctAsset(testActorId, reg.asset.id, payload, { retryToken: sharedToken }),
+        assetService.correctAsset(testActorId, reg.asset.id, payload, { retryToken: sharedToken }),
+      ]);
+
+      expect(res1.asset.name).toBe('Updated Name Concurrently');
+      expect(res2.asset.name).toBe('Updated Name Concurrently');
+      expect(res1.asset.updated_at).toBe(res2.asset.updated_at);
+
+      // Check DB: exactly one CORRECTED history row
       const histRes = await pool.query(
         "SELECT count(*)::int as count FROM asset_history WHERE asset_id = $1 AND action = 'CORRECTED'",
         [reg.asset.id]
       );
-      expect(histRes.rows[0].count).toBe(0);
+      expect(histRes.rows[0].count).toBe(1);
+
+      // Check DB: exactly one retry token row
+      const tokenRes = await pool.query(
+        'SELECT count(*)::int as count FROM registration_retry_tokens WHERE token = $1',
+        [sharedToken]
+      );
+      expect(tokenRes.rows[0].count).toBe(1);
+    });
+
+    it('handles concurrent conflicting payloads under same retry token: one commits and one throws RetryTokenConflictError', async () => {
+      const reg = await assetService.registerAsset(testActorId, {
+        name: 'Concurrent Conflict Asset',
+        asset_number: 'CC-001',
+      });
+
+      const sharedToken = crypto.randomUUID();
+      const payloadA = {
+        name: 'Payload A',
+        expected_name: 'Concurrent Conflict Asset',
+        expected_asset_number: 'CC-001',
+        expected_serial_number: null,
+        reason: 'Reason A',
+      };
+      const payloadB = {
+        name: 'Payload B',
+        expected_name: 'Concurrent Conflict Asset',
+        expected_asset_number: 'CC-001',
+        expected_serial_number: null,
+        reason: 'Reason B',
+      };
+
+      const results = await Promise.allSettled([
+        assetService.correctAsset(testActorId, reg.asset.id, payloadA, { retryToken: sharedToken }),
+        assetService.correctAsset(testActorId, reg.asset.id, payloadB, { retryToken: sharedToken }),
+      ]);
+
+      const fulfilled = results.filter((r) => r.status === 'fulfilled');
+      const rejected = results.filter((r) => r.status === 'rejected');
+
+      expect(fulfilled.length).toBe(1);
+      expect(rejected.length).toBe(1);
+      expect((rejected[0] as PromiseRejectedResult).reason).toBeInstanceOf(RetryTokenConflictError);
+
+      // Exactly one CORRECTED audit record in database
+      const histRes = await pool.query(
+        "SELECT count(*)::int as count FROM asset_history WHERE asset_id = $1 AND action = 'CORRECTED'",
+        [reg.asset.id]
+      );
+      expect(histRes.rows[0].count).toBe(1);
     });
   });
 });

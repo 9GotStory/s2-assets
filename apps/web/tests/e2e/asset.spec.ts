@@ -951,4 +951,228 @@ test.describe.serial('Asset Registry Real SPA -> Composed API -> PostgreSQL Jour
     const dbAsset = await pool.query('SELECT asset_number FROM assets WHERE id = $1', [testAssetId]);
     expect(dbAsset.rows[0].asset_number).toBeNull();
   });
+
+  test('Journey 16: Immediate capability revocation during correction unmounts form and renders read-only notice while preserving history', async ({
+    page,
+    context,
+  }) => {
+    const testAssetId = crypto.randomUUID();
+    await pool.query(
+      `INSERT INTO assets (id, name, asset_number, serial_number, registered_by, recorded_at, created_at, updated_at)
+       VALUES ($1, $2, $3, $4, $5, now(), now(), now())`,
+      [testAssetId, 'เครื่องสำรองไฟฟ้า APC', 'APC-2026-01', 'SN-APC-01', custodianUserId]
+    );
+    await pool.query(
+      `INSERT INTO asset_history (id, asset_id, action, actor_id, payload, recorded_at, created_at)
+       VALUES ($1, $2, 'REGISTERED', $3, $4, now(), now())`,
+      [crypto.randomUUID(), testAssetId, custodianUserId, JSON.stringify({ name: 'เครื่องสำรองไฟฟ้า APC' })]
+    );
+
+    await loginAs(page, context, custodianUserId);
+    await page.goto(`${targetBaseUrl}/assets/${testAssetId}`);
+    await expect(page.locator('#asset-detail-heading')).toHaveText('เครื่องสำรองไฟฟ้า APC');
+    await expect(page.locator('#asset-correction-form')).toBeVisible();
+
+    // Mock capability revocation: POST returns 403 Forbidden
+    await page.route(`**/assets/${testAssetId}/correct`, async (route) => {
+      await route.fulfill({
+        status: 403,
+        contentType: 'application/json',
+        body: JSON.stringify({
+          statusCode: 403,
+          code: 'FORBIDDEN',
+          error: 'FORBIDDEN',
+          message: 'User does not possess required capability: asset:correct',
+        }),
+      });
+    });
+
+    await page.locator('#asset-correction-form input#name').fill('เครื่องสำรองไฟฟ้า APC Smart 1500');
+    await page.locator('#asset-correction-form textarea#reason').fill('แก้ไขชื่อรุ่น');
+    await page.locator('button#submit-correct-btn').click();
+
+    // Verify form is immediately unmounted and read-only notice is displayed
+    await expect(page.locator('#asset-correction-form')).not.toBeVisible();
+    await expect(page.locator('[data-testid="read-only-notice"]')).toBeVisible();
+    await expect(page.locator('[data-testid="read-only-notice"]')).toContainText(
+      'ผู้ใช้ปัจจุบันมีสิทธิ์อ่านอย่างเดียว ไม่สามารถแก้ไขข้อมูลครุภัณฑ์ได้'
+    );
+
+    // Verify history timeline remains visible and intact
+    await expect(page.locator('#history-heading')).toBeVisible();
+    await expect(page.locator('table')).toContainText('REGISTERED');
+  });
+
+  test('Journey 17: Candidate duplicate review supports pagination via load-more button', async ({
+    page,
+    context,
+  }) => {
+    const testAssetId = crypto.randomUUID();
+    await pool.query(
+      `INSERT INTO assets (id, name, asset_number, serial_number, registered_by, recorded_at, created_at, updated_at)
+       VALUES ($1, $2, $3, $4, $5, now(), now(), now())`,
+      [testAssetId, 'เครื่องคอมพิวเตอร์ลูกข่าย', 'PC-CLIENT-00', 'SN-PC-00', custodianUserId]
+    );
+    await pool.query(
+      `INSERT INTO asset_history (id, asset_id, action, actor_id, payload, recorded_at, created_at)
+       VALUES ($1, $2, 'REGISTERED', $3, $4, now(), now())`,
+      [crypto.randomUUID(), testAssetId, custodianUserId, JSON.stringify({ name: 'เครื่องคอมพิวเตอร์ลูกข่าย' })]
+    );
+
+    // Seed 12 duplicate assets with asset_number DUP-PAGE-TAG
+    for (let i = 1; i <= 12; i++) {
+      const dupId = crypto.randomUUID();
+      await pool.query(
+        `INSERT INTO assets (id, name, asset_number, serial_number, registered_by, recorded_at, created_at, updated_at)
+         VALUES ($1, $2, $3, $4, $5, now(), now(), now())`,
+        [dupId, `เครื่องคอมพิวเตอร์ชุดที่ ${i}`, 'DUP-PAGE-TAG', `SN-DUP-${i}`, custodianUserId]
+      );
+      await pool.query(
+        `INSERT INTO asset_history (id, asset_id, action, actor_id, payload, recorded_at, created_at)
+         VALUES ($1, $2, 'REGISTERED', $3, $4, now(), now())`,
+        [crypto.randomUUID(), dupId, custodianUserId, JSON.stringify({ name: `เครื่องคอมพิวเตอร์ชุดที่ ${i}` })]
+      );
+    }
+
+    await loginAs(page, context, custodianUserId);
+    await page.goto(`${targetBaseUrl}/assets/${testAssetId}`);
+
+    // Fill duplicate asset_number
+    await page.locator('#asset-correction-form input#asset_number').fill('DUP-PAGE-TAG');
+    await page.locator('button#check-duplicate-btn').click();
+
+    // Verify first page of 10 items shown out of 12
+    const warningRegion = page.locator('div[role="region"][aria-label="การแจ้งเตือนข้อมูลซ้ำ"]');
+    await expect(warningRegion).toBeVisible();
+    await expect(warningRegion).toContainText('แสดง 10 จากทั้งหมด 12 รายการ');
+
+    // Click load more
+    const loadMoreBtn = page.locator('button#load-more-candidates-btn');
+    await expect(loadMoreBtn).toBeVisible();
+    await loadMoreBtn.click();
+
+    // Verify all 12 items now shown and load-more button disappears
+    await expect(warningRegion).toContainText('แสดง 12 จากทั้งหมด 12 รายการ');
+    await expect(loadMoreBtn).not.toBeVisible();
+  });
+
+  test('Journey 18: Network failure enters immutable uncertain state freezing inputs and allowing retry via retry-uncertain button', async ({
+    page,
+    context,
+  }) => {
+    const testAssetId = crypto.randomUUID();
+    await pool.query(
+      `INSERT INTO assets (id, name, asset_number, serial_number, registered_by, recorded_at, created_at, updated_at)
+       VALUES ($1, $2, $3, $4, $5, now(), now(), now())`,
+      [testAssetId, 'เครื่องปรับอากาศ Daikin', 'AC-DAIKIN-01', 'SN-AC-01', custodianUserId]
+    );
+    await pool.query(
+      `INSERT INTO asset_history (id, asset_id, action, actor_id, payload, recorded_at, created_at)
+       VALUES ($1, $2, 'REGISTERED', $3, $4, now(), now())`,
+      [crypto.randomUUID(), testAssetId, custodianUserId, JSON.stringify({ name: 'เครื่องปรับอากาศ Daikin' })]
+    );
+
+    await loginAs(page, context, custodianUserId);
+    await page.goto(`${targetBaseUrl}/assets/${testAssetId}`);
+
+    await page.locator('#asset-correction-form input#name').fill('เครื่องปรับอากาศ Daikin Inverter');
+    await page.locator('#asset-correction-form textarea#reason').fill('แก้ไขข้อมูลเทคโนโลยี Inverter');
+
+    let abortedFirstAttempt = false;
+    let tokenAttempt1: string | null = null;
+    let tokenAttempt2: string | null = null;
+
+    await page.route(`**/assets/${testAssetId}/correct`, async (route) => {
+      const headers = route.request().headers();
+      if (!abortedFirstAttempt) {
+        abortedFirstAttempt = true;
+        tokenAttempt1 = headers['x-retry-token'];
+        await route.abort('failed');
+        return;
+      }
+      tokenAttempt2 = headers['x-retry-token'];
+      await route.continue();
+    });
+
+    // Submit form -> network aborts
+    await page.locator('button#submit-correct-btn').click();
+
+    // Verify error banner appears with retry button
+    const errorBanner = page.locator('[data-testid="correction-error-message"]');
+    await expect(errorBanner).toBeVisible();
+    await expect(errorBanner).toContainText(
+      'เกิดข้อผิดพลาดในการเชื่อมต่อเครือข่าย ท่านสามารถกดบันทึกซ้ำเพื่อดำเนินการต่อได้อย่างปลอดภัย'
+    );
+    const retryUncertainBtn = page.locator('button#retry-uncertain-btn');
+    await expect(retryUncertainBtn).toBeVisible();
+
+    // Verify inputs are frozen (disabled) during uncertain state
+    await expect(page.locator('#asset-correction-form input#name')).toBeDisabled();
+    await expect(page.locator('#asset-correction-form input#asset_number')).toBeDisabled();
+    await expect(page.locator('#asset-correction-form input#serial_number')).toBeDisabled();
+    await expect(page.locator('#asset-correction-form textarea#reason')).toBeDisabled();
+
+    // Click retry-uncertain button
+    await retryUncertainBtn.click();
+
+    // Success displayed and same token transmitted
+    await expect(page.locator('[data-testid="correction-success-message"]')).toHaveText(
+      'บันทึกการแก้ไขครุภัณฑ์สำเร็จ'
+    );
+    expect(tokenAttempt1).toBeTruthy();
+    expect(tokenAttempt2).toBe(tokenAttempt1);
+
+    // Inputs are enabled again
+    await expect(page.locator('#asset-correction-form input#name')).toBeEnabled();
+  });
+
+  test('Journey 19: Cache eviction and data suppression when asset access returns 403 Forbidden', async ({
+    page,
+    context,
+  }) => {
+    const testAssetId = crypto.randomUUID();
+    await pool.query(
+      `INSERT INTO assets (id, name, asset_number, serial_number, registered_by, recorded_at, created_at, updated_at)
+       VALUES ($1, $2, $3, $4, $5, now(), now(), now())`,
+      [testAssetId, 'อุปกรณ์รักษาความปลอดภัย Firewall', 'FW-001', 'SN-FW-001', custodianUserId]
+    );
+    await pool.query(
+      `INSERT INTO asset_history (id, asset_id, action, actor_id, payload, recorded_at, created_at)
+       VALUES ($1, $2, 'REGISTERED', $3, $4, now(), now())`,
+      [crypto.randomUUID(), testAssetId, custodianUserId, JSON.stringify({ name: 'อุปกรณ์รักษาความปลอดภัย Firewall' })]
+    );
+
+    // Mock GET /assets/:id as 403 Forbidden for API fetches
+    await page.route(`**/assets/${testAssetId}`, async (route) => {
+      const isHtmlNav =
+        route.request().isNavigationRequest() ||
+        route.request().headers()['accept']?.includes('text/html');
+
+      if (isHtmlNav) {
+        await route.continue();
+        return;
+      }
+
+      await route.fulfill({
+        status: 403,
+        contentType: 'application/json',
+        body: JSON.stringify({
+          statusCode: 403,
+          code: 'FORBIDDEN',
+          error: 'FORBIDDEN',
+          message: 'คุณไม่มีสิทธิ์เข้าถึงข้อมูลครุภัณฑ์นี้ (403 Forbidden)',
+        }),
+      });
+    });
+
+    await loginAs(page, context, custodianUserId);
+    await page.goto(`${targetBaseUrl}/assets/${testAssetId}`);
+
+    // Verify error screen is rendered and asset details/form are suppressed
+    await expect(page.locator('div[role="alert"]')).toContainText(
+      'คุณไม่มีสิทธิ์เข้าถึงข้อมูลครุภัณฑ์นี้ (403 Forbidden)'
+    );
+    await expect(page.locator('#asset-detail-heading')).not.toBeVisible();
+    await expect(page.locator('#asset-correction-form')).not.toBeVisible();
+  });
 });

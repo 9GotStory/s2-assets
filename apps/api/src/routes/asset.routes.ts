@@ -329,6 +329,14 @@ export const assetRoutes: FastifyPluginAsync<AssetRoutesOptions> = async (
     }
 
     const retryToken = headerToken || bodyToken;
+    if (!retryToken || retryToken.length === 0) {
+      return reply.status(400).send({
+        statusCode: 400,
+        code: 'VALIDATION_FAILED',
+        error: 'VALIDATION_FAILED',
+        message: 'Correction retry token is required and must be a nonblank string',
+      });
+    }
 
     // Server boundary validation
     const parsed = CorrectAssetSchema.safeParse(request.body || {});

@@ -929,6 +929,7 @@ describe('Asset Routes & Security Matrix Integration Tests (Seam A)', () => {
         headers: {
           cookie: adminUser.cookie,
           'x-csrf-token': adminUser.csrf,
+          'x-retry-token': crypto.randomUUID(),
         },
         payload,
       });
@@ -944,6 +945,7 @@ describe('Asset Routes & Security Matrix Integration Tests (Seam A)', () => {
         headers: {
           cookie: custodianUser.cookie,
           'x-csrf-token': custodianUser.csrf,
+          'x-retry-token': crypto.randomUUID(),
         },
         payload: {
           name: 'Corrected by Custodian',
@@ -1033,6 +1035,7 @@ describe('Asset Routes & Security Matrix Integration Tests (Seam A)', () => {
         headers: {
           cookie: adminUser.cookie,
           'x-csrf-token': adminUser.csrf,
+          'x-retry-token': crypto.randomUUID(),
         },
         payload: {
           name: 'Unexpected Field Test',
@@ -1203,6 +1206,7 @@ describe('Asset Routes & Security Matrix Integration Tests (Seam A)', () => {
         headers: {
           cookie: adminUser.cookie,
           'x-csrf-token': adminUser.csrf,
+          'x-retry-token': crypto.randomUUID(),
         },
         payload: {
           name: 'Some Name',
@@ -1223,6 +1227,7 @@ describe('Asset Routes & Security Matrix Integration Tests (Seam A)', () => {
         headers: {
           cookie: adminUser.cookie,
           'x-csrf-token': adminUser.csrf,
+          'x-retry-token': crypto.randomUUID(),
         },
         payload: {
           name: 'Base Test Asset',
@@ -1246,6 +1251,7 @@ describe('Asset Routes & Security Matrix Integration Tests (Seam A)', () => {
         headers: {
           cookie: adminUser.cookie,
           'x-csrf-token': adminUser.csrf,
+          'x-retry-token': crypto.randomUUID(),
         },
         payload: {
           name: 'Base Test Asset',
@@ -1261,6 +1267,51 @@ describe('Asset Routes & Security Matrix Integration Tests (Seam A)', () => {
       const body = JSON.parse(res.body);
       expect(body.asset.asset_number).toBe('  SPACED-NUM  ');
       expect(body.asset.serial_number).toBe('  SPACED-SN  ');
+    });
+
+    it('rejects correction with 400 VALIDATION_FAILED when retry token is omitted from both header and body', async () => {
+      const res = await app.inject({
+        method: 'POST',
+        url: `/assets/${testAssetId}/correct`,
+        headers: {
+          cookie: adminUser.cookie,
+          'x-csrf-token': adminUser.csrf,
+        },
+        payload: {
+          name: 'Missing Token Asset',
+          expected_name: 'Base Test Asset',
+          expected_asset_number: 'ROUTE-BASE-01',
+          expected_serial_number: 'SN-BASE-01',
+          reason: 'No token passed in header or body',
+        },
+      });
+      expect(res.statusCode).toBe(400);
+      const body = JSON.parse(res.body);
+      expect(body.code).toBe('VALIDATION_FAILED');
+      expect(body.message).toContain('Correction retry token is required and must be a nonblank string');
+    });
+
+    it('rejects correction with 400 VALIDATION_FAILED when retry token is whitespace-only', async () => {
+      const res = await app.inject({
+        method: 'POST',
+        url: `/assets/${testAssetId}/correct`,
+        headers: {
+          cookie: adminUser.cookie,
+          'x-csrf-token': adminUser.csrf,
+          'x-retry-token': '   ',
+        },
+        payload: {
+          name: 'Blank Token Asset',
+          expected_name: 'Base Test Asset',
+          expected_asset_number: 'ROUTE-BASE-01',
+          expected_serial_number: 'SN-BASE-01',
+          reason: 'Blank whitespace token passed',
+        },
+      });
+      expect(res.statusCode).toBe(400);
+      const body = JSON.parse(res.body);
+      expect(body.code).toBe('VALIDATION_FAILED');
+      expect(body.message).toContain('Correction retry token is required and must be a nonblank string');
     });
   });
 });

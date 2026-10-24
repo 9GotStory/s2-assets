@@ -7,8 +7,9 @@ export interface AssetCorrectionFormProps {
   asset: AssetRecord;
   isLegacy?: boolean;
   csrfToken?: string | null;
-  onSuccess: (updatedAsset: AssetRecord) => void;
+  onSuccess: (updatedAsset: AssetRecord) => Promise<boolean> | boolean | void;
   onCancel?: () => void;
+  onPermissionRevoked?: () => void;
 }
 
 interface FormValues {
@@ -32,6 +33,7 @@ export const AssetCorrectionForm: React.FC<AssetCorrectionFormProps> = ({
   csrfToken,
   onSuccess,
   onCancel,
+  onPermissionRevoked,
 }) => {
   const retryTokenRef = useRef<string>(crypto.randomUUID());
 
@@ -43,11 +45,30 @@ export const AssetCorrectionForm: React.FC<AssetCorrectionFormProps> = ({
   });
 
   const [candidates, setCandidates] = useState<DuplicateCandidate[]>([]);
+  const [totalCandidateCount, setTotalCandidateCount] = useState<number>(0);
+  const [hasMoreCandidates, setHasMoreCandidates] = useState<boolean>(false);
+  const [candidateOffset, setCandidateOffset] = useState<number>(0);
   const [isCheckingDuplicates, setIsCheckingDuplicates] = useState(false);
+  const [isLoadingMoreCandidates, setIsLoadingMoreCandidates] = useState(false);
   const [duplicateCheckError, setDuplicateCheckError] = useState<string | null>(null);
+
   const [submitError, setSubmitError] = useState<string | null>(null);
   const [successMessage, setSuccessMessage] = useState<string | null>(null);
   const [isSubmitting, setIsSubmitting] = useState(false);
+  const [isPendingUncertain, setIsPendingUncertain] = useState(false);
+
+  // Stored frozen payload for uncertain retry
+  const frozenPayloadRef = useRef<{
+    name: string | null;
+    asset_number: string | null;
+    serial_number: string | null;
+    expected_name: string | null;
+    expected_asset_number: string | null;
+    expected_serial_number: string | null;
+    reason: string | null;
+    explicit_continuation: boolean;
+    retry_token: string;
+  } | null>(null);
 
   // Sequence tracking and AbortControllers
   const lookupSeqRef = useRef<number>(0);
@@ -110,6 +131,7 @@ export const AssetCorrectionForm: React.FC<AssetCorrectionFormProps> = ({
 
   // When identifier fields change, reset duplicate candidate warning and explicit continuation
   const handleIdentifierChange = (field: 'asset_number' | 'serial_number', val: string) => {
+    if (isPendingUncertain) return;
     setValue(field, val, { shouldDirty: true });
     lookupSeqRef.current += 1;
     submitSeqRef.current += 1; // Invalidate any in-flight POST submission warnings
@@ -122,20 +144,28 @@ export const AssetCorrectionForm: React.FC<AssetCorrectionFormProps> = ({
       submitAbortRef.current = null;
     }
     setIsCheckingDuplicates(false);
+    setIsLoadingMoreCandidates(false);
     setIsSubmitting(false);
     setCandidates([]);
+    setTotalCandidateCount(0);
+    setHasMoreCandidates(false);
+    setCandidateOffset(0);
     setDuplicateCheckError(null);
     setValue('explicit_continuation', false);
   };
 
   // Duplicate candidates preview
-  const handleCheckDuplicates = async () => {
+  const handleCheckDuplicates = async (offsetToFetch = 0, isAppend = false) => {
     const curAssetNumber = watchedAssetNumber || '';
     const curSerialNumber = watchedSerialNumber || '';
 
     if (!curAssetNumber && !curSerialNumber) {
       setIsCheckingDuplicates(false);
+      setIsLoadingMoreCandidates(false);
       setCandidates([]);
+      setTotalCandidateCount(0);
+      setHasMoreCandidates(false);
+      setCandidateOffset(0);
       return;
     }
 
@@ -147,13 +177,19 @@ export const AssetCorrectionForm: React.FC<AssetCorrectionFormProps> = ({
     const controller = new AbortController();
     lookupAbortRef.current = controller;
 
-    setIsCheckingDuplicates(true);
+    if (isAppend) {
+      setIsLoadingMoreCandidates(true);
+    } else {
+      setIsCheckingDuplicates(true);
+    }
     setDuplicateCheckError(null);
 
     try {
       const params = new URLSearchParams();
       if (curAssetNumber) params.append('asset_number', curAssetNumber);
       if (curSerialNumber) params.append('serial_number', curSerialNumber);
+      params.append('limit', '10');
+      params.append('offset', String(offsetToFetch));
 
       const res = await fetch(`/assets/${asset.id}/duplicate-candidates?${params.toString()}`, {
         method: 'GET',
@@ -165,21 +201,32 @@ export const AssetCorrectionForm: React.FC<AssetCorrectionFormProps> = ({
 
       if (res.status === 403) {
         setDuplicateCheckError('คุณไม่มีสิทธิ์ตรวจสอบข้อมูลซ้ำ (403 Forbidden)');
+        onPermissionRevoked?.();
         setIsCheckingDuplicates(false);
+        setIsLoadingMoreCandidates(false);
         return;
       }
 
       if (!res.ok) {
         setDuplicateCheckError('ไม่สามารถตรวจสอบข้อมูลซ้ำได้');
         setIsCheckingDuplicates(false);
+        setIsLoadingMoreCandidates(false);
         return;
       }
 
       const data = await res.json();
       if (currentSeq !== lookupSeqRef.current) return;
 
-      setCandidates(data.candidates || []);
-      if (!data.candidates || data.candidates.length === 0) {
+      const fetchedCandidates: DuplicateCandidate[] = data.candidates || [];
+      const updatedCandidates = isAppend ? [...candidates, ...fetchedCandidates] : fetchedCandidates;
+      setCandidates(updatedCandidates);
+      setTotalCandidateCount(
+        typeof data.total_count === 'number' ? data.total_count : updatedCandidates.length
+      );
+      setHasMoreCandidates(Boolean(data.has_more));
+      setCandidateOffset(offsetToFetch);
+
+      if (updatedCandidates.length === 0) {
         setValue('explicit_continuation', false);
       }
     } catch (err: unknown) {
@@ -189,11 +236,178 @@ export const AssetCorrectionForm: React.FC<AssetCorrectionFormProps> = ({
     } finally {
       if (currentSeq === lookupSeqRef.current) {
         setIsCheckingDuplicates(false);
+        setIsLoadingMoreCandidates(false);
       }
     }
   };
 
+  const executeSubmission = async (payload: {
+    name: string | null;
+    asset_number: string | null;
+    serial_number: string | null;
+    expected_name: string | null;
+    expected_asset_number: string | null;
+    expected_serial_number: string | null;
+    reason: string | null;
+    explicit_continuation: boolean;
+    retry_token: string;
+  }) => {
+    submitSeqRef.current += 1;
+    const currentSubmitSeq = submitSeqRef.current;
+    if (submitAbortRef.current) {
+      submitAbortRef.current.abort();
+    }
+    const controller = new AbortController();
+    submitAbortRef.current = controller;
+
+    setIsSubmitting(true);
+    setSubmitError(null);
+    setSuccessMessage(null);
+
+    // Save frozen payload in ref in case of network/transport uncertainty
+    frozenPayloadRef.current = payload;
+
+    try {
+      const headers: Record<string, string> = {
+        'Content-Type': 'application/json',
+        'x-retry-token': payload.retry_token,
+      };
+      if (csrfToken) {
+        headers['x-csrf-token'] = csrfToken;
+      }
+
+      const res = await fetch(`/assets/${asset.id}/correct`, {
+        method: 'POST',
+        headers,
+        credentials: 'include',
+        signal: controller.signal,
+        body: JSON.stringify(payload),
+      });
+
+      if (currentSubmitSeq !== submitSeqRef.current) return;
+
+      if (res.status === 409) {
+        const errJson = await res.json().catch(() => null);
+        setIsPendingUncertain(false);
+        if (errJson?.code === 'STALE_BEFORE_CONFLICT') {
+          setSubmitError(
+            'ข้อมูลครุภัณฑ์ถูกแก้ไขโดยผู้อื่นแล้ว กรุณารีเฟรชข้อมูลล่าสุดก่อนดำเนินการต่อ (409 Conflict)'
+          );
+        } else if (
+          errJson?.code === 'DUPLICATE_WARNING' ||
+          errJson?.code === 'DUPLICATE_CANDIDATES_FOUND'
+        ) {
+          setCandidates(errJson.candidates || []);
+          setTotalCandidateCount(errJson.total_count ?? (errJson.candidates?.length || 0));
+          setHasMoreCandidates(Boolean(errJson.has_more));
+          setCandidateOffset(errJson.offset ?? 0);
+          setSubmitError(
+            'พบข้อมูลครุภัณฑ์ใกล้เคียงกันในระบบ หากประสงค์จะบันทึกข้อมูลนี้ กรุณาทำเครื่องหมายยืนยันด้านล่าง'
+          );
+        } else {
+          setSubmitError(errJson?.message || 'เกิดข้อขัดแย้งของข้อมูล (409 Conflict)');
+        }
+        setIsSubmitting(false);
+        return;
+      }
+
+      if (res.status === 400) {
+        setIsPendingUncertain(false);
+        const errJson = await res.json().catch(() => null);
+        setSubmitError(errJson?.message || 'ข้อมูลที่ส่งไม่ถูกต้อง (400 Bad Request)');
+        setIsSubmitting(false);
+        return;
+      }
+
+      if (res.status === 403) {
+        setIsPendingUncertain(false);
+        setSubmitError('คุณไม่มีสิทธิ์แก้ไขข้อมูลครุภัณฑ์นี้ (403 Forbidden)');
+        onPermissionRevoked?.();
+        setIsSubmitting(false);
+        return;
+      }
+
+      if (!res.ok) {
+        // Transport or server error (>= 500): Server state uncertain, FREEZE intent and offer retry with same token
+        setIsPendingUncertain(true);
+        setSubmitError('เกิดข้อผิดพลาดในการบันทึกข้อมูล กรุณากดบันทึกซ้ำเพื่อดำเนินการต่อได้อย่างปลอดภัย');
+        setIsSubmitting(false);
+        return;
+      }
+
+      const result = await res.json();
+      if (currentSubmitSeq !== submitSeqRef.current) return;
+
+      // Commit confirmed on server!
+      // Now verify refresh first:
+      let refreshSuccess = true;
+      if (result?.asset) {
+        const refreshRes = await onSuccess(result.asset);
+        if (refreshRes === false) {
+          refreshSuccess = false;
+        }
+      }
+
+      if (!refreshSuccess) {
+        // Refresh failed: keep form values, do NOT rotate token, do NOT reset form
+        setIsSubmitting(false);
+        setSubmitError(
+          'บันทึกการแก้ไขครุภัณฑ์สำเร็จ แต่การดึงข้อมูลล่าสุดล้มเหลว กรุณากดปุ่มเพื่อโหลดข้อมูลใหม่'
+        );
+        return;
+      }
+
+      // Both commit and refresh succeeded!
+      setSuccessMessage('บันทึกการแก้ไขครุภัณฑ์สำเร็จ');
+      setIsPendingUncertain(false);
+      frozenPayloadRef.current = null;
+      retryTokenRef.current = crypto.randomUUID();
+      setIsSubmitting(false);
+
+      if (result?.asset) {
+        setBaselineExpected({
+          name: result.asset.name,
+          asset_number: result.asset.asset_number,
+          serial_number: result.asset.serial_number,
+        });
+        reset({
+          name: result.asset.name || '',
+          asset_number: result.asset.asset_number || '',
+          serial_number: result.asset.serial_number || '',
+          reason: '',
+          explicit_continuation: false,
+        });
+        setCandidates([]);
+        setTotalCandidateCount(0);
+        setHasMoreCandidates(false);
+      }
+    } catch (err: unknown) {
+      if (err instanceof DOMException && err.name === 'AbortError') {
+        setIsSubmitting(false);
+        return;
+      }
+      if (currentSubmitSeq !== submitSeqRef.current) return;
+      // Network failure: State uncertain, freeze intent, keep retry token unchanged
+      setIsPendingUncertain(true);
+      setSubmitError(
+        'เกิดข้อผิดพลาดในการเชื่อมต่อเครือข่าย ท่านสามารถกดบันทึกซ้ำเพื่อดำเนินการต่อได้อย่างปลอดภัย'
+      );
+      setIsSubmitting(false);
+    }
+  };
+
+  const retryUncertain = async () => {
+    if (frozenPayloadRef.current) {
+      await executeSubmission(frozenPayloadRef.current);
+    }
+  };
+
   const onSubmit = async (data: FormValues) => {
+    if (isPendingUncertain && frozenPayloadRef.current) {
+      await executeSubmission(frozenPayloadRef.current);
+      return;
+    }
+
     setSubmitError(null);
     setSuccessMessage(null);
 
@@ -241,16 +455,6 @@ export const AssetCorrectionForm: React.FC<AssetCorrectionFormProps> = ({
       return;
     }
 
-    submitSeqRef.current += 1;
-    const currentSubmitSeq = submitSeqRef.current;
-    if (submitAbortRef.current) {
-      submitAbortRef.current.abort();
-    }
-    const controller = new AbortController();
-    submitAbortRef.current = controller;
-
-    setIsSubmitting(true);
-
     const payload = {
       name: isLegacy && (!rawName || rawName.trim().length === 0) ? null : rawName,
       asset_number: rawAssetNumber,
@@ -263,101 +467,7 @@ export const AssetCorrectionForm: React.FC<AssetCorrectionFormProps> = ({
       retry_token: retryTokenRef.current,
     };
 
-    try {
-      const headers: Record<string, string> = {
-        'Content-Type': 'application/json',
-        'x-retry-token': retryTokenRef.current,
-      };
-      if (csrfToken) {
-        headers['x-csrf-token'] = csrfToken;
-      }
-
-      const res = await fetch(`/assets/${asset.id}/correct`, {
-        method: 'POST',
-        headers,
-        credentials: 'include',
-        signal: controller.signal,
-        body: JSON.stringify(payload),
-      });
-
-      if (currentSubmitSeq !== submitSeqRef.current) return;
-
-      if (res.status === 409) {
-        const errJson = await res.json().catch(() => null);
-        if (errJson?.code === 'STALE_BEFORE_CONFLICT') {
-          setSubmitError(
-            'ข้อมูลครุภัณฑ์ถูกแก้ไขโดยผู้อื่นแล้ว กรุณารีเฟรชข้อมูลล่าสุดก่อนดำเนินการต่อ (409 Conflict)'
-          );
-        } else if (
-          errJson?.code === 'DUPLICATE_WARNING' ||
-          errJson?.code === 'DUPLICATE_CANDIDATES_FOUND'
-        ) {
-          setCandidates(errJson.candidates || []);
-          setSubmitError(
-            'พบข้อมูลครุภัณฑ์ใกล้เคียงกันในระบบ หากประสงค์จะบันทึกข้อมูลนี้ กรุณาทำเครื่องหมายยืนยันด้านล่าง'
-          );
-        } else {
-          setSubmitError(errJson?.message || 'เกิดข้อขัดแย้งของข้อมูล (409 Conflict)');
-        }
-        setIsSubmitting(false);
-        return;
-      }
-
-      if (res.status === 400) {
-        const errJson = await res.json().catch(() => null);
-        setSubmitError(errJson?.message || 'ข้อมูลที่ส่งไม่ถูกต้อง (400 Bad Request)');
-        setIsSubmitting(false);
-        return;
-      }
-
-      if (res.status === 403) {
-        setSubmitError('คุณไม่มีสิทธิ์แก้ไขข้อมูลครุภัณฑ์นี้ (403 Forbidden)');
-        setIsSubmitting(false);
-        return;
-      }
-
-      if (!res.ok) {
-        // Transport or server error: KEEP retry token unchanged for safe retry
-        setSubmitError('เกิดข้อผิดพลาดในการบันทึกข้อมูล กรุณากดบันทึกซ้ำเพื่อดำเนินการต่อได้อย่างปลอดภัย');
-        setIsSubmitting(false);
-        return;
-      }
-
-      const result = await res.json();
-      if (currentSubmitSeq !== submitSeqRef.current) return;
-
-      setSuccessMessage('บันทึกการแก้ไขครุภัณฑ์สำเร็จ');
-      // Fresh token for future edits
-      retryTokenRef.current = crypto.randomUUID();
-      setIsSubmitting(false);
-
-      if (result?.asset) {
-        setBaselineExpected({
-          name: result.asset.name,
-          asset_number: result.asset.asset_number,
-          serial_number: result.asset.serial_number,
-        });
-        reset({
-          name: result.asset.name || '',
-          asset_number: result.asset.asset_number || '',
-          serial_number: result.asset.serial_number || '',
-          reason: '',
-          explicit_continuation: false,
-        });
-        onSuccess(result.asset);
-      }
-    } catch (err: unknown) {
-      if (err instanceof DOMException && err.name === 'AbortError') {
-        setIsSubmitting(false);
-        return;
-      }
-      if (currentSubmitSeq !== submitSeqRef.current) return;
-      // Network error: PRESERVE retry token for safe user retry
-      setSubmitError(
-        'เกิดข้อผิดพลาดในการเชื่อมต่อเครือข่าย ท่านสามารถกดบันทึกซ้ำเพื่อดำเนินการต่อได้อย่างปลอดภัย'
-      );
-      setIsSubmitting(false);
-    }
+    await executeSubmission(payload);
   };
 
   return (
@@ -417,9 +527,34 @@ export const AssetCorrectionForm: React.FC<AssetCorrectionFormProps> = ({
             marginBottom: '1rem',
             fontSize: '0.875rem',
             fontWeight: 500,
+            display: 'flex',
+            justifyContent: 'space-between',
+            alignItems: 'center',
           }}
         >
-          {submitError}
+          <span>{submitError}</span>
+          {isPendingUncertain && (
+            <button
+              type="button"
+              id="retry-uncertain-btn"
+              onClick={retryUncertain}
+              disabled={isSubmitting}
+              style={{
+                marginLeft: '1rem',
+                padding: '0.375rem 0.75rem',
+                backgroundColor: '#991b1b',
+                color: '#ffffff',
+                border: 'none',
+                borderRadius: '4px',
+                cursor: isSubmitting ? 'not-allowed' : 'pointer',
+                fontWeight: 600,
+                fontSize: '0.8125rem',
+                whiteSpace: 'nowrap',
+              }}
+            >
+              {isSubmitting ? 'กำลังส่งซ้ำ...' : 'ลองส่งซ้ำ (Retry with same token)'}
+            </button>
+          )}
         </div>
       )}
 
@@ -443,6 +578,7 @@ export const AssetCorrectionForm: React.FC<AssetCorrectionFormProps> = ({
         <input
           id="name"
           type="text"
+          disabled={isSubmitting || isPendingUncertain}
           {...register('name')}
           placeholder={isLegacy ? 'เว้นว่างได้สำหรับข้อมูลตกทอด' : 'ระบุชื่อครุภัณฑ์'}
           style={{
@@ -481,6 +617,7 @@ export const AssetCorrectionForm: React.FC<AssetCorrectionFormProps> = ({
         <input
           id="asset_number"
           type="text"
+          disabled={isSubmitting || isPendingUncertain}
           {...register('asset_number')}
           onChange={(e) => handleIdentifierChange('asset_number', e.target.value)}
           placeholder="เว้นว่างได้หากไม่มี"
@@ -520,6 +657,7 @@ export const AssetCorrectionForm: React.FC<AssetCorrectionFormProps> = ({
         <input
           id="serial_number"
           type="text"
+          disabled={isSubmitting || isPendingUncertain}
           {...register('serial_number')}
           onChange={(e) => handleIdentifierChange('serial_number', e.target.value)}
           placeholder="เว้นว่างได้หากไม่มี"
@@ -545,8 +683,8 @@ export const AssetCorrectionForm: React.FC<AssetCorrectionFormProps> = ({
           <button
             type="button"
             id="check-duplicate-btn"
-            onClick={handleCheckDuplicates}
-            disabled={isCheckingDuplicates}
+            onClick={() => handleCheckDuplicates(0, false)}
+            disabled={isCheckingDuplicates || isSubmitting || isPendingUncertain}
             style={{
               padding: '0.375rem 0.75rem',
               backgroundColor: '#f3f4f6',
@@ -554,7 +692,7 @@ export const AssetCorrectionForm: React.FC<AssetCorrectionFormProps> = ({
               borderRadius: '4px',
               fontSize: '0.8125rem',
               color: '#374151',
-              cursor: isCheckingDuplicates ? 'not-allowed' : 'pointer',
+              cursor: isCheckingDuplicates || isSubmitting || isPendingUncertain ? 'not-allowed' : 'pointer',
             }}
           >
             {isCheckingDuplicates ? 'กำลังตรวจสอบ...' : '🔍 ตรวจสอบข้อมูลซ้ำ'}
@@ -592,7 +730,9 @@ export const AssetCorrectionForm: React.FC<AssetCorrectionFormProps> = ({
             }}
           >
             <span>⚠️</span>
-            <span>คำเตือน: พบครุภัณฑ์ที่มีเลขระบุตัวตนตรงกันในระบบ ({candidates.length} รายการ)</span>
+            <span>
+              คำเตือน: พบครุภัณฑ์ที่มีเลขระบุตัวตนตรงกันในระบบ (แสดง {candidates.length} จากทั้งหมด {totalCandidateCount} รายการ)
+            </span>
           </div>
           <div style={{ maxHeight: '120px', overflowY: 'auto', marginBottom: '0.75rem' }}>
             <table style={{ width: '100%', fontSize: '0.75rem', borderCollapse: 'collapse' }}>
@@ -619,6 +759,29 @@ export const AssetCorrectionForm: React.FC<AssetCorrectionFormProps> = ({
             </table>
           </div>
 
+          {hasMoreCandidates && (
+            <div style={{ marginBottom: '0.75rem' }}>
+              <button
+                type="button"
+                id="load-more-candidates-btn"
+                onClick={() => handleCheckDuplicates(candidateOffset + 10, true)}
+                disabled={isLoadingMoreCandidates}
+                style={{
+                  padding: '0.25rem 0.5rem',
+                  backgroundColor: '#fef3c7',
+                  border: '1px solid #d97706',
+                  borderRadius: '4px',
+                  fontSize: '0.75rem',
+                  color: '#92400e',
+                  cursor: isLoadingMoreCandidates ? 'not-allowed' : 'pointer',
+                  fontWeight: 500,
+                }}
+              >
+                {isLoadingMoreCandidates ? 'กำลังโหลด...' : 'โหลดข้อมูลเพิ่มเติม (Load More)'}
+              </button>
+            </div>
+          )}
+
           <label
             style={{
               display: 'flex',
@@ -626,12 +789,13 @@ export const AssetCorrectionForm: React.FC<AssetCorrectionFormProps> = ({
               gap: '0.5rem',
               fontSize: '0.8125rem',
               color: '#78350f',
-              cursor: 'pointer',
+              cursor: isSubmitting || isPendingUncertain ? 'not-allowed' : 'pointer',
             }}
           >
             <input
               type="checkbox"
               id="explicit_continuation"
+              disabled={isSubmitting || isPendingUncertain}
               {...register('explicit_continuation')}
             />
             <span>ข้าพเจ้ายืนยันที่จะบันทึกการแก้ไขนี้แม้มีข้อมูลใกล้เคียงกัน</span>
@@ -656,6 +820,7 @@ export const AssetCorrectionForm: React.FC<AssetCorrectionFormProps> = ({
         <textarea
           id="reason"
           rows={3}
+          disabled={isSubmitting || isPendingUncertain}
           {...register('reason')}
           placeholder="ระบุเหตุผลในการแก้ไข เช่น แก้ไขเพื่อความถูกต้องตามผลการตรวจนับพัสดุประจำปี"
           style={{
@@ -691,14 +856,18 @@ export const AssetCorrectionForm: React.FC<AssetCorrectionFormProps> = ({
             cursor: isSubmitting ? 'not-allowed' : 'pointer',
           }}
         >
-          {isSubmitting ? 'กำลังบันทึก...' : '💾 บันทึกการแก้ไข'}
+          {isSubmitting
+            ? 'กำลังบันทึก...'
+            : isPendingUncertain
+            ? '💾 ลองส่งซ้ำ (Retry)'
+            : '💾 บันทึกการแก้ไข'}
         </button>
         {onCancel && (
           <button
             type="button"
             id="cancel-correct-btn"
             onClick={onCancel}
-            disabled={isSubmitting}
+            disabled={isSubmitting || isPendingUncertain}
             style={{
               padding: '0.5rem 1rem',
               backgroundColor: '#f3f4f6',
@@ -706,7 +875,7 @@ export const AssetCorrectionForm: React.FC<AssetCorrectionFormProps> = ({
               border: '1px solid #d1d5db',
               borderRadius: '6px',
               fontSize: '0.875rem',
-              cursor: isSubmitting ? 'not-allowed' : 'pointer',
+              cursor: isSubmitting || isPendingUncertain ? 'not-allowed' : 'pointer',
             }}
           >
             ยกเลิก

@@ -219,7 +219,7 @@ export class AssetService {
       changes: {
         asset_number: input.asset_number !== undefined ? (input.asset_number ?? null) : undefined,
         serial_number: input.serial_number !== undefined ? (input.serial_number ?? null) : undefined,
-        name: input.name !== undefined ? (input.name?.trim() || null) : undefined,
+        name: input.name !== undefined ? (input.name !== null && input.name !== '' ? input.name : null) : undefined,
       },
       expected_before: {
         asset_number: input.expected_asset_number ?? null,
@@ -688,15 +688,19 @@ export class AssetService {
 
     const explicitContinuation = input.explicit_continuation === true;
 
-    const retryToken =
-      options?.retryToken !== undefined &&
-      options.retryToken !== null &&
-      options.retryToken.trim() !== ''
-        ? options.retryToken.trim()
-        : null;
+    const rawRetryToken = options?.retryToken;
+    if (
+      rawRetryToken === undefined ||
+      rawRetryToken === null ||
+      typeof rawRetryToken !== 'string' ||
+      rawRetryToken.trim() === ''
+    ) {
+      throw new ValidationError('Correction retry token is required and must be a nonblank string');
+    }
+    const retryToken = rawRetryToken.trim();
 
     const operation = `asset:correct:${assetId.trim()}`;
-    const fingerprint = retryToken ? this.computeCorrectionFingerprint(assetId, input) : null;
+    const fingerprint = this.computeCorrectionFingerprint(assetId, input);
 
     const pool = this.db;
     const client = typeof pool.connect === 'function' ? await pool.connect() : pool;
@@ -1033,7 +1037,7 @@ export class AssetService {
     const shouldRelease = typeof pool.connect === 'function';
 
     try {
-      await client.query('BEGIN');
+      await client.query('BEGIN TRANSACTION ISOLATION LEVEL REPEATABLE READ READ ONLY');
 
       const assetRes = await client.query(
         `SELECT id, asset_number, serial_number, name, category, organization_unit,
