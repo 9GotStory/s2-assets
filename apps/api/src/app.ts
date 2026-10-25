@@ -3,7 +3,7 @@ import Fastify, {
   type FastifyServerOptions,
 } from 'fastify';
 import pg from 'pg';
-import { loadConfig, type Config } from './config/env.ts';
+import { validatePublicAppOrigin, type Config } from './config/env.ts';
 import { createLogger, getLoggerOptions, type AppLoggerOptions } from './plugins/logger.ts';
 import { errorHandler, errorHandlerPlugin } from './plugins/error-handler.ts';
 import {
@@ -30,6 +30,7 @@ export interface AppOptions {
   logger?: boolean | AppLoggerOptions | any;
   sessionTtlMs?: number;
   plugin?: (app: FastifyInstance) => Promise<void> | void;
+  publicAppOrigin?: string;
 }
 
 export function redactSecrets(message: string): string {
@@ -55,6 +56,12 @@ export async function buildApp(options: AppOptions = {}): Promise<FastifyInstanc
   const nodeEnv = options.config?.NODE_ENV ?? process.env.NODE_ENV ?? 'development';
   const isProduction = nodeEnv === 'production';
   const secure = options.secure ?? (isProduction ? true : false);
+
+  const rawPublicAppOrigin =
+    options.publicAppOrigin ??
+    options.config?.PUBLIC_APP_ORIGIN ??
+    process.env.PUBLIC_APP_ORIGIN;
+  const publicAppOrigin = validatePublicAppOrigin(rawPublicAppOrigin, nodeEnv);
 
   let app: FastifyInstance | null = null;
   let ownedPool: pg.Pool | null = null;
@@ -178,6 +185,10 @@ export async function buildApp(options: AppOptions = {}): Promise<FastifyInstanc
       app.decorate('assetService', assetService);
     }
 
+    if (!app.hasDecorator('publicAppOrigin')) {
+      app.decorate('publicAppOrigin', publicAppOrigin);
+    }
+
     // 7. Register Auth plugin in effective application scope
     // Note: allowTestCsrfRoute is explicitly false to prevent test route exposure
     const authOpts: AuthPluginOptions = {
@@ -215,6 +226,7 @@ export async function buildApp(options: AppOptions = {}): Promise<FastifyInstanc
       assetService,
       capabilityService,
       db: dbClient,
+      publicAppOrigin,
     });
 
     // Health and readiness routes mounted at root

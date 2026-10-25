@@ -11,6 +11,7 @@ import { buildApp } from '../../../api/src/app.ts';
 import { UserService } from '../../../api/src/services/user.service.ts';
 import { SessionService } from '../../../api/src/services/session.service.ts';
 import { AssetService } from '../../../api/src/services/asset.service.ts';
+import jsQR from 'jsqr';
 
 const { Pool } = pg;
 
@@ -139,6 +140,7 @@ test.describe.serial('Asset Registry Real SPA -> Composed API -> PostgreSQL Jour
     const address = viteServer.httpServer?.address();
     targetBaseUrl =
       typeof address === 'object' && address ? `http://localhost:${address.port}` : 'http://localhost:5173';
+    (fastifyApp as any).publicAppOrigin = targetBaseUrl;
   });
 
   test.afterAll(async () => {
@@ -2556,5 +2558,363 @@ test.describe.serial('Asset Registry Real SPA -> Composed API -> PostgreSQL Jour
     await expect(page.getByRole('heading', { level: 1, name: 'เข้าสู่ระบบ' })).not.toBeVisible();
 
     await page.unroute('**/auth/session-check');
+  });
+
+  test('T8 Seam B: Explicit QR generation, canvas extraction, jsQR decoding, single-page print layout, T2 correction re-fetch, pre-print revocation suppression, and zero business mutations', async ({
+    page,
+    context,
+  }) => {
+    // 1. Initial Ledger & Snapshot Helper
+    const countQuery = async () => {
+      const assetsCount = await pool.query('SELECT COUNT(*) FROM assets');
+      const historyCount = await pool.query('SELECT COUNT(*) FROM asset_history');
+      const retryCount = await pool.query('SELECT COUNT(*) FROM registration_retry_tokens');
+      return {
+        assets: Number(assetsCount.rows[0].count),
+        history: Number(historyCount.rows[0].count),
+        retry: Number(retryCount.rows[0].count),
+      };
+    };
+
+    const getAssetSnapshot = async (id: string) => {
+      const res = await pool.query('SELECT * FROM assets WHERE id = $1', [id]);
+      return res.rows[0];
+    };
+
+    // 2. Seed a test asset in the database with long Thai name and missing serial_number (NULL)
+    const insertRes = await pool.query(
+      `INSERT INTO assets (
+        name, asset_number, serial_number, registered_by, category, organization_unit
+      ) VALUES (
+        'จอมอนิเตอร์ Dell 27 นิ้ว UltraSharp (พัสดุและงานเทคนิคกลาง)', 'MON-DELL-QR-888', NULL, $1, NULL, NULL
+      ) RETURNING id;`,
+      [custodianUserId]
+    );
+    const qrAssetId = insertRes.rows[0].id;
+
+    // 3. Login as Custodian and navigate to AssetDetail
+    await loginAs(page, context, custodianUserId);
+    await page.goto(`${targetBaseUrl}/assets/${qrAssetId}`);
+
+    await expect(page.locator('#asset-detail-heading')).toBeVisible();
+    await expect(page.locator('#asset-detail-heading')).toContainText(
+      'จอมอนิเตอร์ Dell 27 นิ้ว UltraSharp (พัสดุและงานเทคนิคกลาง)'
+    );
+
+    // 4. Assert explicit generation requirement (card is NOT fetched automatically on mount)
+    await expect(page.locator('[data-testid="asset-qr-panel"]')).toBeVisible();
+    await expect(page.locator('[data-testid="generate-qr-btn"]')).toBeVisible();
+    await expect(page.locator('[data-testid="asset-qr-label-card"]')).toBeHidden();
+
+    // Click explicit generate action
+    await page.locator('[data-testid="generate-qr-btn"]').click();
+    await expect(page.locator('[data-testid="asset-qr-label-card"]')).toBeVisible();
+
+    // Assert truthful identifiers: long Thai text, exact UUID, and missing identifier displays 'ไม่ระบุในทะเบียน' (never '-')
+    await expect(page.locator('[data-testid="asset-qr-name"]')).toContainText(
+      'จอมอนิเตอร์ Dell 27 นิ้ว UltraSharp (พัสดุและงานเทคนิคกลาง)'
+    );
+    await expect(page.locator('[data-testid="asset-qr-number"]')).toContainText(
+      'MON-DELL-QR-888'
+    );
+    await expect(page.locator('[data-testid="asset-qr-serial"]')).toContainText(
+      'ไม่ระบุในทะเบียน'
+    );
+    await expect(page.locator('[data-testid="asset-qr-uuid"]')).toContainText(qrAssetId);
+    await expect(page.locator('[data-testid="asset-qr-locator"]')).toContainText(
+      `${targetBaseUrl}/assets/${qrAssetId}`
+    );
+
+    // 5. Extract SVG pixel data from browser DOM onto canvas and decode with jsQR
+    await expect(page.locator('[data-testid="asset-qr-svg"]')).toBeVisible();
+
+    const qrPixels = await page.evaluate(async () => {
+      const svg = document.querySelector('[data-testid="asset-qr-code-wrapper"] svg');
+      if (!svg) return null;
+      const svgXml = new XMLSerializer().serializeToString(svg);
+      const svgDataUrl = 'data:image/svg+xml;charset=utf-8,' + encodeURIComponent(svgXml);
+      const img = new Image();
+      await new Promise((resolve, reject) => {
+        img.onload = resolve;
+        img.onerror = reject;
+        img.src = svgDataUrl;
+      });
+      const canvas = document.createElement('canvas');
+      canvas.width = img.width || 128;
+      canvas.height = img.height || 128;
+      const ctx = canvas.getContext('2d');
+      if (!ctx) return null;
+      ctx.fillStyle = '#ffffff';
+      ctx.fillRect(0, 0, canvas.width, canvas.height);
+      ctx.drawImage(img, 0, 0);
+      const imageData = ctx.getImageData(0, 0, canvas.width, canvas.height);
+      return {
+        width: canvas.width,
+        height: canvas.height,
+        data: Array.from(imageData.data),
+      };
+    });
+
+    expect(qrPixels).not.toBeNull();
+    const uint8Clamped = new Uint8ClampedArray(qrPixels!.data);
+    const decoded = jsQR(uint8Clamped, qrPixels!.width, qrPixels!.height);
+
+    expect(decoded).not.toBeNull();
+    expect(decoded?.data).toBe(`${targetBaseUrl}/assets/${qrAssetId}`);
+
+    // 6. Visual Artifact Capture: Take screenshot of the rendered printable QR card
+    const screenshotBuffer = await page.locator('[data-testid="asset-qr-label-card"]').screenshot();
+    expect(screenshotBuffer).toBeDefined();
+    expect(screenshotBuffer.byteLength).toBeGreaterThan(1000);
+
+    // 7. Minimal single-label print view validation (scoped under body.t8-print-active)
+    await page.evaluate(() => document.body.classList.add('t8-print-active'));
+    await page.emulateMedia({ media: 'print' });
+    await expect(page.locator('[data-testid="asset-qr-label-card"]')).toBeVisible();
+    await expect(page.locator('[data-testid="print-qr-label-btn"]')).toBeHidden();
+    await expect(page.locator('[data-testid="generate-qr-btn"]')).toBeHidden();
+    await expect(page.locator('[data-testid="asset-qr-locator"]')).toBeHidden();
+    await expect(page.locator('#nav-dashboard-link')).toBeHidden();
+
+    // Verify print layout gives details column usable width and UUID fits on single line
+    const detailsBox = await page.locator('.asset-qr-details').boundingBox();
+    expect(detailsBox).not.toBeNull();
+    expect(detailsBox!.width).toBeGreaterThan(180);
+
+    const uuidBox = await page.locator('[data-testid="asset-qr-uuid"] .mono').boundingBox();
+    expect(uuidBox).not.toBeNull();
+    expect(uuidBox!.height).toBeLessThan(25); // Unbroken single line height
+
+    // Save and verify actual A4 PDF generates EXACTLY 1 page (no blank 2nd page)
+    const pdfBuffer = await page.pdf({ format: 'A4' });
+    expect(pdfBuffer).toBeDefined();
+    expect(pdfBuffer.byteLength).toBeGreaterThan(1000);
+    const pdfStr = pdfBuffer.toString('latin1');
+    const pageMatches = pdfStr.match(/\/Type\s*\/Page[^s]/g);
+    const pageCount = pageMatches ? pageMatches.length : 0;
+    expect(pageCount).toBe(1);
+
+    await page.emulateMedia({ media: 'screen' });
+    await page.evaluate(() => document.body.classList.remove('t8-print-active'));
+
+    // 8. Test authoritative pre-print fetch and window.print invocation
+    await page.evaluate(() => {
+      (window as any).__printed = false;
+      window.print = () => {
+        (window as any).__printed = true;
+      };
+    });
+
+    await page.locator('[data-testid="print-qr-label-btn"]').click();
+    await expect.poll(() => page.evaluate(() => (window as any).__printed)).toBe(true);
+
+    // 9. Real T2 Metadata Correction Mutation & Retirement of Older Pending Pre-Print Response:
+    // User clicks print with old facts; hold the pre-print fetch in route intercept
+    await page.evaluate(() => {
+      (window as any).__printNames = [];
+      (window as any).__qrSettled = false;
+      window.print = () => {
+        (window as any).__printNames.push(
+          document.querySelector('[data-testid="asset-qr-name"]')?.textContent
+        );
+      };
+      const originalFetch = window.fetch.bind(window);
+      window.fetch = async (...args) => {
+        try {
+          return await originalFetch(...args);
+        } finally {
+          if (String(args[0]).endsWith('/qr-label')) {
+            (window as any).__qrSettled = true;
+          }
+        }
+      };
+    });
+
+    let startPrePrint!: () => void;
+    let releasePrePrint!: () => void;
+    let completePrePrint!: () => void;
+    const prePrintStarted = new Promise<void>((r) => (startPrePrint = r));
+    const prePrintReleased = new Promise<void>((r) => (releasePrePrint = r));
+    const prePrintCompleted = new Promise<void>((r) => (completePrePrint = r));
+
+    await page.route(`**/assets/${qrAssetId}/qr-label`, async (route) => {
+      const response = await route.fetch();
+      startPrePrint();
+      await prePrintReleased;
+      await route.fulfill({ response }).catch(() => {});
+      completePrePrint();
+    });
+
+    try {
+      // Trigger pre-print fetch and wait until it is in-flight
+      await page.locator('[data-testid="print-qr-label-btn"]').click();
+      await prePrintStarted;
+
+      // Perform a real T2 correction on the asset while the pre-print response is held
+      await expect(page.locator('#asset-correction-form')).toBeVisible();
+      await page.locator('#asset-correction-form input#name').fill('จอมอนิเตอร์ Dell 27 นิ้ว UltraSharp (แก้ไข)');
+      await page.locator('#asset-correction-form input#asset_number').fill('MON-DELL-QR-888-CORRECTED');
+      await page.locator('#asset-correction-form input#serial_number').fill('SN-DELL-QR-888-CORRECTED');
+      await page.locator('#asset-correction-form textarea#reason').fill('แก้ไขข้อมูลตามรายงานตรวจนับพัสดุ');
+      await page.locator('#asset-correction-form button[type="submit"]').click();
+
+      await expect(page.locator('[data-testid="correction-success-message"]')).toBeVisible();
+      await expect(page.locator('#asset-detail-heading')).toContainText('จอมอนิเตอร์ Dell 27 นิ้ว UltraSharp (แก้ไข)');
+
+      // Release the held pre-print response that carried old facts
+      releasePrePrint();
+      await prePrintCompleted;
+      await expect.poll(() => page.evaluate(() => (window as any).__qrSettled)).toBe(true);
+      await page.evaluate(() => new Promise<void>((r) => requestAnimationFrame(() => requestAnimationFrame(() => r()))));
+
+      // Obsolete pre-print response must NOT print old facts or restore card
+      const printNames = await page.evaluate(() => (window as any).__printNames);
+      expect(printNames, 'The old QR response must not print after an acknowledged correction').toEqual([]);
+      await expect(page.locator('[data-testid="asset-qr-label-card"]')).toBeHidden();
+    } finally {
+      releasePrePrint();
+      await page.unroute(`**/assets/${qrAssetId}/qr-label`);
+    }
+
+    // Re-generate QR label; assert fresh facts are committed to the DOM
+    await page.locator('[data-testid="generate-qr-btn"]').click();
+    await expect(page.locator('[data-testid="asset-qr-label-card"]')).toBeVisible();
+
+    await expect(page.locator('[data-testid="asset-qr-name"]')).toContainText(
+      'จอมอนิเตอร์ Dell 27 นิ้ว UltraSharp (แก้ไข)'
+    );
+    await expect(page.locator('[data-testid="asset-qr-number"]')).toContainText(
+      'MON-DELL-QR-888-CORRECTED'
+    );
+    await expect(page.locator('[data-testid="asset-qr-serial"]')).toContainText(
+      'SN-DELL-QR-888-CORRECTED'
+    );
+    // Stable UUID and locator URL remain invariant
+    await expect(page.locator('[data-testid="asset-qr-uuid"]')).toContainText(qrAssetId);
+    await expect(page.locator('[data-testid="asset-qr-locator"]')).toContainText(
+      `${targetBaseUrl}/assets/${qrAssetId}`
+    );
+
+    // 10. Follow the decoded QR locator URL and verify destination reflects corrected metadata
+    await page.goto(decoded!.data);
+    await expect(page.locator('#asset-detail-heading')).toBeVisible();
+    await expect(page.locator('#asset-detail-heading')).toContainText(
+      'จอมอนิเตอร์ Dell 27 นิ้ว UltraSharp (แก้ไข)'
+    );
+    expect(page.url()).toBe(`${targetBaseUrl}/assets/${qrAssetId}`);
+
+    // 11. Access Control Enforcement on locator URL
+    // A. Unauthenticated access redirects to /login
+    const unauthContext = await context.browser()!.newContext();
+    const unauthPage = await unauthContext.newPage();
+    await unauthPage.goto(`${targetBaseUrl}/assets/${qrAssetId}`);
+    await unauthPage.waitForURL(`${targetBaseUrl}/login`);
+    await expect(unauthPage.getByRole('heading', { level: 1, name: 'เข้าสู่ระบบ' })).toBeVisible();
+    await unauthContext.close();
+
+    // B. Maintainer role (lacks asset:view) is denied with boundary error
+    const maintainerContext = await context.browser()!.newContext();
+    const maintainerPage = await maintainerContext.newPage();
+    await loginAs(maintainerPage, maintainerContext, maintainerUserId);
+    await maintainerPage.goto(`${targetBaseUrl}/assets/${qrAssetId}`);
+    await expect(maintainerPage.locator('#detail-boundary-error')).toBeVisible();
+    await expect(maintainerPage.locator('#detail-boundary-error')).toContainText(
+      'คุณไม่มีสิทธิ์เข้าถึงข้อมูลครุภัณฑ์นี้ (403 Forbidden)'
+    );
+    await maintainerContext.close();
+
+    // 12. Test pre-print revocation suppression: genuine grant loss on 403 suppresses protected detail & QR
+    await page.locator('[data-testid="generate-qr-btn"]').click();
+    await expect(page.locator('[data-testid="asset-qr-label-card"]')).toBeVisible();
+
+    await page.evaluate(() => {
+      (window as any).__prints = 0;
+      window.print = () => {
+        (window as any).__prints++;
+      };
+    });
+
+    // Revoke user role in PostgreSQL to test genuine grant loss
+    await pool.query('DELETE FROM user_roles WHERE user_id = $1', [custodianUserId]);
+    try {
+      const deniedResponse = page.waitForResponse(
+        (r) => r.url().includes(`/assets/${qrAssetId}/qr-label`) && r.status() === 403
+      );
+      await page.locator('[data-testid="print-qr-label-btn"]').click();
+      await deniedResponse;
+
+      // Verify window.print is NOT called, and protected card & detail are suppressed
+      expect(await page.evaluate(() => (window as any).__prints)).toBe(0);
+      await expect(page.locator('[data-testid="asset-qr-label-card"]')).toBeHidden();
+      await expect(
+        page.locator('#asset-detail-heading'),
+        'A genuine asset:view denial must retire protected detail as well as the QR'
+      ).toBeHidden();
+      await expect(page.getByRole('alert')).toBeVisible();
+      await expect(page.getByRole('alert')).toContainText('403 Forbidden');
+    } finally {
+      // Restore user role for subsequent checks
+      await pool.query('INSERT INTO user_roles (user_id, role_id) VALUES ($1, $2)', [
+        custodianUserId,
+        'ASSET_CUSTODIAN',
+      ]);
+    }
+
+    // 13. Test error & reauthorization suppression on 503
+    // Navigate back to restore fresh asset view
+    await page.goto(`${targetBaseUrl}/assets/${qrAssetId}`);
+    await expect(page.locator('#asset-detail-heading')).toBeVisible();
+
+    await page.route(`**/assets/${qrAssetId}/qr-label`, async (route) => {
+      await route.fulfill({
+        status: 503,
+        contentType: 'application/json',
+        body: JSON.stringify({
+          statusCode: 503,
+          code: 'SERVICE_UNAVAILABLE',
+          message: 'Public application origin is not configured',
+        }),
+      });
+    });
+
+    await page.evaluate(() => {
+      (window as any).__printed = false;
+    });
+
+    // Attempt generate under 503
+    await page.locator('[data-testid="generate-qr-btn"]').click();
+    await expect(page.locator('[data-testid="asset-qr-error"]')).toBeVisible();
+    await expect(page.locator('[data-testid="asset-qr-error"]')).toContainText(
+      '503 Service Unavailable'
+    );
+
+    await page.unroute(`**/assets/${qrAssetId}/qr-label`);
+
+    // 14. Database Zero Business Mutation Invariant:
+    // Capture post-correction baseline for row counts, persistent field values, and update timestamps
+    const baselineCounts = await countQuery();
+    const baselineAsset = await getAssetSnapshot(qrAssetId);
+
+    // Perform successful QR generation and print invocation
+    await page.locator('[data-testid="generate-qr-btn"]').click();
+    await expect(page.locator('[data-testid="asset-qr-label-card"]')).toBeVisible();
+
+    await page.evaluate(() => {
+      (window as any).__printed = false;
+      window.print = () => {
+        (window as any).__printed = true;
+      };
+    });
+    await page.locator('[data-testid="print-qr-label-btn"]').click();
+    await expect.poll(() => page.evaluate(() => (window as any).__printed)).toBe(true);
+
+    // Verify row counts and persistent field values/timestamps in assets table are strictly unchanged
+    const finalCounts = await countQuery();
+    const finalAsset = await getAssetSnapshot(qrAssetId);
+
+    expect(finalCounts.assets).toBe(baselineCounts.assets);
+    expect(finalCounts.history).toBe(baselineCounts.history);
+    expect(finalCounts.retry).toBe(baselineCounts.retry);
+    expect(finalAsset).toEqual(baselineAsset);
   });
 });

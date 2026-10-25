@@ -181,6 +181,20 @@ Fedora Host
 
 Quadlet เป็น production service-management baseline ไม่ใช่ requirement สำหรับ day-to-day development
 
+### Configuration: Public Application Origin (`PUBLIC_APP_ORIGIN`)
+
+For QR code generation and minimal single-label printing (Ticket #29, T8):
+
+- `PUBLIC_APP_ORIGIN`: Base URL (protocol + host[:port]) of the public web application used to construct canonical QR locator URLs (`${PUBLIC_APP_ORIGIN}/assets/:id`).
+- **Validation rules**:
+  - Maximum 512 UTF-8 bytes.
+  - Must not contain whitespace, control characters, userinfo, query parameters, fragments, or paths (trailing slashes are stripped automatically).
+  - Must use `https:` in production environments (`NODE_ENV=production`).
+  - In non-production (`development`, `test`), `http:` is permitted only for loopback addresses (`localhost`, `127.0.0.1`, `[::1]`). Wildcard hosts (`0.0.0.0`, `[::]`, `*`) are rejected.
+  - If invalid, application startup/composition fails closed without echoing raw input in error logs.
+- **Runtime failure behavior**:
+  - If `PUBLIC_APP_ORIGIN` is unset or omitted, the application starts normally, but requests to `GET /assets/:id/qr-label` will fail closed with HTTP 503 `SERVICE_UNAVAILABLE` and `Cache-Control: no-store`.
+
 ---
 
 ## 6. Delivery order

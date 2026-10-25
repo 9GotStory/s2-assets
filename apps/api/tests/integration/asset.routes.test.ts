@@ -1862,4 +1862,263 @@ describe('Asset Routes & Security Matrix Integration Tests (Seam A)', () => {
       }
     });
   });
+
+  describe('GET /assets/:id/qr-label Integration & Security Tests (Seam A - T8)', () => {
+    let qrApp: FastifyInstance;
+    let testAssetId: string;
+
+    beforeAll(async () => {
+      qrApp = await buildApp({
+        db: pool,
+        cookieSecret: 'test-secret-at-least-32-chars-long-12345',
+        publicAppOrigin: 'http://localhost:3000',
+        logger: false,
+      });
+    });
+
+    beforeEach(async () => {
+      // Insert an asset for testing in each test (since outer beforeEach clears assets)
+      const insertRes = await pool.query(
+        `INSERT INTO assets (
+          name, asset_number, serial_number, registered_by, category, organization_unit
+        ) VALUES (
+          'Test QR Asset', 'QR-ASSET-001', 'SN-QR-999', $1, NULL, NULL
+        ) RETURNING id;`,
+        [custodianUser.id]
+      );
+      testAssetId = insertRes.rows[0].id;
+    });
+
+    afterAll(async () => {
+      if (qrApp) {
+        await qrApp.close();
+      }
+    });
+
+    it('returns HTTP 503 SERVICE_UNAVAILABLE with Cache-Control: no-store when PUBLIC_APP_ORIGIN is not configured', async () => {
+      // Default app does NOT have publicAppOrigin configured
+      const res = await app.inject({
+        method: 'GET',
+        url: `/assets/${testAssetId}/qr-label`,
+        headers: { cookie: custodianUser.cookie },
+      });
+
+      expect(res.statusCode).toBe(503);
+      expect(res.headers['cache-control']).toBe('no-store');
+      const body = JSON.parse(res.body);
+      expect(body.code).toBe('SERVICE_UNAVAILABLE');
+      expect(body.error).toBe('SERVICE_UNAVAILABLE');
+      expect(body.message).toBe('Public application origin is not configured');
+    });
+
+    it('enforces RBAC matrix under asset:view capability (Admin, Custodian, Read-only allowed; Maintainer, unauthenticated, inactive denied)', async () => {
+      // 1. Custodian (has asset:view) -> 200 OK
+      const resCustodian = await qrApp.inject({
+        method: 'GET',
+        url: `/assets/${testAssetId}/qr-label`,
+        headers: { cookie: custodianUser.cookie },
+      });
+      expect(resCustodian.statusCode).toBe(200);
+
+      // 2. Administrator (has asset:view) -> 200 OK
+      const resAdmin = await qrApp.inject({
+        method: 'GET',
+        url: `/assets/${testAssetId}/qr-label`,
+        headers: { cookie: adminUser.cookie },
+      });
+      expect(resAdmin.statusCode).toBe(200);
+
+      // 3. Read-only user (has asset:view) -> 200 OK
+      const resReadOnly = await qrApp.inject({
+        method: 'GET',
+        url: `/assets/${testAssetId}/qr-label`,
+        headers: { cookie: readonlyUser.cookie },
+      });
+      expect(resReadOnly.statusCode).toBe(200);
+
+      // 4. Maintainer alone (lacks asset:view) -> 403 Forbidden
+      const resMaintainer = await qrApp.inject({
+        method: 'GET',
+        url: `/assets/${testAssetId}/qr-label`,
+        headers: { cookie: maintainerUser.cookie },
+      });
+      expect(resMaintainer.statusCode).toBe(403);
+      expect(resMaintainer.headers['cache-control']).toBe('no-store');
+
+      // 5. Unauthenticated -> 401 Unauthorized
+      const resUnauth = await qrApp.inject({
+        method: 'GET',
+        url: `/assets/${testAssetId}/qr-label`,
+      });
+      expect(resUnauth.statusCode).toBe(401);
+      expect(resUnauth.headers['cache-control']).toBe('no-store');
+
+      // 6. Inactive user -> 403 Forbidden
+      const resInactive = await qrApp.inject({
+        method: 'GET',
+        url: `/assets/${testAssetId}/qr-label`,
+        headers: { cookie: inactiveUser.cookie },
+      });
+      expect([401, 403]).toContain(resInactive.statusCode);
+      expect(resInactive.headers['cache-control']).toBe('no-store');
+    });
+
+    it('returns 200 with strictly shaped payload matching { id, locator, name, asset_number, serial_number }', async () => {
+      const res = await qrApp.inject({
+        method: 'GET',
+        url: `/assets/${testAssetId}/qr-label`,
+        headers: { cookie: readonlyUser.cookie },
+      });
+
+      expect(res.statusCode).toBe(200);
+      expect(res.headers['cache-control']).toBe('no-store');
+      const body = JSON.parse(res.body);
+      expect(body).toEqual({
+        id: testAssetId,
+        locator: `http://localhost:3000/assets/${testAssetId}`,
+        name: 'Test QR Asset',
+        asset_number: 'QR-ASSET-001',
+        serial_number: 'SN-QR-999',
+      });
+      expect(Object.keys(body).sort()).toEqual([
+        'asset_number',
+        'id',
+        'locator',
+        'name',
+        'serial_number',
+      ]);
+    });
+
+    it('rejects invalid UUID formats with 400 INVALID_ID and Cache-Control: no-store', async () => {
+      const res = await qrApp.inject({
+        method: 'GET',
+        url: '/assets/invalid-uuid-string/qr-label',
+        headers: { cookie: custodianUser.cookie },
+      });
+
+      expect(res.statusCode).toBe(400);
+      expect(res.headers['cache-control']).toBe('no-store');
+      const body = JSON.parse(res.body);
+      expect(body.code).toBe('INVALID_ID');
+      expect(body.error).toBe('INVALID_ID');
+      expect(body.message).toBe('Asset ID must be a valid UUID string');
+    });
+
+    it('returns 404 NOT_FOUND and Cache-Control: no-store when asset does not exist', async () => {
+      const nonexistentId = '00000000-0000-4000-a000-000000000999';
+      const res = await qrApp.inject({
+        method: 'GET',
+        url: `/assets/${nonexistentId}/qr-label`,
+        headers: { cookie: custodianUser.cookie },
+      });
+
+      expect(res.statusCode).toBe(404);
+      expect(res.headers['cache-control']).toBe('no-store');
+      const body = JSON.parse(res.body);
+      expect(body.code).toBe('NOT_FOUND');
+      expect(body.error).toBe('NOT_FOUND');
+      expect(body.message).toBe('Asset not found');
+    });
+
+    it('remains strictly immune to hostile Host, Forwarded, and X-Forwarded headers', async () => {
+      const res = await qrApp.inject({
+        method: 'GET',
+        url: `/assets/${testAssetId}/qr-label`,
+        headers: {
+          cookie: custodianUser.cookie,
+          host: 'evil-attacker.example.com',
+          'x-forwarded-host': 'evil-attacker.example.com',
+          'x-forwarded-proto': 'https',
+          forwarded: 'host=evil-attacker.example.com;proto=https',
+        },
+      });
+
+      expect(res.statusCode).toBe(200);
+      const body = JSON.parse(res.body);
+      expect(body.locator).toBe(`http://localhost:3000/assets/${testAssetId}`);
+      expect(body.locator).not.toContain('evil-attacker');
+    });
+
+    it('enforces Cache-Control: no-store on simulated 500 error', async () => {
+      const originalGetAsset = (qrApp as any).assetService.getAssetById;
+      try {
+        (qrApp as any).assetService.getAssetById = async () => {
+          throw new Error('Simulated database breakdown during qr-label');
+        };
+
+        const res500 = await qrApp.inject({
+          method: 'GET',
+          url: `/assets/${testAssetId}/qr-label`,
+          headers: { cookie: custodianUser.cookie },
+        });
+
+        expect(res500.statusCode).toBe(500);
+        expect(res500.headers['cache-control']).toBe('no-store');
+      } finally {
+        (qrApp as any).assetService.getAssetById = originalGetAsset;
+      }
+    });
+
+    it('rejects padded or whitespace UUIDs with 400 INVALID_ID while accepting uppercase UUIDs and returning canonical lowercase', async () => {
+      // 1. Padded/whitespace UUID with %20 -> 400 INVALID_ID
+      const paddedRes = await qrApp.inject({
+        method: 'GET',
+        url: `/assets/%20${testAssetId}%20/qr-label`,
+        headers: { cookie: custodianUser.cookie },
+      });
+      expect(paddedRes.statusCode).toBe(400);
+      expect(paddedRes.headers['cache-control']).toBe('no-store');
+      const paddedBody = JSON.parse(paddedRes.body);
+      expect(paddedBody.code).toBe('INVALID_ID');
+
+      // 2. Uppercase UUID -> 200 OK with canonical lowercase id in response
+      const uppercaseId = testAssetId.toUpperCase();
+      const upperRes = await qrApp.inject({
+        method: 'GET',
+        url: `/assets/${uppercaseId}/qr-label`,
+        headers: { cookie: custodianUser.cookie },
+      });
+      expect(upperRes.statusCode).toBe(200);
+      expect(upperRes.headers['cache-control']).toBe('no-store');
+      const upperBody = JSON.parse(upperRes.body);
+      expect(upperBody.id).toBe(testAssetId.toLowerCase());
+      expect(upperBody.locator).toBe(`http://localhost:3000/assets/${testAssetId.toLowerCase()}`);
+    });
+
+    it('performs zero mutations in assets, asset_history, and retry tokens (row counts and asset field/timestamp immutability)', async () => {
+      const getAssetSnapshot = async () => {
+        const res = await pool.query('SELECT * FROM assets WHERE id = $1', [testAssetId]);
+        return res.rows[0];
+      };
+
+      const countQuery = async () => {
+        const assetsCount = await pool.query('SELECT COUNT(*) FROM assets');
+        const historyCount = await pool.query('SELECT COUNT(*) FROM asset_history');
+        const retryCount = await pool.query('SELECT COUNT(*) FROM registration_retry_tokens');
+        return {
+          assets: Number(assetsCount.rows[0].count),
+          history: Number(historyCount.rows[0].count),
+          retry: Number(retryCount.rows[0].count),
+        };
+      };
+
+      const beforeCounts = await countQuery();
+      const beforeSnapshot = await getAssetSnapshot();
+
+      const res = await qrApp.inject({
+        method: 'GET',
+        url: `/assets/${testAssetId}/qr-label`,
+        headers: { cookie: custodianUser.cookie },
+      });
+      expect(res.statusCode).toBe(200);
+
+      const afterCounts = await countQuery();
+      const afterSnapshot = await getAssetSnapshot();
+
+      expect(afterCounts.assets).toBe(beforeCounts.assets);
+      expect(afterCounts.history).toBe(beforeCounts.history);
+      expect(afterCounts.retry).toBe(beforeCounts.retry);
+      expect(afterSnapshot).toEqual(beforeSnapshot);
+    });
+  });
 });
