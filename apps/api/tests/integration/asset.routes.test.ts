@@ -890,4 +890,457 @@ describe('Asset Routes & Security Matrix Integration Tests (Seam A)', () => {
       expect(statusCodes).toEqual([201, 409]);
     });
   });
+
+  describe('GET /assets/search Integration & Security Tests (Seam A - T3)', () => {
+    let testAssetId: string;
+
+    beforeEach(async () => {
+      // Seed test assets for search tests
+      const res = await app.inject({
+        method: 'POST',
+        url: '/assets',
+        headers: {
+          cookie: custodianUser.cookie,
+          'x-csrf-token': custodianUser.csrf,
+        },
+        payload: {
+          name: 'Dell UltraSharp Monitor 27"',
+          asset_number: 'MON-DELL-001',
+          serial_number: 'SN-DELL-998877',
+        },
+      });
+      expect(res.statusCode).toBe(201);
+      testAssetId = JSON.parse(res.body).asset.id;
+
+      await app.inject({
+        method: 'POST',
+        url: '/assets',
+        headers: {
+          cookie: custodianUser.cookie,
+          'x-csrf-token': custodianUser.csrf,
+        },
+        payload: {
+          name: 'Special %_\\ Inventory Item',
+          asset_number: 'SPEC-INV-001',
+          serial_number: 'SN-SPEC-001',
+        },
+      });
+    });
+
+    it('allows Asset Custodian, Administrator, and Read-Only users to perform search (200 OK)', async () => {
+      for (const user of [custodianUser, adminUser, readonlyUser]) {
+        const res = await app.inject({
+          method: 'GET',
+          url: '/assets/search?field=asset_number&value=MON-DELL-001',
+          headers: { cookie: user.cookie },
+        });
+        expect(res.statusCode).toBe(200);
+        expect(res.headers['cache-control']).toBe('no-store');
+
+        const body = JSON.parse(res.body);
+        expect(body.items).toHaveLength(1);
+        expect(body.items[0].id).toBe(testAssetId);
+        expect(body.items[0].asset_number).toBe('MON-DELL-001');
+        expect(body.items[0].serial_number).toBe('SN-DELL-998877');
+        expect(body.items[0].name).toBe('Dell UltraSharp Monitor 27"');
+        expect(body.total_count).toBe(1);
+        expect(body.has_more).toBe(false);
+
+        // Strict projection: exactly id, name, asset_number, serial_number
+        expect(Object.keys(body.items[0]).sort()).toEqual([
+          'asset_number',
+          'id',
+          'name',
+          'serial_number',
+        ]);
+      }
+    });
+
+    it('supports search by stable_id UUID, serial_number, and case-insensitive substring name', async () => {
+      // By stable_id UUID
+      const resId = await app.inject({
+        method: 'GET',
+        url: `/assets/search?field=stable_id&value=${testAssetId}`,
+        headers: { cookie: readonlyUser.cookie },
+      });
+      expect(resId.statusCode).toBe(200);
+      expect(JSON.parse(resId.body).items[0].id).toBe(testAssetId);
+
+      // By serial_number
+      const resSerial = await app.inject({
+        method: 'GET',
+        url: '/assets/search?field=serial_number&value=SN-DELL-998877',
+        headers: { cookie: readonlyUser.cookie },
+      });
+      expect(resSerial.statusCode).toBe(200);
+      expect(JSON.parse(resSerial.body).items[0].id).toBe(testAssetId);
+
+      // By name substring case-insensitive
+      const resName = await app.inject({
+        method: 'GET',
+        url: '/assets/search?field=name&value=ultrasharp',
+        headers: { cookie: readonlyUser.cookie },
+      });
+      expect(resName.statusCode).toBe(200);
+      expect(JSON.parse(resName.body).items[0].id).toBe(testAssetId);
+
+      // By literal %_\ characters
+      const resLiteral = await app.inject({
+        method: 'GET',
+        url: '/assets/search?field=name&value=%25_%5C',
+        headers: { cookie: readonlyUser.cookie },
+      });
+      expect(resLiteral.statusCode).toBe(200);
+      const literalBody = JSON.parse(resLiteral.body);
+      expect(literalBody.items).toHaveLength(1);
+      expect(literalBody.items[0].asset_number).toBe('SPEC-INV-001');
+    });
+
+    it('supports empty browse and pagination', async () => {
+      // Empty browse without params
+      const resEmpty = await app.inject({
+        method: 'GET',
+        url: '/assets/search',
+        headers: { cookie: readonlyUser.cookie },
+      });
+      expect(resEmpty.statusCode).toBe(200);
+      const emptyBody = JSON.parse(resEmpty.body);
+      expect(emptyBody.items.length).toBeGreaterThanOrEqual(2);
+      expect(emptyBody.limit).toBe(25);
+      expect(emptyBody.offset).toBe(0);
+
+      // Paged browse
+      const resPaged = await app.inject({
+        method: 'GET',
+        url: '/assets/search?limit=1&offset=0',
+        headers: { cookie: readonlyUser.cookie },
+      });
+      expect(resPaged.statusCode).toBe(200);
+      const pagedBody = JSON.parse(resPaged.body);
+      expect(pagedBody.items).toHaveLength(1);
+      expect(pagedBody.has_more).toBe(true);
+    });
+
+    it('rejects unauthenticated and unauthorized requests (401 and 403)', async () => {
+      // 401 unauthenticated
+      const resUnauth = await app.inject({
+        method: 'GET',
+        url: '/assets/search',
+      });
+      expect(resUnauth.statusCode).toBe(401);
+
+      // 401 inactive user
+      const resInactive = await app.inject({
+        method: 'GET',
+        url: '/assets/search',
+        headers: { cookie: inactiveUser.cookie },
+      });
+      expect(resInactive.statusCode).toBe(401);
+
+      // 403 system maintainer (lacks asset:search / asset:view)
+      const resMaintainer = await app.inject({
+        method: 'GET',
+        url: '/assets/search',
+        headers: { cookie: maintainerUser.cookie },
+      });
+      expect(resMaintainer.statusCode).toBe(403);
+
+      // 403 ordinary user without capabilities
+      const resOrdinary = await app.inject({
+        method: 'GET',
+        url: '/assets/search',
+        headers: { cookie: ordinaryUser.cookie },
+      });
+      expect(resOrdinary.statusCode).toBe(403);
+    });
+
+    it('rejects invalid query parameters with 400 and standard validation envelope', async () => {
+      const invalidUrls = [
+        '/assets/search?unknown_param=123',
+        '/assets/search?field=name&field=asset_number',
+        '/assets/search?field=name',
+        '/assets/search?value=some-val',
+        '/assets/search?field=unknown_field&value=123',
+        '/assets/search?field=stable_id&value=not-a-uuid',
+        '/assets/search?field=name&value=%20%20%20',
+        '/assets/search?limit=0',
+        '/assets/search?limit=101',
+        '/assets/search?limit=abc',
+        '/assets/search?offset=-1',
+        '/assets/search?offset=abc',
+        '/assets/search?field=name&value=null%00byte',
+        '/assets/search?limit=01',
+        '/assets/search?limit=025',
+        '/assets/search?offset=00',
+        '/assets/search?offset=01',
+        '/assets/search?field=stable_id&value=%20f81d4fae-7dec-11d0-a765-00a0c91e6bf6',
+        '/assets/search?field=stable_id&value=f81d4fae-7dec-11d0-a765-00a0c91e6bf6%20',
+        '/assets/search?field=stable_id&value=%20%20f81d4fae-7dec-11d0-a765-00a0c91e6bf6%20%20',
+        '/assets/search?field=stable_id&value=%09f81d4fae-7dec-11d0-a765-00a0c91e6bf6',
+        '/assets/search?field=stable_id&value=f81d4fae-7dec-11d0-a765-00a0c91e6bf6%0A',
+      ];
+
+      for (const url of invalidUrls) {
+        const res = await app.inject({
+          method: 'GET',
+          url,
+          headers: {
+            cookie: custodianUser.cookie,
+            'x-request-id': 'req-test-val-err-1',
+          },
+        });
+        expect(res.statusCode).toBe(400);
+
+        const body = JSON.parse(res.body);
+        expect(body).toHaveProperty('error');
+        expect(body.error.code).toBe('VALIDATION_FAILED');
+        expect(body.error.message).toBe('The provided request data is invalid.');
+        expect(body.error.request_id).toBe('req-test-val-err-1');
+        expect(body.error).toHaveProperty('details');
+        expect(typeof body.error.details).toBe('object');
+      }
+    });
+
+    it('IR-F1: accepts valid UUID formats and empty-value browse, and returns 400 for padded UUID', async () => {
+      // 1. Valid lowercase UUID
+      const resLower = await app.inject({
+        method: 'GET',
+        url: `/assets/search?field=stable_id&value=${testAssetId.toLowerCase()}`,
+        headers: { cookie: readonlyUser.cookie },
+      });
+      expect(resLower.statusCode).toBe(200);
+
+      // 2. Valid uppercase UUID
+      const resUpper = await app.inject({
+        method: 'GET',
+        url: `/assets/search?field=stable_id&value=${testAssetId.toUpperCase()}`,
+        headers: { cookie: readonlyUser.cookie },
+      });
+      expect(resUpper.statusCode).toBe(200);
+
+      // 3. Padded UUID returns 400 with details.value
+      const resPadded = await app.inject({
+        method: 'GET',
+        url: `/assets/search?field=stable_id&value=%20${testAssetId}%20`,
+        headers: { cookie: readonlyUser.cookie },
+      });
+      expect(resPadded.statusCode).toBe(400);
+      const paddedBody = JSON.parse(resPadded.body);
+      expect(paddedBody.error.details).toEqual({ value: 'Invalid UUID format for stable_id' });
+
+      // 4. Empty-value stable_id -> browse mode preserved (200 OK)
+      const resBrowse = await app.inject({
+        method: 'GET',
+        url: '/assets/search?field=stable_id&value=',
+        headers: { cookie: readonlyUser.cookie },
+      });
+      expect(resBrowse.statusCode).toBe(200);
+
+      // 5. Valid UUID not matching any asset -> 200 OK with empty items
+      const resNoMatch = await app.inject({
+        method: 'GET',
+        url: '/assets/search?field=stable_id&value=00000000-0000-0000-0000-000000000000',
+        headers: { cookie: readonlyUser.cookie },
+      });
+      expect(resNoMatch.statusCode).toBe(200);
+      const noMatchBody = JSON.parse(resNoMatch.body);
+      expect(noMatchBody.items).toHaveLength(0);
+      expect(noMatchBody.total_count).toBe(0);
+    });
+
+    it('IR-F3: enforces search-specific response policy covering 200, 400, 401, 403, and early/late 500s while preserving T1 routes', async () => {
+      // 1. Success 200 OK
+      const res200 = await app.inject({
+        method: 'GET',
+        url: '/assets/search?field=asset_number&value=MON-DELL-001',
+        headers: { cookie: readonlyUser.cookie },
+      });
+      expect(res200.statusCode).toBe(200);
+      expect(res200.headers['cache-control']).toBe('no-store');
+
+      // 2. Validation 400 Bad Request
+      const res400 = await app.inject({
+        method: 'GET',
+        url: '/assets/search?limit=0',
+        headers: { cookie: readonlyUser.cookie },
+      });
+      expect(res400.statusCode).toBe(400);
+      expect(res400.headers['cache-control']).toBe('no-store');
+
+      // 3. Authentication 401 Unauthorized (early denial in global auth hook before preHandler)
+      const res401 = await app.inject({
+        method: 'GET',
+        url: '/assets/search?field=asset_number&value=MON-DELL-001',
+      });
+      expect(res401.statusCode).toBe(401);
+      expect(res401.headers['cache-control']).toBe('no-store');
+
+      // 4. Authorization 403 Forbidden (denial in requireCapability preHandler)
+      const res403 = await app.inject({
+        method: 'GET',
+        url: '/assets/search?field=asset_number&value=MON-DELL-001',
+        headers: { cookie: maintainerUser.cookie },
+      });
+      expect(res403.statusCode).toBe(403);
+      expect(res403.headers['cache-control']).toBe('no-store');
+
+      // 5. Early Pre-handler Failure 500
+      // Induce failure in capability check during preHandler phase
+      const origHasCap = app.capabilityService!.hasCapability;
+      app.capabilityService!.hasCapability = async () => {
+        throw new Error('Pre-handler capability evaluation crash');
+      };
+
+      try {
+        const res500Early = await app.inject({
+          method: 'GET',
+          url: '/assets/search?field=asset_number&value=MON-DELL-001',
+          headers: { cookie: readonlyUser.cookie },
+        });
+        expect(res500Early.statusCode).toBe(500);
+        expect(res500Early.headers['cache-control']).toBe('no-store');
+      } finally {
+        app.capabilityService!.hasCapability = origHasCap;
+      }
+
+      // 6. Handler/Service Failure 500
+      const origSearch = (app as any).assetService.searchAssets;
+      (app as any).assetService.searchAssets = async () => {
+        throw new Error('Service database failure during search');
+      };
+
+      try {
+        const res500Service = await app.inject({
+          method: 'GET',
+          url: '/assets/search?field=asset_number&value=MON-DELL-001',
+          headers: { cookie: readonlyUser.cookie },
+        });
+        expect(res500Service.statusCode).toBe(500);
+        expect(res500Service.headers['cache-control']).toBe('no-store');
+      } finally {
+        (app as any).assetService.searchAssets = origSearch;
+      }
+
+      // 7. Preservation of unrelated T1 routes (must not be forced to no-store)
+      const resT1Get = await app.inject({
+        method: 'GET',
+        url: `/assets/${testAssetId}`,
+        headers: { cookie: readonlyUser.cookie },
+      });
+      expect(resT1Get.statusCode).toBe(200);
+      expect(resT1Get.headers['cache-control']).not.toBe('no-store');
+    });
+
+    it('F1: accepts canonical offset=0 and rejects leading-zero pagination', async () => {
+      const resZero = await app.inject({
+        method: 'GET',
+        url: '/assets/search?offset=0&limit=25',
+        headers: { cookie: readonlyUser.cookie },
+      });
+      expect(resZero.statusCode).toBe(200);
+    });
+
+    it('F4: does not echo unknown query key or value in validation error details', async () => {
+      const res = await app.inject({
+        method: 'GET',
+        url: '/assets/search?untrusted_secret_key=secret_value_123',
+        headers: {
+          cookie: custodianUser.cookie,
+          'x-request-id': 'req-test-no-echo-1',
+        },
+      });
+      expect(res.statusCode).toBe(400);
+      const body = JSON.parse(res.body);
+      expect(body.error.code).toBe('VALIDATION_FAILED');
+      // Crucial: untrusted key must NEVER appear as a property in details
+      expect(body.error.details).not.toHaveProperty('untrusted_secret_key');
+      expect(body.error.details).toHaveProperty('query');
+      expect(JSON.stringify(body)).not.toContain('untrusted_secret_key');
+      expect(JSON.stringify(body)).not.toContain('secret_value_123');
+    });
+
+    it('F4: does not disclose query-bearing URL or search values in composed operational logs', async () => {
+      let logBuffer = '';
+      const { Writable } = await import('node:stream');
+      const captureStream = new Writable({
+        write(chunk, _enc, cb) {
+          logBuffer += chunk.toString();
+          cb();
+        },
+      });
+
+      const loggedApp = await buildApp({
+        db: pool,
+        cookieSecret: 'test-secret-at-least-32-chars-long-12345',
+        logger: { stream: captureStream, level: 'info' },
+      });
+
+      try {
+        // 1. 200 OK request with query values
+        const res200 = await loggedApp.inject({
+          method: 'GET',
+          url: '/assets/search?field=name&value=SECRET_SEARCH_VALUE',
+          headers: { cookie: readonlyUser.cookie },
+        });
+        expect(res200.statusCode).toBe(200);
+
+        // 2. 400 Bad request with unknown query key and value
+        const res400 = await loggedApp.inject({
+          method: 'GET',
+          url: '/assets/search?untrusted_secret_key=untrusted_secret_val',
+          headers: { cookie: custodianUser.cookie },
+        });
+        expect(res400.statusCode).toBe(400);
+
+        // 3. 401 Unauthenticated
+        const res401 = await loggedApp.inject({
+          method: 'GET',
+          url: '/assets/search?field=asset_number&value=SECRET_UNAUTH_VAL',
+        });
+        expect(res401.statusCode).toBe(401);
+
+        // 4. 403 Forbidden
+        const res403 = await loggedApp.inject({
+          method: 'GET',
+          url: '/assets/search?field=asset_number&value=SECRET_FORBIDDEN_VAL',
+          headers: { cookie: maintainerUser.cookie },
+        });
+        expect(res403.statusCode).toBe(403);
+
+        // 5. 500 Internal Server Error (genuine database/service failure on composed app)
+        const originalSearchAssets = (loggedApp as any).assetService.searchAssets;
+        (loggedApp as any).assetService.searchAssets = async () => {
+          throw new Error('Database query failure during search operation');
+        };
+
+        const res500 = await loggedApp.inject({
+          method: 'GET',
+          url: '/assets/search?field=name&value=SECRET_500_VAL',
+          headers: { cookie: readonlyUser.cookie },
+        });
+        expect(res500.statusCode).toBe(500);
+        expect(res500.body).not.toContain('SECRET_500_VAL');
+
+        // Restore normal service behavior and verify normal recovery
+        (loggedApp as any).assetService.searchAssets = originalSearchAssets;
+        const resRecovery = await loggedApp.inject({
+          method: 'GET',
+          url: '/assets/search?field=asset_number&value=MON-DELL-001',
+          headers: { cookie: readonlyUser.cookie },
+        });
+        expect(resRecovery.statusCode).toBe(200);
+
+        // Verify that NO query string or query value was leaked to operational logs
+        expect(logBuffer).not.toContain('SECRET_SEARCH_VALUE');
+        expect(logBuffer).not.toContain('untrusted_secret_key');
+        expect(logBuffer).not.toContain('untrusted_secret_val');
+        expect(logBuffer).not.toContain('SECRET_UNAUTH_VAL');
+        expect(logBuffer).not.toContain('SECRET_FORBIDDEN_VAL');
+        expect(logBuffer).not.toContain('SECRET_500_VAL');
+        expect(logBuffer).not.toContain('/assets/search?');
+      } finally {
+        await loggedApp.close();
+      }
+    });
+  });
 });

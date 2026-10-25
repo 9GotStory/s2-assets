@@ -302,7 +302,7 @@ export const Dashboard: React.FC = () => {
           <p style={{ margin: '0 0 1rem 0', fontSize: '0.875rem', color: '#4b5563' }}>
             ระบบบันทึกและจัดการข้อมูลครุภัณฑ์รายชิ้น
           </p>
-          <div>
+          <div style={{ display: 'flex', gap: '0.75rem', flexWrap: 'wrap' }}>
             <Link
               to="/assets/register"
               id="nav-asset-register"
@@ -318,6 +318,22 @@ export const Dashboard: React.FC = () => {
               }}
             >
               + ลงทะเบียนครุภัณฑ์ใหม่
+            </Link>
+            <Link
+              to="/assets/search"
+              id="nav-asset-search"
+              style={{
+                display: 'inline-block',
+                padding: '0.5rem 1rem',
+                backgroundColor: '#4b5563',
+                color: '#ffffff',
+                textDecoration: 'none',
+                borderRadius: '4px',
+                fontSize: '0.875rem',
+                fontWeight: 500,
+              }}
+            >
+              🔍 ค้นหาครุภัณฑ์
             </Link>
           </div>
         </section>
