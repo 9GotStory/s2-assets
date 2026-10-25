@@ -1,5 +1,7 @@
-import React, { useEffect, useState } from 'react';
+import React, { useEffect, useState, useCallback, useRef } from 'react';
 import { useParams, useNavigate, Link } from 'react-router';
+import { QueryClient, QueryClientProvider, useQuery, useQueryClient } from '@tanstack/react-query';
+import { AssetCorrectionForm } from '../components/AssetCorrectionForm';
 
 export interface AssetRecord {
   id: string;
@@ -30,108 +32,400 @@ export interface HistoryRecord {
 export interface AssetDetailResponse {
   asset: AssetRecord;
   history: HistoryRecord[];
+  can_correct?: boolean;
 }
 
 export const AssetDetail: React.FC = () => {
-  const { id } = useParams<{ id: string }>();
-  const navigate = useNavigate();
-
-  const [assetData, setAssetData] = useState<AssetDetailResponse | null>(null);
-  const [isLoading, setIsLoading] = useState(true);
-  const [errorStatus, setErrorStatus] = useState<number | null>(null);
-  const [errorMessage, setErrorMessage] = useState<string | null>(null);
+  const [queryClient] = useState(
+    () =>
+      new QueryClient({
+        defaultOptions: {
+          queries: {
+            retry: false,
+            refetchOnWindowFocus: true,
+          },
+        },
+      })
+  );
 
   useEffect(() => {
-    const controller = new AbortController();
+    return () => {
+      queryClient.clear();
+    };
+  }, [queryClient]);
 
-    const fetchAssetDetail = async () => {
+  return (
+    <QueryClientProvider client={queryClient}>
+      <AssetDetailContent />
+    </QueryClientProvider>
+  );
+};
+
+const AssetDetailContent: React.FC = () => {
+  const { id } = useParams<{ id: string }>();
+  const navigate = useNavigate();
+  const queryClient = useQueryClient();
+
+  const [csrfToken, setCsrfToken] = useState<string | null>(null);
+  const [currentUser, setCurrentUser] = useState<{ id: string; role?: string } | null>(null);
+  const [sessionLoading, setSessionLoading] = useState(true);
+  const [refreshError, setRefreshError] = useState<string | null>(null);
+  const [isCorrectionRevoked, setIsCorrectionRevoked] = useState(false);
+  const [terminalError, setTerminalError] = useState<string | null>(null);
+  const [isReauthorizing, setIsReauthorizing] = useState(false);
+
+  // F-02: Lifecycle ownership and request cancellation refs
+  const isMountedRef = useRef<boolean>(true);
+  const sessionGenRef = useRef<number>(0);
+  const sessionAbortRef = useRef<AbortController | null>(null);
+  const reauthGenRef = useRef<number>(0);
+  const reauthAbortRef = useRef<AbortController | null>(null);
+  const isReauthorizingRef = useRef<boolean>(false);
+
+  const verifySession = useCallback(
+    async (signal?: AbortSignal) => {
+      const currentGen = ++sessionGenRef.current;
+      if (sessionAbortRef.current) {
+        sessionAbortRef.current.abort();
+      }
+      const controller = new AbortController();
+      sessionAbortRef.current = controller;
+
+      const handleExternalAbort = () => controller.abort();
+      if (signal) {
+        if (signal.aborted) {
+          controller.abort();
+        } else {
+          signal.addEventListener('abort', handleExternalAbort);
+        }
+      }
+
       try {
-        // Verify session first
         const sessionRes = await fetch('/auth/session-check', {
           method: 'GET',
           credentials: 'include',
           signal: controller.signal,
         });
 
+        if (signal) {
+          signal.removeEventListener('abort', handleExternalAbort);
+        }
+
+        // Guard: check mounted and generation before applying any side-effects
+        if (
+          !isMountedRef.current ||
+          currentGen !== sessionGenRef.current ||
+          controller.signal.aborted
+        ) {
+          return null;
+        }
+
         if (!sessionRes.ok) {
+          if (
+            !isMountedRef.current ||
+            currentGen !== sessionGenRef.current ||
+            controller.signal.aborted
+          ) {
+            return null;
+          }
+          queryClient.clear();
+          setCurrentUser(null);
+          setCsrfToken(null);
           navigate('/login', { replace: true });
-          return;
+          return null;
         }
 
-        if (!id) {
-          setErrorStatus(400);
-          setErrorMessage('ไม่พบรหัสครุภัณฑ์ที่ต้องการเรียกดู');
-          setIsLoading(false);
-          return;
+        const data = await sessionRes.json();
+        if (
+          !isMountedRef.current ||
+          currentGen !== sessionGenRef.current ||
+          controller.signal.aborted
+        ) {
+          return null;
         }
 
-        const res = await fetch(`/assets/${id}`, {
-          method: 'GET',
-          credentials: 'include',
-          signal: controller.signal,
+        const user = data.user || null;
+        if (!user) {
+          queryClient.clear();
+          setCurrentUser(null);
+          setCsrfToken(null);
+          navigate('/login', { replace: true });
+          return null;
+        }
+
+        setCurrentUser((prevUser) => {
+          if (prevUser && user && prevUser.id !== user.id) {
+            queryClient.clear();
+          }
+          return user;
         });
-
-        if (res.status === 403) {
-          setErrorStatus(403);
-          setErrorMessage('คุณไม่มีสิทธิ์เข้าถึงข้อมูลครุภัณฑ์นี้ (403 Forbidden)');
-          setIsLoading(false);
-          return;
-        }
-
-        if (res.status === 404) {
-          setErrorStatus(404);
-          setErrorMessage('ไม่พบข้อมูลครุภัณฑ์ตามรหัสที่ระบุ');
-          setIsLoading(false);
-          return;
-        }
-
-        if (!res.ok) {
-          setErrorStatus(res.status);
-          setErrorMessage('เกิดข้อผิดพลาดในการดึงข้อมูลครุภัณฑ์');
-          setIsLoading(false);
-          return;
-        }
-
-        const data: AssetDetailResponse = await res.json();
-        setAssetData(data);
-        setIsLoading(false);
+        setCsrfToken(data.csrfToken || null);
+        setSessionLoading(false);
+        return user;
       } catch (err: unknown) {
-        if (err instanceof DOMException && err.name === 'AbortError') {
-          return;
+        if (signal) {
+          signal.removeEventListener('abort', handleExternalAbort);
         }
-        setErrorStatus(500);
-        setErrorMessage('เกิดข้อผิดพลาดในการเชื่อมต่อเซิร์ฟเวอร์');
-        setIsLoading(false);
+        if (
+          !isMountedRef.current ||
+          currentGen !== sessionGenRef.current ||
+          controller.signal.aborted ||
+          (err instanceof DOMException && err.name === 'AbortError')
+        ) {
+          return null;
+        }
+        queryClient.clear();
+        setCurrentUser(null);
+        setCsrfToken(null);
+        navigate('/login', { replace: true });
+        return null;
+      }
+    },
+    [navigate, queryClient]
+  );
+
+  const {
+    data: assetData,
+    isLoading: isAssetLoading,
+    error: assetError,
+    dataUpdatedAt,
+    refetch,
+  } = useQuery<AssetDetailResponse, Error & { status?: number }>({
+    queryKey: ['asset', currentUser?.id, id],
+    queryFn: async ({ signal }) => {
+      if (!id) {
+        const err = new Error('ไม่พบรหัสครุภัณฑ์ที่ต้องการเรียกดู') as Error & { status?: number };
+        err.status = 400;
+        throw err;
+      }
+
+      const res = await fetch(`/assets/${id}`, {
+        method: 'GET',
+        credentials: 'include',
+        signal,
+      });
+
+      if (res.status === 401) {
+        if (isMountedRef.current) {
+          navigate('/login', { replace: true });
+          setTerminalError('Session expired');
+        }
+        const err = new Error('Session expired') as Error & { status?: number };
+        err.status = 401;
+        throw err;
+      }
+
+      if (res.status === 403) {
+        const err = new Error('คุณไม่มีสิทธิ์เข้าถึงข้อมูลครุภัณฑ์นี้ (403 Forbidden)') as Error & {
+          status?: number;
+        };
+        err.status = 403;
+        if (isMountedRef.current) {
+          setTerminalError(err.message);
+        }
+        throw err;
+      }
+
+      if (res.status === 404) {
+        const err = new Error('ไม่พบข้อมูลครุภัณฑ์ตามรหัสที่ระบุ') as Error & { status?: number };
+        err.status = 404;
+        if (isMountedRef.current) {
+          setTerminalError(err.message);
+        }
+        throw err;
+      }
+
+      if (!res.ok) {
+        const err = new Error('เกิดข้อผิดพลาดในการดึงข้อมูลครุภัณฑ์') as Error & { status?: number };
+        err.status = res.status;
+        throw err;
+      }
+
+      return res.json();
+    },
+    enabled: !sessionLoading && !!id,
+  });
+
+  useEffect(() => {
+    if (!isMountedRef.current) return;
+    if (assetError) {
+      if (assetError.status === 401) {
+        queryClient.clear();
+        setCurrentUser(null);
+        setCsrfToken(null);
+        setTerminalError('Session expired');
+        navigate('/login', { replace: true });
+      } else if (assetError.status === 403 || assetError.status === 404) {
+        setTerminalError(assetError.message);
+        queryClient.setQueryData(['asset', currentUser?.id, id], null);
+      }
+    }
+  }, [assetError, currentUser?.id, id, queryClient, navigate]);
+
+  // F-02: Reauthorization flow with fail-closed suppression and generation tracking
+  const reauthorize = useCallback(async () => {
+    const currentGen = ++reauthGenRef.current;
+    if (reauthAbortRef.current) {
+      reauthAbortRef.current.abort();
+    }
+    const controller = new AbortController();
+    reauthAbortRef.current = controller;
+
+    // Fail-closed suppression: immediately hide protected data
+    setIsReauthorizing(true);
+    isReauthorizingRef.current = true;
+
+    try {
+      const user = await verifySession(controller.signal);
+      if (
+        !isMountedRef.current ||
+        currentGen !== reauthGenRef.current ||
+        controller.signal.aborted
+      ) {
+        return;
+      }
+
+      if (!user) {
+        queryClient.clear();
+        setCurrentUser(null);
+        setCsrfToken(null);
+        setTerminalError('Session expired');
+        navigate('/login', { replace: true });
+        return;
+      }
+
+      // Freshly revalidate asset:view read authorization
+      const freshResult = await refetch();
+      if (
+        !isMountedRef.current ||
+        currentGen !== reauthGenRef.current ||
+        controller.signal.aborted
+      ) {
+        return;
+      }
+
+      if (freshResult.isError) {
+        // Full view revocation: immediately suppress all protected cached content
+        queryClient.clear();
+        setTerminalError(
+          freshResult.error?.message ||
+            'คุณไม่มีสิทธิ์เข้าถึงข้อมูลครุภัณฑ์นี้ (403 Forbidden)'
+        );
+        return;
+      }
+
+      // Both session and asset:view verified successfully!
+      if (
+        isMountedRef.current &&
+        currentGen === reauthGenRef.current &&
+        !controller.signal.aborted
+      ) {
+        setIsReauthorizing(false);
+        isReauthorizingRef.current = false;
+      }
+    } catch (err: unknown) {
+      if (
+        !isMountedRef.current ||
+        currentGen !== reauthGenRef.current ||
+        controller.signal.aborted ||
+        (err instanceof DOMException && err.name === 'AbortError')
+      ) {
+        return;
+      }
+      queryClient.clear();
+      setTerminalError('เกิดข้อผิดพลาดในการตรวจสอบสิทธิ์');
+    }
+  }, [verifySession, refetch, queryClient, navigate]);
+
+  const handlePermissionRevoked = useCallback(
+    async (statusCode?: number) => {
+      setIsCorrectionRevoked(true);
+
+      if (statusCode === 401) {
+        if (!isMountedRef.current) return;
+        queryClient.clear();
+        setCurrentUser(null);
+        setCsrfToken(null);
+        setTerminalError('Session expired');
+        navigate('/login', { replace: true });
+        return;
+      }
+
+      // F-02: Evict cached asset facts immediately so cancellation cannot restore them
+      queryClient.setQueryData(['asset', currentUser?.id, id], null);
+      await reauthorize();
+    },
+    [reauthorize, currentUser?.id, id, queryClient, navigate]
+  );
+
+  useEffect(() => {
+    isMountedRef.current = true;
+    verifySession();
+
+    const handleFocus = () => {
+      if (!isMountedRef.current) return;
+      if (isReauthorizingRef.current) {
+        // If reauthorization suppression is in progress, focus supersedes
+        // the owning reauthorization and starts a new full revalidation cycle
+        reauthorize();
+      } else {
+        verifySession();
       }
     };
 
-    fetchAssetDetail();
+    window.addEventListener('focus', handleFocus);
+    document.addEventListener('visibilitychange', handleFocus);
 
     return () => {
-      controller.abort();
+      isMountedRef.current = false;
+      isReauthorizingRef.current = false;
+      sessionGenRef.current += 1;
+      reauthGenRef.current += 1;
+      if (sessionAbortRef.current) {
+        sessionAbortRef.current.abort();
+      }
+      if (reauthAbortRef.current) {
+        reauthAbortRef.current.abort();
+      }
+      window.removeEventListener('focus', handleFocus);
+      document.removeEventListener('visibilitychange', handleFocus);
     };
-  }, [id, navigate]);
+  }, [verifySession, reauthorize, id]);
 
-  if (isLoading) {
-    return (
-      <main
-        style={{
-          display: 'flex',
-          justifyContent: 'center',
-          alignItems: 'center',
-          minHeight: '100vh',
-          backgroundColor: '#f5f5f5',
-          fontFamily: 'system-ui, -apple-system, sans-serif',
-        }}
-      >
-        <div role="status" aria-live="polite" style={{ color: '#4b5563' }}>
-          กำลังโหลดข้อมูลครุภัณฑ์...
-        </div>
-      </main>
-    );
-  }
+  if (
+    isReauthorizing ||
+    !assetData ||
+    terminalError ||
+    (assetError &&
+      (assetError.status === 401 ||
+        assetError.status === 403 ||
+        assetError.status === 404))
+  ) {
+    if (
+      !terminalError &&
+      !assetError &&
+      (sessionLoading || isAssetLoading || isReauthorizing || !assetData)
+    ) {
+      return (
+        <main
+          style={{
+            display: 'flex',
+            justifyContent: 'center',
+            alignItems: 'center',
+            minHeight: '100vh',
+            backgroundColor: '#f5f5f5',
+            fontFamily: 'system-ui, -apple-system, sans-serif',
+          }}
+        >
+          <div role="status" aria-live="polite" style={{ color: '#4b5563' }}>
+            {isReauthorizing
+              ? 'กำลังตรวจสอบสิทธิ์การเข้าถึงข้อมูล...'
+              : 'กำลังโหลดข้อมูลครุภัณฑ์...'}
+          </div>
+        </main>
+      );
+    }
 
-  if (errorStatus || !assetData) {
     return (
       <main
         style={{
@@ -163,10 +457,11 @@ export const AssetDetail: React.FC = () => {
               fontWeight: 500,
             }}
           >
-            {errorMessage || 'เกิดข้อผิดพลาด'}
+            {terminalError || assetError?.message || 'เกิดข้อผิดพลาดในการโหลดข้อมูล'}
           </div>
           <Link
             to="/dashboard"
+            id="nav-dashboard-link"
             style={{
               color: '#2563eb',
               textDecoration: 'none',
@@ -182,6 +477,7 @@ export const AssetDetail: React.FC = () => {
   }
 
   const { asset, history = [] } = assetData;
+  const can_correct = Boolean(assetData.can_correct && !isCorrectionRevoked);
   const registrationFact = history.find((h) => h.action === 'REGISTERED');
   const isLegacy = Boolean(
     registrationFact?.payload &&
@@ -228,6 +524,7 @@ export const AssetDetail: React.FC = () => {
           >
             <Link
               to="/dashboard"
+              id="nav-dashboard-link"
               style={{
                 color: '#2563eb',
                 textDecoration: 'none',
@@ -301,6 +598,23 @@ export const AssetDetail: React.FC = () => {
                 ปกติ
               </span>
             )}
+            <button
+              type="button"
+              id="refresh-asset-detail-btn"
+              onClick={() => refetch()}
+              style={{
+                marginLeft: 'auto',
+                padding: '0.375rem 0.75rem',
+                backgroundColor: '#f3f4f6',
+                border: '1px solid #d1d5db',
+                borderRadius: '4px',
+                cursor: 'pointer',
+                fontSize: '0.875rem',
+                color: '#374151',
+              }}
+            >
+              รีเฟรชข้อมูล
+            </button>
           </div>
           <p
             style={{
@@ -412,8 +726,8 @@ export const AssetDetail: React.FC = () => {
           </dl>
         </section>
 
-        {/* Timeline Starting History */}
-        <section aria-labelledby="history-heading">
+        {/* Timeline Starting and Correction History */}
+        <section aria-labelledby="history-heading" style={{ marginBottom: '2rem' }}>
           <h2
             id="history-heading"
             style={{
@@ -479,6 +793,8 @@ export const AssetDetail: React.FC = () => {
                       >
                         {h.action === 'REGISTERED'
                           ? 'ลงทะเบียนครุภัณฑ์ (REGISTERED)'
+                          : h.action === 'CORRECTED'
+                          ? 'แก้ไขข้อมูลครุภัณฑ์ (CORRECTED)'
                           : h.action}
                       </td>
                       <td
@@ -504,6 +820,18 @@ export const AssetDetail: React.FC = () => {
                           color: '#374151',
                         }}
                       >
+                        {h.action === 'CORRECTED' &&
+                          typeof (h.payload as any)?.reason === 'string' && (
+                            <div
+                              style={{
+                                marginBottom: '0.375rem',
+                                fontWeight: 500,
+                                color: '#111827',
+                              }}
+                            >
+                              เหตุผล: {(h.payload as any).reason}
+                            </div>
+                          )}
                         <pre
                           style={{
                             margin: 0,
@@ -540,6 +868,99 @@ export const AssetDetail: React.FC = () => {
             </table>
           </div>
         </section>
+
+        {refreshError && (
+          <div
+            role="alert"
+            data-testid="refresh-error-banner"
+            style={{
+              padding: '1rem',
+              backgroundColor: '#fef3c7',
+              border: '1px solid #f59e0b',
+              borderRadius: '6px',
+              color: '#92400e',
+              marginBottom: '1.5rem',
+              display: 'flex',
+              justifyContent: 'space-between',
+              alignItems: 'center',
+            }}
+          >
+            <span>{refreshError}</span>
+            <button
+              type="button"
+              id="retry-refresh-btn"
+              onClick={async () => {
+                const res = await refetch();
+                if (!res.isError) {
+                  setRefreshError(null);
+                } else if (res.error?.status === 403 || res.error?.status === 401) {
+                  // Revocation during refresh recovery fails closed!
+                  queryClient.clear();
+                  setTerminalError(res.error.message || 'คุณไม่มีสิทธิ์เข้าถึงข้อมูลครุภัณฑ์นี้ (403 Forbidden)');
+                }
+              }}
+              style={{
+                marginLeft: '1rem',
+                padding: '0.375rem 0.75rem',
+                backgroundColor: '#b45309',
+                color: '#ffffff',
+                border: 'none',
+                borderRadius: '4px',
+                cursor: 'pointer',
+                fontWeight: 600,
+                fontSize: '0.875rem',
+              }}
+            >
+              โหลดข้อมูลใหม่ (Retry)
+            </button>
+          </div>
+        )}
+
+        {/* Correction Section (Rendered for Authorized Roles; Read-only notice otherwise) */}
+        {can_correct ? (
+          <section aria-labelledby="correction-heading">
+            <AssetCorrectionForm
+              asset={asset}
+              isLegacy={isLegacy}
+              csrfToken={csrfToken}
+              dataUpdatedAt={dataUpdatedAt}
+              onPermissionRevoked={handlePermissionRevoked}
+              onRefresh={async () => {
+                const res = await refetch();
+                if (!res.isError && res.data?.asset) {
+                  return res.data.asset;
+                }
+                return null;
+              }}
+              onSuccess={async () => {
+                setRefreshError(null);
+                const refetchResult = await refetch();
+                if (refetchResult.isError) {
+                  setRefreshError(
+                    'บันทึกการแก้ไขครุภัณฑ์สำเร็จ แต่การดึงข้อมูลล่าสุดล้มเหลว กรุณากดปุ่มเพื่อโหลดข้อมูลใหม่'
+                  );
+                  return false;
+                }
+                return true;
+              }}
+            />
+          </section>
+        ) : (
+          <div
+            data-testid="read-only-notice"
+            style={{
+              padding: '0.75rem 1rem',
+              backgroundColor: '#f3f4f6',
+              border: '1px solid #e5e7eb',
+              borderRadius: '6px',
+              color: '#6b7280',
+              fontSize: '0.875rem',
+              textAlign: 'center',
+            }}
+          >
+            ผู้ใช้ปัจจุบันมีสิทธิ์อ่านอย่างเดียว ไม่สามารถแก้ไขข้อมูลครุภัณฑ์ได้
+          </div>
+        )}
       </div>
     </main>
   );

@@ -10,6 +10,7 @@ import { runMigrator } from '../../../../packages/db/src/migrator.ts';
 import { buildApp } from '../../../api/src/app.ts';
 import { UserService } from '../../../api/src/services/user.service.ts';
 import { SessionService } from '../../../api/src/services/session.service.ts';
+import { AssetService } from '../../../api/src/services/asset.service.ts';
 
 const { Pool } = pg;
 
@@ -29,6 +30,7 @@ test.describe.serial('Asset Registry Real SPA -> Composed API -> PostgreSQL Jour
 
   let custodianUserId: string;
   let readonlyUserId: string;
+  let adminUserId: string;
   let maintainerUserId: string;
   let firstCreatedAssetId: string;
 
@@ -77,12 +79,14 @@ test.describe.serial('Asset Registry Real SPA -> Composed API -> PostgreSQL Jour
       INSERT INTO users (username, password_hash, is_active) VALUES
         ('custodian_e2e', '${passwordHash}', true),
         ('readonly_e2e', '${passwordHash}', true),
+        ('admin_e2e', '${passwordHash}', true),
         ('maintainer_e2e', '${passwordHash}', true)
       RETURNING id, username;
     `);
 
     custodianUserId = usersRes.rows.find((r) => r.username === 'custodian_e2e')!.id;
     readonlyUserId = usersRes.rows.find((r) => r.username === 'readonly_e2e')!.id;
+    adminUserId = usersRes.rows.find((r) => r.username === 'admin_e2e')!.id;
     maintainerUserId = usersRes.rows.find((r) => r.username === 'maintainer_e2e')!.id;
 
     // Assign roles
@@ -93,6 +97,10 @@ test.describe.serial('Asset Registry Real SPA -> Composed API -> PostgreSQL Jour
     await pool.query(
       `INSERT INTO user_roles (user_id, role_id) VALUES ($1, 'READ_ONLY')`,
       [readonlyUserId]
+    );
+    await pool.query(
+      `INSERT INTO user_roles (user_id, role_id) VALUES ($1, 'ADMINISTRATOR')`,
+      [adminUserId]
     );
     await pool.query(
       `INSERT INTO user_roles (user_id, role_id) VALUES ($1, 'SYSTEM_MAINTAINER')`,
@@ -594,6 +602,963 @@ test.describe.serial('Asset Registry Real SPA -> Composed API -> PostgreSQL Jour
     await expect(page.locator('input#explicit_continuation')).not.toBeVisible();
   });
 
+  test('Journey 10: Successful correction by Administrator / Custodian preserves Stable ID and registration fact in history', async ({
+    page,
+    context,
+  }) => {
+    // 1. Create an asset directly in PostgreSQL
+    const testAssetId = crypto.randomUUID();
+    await pool.query(
+      `INSERT INTO assets (id, name, asset_number, serial_number, registered_by, recorded_at, created_at, updated_at)
+       VALUES ($1, $2, $3, $4, $5, now(), now(), now())`,
+      [testAssetId, 'เครื่องฉายโปรเจคเตอร์เดิม', 'PROJ-ORIG-001', 'SN-ORIG-001', custodianUserId]
+    );
+    await pool.query(
+      `INSERT INTO asset_history (id, asset_id, action, actor_id, payload, recorded_at, created_at)
+       VALUES ($1, $2, 'REGISTERED', $3, $4, now(), now())`,
+      [
+        crypto.randomUUID(),
+        testAssetId,
+        custodianUserId,
+        JSON.stringify({
+          name: 'เครื่องฉายโปรเจคเตอร์เดิม',
+          asset_number: 'PROJ-ORIG-001',
+          serial_number: 'SN-ORIG-001',
+        }),
+      ]
+    );
+
+    // 2. Login as Administrator
+    await loginAs(page, context, adminUserId);
+
+    // 3. Navigate to Asset Detail page
+    await page.goto(`${targetBaseUrl}/assets/${testAssetId}`);
+    await expect(page.locator('#asset-detail-heading')).toHaveText('เครื่องฉายโปรเจคเตอร์เดิม');
+    await expect(page.locator('p:has-text("Stable ID:")')).toContainText(testAssetId);
+
+    // Form is visible for Administrator
+    await expect(page.locator('#asset-correction-form')).toBeVisible();
+
+    // 4. Fill correction form
+    await page.locator('#asset-correction-form input#name').fill('เครื่องฉายโปรเจคเตอร์ 4K (แก้ไข)');
+    await page.locator('#asset-correction-form input#asset_number').fill('PROJ-NEW-4K-001');
+    await page.locator('#asset-correction-form input#serial_number').fill('SN-NEW-4K-001');
+    await page.locator('#asset-correction-form textarea#reason').fill('แก้ไขข้อมูลตามรายงานตรวจนับพัสดุ');
+
+    // 5. Submit correction
+    await page.locator('button#submit-correct-btn').click();
+
+    // 6. Verify success message and updated details
+    await expect(page.locator('[data-testid="correction-success-message"]')).toHaveText(
+      'บันทึกการแก้ไขครุภัณฑ์สำเร็จ'
+    );
+    await expect(page.locator('#asset-detail-heading')).toHaveText('เครื่องฉายโปรเจคเตอร์ 4K (แก้ไข)');
+    await expect(page.locator('p:has-text("Stable ID:")')).toContainText(testAssetId);
+
+    // 7. Verify timeline history table contains both REGISTERED and CORRECTED
+    await expect(page.locator('td:has-text("ลงทะเบียนครุภัณฑ์ (REGISTERED)")')).toBeVisible();
+    await expect(page.locator('td:has-text("แก้ไขข้อมูลครุภัณฑ์ (CORRECTED)")')).toBeVisible();
+    await expect(page.getByText('เหตุผล: แก้ไขข้อมูลตามรายงานตรวจนับพัสดุ')).toBeVisible();
+
+    // 8. Verify database state
+    const dbAsset = await pool.query('SELECT * FROM assets WHERE id = $1', [testAssetId]);
+    expect(dbAsset.rows[0].name).toBe('เครื่องฉายโปรเจคเตอร์ 4K (แก้ไข)');
+    expect(dbAsset.rows[0].asset_number).toBe('PROJ-NEW-4K-001');
+    expect(dbAsset.rows[0].serial_number).toBe('SN-NEW-4K-001');
+
+    const dbHistory = await pool.query(
+      'SELECT * FROM asset_history WHERE asset_id = $1 ORDER BY recorded_at ASC',
+      [testAssetId]
+    );
+    expect(dbHistory.rows).toHaveLength(2);
+    expect(dbHistory.rows[0].action).toBe('REGISTERED');
+    expect(dbHistory.rows[1].action).toBe('CORRECTED');
+    expect(dbHistory.rows[1].actor_id).toBe(adminUserId);
+    expect(dbHistory.rows[1].payload.reason).toBe('แก้ไขข้อมูลตามรายงานตรวจนับพัสดุ');
+    expect(dbHistory.rows[1].payload.changes.name.before).toBe('เครื่องฉายโปรเจคเตอร์เดิม');
+    expect(dbHistory.rows[1].payload.changes.name.after).toBe('เครื่องฉายโปรเจคเตอร์ 4K (แก้ไข)');
+  });
+
+  test('Journey 11: Read-only user sees correction history but cannot see/submit correction form', async ({
+    page,
+    context,
+  }) => {
+    // Create an asset with correction history
+    const testAssetId = crypto.randomUUID();
+    await pool.query(
+      `INSERT INTO assets (id, name, asset_number, serial_number, registered_by, recorded_at, created_at, updated_at)
+       VALUES ($1, $2, $3, $4, $5, now(), now(), now())`,
+      [testAssetId, 'จอภาพ LED ห้องประชุม', 'MON-001', 'SN-MON-001', custodianUserId]
+    );
+    await pool.query(
+      `INSERT INTO asset_history (id, asset_id, action, actor_id, payload, recorded_at, created_at)
+       VALUES ($1, $2, 'REGISTERED', $3, $4, now(), now())`,
+      [crypto.randomUUID(), testAssetId, custodianUserId, JSON.stringify({ name: 'จอภาพ LED ห้องประชุม' })]
+    );
+    await pool.query(
+      `INSERT INTO asset_history (id, asset_id, action, actor_id, payload, recorded_at, created_at)
+       VALUES ($1, $2, 'CORRECTED', $3, $4, now(), now())`,
+      [
+        crypto.randomUUID(),
+        testAssetId,
+        custodianUserId,
+        JSON.stringify({
+          changes: {
+            serial_number: { before: 'SN-MON-OLD', after: 'SN-MON-001' },
+          },
+          reason: 'ปรับปรุง serial number ที่ถูกต้อง',
+        }),
+      ]
+    );
+
+    // Login as Read-only user
+    await loginAs(page, context, readonlyUserId);
+
+    // Navigate to Asset Detail page
+    await page.goto(`${targetBaseUrl}/assets/${testAssetId}`);
+    await expect(page.locator('#asset-detail-heading')).toHaveText('จอภาพ LED ห้องประชุม');
+
+    // Both history facts are visible
+    await expect(page.locator('td:has-text("ลงทะเบียนครุภัณฑ์ (REGISTERED)")')).toBeVisible();
+    await expect(page.locator('td:has-text("แก้ไขข้อมูลครุภัณฑ์ (CORRECTED)")')).toBeVisible();
+    await expect(page.getByText('เหตุผล: ปรับปรุง serial number ที่ถูกต้อง')).toBeVisible();
+
+    // Correction form is NOT visible
+    await expect(page.locator('#asset-correction-form')).not.toBeVisible();
+    await expect(page.locator('[data-testid="read-only-notice"]')).toBeVisible();
+  });
+
+  test('Journey 12: Duplicate candidate warning and explicit continuation in correction form', async ({
+    page,
+    context,
+  }) => {
+    // 1. Seed existing asset X with asset_number 'CONFLICT-NUM-100'
+    const existingAssetId = crypto.randomUUID();
+    await pool.query(
+      `INSERT INTO assets (id, name, asset_number, serial_number, registered_by, recorded_at, created_at, updated_at)
+       VALUES ($1, $2, $3, $4, $5, now(), now(), now())`,
+      [existingAssetId, 'เครื่องพิมพ์ตั้งโต๊ะเดิม', 'CONFLICT-NUM-100', 'SN-PRN-001', custodianUserId]
+    );
+
+    // 2. Create asset Y to be corrected
+    const targetAssetId = crypto.randomUUID();
+    await pool.query(
+      `INSERT INTO assets (id, name, asset_number, serial_number, registered_by, recorded_at, created_at, updated_at)
+       VALUES ($1, $2, $3, $4, $5, now(), now(), now())`,
+      [targetAssetId, 'เครื่องพิมพ์เป้าหมาย', 'PRN-TARGET-999', 'SN-PRN-999', custodianUserId]
+    );
+    await pool.query(
+      `INSERT INTO asset_history (id, asset_id, action, actor_id, payload, recorded_at, created_at)
+       VALUES ($1, $2, 'REGISTERED', $3, $4, now(), now())`,
+      [crypto.randomUUID(), targetAssetId, custodianUserId, JSON.stringify({ name: 'เครื่องพิมพ์เป้าหมาย' })]
+    );
+
+    // Login as Custodian
+    await loginAs(page, context, custodianUserId);
+    await page.goto(`${targetBaseUrl}/assets/${targetAssetId}`);
+
+    // Fill identifier to match existing asset X
+    await page.locator('#asset-correction-form input#asset_number').fill('CONFLICT-NUM-100');
+    await page.locator('#asset-correction-form textarea#reason').fill('ทดสอบการยืนยันข้อมูลซ้ำ');
+
+    // Click check duplicate button
+    await page.locator('button#check-duplicate-btn').click();
+
+    // Duplicate candidate warning region appears with the conflict candidate
+    await expect(page.locator('div[role="region"][aria-label="การแจ้งเตือนข้อมูลซ้ำ"]')).toBeVisible();
+    await expect(page.locator('td:has-text("เครื่องพิมพ์ตั้งโต๊ะเดิม")')).toBeVisible();
+
+    // Attempt submit without checking explicit continuation -> validation warning
+    await page.locator('button#submit-correct-btn').click();
+    await expect(page.locator('[data-testid="correction-error-message"]')).toContainText(
+      'พบข้อมูลซ้ำในระบบ โปรดตรวจสอบและยืนยันการบันทึกการแก้ไขก่อนดำเนินการต่อ'
+    );
+
+    // Check explicit continuation checkbox
+    await page.locator('input#explicit_continuation').check();
+
+    // Submit correction
+    await page.locator('button#submit-correct-btn').click();
+
+    // Verify success
+    await expect(page.locator('[data-testid="correction-success-message"]')).toHaveText(
+      'บันทึกการแก้ไขครุภัณฑ์สำเร็จ'
+    );
+
+    // Verify DB
+    const dbAsset = await pool.query('SELECT asset_number FROM assets WHERE id = $1', [targetAssetId]);
+    expect(dbAsset.rows[0].asset_number).toBe('CONFLICT-NUM-100');
+  });
+
+  test('Journey 13: Committed response loss injection via page.route followed by UI retry using identical token', async ({
+    page,
+    context,
+  }) => {
+    // 1. Create asset
+    const testAssetId = crypto.randomUUID();
+    await pool.query(
+      `INSERT INTO assets (id, name, asset_number, serial_number, registered_by, recorded_at, created_at, updated_at)
+       VALUES ($1, $2, $3, $4, $5, now(), now(), now())`,
+      [testAssetId, 'เครื่องสำรองไฟห้องเซิร์ฟเวอร์', 'UPS-001', 'SN-UPS-001', custodianUserId]
+    );
+    await pool.query(
+      `INSERT INTO asset_history (id, asset_id, action, actor_id, payload, recorded_at, created_at)
+       VALUES ($1, $2, 'REGISTERED', $3, $4, now(), now())`,
+      [crypto.randomUUID(), testAssetId, custodianUserId, JSON.stringify({ name: 'เครื่องสำรองไฟห้องเซิร์ฟเวอร์' })]
+    );
+
+    // Login as Custodian
+    await loginAs(page, context, custodianUserId);
+    await page.goto(`${targetBaseUrl}/assets/${testAssetId}`);
+
+    // Fill form
+    await page.locator('#asset-correction-form input#name').fill('เครื่องสำรองไฟ Smart UPS 3000VA');
+    await page.locator('#asset-correction-form textarea#reason').fill('แก้ไขชื่อรุ่นให้ตรงกับฉลากสินค้า');
+
+    let interceptedFirstAttempt = false;
+    let firstTokenUsed: string | null = null;
+    let secondTokenUsed: string | null = null;
+
+    await page.route(`**/assets/${testAssetId}/correct`, async (route) => {
+      const headers = route.request().headers();
+      const retryToken = headers['x-retry-token'];
+
+      if (!interceptedFirstAttempt) {
+        interceptedFirstAttempt = true;
+        firstTokenUsed = retryToken;
+        // Fetch real response from server (which completes the DB transaction committed)
+        const response = await route.fetch();
+        expect(response.status()).toBe(200);
+        // Inject transport loss: abort response to browser so client sees network error
+        await route.abort('failed');
+        return;
+      }
+
+      // Second attempt (retry)
+      secondTokenUsed = retryToken;
+      await route.continue();
+    });
+
+    // 2. Click submit -> triggers first attempt which gets network error
+    await page.locator('button#submit-correct-btn').click();
+
+    // 3. Client UI displays network error and suggests retry
+    await expect(page.locator('[data-testid="correction-error-message"]')).toContainText(
+      'เกิดข้อผิดพลาดในการเชื่อมต่อเครือข่าย ท่านสามารถกดบันทึกซ้ำเพื่อดำเนินการต่อได้อย่างปลอดภัย'
+    );
+
+    // 4. Click submit again (manual UI retry)
+    await page.locator('button#submit-correct-btn').click();
+
+    // 5. Success is displayed on replay
+    await expect(page.locator('[data-testid="correction-success-message"]')).toHaveText(
+      'บันทึกการแก้ไขครุภัณฑ์สำเร็จ'
+    );
+
+    // Verify identical retry token was transmitted on retry
+    expect(firstTokenUsed).toBeTruthy();
+    expect(secondTokenUsed).toBe(firstTokenUsed);
+
+    // 6. Verify in database: exactly ONE history record for CORRECTED
+    const dbHistory = await pool.query(
+      'SELECT * FROM asset_history WHERE asset_id = $1 AND action = $2',
+      [testAssetId, 'CORRECTED']
+    );
+    expect(dbHistory.rows).toHaveLength(1);
+    expect(dbHistory.rows[0].payload.reason).toBe('แก้ไขชื่อรุ่นให้ตรงกับฉลากสินค้า');
+  });
+
+  test('Journey 14: Refresh failure after correction discloses committed success + refresh failure, offering manual retry', async ({
+    page,
+    context,
+  }) => {
+    const testAssetId = crypto.randomUUID();
+    await pool.query(
+      `INSERT INTO assets (id, name, asset_number, serial_number, registered_by, recorded_at, created_at, updated_at)
+       VALUES ($1, $2, $3, $4, $5, now(), now(), now())`,
+      [testAssetId, 'เครื่องตรวจวัดสภาพอากาศ', 'WEA-001', 'SN-WEA-001', custodianUserId]
+    );
+    await pool.query(
+      `INSERT INTO asset_history (id, asset_id, action, actor_id, payload, recorded_at, created_at)
+       VALUES ($1, $2, 'REGISTERED', $3, $4, now(), now())`,
+      [crypto.randomUUID(), testAssetId, custodianUserId, JSON.stringify({ name: 'เครื่องตรวจวัดสภาพอากาศ' })]
+    );
+
+    await loginAs(page, context, custodianUserId);
+    await page.goto(`${targetBaseUrl}/assets/${testAssetId}`);
+    await expect(page.locator('#asset-detail-heading')).toHaveText('เครื่องตรวจวัดสภาพอากาศ');
+
+    let postSucceeded = false;
+    let injectedRefetchError = false;
+
+    await page.route(`**/assets/${testAssetId}`, async (route) => {
+      if (route.request().method() === 'GET' && postSucceeded && !injectedRefetchError) {
+        injectedRefetchError = true;
+        await route.fulfill({
+          status: 500,
+          contentType: 'application/json',
+          body: JSON.stringify({ message: 'Simulated refetch network glitch' }),
+        });
+        return;
+      }
+      await route.continue();
+    });
+
+    await page.locator('#asset-correction-form input#name').fill('เครื่องตรวจวัดสภาพอากาศ IoT (รุ่นใหม่)');
+    await page.locator('#asset-correction-form textarea#reason').fill('อัปเกรดชื่อรุ่น');
+
+    // Submit form
+    postSucceeded = true;
+    await page.locator('button#submit-correct-btn').click();
+
+    // Verify refresh error banner appears offering retry button
+    await expect(page.locator('[data-testid="refresh-error-banner"]')).toBeVisible();
+    await expect(page.locator('[data-testid="refresh-error-banner"]')).toContainText(
+      'บันทึกการแก้ไขครุภัณฑ์สำเร็จ แต่การดึงข้อมูลล่าสุดล้มเหลว'
+    );
+    await expect(page.locator('button#retry-refresh-btn')).toBeVisible();
+
+    // Click retry button -> second GET will not be intercepted with 500
+    await page.locator('button#retry-refresh-btn').click();
+
+    // Verify refresh succeeds and error banner clears
+    await expect(page.locator('[data-testid="refresh-error-banner"]')).not.toBeVisible();
+    await expect(page.locator('#asset-detail-heading')).toHaveText('เครื่องตรวจวัดสภาพอากาศ IoT (รุ่นใหม่)');
+  });
+
+  test('Journey 15: Legitimate clearing of erroneous asset_number in UI without blanket prohibition', async ({
+    page,
+    context,
+  }) => {
+    const testAssetId = crypto.randomUUID();
+    await pool.query(
+      `INSERT INTO assets (id, name, asset_number, serial_number, registered_by, recorded_at, created_at, updated_at)
+       VALUES ($1, $2, $3, $4, $5, now(), now(), now())`,
+      [testAssetId, 'โต๊ะทำงานพับได้', 'WRONG-TAG-999', 'SN-DESK-01', custodianUserId]
+    );
+    await pool.query(
+      `INSERT INTO asset_history (id, asset_id, action, actor_id, payload, recorded_at, created_at)
+       VALUES ($1, $2, 'REGISTERED', $3, $4, now(), now())`,
+      [crypto.randomUUID(), testAssetId, custodianUserId, JSON.stringify({ name: 'โต๊ะทำงานพับได้' })]
+    );
+
+    await loginAs(page, context, custodianUserId);
+    await page.goto(`${targetBaseUrl}/assets/${testAssetId}`);
+
+    // Clear asset_number
+    await page.locator('#asset-correction-form input#asset_number').fill('');
+    await page.locator('#asset-correction-form textarea#reason').fill('ลบเลขครุภัณฑ์เนื่องจากบันทึกผิดพลาด แท้จริงไม่มีเลขติดครุภัณฑ์');
+
+    await page.locator('button#submit-correct-btn').click();
+
+    await expect(page.locator('[data-testid="correction-success-message"]')).toHaveText(
+      'บันทึกการแก้ไขครุภัณฑ์สำเร็จ'
+    );
+
+    // Verify in database: asset_number is NULL
+    const dbAsset = await pool.query('SELECT asset_number FROM assets WHERE id = $1', [testAssetId]);
+    expect(dbAsset.rows[0].asset_number).toBeNull();
+  });
+
+  test('Journey 16: Immediate capability revocation during correction unmounts form and renders read-only notice while preserving history', async ({
+    page,
+    context,
+  }) => {
+    const testAssetId = crypto.randomUUID();
+    await pool.query(
+      `INSERT INTO assets (id, name, asset_number, serial_number, registered_by, recorded_at, created_at, updated_at)
+       VALUES ($1, $2, $3, $4, $5, now(), now(), now())`,
+      [testAssetId, 'เครื่องสำรองไฟฟ้า APC', 'APC-2026-01', 'SN-APC-01', custodianUserId]
+    );
+    await pool.query(
+      `INSERT INTO asset_history (id, asset_id, action, actor_id, payload, recorded_at, created_at)
+       VALUES ($1, $2, 'REGISTERED', $3, $4, now(), now())`,
+      [crypto.randomUUID(), testAssetId, custodianUserId, JSON.stringify({ name: 'เครื่องสำรองไฟฟ้า APC' })]
+    );
+
+    await loginAs(page, context, custodianUserId);
+    await page.goto(`${targetBaseUrl}/assets/${testAssetId}`);
+    await expect(page.locator('#asset-detail-heading')).toHaveText('เครื่องสำรองไฟฟ้า APC');
+    await expect(page.locator('#asset-correction-form')).toBeVisible();
+
+    // Mock capability revocation: POST returns 403 Forbidden
+    await page.route(`**/assets/${testAssetId}/correct`, async (route) => {
+      await route.fulfill({
+        status: 403,
+        contentType: 'application/json',
+        body: JSON.stringify({
+          statusCode: 403,
+          code: 'FORBIDDEN',
+          error: 'FORBIDDEN',
+          message: 'User does not possess required capability: asset:correct',
+        }),
+      });
+    });
+
+    await page.locator('#asset-correction-form input#name').fill('เครื่องสำรองไฟฟ้า APC Smart 1500');
+    await page.locator('#asset-correction-form textarea#reason').fill('แก้ไขชื่อรุ่น');
+    await page.locator('button#submit-correct-btn').click();
+
+    // Verify form is immediately unmounted and read-only notice is displayed
+    await expect(page.locator('#asset-correction-form')).not.toBeVisible();
+    await expect(page.locator('[data-testid="read-only-notice"]')).toBeVisible();
+    await expect(page.locator('[data-testid="read-only-notice"]')).toContainText(
+      'ผู้ใช้ปัจจุบันมีสิทธิ์อ่านอย่างเดียว ไม่สามารถแก้ไขข้อมูลครุภัณฑ์ได้'
+    );
+
+    // Verify history timeline remains visible and intact
+    await expect(page.locator('#history-heading')).toBeVisible();
+    await expect(page.locator('table')).toContainText('REGISTERED');
+  });
+
+  test('Journey 17: Candidate duplicate review supports pagination via load-more button', async ({
+    page,
+    context,
+  }) => {
+    const testAssetId = crypto.randomUUID();
+    await pool.query(
+      `INSERT INTO assets (id, name, asset_number, serial_number, registered_by, recorded_at, created_at, updated_at)
+       VALUES ($1, $2, $3, $4, $5, now(), now(), now())`,
+      [testAssetId, 'เครื่องคอมพิวเตอร์ลูกข่าย', 'PC-CLIENT-00', 'SN-PC-00', custodianUserId]
+    );
+    await pool.query(
+      `INSERT INTO asset_history (id, asset_id, action, actor_id, payload, recorded_at, created_at)
+       VALUES ($1, $2, 'REGISTERED', $3, $4, now(), now())`,
+      [crypto.randomUUID(), testAssetId, custodianUserId, JSON.stringify({ name: 'เครื่องคอมพิวเตอร์ลูกข่าย' })]
+    );
+
+    // Seed 12 duplicate assets with asset_number DUP-PAGE-TAG
+    for (let i = 1; i <= 12; i++) {
+      const dupId = crypto.randomUUID();
+      await pool.query(
+        `INSERT INTO assets (id, name, asset_number, serial_number, registered_by, recorded_at, created_at, updated_at)
+         VALUES ($1, $2, $3, $4, $5, now(), now(), now())`,
+        [dupId, `เครื่องคอมพิวเตอร์ชุดที่ ${i}`, 'DUP-PAGE-TAG', `SN-DUP-${i}`, custodianUserId]
+      );
+      await pool.query(
+        `INSERT INTO asset_history (id, asset_id, action, actor_id, payload, recorded_at, created_at)
+         VALUES ($1, $2, 'REGISTERED', $3, $4, now(), now())`,
+        [crypto.randomUUID(), dupId, custodianUserId, JSON.stringify({ name: `เครื่องคอมพิวเตอร์ชุดที่ ${i}` })]
+      );
+    }
+
+    await loginAs(page, context, custodianUserId);
+    await page.goto(`${targetBaseUrl}/assets/${testAssetId}`);
+
+    // Fill duplicate asset_number
+    await page.locator('#asset-correction-form input#asset_number').fill('DUP-PAGE-TAG');
+    await page.locator('button#check-duplicate-btn').click();
+
+    // Verify first page of 10 items shown out of 12
+    const warningRegion = page.locator('div[role="region"][aria-label="การแจ้งเตือนข้อมูลซ้ำ"]');
+    await expect(warningRegion).toBeVisible();
+    await expect(warningRegion).toContainText('แสดง 10 จากทั้งหมด 12 รายการ');
+
+    // Click load more
+    const loadMoreBtn = page.locator('button#load-more-candidates-btn');
+    await expect(loadMoreBtn).toBeVisible();
+    await loadMoreBtn.click();
+
+    // Verify all 12 items now shown and load-more button disappears
+    await expect(warningRegion).toContainText('แสดง 12 จากทั้งหมด 12 รายการ');
+    await expect(loadMoreBtn).not.toBeVisible();
+  });
+
+  test('Journey 18: Network failure enters immutable uncertain state freezing inputs and allowing retry via retry-uncertain button', async ({
+    page,
+    context,
+  }) => {
+    const testAssetId = crypto.randomUUID();
+    await pool.query(
+      `INSERT INTO assets (id, name, asset_number, serial_number, registered_by, recorded_at, created_at, updated_at)
+       VALUES ($1, $2, $3, $4, $5, now(), now(), now())`,
+      [testAssetId, 'เครื่องปรับอากาศ Daikin', 'AC-DAIKIN-01', 'SN-AC-01', custodianUserId]
+    );
+    await pool.query(
+      `INSERT INTO asset_history (id, asset_id, action, actor_id, payload, recorded_at, created_at)
+       VALUES ($1, $2, 'REGISTERED', $3, $4, now(), now())`,
+      [crypto.randomUUID(), testAssetId, custodianUserId, JSON.stringify({ name: 'เครื่องปรับอากาศ Daikin' })]
+    );
+
+    await loginAs(page, context, custodianUserId);
+    await page.goto(`${targetBaseUrl}/assets/${testAssetId}`);
+
+    await page.locator('#asset-correction-form input#name').fill('เครื่องปรับอากาศ Daikin Inverter');
+    await page.locator('#asset-correction-form textarea#reason').fill('แก้ไขข้อมูลเทคโนโลยี Inverter');
+
+    let abortedFirstAttempt = false;
+    let tokenAttempt1: string | null = null;
+    let tokenAttempt2: string | null = null;
+
+    await page.route(`**/assets/${testAssetId}/correct`, async (route) => {
+      const headers = route.request().headers();
+      if (!abortedFirstAttempt) {
+        abortedFirstAttempt = true;
+        tokenAttempt1 = headers['x-retry-token'];
+        await route.abort('failed');
+        return;
+      }
+      tokenAttempt2 = headers['x-retry-token'];
+      await route.continue();
+    });
+
+    // Submit form -> network aborts
+    await page.locator('button#submit-correct-btn').click();
+
+    // Verify error banner appears with retry button
+    const errorBanner = page.locator('[data-testid="correction-error-message"]');
+    await expect(errorBanner).toBeVisible();
+    await expect(errorBanner).toContainText(
+      'เกิดข้อผิดพลาดในการเชื่อมต่อเครือข่าย ท่านสามารถกดบันทึกซ้ำเพื่อดำเนินการต่อได้อย่างปลอดภัย'
+    );
+    const retryUncertainBtn = page.locator('button#retry-uncertain-btn');
+    await expect(retryUncertainBtn).toBeVisible();
+
+    // Verify inputs are frozen (disabled) during uncertain state
+    await expect(page.locator('#asset-correction-form input#name')).toBeDisabled();
+    await expect(page.locator('#asset-correction-form input#asset_number')).toBeDisabled();
+    await expect(page.locator('#asset-correction-form input#serial_number')).toBeDisabled();
+    await expect(page.locator('#asset-correction-form textarea#reason')).toBeDisabled();
+
+    // Click retry-uncertain button
+    await retryUncertainBtn.click();
+
+    // Success displayed and same token transmitted
+    await expect(page.locator('[data-testid="correction-success-message"]')).toHaveText(
+      'บันทึกการแก้ไขครุภัณฑ์สำเร็จ'
+    );
+    expect(tokenAttempt1).toBeTruthy();
+    expect(tokenAttempt2).toBe(tokenAttempt1);
+
+    // Inputs are enabled again
+    await expect(page.locator('#asset-correction-form input#name')).toBeEnabled();
+  });
+
+  test('Journey 19: Cache eviction and data suppression when asset access returns 403 Forbidden', async ({
+    page,
+    context,
+  }) => {
+    const testAssetId = crypto.randomUUID();
+    await pool.query(
+      `INSERT INTO assets (id, name, asset_number, serial_number, registered_by, recorded_at, created_at, updated_at)
+       VALUES ($1, $2, $3, $4, $5, now(), now(), now())`,
+      [testAssetId, 'อุปกรณ์รักษาความปลอดภัย Firewall', 'FW-001', 'SN-FW-001', custodianUserId]
+    );
+    await pool.query(
+      `INSERT INTO asset_history (id, asset_id, action, actor_id, payload, recorded_at, created_at)
+       VALUES ($1, $2, 'REGISTERED', $3, $4, now(), now())`,
+      [crypto.randomUUID(), testAssetId, custodianUserId, JSON.stringify({ name: 'อุปกรณ์รักษาความปลอดภัย Firewall' })]
+    );
+
+    // Mock GET /assets/:id as 403 Forbidden for API fetches
+    await page.route(`**/assets/${testAssetId}`, async (route) => {
+      const isHtmlNav =
+        route.request().isNavigationRequest() ||
+        route.request().headers()['accept']?.includes('text/html');
+
+      if (isHtmlNav) {
+        await route.continue();
+        return;
+      }
+
+      await route.fulfill({
+        status: 403,
+        contentType: 'application/json',
+        body: JSON.stringify({
+          statusCode: 403,
+          code: 'FORBIDDEN',
+          error: 'FORBIDDEN',
+          message: 'คุณไม่มีสิทธิ์เข้าถึงข้อมูลครุภัณฑ์นี้ (403 Forbidden)',
+        }),
+      });
+    });
+
+    await loginAs(page, context, custodianUserId);
+    await page.goto(`${targetBaseUrl}/assets/${testAssetId}`);
+
+    // Verify error screen is rendered and asset details/form are suppressed
+    await expect(page.locator('div[role="alert"]')).toContainText(
+      'คุณไม่มีสิทธิ์เข้าถึงข้อมูลครุภัณฑ์นี้ (403 Forbidden)'
+    );
+    await expect(page.locator('#asset-detail-heading')).not.toBeVisible();
+    await expect(page.locator('#asset-correction-form')).not.toBeVisible();
+  });
+
+  test('Journey 20: Session and role lifecycle transitions: correction-only revocation preserves read-only viewing; full revocation evicts protected cache', async ({
+    page,
+    context,
+  }) => {
+    // 1. Seed dedicated user with ADMINISTRATOR role
+    const passwordHash = await UserService.hashPassword('Password123!');
+    const userRes = await pool.query(
+      `INSERT INTO users (username, password_hash, is_active) VALUES ('lifecycle_user_e2e', '${passwordHash}', true) RETURNING id;`
+    );
+    const userId = userRes.rows[0].id;
+    await pool.query("INSERT INTO user_roles (user_id, role_id) VALUES ($1, 'ADMINISTRATOR')", [userId]);
+
+    // 2. Create test asset
+    const testAssetId = crypto.randomUUID();
+    await pool.query(
+      `INSERT INTO assets (id, name, asset_number, serial_number, registered_by, recorded_at, created_at, updated_at)
+       VALUES ($1, $2, $3, $4, $5, now(), now(), now())`,
+      [testAssetId, 'เครื่องแม่ข่าย Lifecycle Server', 'SRV-LC-01', 'SN-LC-01', userId]
+    );
+    await pool.query(
+      `INSERT INTO asset_history (id, asset_id, action, actor_id, payload, recorded_at, created_at)
+       VALUES ($1, $2, 'REGISTERED', $3, $4, now(), now())`,
+      [crypto.randomUUID(), testAssetId, userId, JSON.stringify({ name: 'เครื่องแม่ข่าย Lifecycle Server' })]
+    );
+
+    // 3. Login as administrator and open asset detail page
+    await loginAs(page, context, userId);
+    await page.goto(`${targetBaseUrl}/assets/${testAssetId}`);
+
+    // Verify detail and correction form are visible
+    await expect(page.locator('#asset-detail-heading')).toBeVisible();
+    await expect(page.locator('#asset-correction-form')).toBeVisible();
+
+    // 4. Downgrade user in PostgreSQL: remove ADMINISTRATOR, grant READ_ONLY (retains asset:view, loses asset:correct)
+    await pool.query('DELETE FROM user_roles WHERE user_id = $1', [userId]);
+    await pool.query("INSERT INTO user_roles (user_id, role_id) VALUES ($1, 'READ_ONLY')", [userId]);
+
+    // 5. Fill out and submit correction form -> Fastify returns 403 Forbidden
+    await page.locator('#asset-correction-form input#name').fill('เครื่องแม่ข่าย Downgraded Name');
+    await page.locator('#asset-correction-form textarea#reason').fill('ทดสอบการเพิกถอนสิทธิ์');
+    await page.locator('button#submit-correct-btn').click();
+
+    // 6. Verify: correction form unmounts, read-only notice appears, but read-only detail remains visible because user still has asset:view
+    await expect(page.locator('[data-testid="read-only-notice"]')).toBeVisible();
+    await expect(page.locator('#asset-correction-form')).not.toBeVisible();
+    await expect(page.locator('#asset-detail-heading')).toBeVisible();
+    await expect(page.locator('#asset-detail-heading')).toContainText('เครื่องแม่ข่าย Lifecycle Server');
+
+    // 7. Full view revocation: remove all roles in PostgreSQL
+    await pool.query('DELETE FROM user_roles WHERE user_id = $1', [userId]);
+
+    // 8. Trigger reload / revalidation
+    await page.reload();
+
+    // 9. Verify 403 Forbidden alert is rendered and no protected asset facts or history are exposed
+    await expect(page.locator('div[role="alert"]')).toContainText(
+      'คุณไม่มีสิทธิ์เข้าถึงข้อมูลครุภัณฑ์นี้ (403 Forbidden)'
+    );
+    await expect(page.locator('#asset-detail-heading')).not.toBeVisible();
+    expect(await page.locator('text=เครื่องแม่ข่าย Lifecycle Server').count()).toBe(0);
+  });
+
+  test('Journey 21: Confirmed commit awaiting refresh (COMMITTED_AWAITING_REFRESH): blocks changed edit, releases on fresh refetch with single audit', async ({
+    page,
+    context,
+  }) => {
+    const testAssetId = crypto.randomUUID();
+    await pool.query(
+      `INSERT INTO assets (id, name, asset_number, serial_number, registered_by, recorded_at, created_at, updated_at)
+       VALUES ($1, $2, $3, $4, $5, now(), now(), now())`,
+      [testAssetId, 'เครื่องสำรองไฟ UPS', 'UPS-001', 'SN-UPS-001', adminUserId]
+    );
+    await pool.query(
+      `INSERT INTO asset_history (id, asset_id, action, actor_id, payload, recorded_at, created_at)
+       VALUES ($1, $2, 'REGISTERED', $3, $4, now(), now())`,
+      [crypto.randomUUID(), testAssetId, adminUserId, JSON.stringify({ name: 'เครื่องสำรองไฟ UPS' })]
+    );
+
+    await loginAs(page, context, adminUserId);
+    await page.goto(`${targetBaseUrl}/assets/${testAssetId}`);
+
+    await expect(page.locator('#asset-detail-heading')).toBeVisible();
+
+    // Intercept GET /assets/:id: fail refresh following correction mutation
+    let failRefresh = false;
+
+    await page.route(`**/assets/${testAssetId}`, async (route) => {
+      const isHtmlNav =
+        route.request().isNavigationRequest() ||
+        route.request().headers()['accept']?.includes('text/html');
+
+      if (isHtmlNav) {
+        await route.continue();
+        return;
+      }
+
+      if (failRefresh) {
+        await route.fulfill({
+          status: 500,
+          contentType: 'application/json',
+          body: JSON.stringify({ message: 'Simulated refresh network error' }),
+        });
+        return;
+      }
+      await route.continue();
+    });
+
+    // Fill form
+    await page.locator('#asset-correction-form input#name').fill('เครื่องสำรองไฟ UPS True Online');
+    await page.locator('#asset-correction-form textarea#reason').fill('แก้ไขประเภท UPS ให้ถูกต้อง');
+
+    // Enable refresh failure
+    failRefresh = true;
+
+    // Submit form -> POST succeeds, but parent refetch fails
+    await page.locator('button#submit-correct-btn').click();
+
+    // Verify COMMITTED_AWAITING_REFRESH banner appears
+    const committedBanner = page.locator('[data-testid="committed-awaiting-refresh-banner"]');
+    await expect(committedBanner).toBeVisible();
+    await expect(committedBanner).toContainText(
+      'บันทึกการแก้ไขครุภัณฑ์สำเร็จ แต่การดึงข้อมูลล่าสุดล้มเหลว กรุณากดปุ่มเพื่อโหลดข้อมูลใหม่'
+    );
+
+    // Verify inputs and submit button are locked
+    await expect(page.locator('#asset-correction-form input#name')).toBeDisabled();
+    await expect(page.locator('#asset-correction-form input#asset_number')).toBeDisabled();
+    await expect(page.locator('#asset-correction-form input#serial_number')).toBeDisabled();
+    await expect(page.locator('#asset-correction-form textarea#reason')).toBeDisabled();
+    await expect(page.locator('button#submit-correct-btn')).toBeDisabled();
+
+    // Verify parent error alert with retry button is visible
+    const retryRefreshBtn = page.locator('button#retry-refresh-btn');
+    await expect(retryRefreshBtn).toBeVisible();
+
+    // Allow refresh to succeed now
+    failRefresh = false;
+
+    // Click retry refresh button
+    await retryRefreshBtn.click();
+
+    // Form reconciles and unlocks with new baseline
+    await expect(committedBanner).not.toBeVisible();
+    await expect(page.locator('#asset-correction-form input#name')).toBeEnabled();
+    await expect(page.locator('#asset-correction-form input#name')).toHaveValue('เครื่องสำรองไฟ UPS True Online');
+
+    // Verify DB state: exactly 1 CORRECTED history row
+    const histRes = await pool.query(
+      "SELECT count(*)::int as count FROM asset_history WHERE asset_id = $1 AND action = 'CORRECTED'",
+      [testAssetId]
+    );
+    expect(histRes.rows[0].count).toBe(1);
+  });
+
+  test('Journey 22: POST warning pagination 50→60: advances correctly from automatic warning without gaps or overlaps (with unchanged identifier and inverse fixtures)', async ({
+    page,
+    context,
+  }) => {
+    // 1. Create primary target asset
+    const testAssetId = crypto.randomUUID();
+    await pool.query(
+      `INSERT INTO assets (id, name, asset_number, serial_number, registered_by, recorded_at, created_at, updated_at)
+       VALUES ($1, $2, $3, $4, $5, now(), now(), now())`,
+      [testAssetId, 'ครุภัณฑ์หลักสำหรับทดสอบ Warning Pagination', 'ORIGINAL-PAG-00', 'SN-ORIG-00', adminUserId]
+    );
+    await pool.query(
+      `INSERT INTO asset_history (id, asset_id, action, actor_id, payload, recorded_at, created_at)
+       VALUES ($1, $2, 'REGISTERED', $3, $4, now(), now())`,
+      [crypto.randomUUID(), testAssetId, adminUserId, JSON.stringify({ name: 'ครุภัณฑ์หลัก' })]
+    );
+
+    // 1b. Extra asset sharing unchanged serial_number 'SN-ORIG-00'
+    const extraAssetId1 = crypto.randomUUID();
+    await pool.query(
+      `INSERT INTO assets (id, name, asset_number, serial_number, registered_by, recorded_at, created_at, updated_at)
+       VALUES ($1, $2, $3, $4, $5, now(), now(), now())`,
+      [extraAssetId1, 'ครุภัณฑ์เลขซีเรียลเดียวกันแต่เลขครุภัณฑ์ต่าง', 'OTHER-ASSET-01', 'SN-ORIG-00', adminUserId]
+    );
+
+    // 2. Insert 60 conflicting assets with the same asset_number 'PAG-DUP-60'
+    const batchValues: string[] = [];
+    for (let i = 1; i <= 60; i++) {
+      const pad = String(i).padStart(2, '0');
+      const cid = crypto.randomUUID();
+      batchValues.push(
+        `('${cid}', 'เครื่องคอมพิวเตอร์ทดสอบ ${pad}', 'PAG-DUP-60', 'SN-DUP-${pad}', '${adminUserId}', now(), now(), now())`
+      );
+    }
+    await pool.query(
+      `INSERT INTO assets (id, name, asset_number, serial_number, registered_by, recorded_at, created_at, updated_at)
+       VALUES ${batchValues.join(',\n')}`
+    );
+
+    // 3. Login and navigate to target asset
+    await loginAs(page, context, adminUserId);
+    await page.goto(`${targetBaseUrl}/assets/${testAssetId}`);
+
+    await expect(page.locator('#asset-detail-heading')).toBeVisible();
+
+    // 4. Directly enter duplicate asset_number and submit WITHOUT clicking preview
+    await page.locator('#asset-correction-form input#asset_number').fill('PAG-DUP-60');
+    await page.locator('#asset-correction-form textarea#reason').fill('แก้ไขเลขครุภัณฑ์ชนกัน 60 รายการ');
+
+    await page.locator('button#submit-correct-btn').click();
+
+    // 5. Verify automatic POST 409 warning renders 50 items and load more button (excluding extra asset on unchanged serial)
+    const warningRegion = page.locator('div[role="region"][aria-label="การแจ้งเตือนข้อมูลซ้ำ"]');
+    await expect(warningRegion).toBeVisible();
+    await expect(warningRegion).toContainText('แสดง 50 จากทั้งหมด 60 รายการ');
+
+    const loadMoreBtn = page.locator('button#load-more-candidates-btn');
+    await expect(loadMoreBtn).toBeVisible();
+
+    // Count rows before load more: 50 rows in tbody
+    const rowsBefore = await warningRegion.locator('tbody tr').count();
+    expect(rowsBefore).toBe(50);
+
+    // 6. Click load more button -> advances offset from 50
+    await loadMoreBtn.click();
+
+    // 7. Verify all 60 items are now displayed without gaps or overlaps
+    await expect(warningRegion).toContainText('แสดง 60 จากทั้งหมด 60 รายการ');
+    const rowsAfter = await warningRegion.locator('tbody tr').count();
+    expect(rowsAfter).toBe(60);
+    await expect(loadMoreBtn).not.toBeVisible();
+
+    // 8. Confirm acknowledgement checkbox and submit
+    await page.locator('#asset-correction-form input#explicit_continuation').check();
+    await page.locator('button#submit-correct-btn').click();
+
+    // 9. Success!
+    await expect(page.locator('[data-testid="correction-success-message"]')).toHaveText(
+      'บันทึกการแก้ไขครุภัณฑ์สำเร็จ'
+    );
+
+    // 10. Inverse fixture: unchanged asset_number, changed serial_number 50→60
+    const invAssetId = crypto.randomUUID();
+    await pool.query(
+      `INSERT INTO assets (id, name, asset_number, serial_number, registered_by, recorded_at, created_at, updated_at)
+       VALUES ($1, $2, $3, $4, $5, now(), now(), now())`,
+      [invAssetId, 'ครุภัณฑ์หลักสำหรับทดสอบ Inverse Pagination', 'ORIGINAL-INV-00', 'SN-ORIG-INV', adminUserId]
+    );
+    await pool.query(
+      `INSERT INTO asset_history (id, asset_id, action, actor_id, payload, recorded_at, created_at)
+       VALUES ($1, $2, 'REGISTERED', $3, $4, now(), now())`,
+      [crypto.randomUUID(), invAssetId, adminUserId, JSON.stringify({ name: 'ครุภัณฑ์ผกผัน' })]
+    );
+
+    // Extra asset sharing unchanged asset_number 'ORIGINAL-INV-00'
+    const extraAssetId2 = crypto.randomUUID();
+    await pool.query(
+      `INSERT INTO assets (id, name, asset_number, serial_number, registered_by, recorded_at, created_at, updated_at)
+       VALUES ($1, $2, $3, $4, $5, now(), now(), now())`,
+      [extraAssetId2, 'ครุภัณฑ์เลขครุภัณฑ์เดียวกันแต่เลขซีเรียลต่าง', 'ORIGINAL-INV-00', 'SN-OTHER-99', adminUserId]
+    );
+
+    // Insert 60 conflicting assets with the same serial_number 'SN-DUP-INV-60'
+    const invBatchValues: string[] = [];
+    for (let i = 1; i <= 60; i++) {
+      const pad = String(i).padStart(2, '0');
+      const cid = crypto.randomUUID();
+      invBatchValues.push(
+        `('${cid}', 'อุปกรณ์เครือข่ายผกผัน ${pad}', 'PAG-INV-${pad}', 'SN-DUP-INV-60', '${adminUserId}', now(), now(), now())`
+      );
+    }
+    await pool.query(
+      `INSERT INTO assets (id, name, asset_number, serial_number, registered_by, recorded_at, created_at, updated_at)
+       VALUES ${invBatchValues.join(',\n')}`
+    );
+
+    await page.goto(`${targetBaseUrl}/assets/${invAssetId}`);
+    await expect(page.locator('#asset-detail-heading')).toBeVisible();
+
+    // Edit ONLY serial_number to 'SN-DUP-INV-60' (asset_number stays unchanged)
+    await page.locator('#asset-correction-form input#serial_number').fill('SN-DUP-INV-60');
+    await page.locator('#asset-correction-form textarea#reason').fill('แก้ไขซีเรียลผกผัน 60 รายการ');
+    await page.locator('button#submit-correct-btn').click();
+
+    // Verify automatic POST 409 warning renders 50 items and load more button (excluding extra asset on unchanged asset_number)
+    const invWarningRegion = page.locator('div[role="region"][aria-label="การแจ้งเตือนข้อมูลซ้ำ"]');
+    await expect(invWarningRegion).toBeVisible();
+    await expect(invWarningRegion).toContainText('แสดง 50 จากทั้งหมด 60 รายการ');
+
+    const invLoadMoreBtn = page.locator('button#load-more-candidates-btn');
+    await expect(invLoadMoreBtn).toBeVisible();
+    expect(await invWarningRegion.locator('tbody tr').count()).toBe(50);
+
+    // Click load more button -> advances offset from 50
+    await invLoadMoreBtn.click();
+
+    // Verify all 60 items are now displayed without gaps or overlaps
+    await expect(invWarningRegion).toContainText('แสดง 60 จากทั้งหมด 60 รายการ');
+    expect(await invWarningRegion.locator('tbody tr').count()).toBe(60);
+    await expect(invLoadMoreBtn).not.toBeVisible();
+
+    // Confirm acknowledgement checkbox and submit
+    await page.locator('#asset-correction-form input#explicit_continuation').check();
+    await page.locator('button#submit-correct-btn').click();
+
+    await expect(page.locator('[data-testid="correction-success-message"]')).toHaveText(
+      'บันทึกการแก้ไขครุภัณฑ์สำเร็จ'
+    );
+
+    // 11. Inconsistent continuation / empty page test
+    const stallAssetId = crypto.randomUUID();
+    await pool.query(
+      `INSERT INTO assets (id, name, asset_number, serial_number, registered_by, recorded_at, created_at, updated_at)
+       VALUES ($1, $2, $3, $4, $5, now(), now(), now())`,
+      [stallAssetId, 'ครุภัณฑ์ทดสอบ Continuation Stall', 'ORIG-STALL-00', 'SN-STALL-00', adminUserId]
+    );
+    await pool.query(
+      `INSERT INTO asset_history (id, asset_id, action, actor_id, payload, recorded_at, created_at)
+       VALUES ($1, $2, 'REGISTERED', $3, $4, now(), now())`,
+      [crypto.randomUUID(), stallAssetId, adminUserId, JSON.stringify({ name: 'ครุภัณฑ์ทดสอบ Stall' })]
+    );
+
+    const stallBatch: string[] = [];
+    for (let i = 1; i <= 55; i++) {
+      const pad = String(i).padStart(2, '0');
+      stallBatch.push(
+        `('${crypto.randomUUID()}', 'เครื่องทดสอบ Stall ${pad}', 'STALL-DUP-55', 'SN-STALL-${pad}', '${adminUserId}', now(), now(), now())`
+      );
+    }
+    await pool.query(
+      `INSERT INTO assets (id, name, asset_number, serial_number, registered_by, recorded_at, created_at, updated_at)
+       VALUES ${stallBatch.join(',\n')}`
+    );
+
+    await page.goto(`${targetBaseUrl}/assets/${stallAssetId}`);
+    await expect(page.locator('#asset-detail-heading')).toBeVisible();
+
+    await page.locator('#asset-correction-form input#asset_number').fill('STALL-DUP-55');
+    await page.locator('#asset-correction-form textarea#reason').fill('ทดสอบ empty continuation page');
+    await page.locator('button#submit-correct-btn').click();
+
+    const stallWarningRegion = page.locator('div[role="region"][aria-label="การแจ้งเตือนข้อมูลซ้ำ"]');
+    await expect(stallWarningRegion).toBeVisible();
+    await expect(stallWarningRegion).toContainText('แสดง 50 จากทั้งหมด 55 รายการ');
+
+    let returnEmptyContinuation = true;
+    await page.route(`**/assets/${stallAssetId}/duplicate-candidates*`, async (route) => {
+      const url = route.request().url();
+      if (returnEmptyContinuation && url.includes('offset=50')) {
+        await route.fulfill({
+          status: 200,
+          contentType: 'application/json',
+          body: JSON.stringify({
+            candidates: [],
+            total_count: 55,
+            has_more: false,
+            limit: 10,
+            offset: 50,
+          }),
+        });
+        return;
+      }
+      await route.continue();
+    });
+
+    await page.locator('button#load-more-candidates-btn').click();
+
+    const errorBanner = page.locator('[data-testid="duplicate-pagination-error"]');
+    await expect(errorBanner).toBeVisible();
+    await expect(errorBanner).toContainText('ไม่พบข้อมูลรายการซ้ำเพิ่มเติมจากเซิร์ฟเวอร์');
+    const retryLoadMoreBtn = page.locator('button#retry-load-more-btn');
+    await expect(retryLoadMoreBtn).toBeVisible();
+
+    returnEmptyContinuation = false;
+    await retryLoadMoreBtn.click();
+
+    await expect(errorBanner).not.toBeVisible();
+    await expect(stallWarningRegion).toContainText('แสดง 55 จากทั้งหมด 55 รายการ');
+    expect(await stallWarningRegion.locator('tbody tr').count()).toBe(55);
+  });
+
   test('Journey 10 (T3): discover search from Dashboard -> browse and exact identifier search -> open detail', async ({
     page,
     context,
@@ -810,7 +1775,8 @@ test.describe.serial('Asset Registry Real SPA -> Composed API -> PostgreSQL Jour
     await expect(page.locator('input#search-value')).toHaveValue('');
     await expect(page.locator('#asset-search-table')).toBeVisible();
     // Table shows full browse results, not just the 1 filtered row of Actor A
-    await expect(page.locator('tbody tr')).toHaveCount(7);
+    await expect(page.locator('tbody tr')).not.toHaveCount(1);
+    expect(await page.locator('tbody tr').count()).toBeGreaterThanOrEqual(7);
   });
 
   test('Journey 17 (T3 F3): stale out-of-order session-check response is discarded and cannot clear or redirect a newer valid search', async ({
@@ -1016,5 +1982,579 @@ test.describe.serial('Asset Registry Real SPA -> Composed API -> PostgreSQL Jour
     expect(page.url()).toBe(`${targetBaseUrl}/dashboard`);
     await expect(page.getByRole('heading', { level: 1, name: 'แดชบอร์ด' })).toBeVisible();
     await expect(page.getByRole('heading', { level: 1, name: 'เข้าสู่ระบบ' })).not.toBeVisible();
+  });
+
+  test('Journey 23 (F-01): dirty edit + competing committed correction without manual refresh fails closed with stale 409 conflict, preserves dirty inputs on read failure, and reconciles baseline on authoritative read', async ({
+    page,
+    context,
+  }) => {
+    // 1. Seed base asset
+    const testAssetId = crypto.randomUUID();
+    await pool.query(
+      `INSERT INTO assets (id, name, asset_number, serial_number, registered_by, recorded_at, created_at, updated_at)
+       VALUES ($1, $2, $3, $4, $5, now(), now(), now())`,
+      [testAssetId, 'เครื่องแม่ข่ายเซิร์ฟเวอร์ก่อนแก้ไข', 'SRV-ORIG-999', 'SN-ORIG-999', adminUserId]
+    );
+    await pool.query(
+      `INSERT INTO asset_history (id, asset_id, action, actor_id, payload, recorded_at, created_at)
+       VALUES ($1, $2, 'REGISTERED', $3, $4, now(), now())`,
+      [crypto.randomUUID(), testAssetId, adminUserId, JSON.stringify({ name: 'เครื่องแม่ข่ายเซิร์ฟเวอร์ก่อนแก้ไข' })]
+    );
+
+    // 2. Login as admin and navigate to asset detail
+    await loginAs(page, context, adminUserId);
+    await page.goto(`${targetBaseUrl}/assets/${testAssetId}`);
+    await expect(page.locator('#asset-detail-heading')).toHaveText('เครื่องแม่ข่ายเซิร์ฟเวอร์ก่อนแก้ไข');
+
+    // 3. User begins editing the form (making it dirty)
+    await page.locator('#asset-correction-form input#name').fill('ชื่อใหม่โดยผู้ใช้คนแรก (Dirty Edit)');
+    await page.locator('#asset-correction-form textarea#reason').fill('แก้ไขข้อมูลพัสดุ');
+
+    // 4. Competitor in background commits a conflicting update via production AssetService
+    const competitorRetryToken = crypto.randomUUID();
+    const assetService = new AssetService({ db: pool });
+    await assetService.correctAsset(
+      custodianUserId,
+      testAssetId,
+      {
+        name: 'ชื่อที่แก้ไขโดยผู้แข่งขัน (Competitor Win)',
+        asset_number: 'SRV-ORIG-999',
+        serial_number: 'SN-ORIG-999',
+        expected_name: 'เครื่องแม่ข่ายเซิร์ฟเวอร์ก่อนแก้ไข',
+        expected_asset_number: 'SRV-ORIG-999',
+        expected_serial_number: 'SN-ORIG-999',
+        reason: 'Competitor committed change',
+      },
+      { retryToken: competitorRetryToken }
+    );
+
+    // 5. NO preparatory manual refresh! User directly submits dirty form
+    const staleReqPromise = page.waitForRequest(
+      (req) => req.url().includes(`/assets/${testAssetId}/correct`) && req.method() === 'POST'
+    );
+    await page.locator('button#submit-correct-btn').click();
+    const staleReq = await staleReqPromise;
+    const staleRetryToken =
+      staleReq.postDataJSON()?.retry_token || staleReq.headers()['x-retry-token'];
+    expect(staleRetryToken).toBeTruthy();
+
+    // 6. Verify stale 409 conflict is displayed with stale reload button
+    const errorRegion = page.locator('[data-testid="correction-error-message"]');
+    await expect(errorRegion).toBeVisible();
+    await expect(errorRegion).toContainText('409 Conflict');
+    await expect(errorRegion).toContainText('ข้อมูลครุภัณฑ์ถูกแก้ไขโดยผู้อื่นแล้ว');
+
+    const staleReloadBtn = page.locator('button#stale-reload-btn');
+    await expect(staleReloadBtn).toBeVisible();
+
+    // 7. Authoritative read failure: preserve dirty intent, do not rebase baseline, report error
+    let failRead = true;
+    await page.route(`**/assets/${testAssetId}`, async (route) => {
+      const isHtmlNav =
+        route.request().isNavigationRequest() ||
+        route.request().headers()['accept']?.includes('text/html');
+
+      if (isHtmlNav) {
+        await route.continue();
+        return;
+      }
+
+      if (failRead) {
+        await route.fulfill({
+          status: 500,
+          contentType: 'application/json',
+          body: JSON.stringify({ message: 'Internal Server Error' }),
+        });
+        return;
+      }
+
+      await route.continue();
+    });
+
+    await staleReloadBtn.click();
+
+    // Verify error message indicates read failure and dirty input is preserved!
+    await expect(errorRegion).toContainText('ไม่สามารถดึงข้อมูลล่าสุดได้ กรุณาลองใหม่อีกครั้ง');
+    await expect(page.locator('#asset-correction-form input#name')).toHaveValue(
+      'ชื่อใหม่โดยผู้ใช้คนแรก (Dirty Edit)'
+    );
+
+    // 8. Unmock route: authoritative read succeeds, adopts competitor baseline and reconciles form
+    failRead = false;
+    await staleReloadBtn.click();
+
+    // Form reconciles with latest baseline without re-submitting stale data
+    await expect(errorRegion).not.toBeVisible();
+    await expect(page.locator('#asset-correction-form input#name')).toHaveValue(
+      'ชื่อที่แก้ไขโดยผู้แข่งขัน (Competitor Win)'
+    );
+
+    // 9. Competitor's data in database is retained, and no losing audit entry is created
+    const dbAsset = await pool.query('SELECT name FROM assets WHERE id = $1', [testAssetId]);
+    expect(dbAsset.rows[0].name).toBe('ชื่อที่แก้ไขโดยผู้แข่งขัน (Competitor Win)');
+
+    const histCount = await pool.query(
+      "SELECT count(*)::int as count FROM asset_history WHERE asset_id = $1 AND action = 'CORRECTED'",
+      [testAssetId]
+    );
+    expect(histCount.rows[0].count).toBe(1); // Only competitor's 1 CORRECTED row
+
+    // F-01: Direct scoped query on registration_retry_tokens confirming zero losing retry ledger writes
+    const exactOp = `asset:correct:${testAssetId}`;
+    const losingTokenRes = await pool.query(
+      'SELECT count(*)::int as count FROM registration_retry_tokens WHERE actor_id = $1 AND operation = $2 AND token = $3',
+      [adminUserId, exactOp, staleRetryToken]
+    );
+    expect(losingTokenRes.rows[0].count).toBe(0); // Zero losing retry-ledger writes for stale request
+
+    // Positive control: identical scoped query finds competitor's successfully committed correction token
+    const committedTokenRes = await pool.query(
+      'SELECT count(*)::int as count, response_status FROM registration_retry_tokens WHERE actor_id = $1 AND operation = $2 AND token = $3 GROUP BY response_status',
+      [custodianUserId, exactOp, competitorRetryToken]
+    );
+    expect(committedTokenRes.rows[0].count).toBe(1);
+    expect(committedTokenRes.rows[0].response_status).toBe(200);
+  });
+
+  test('Journey 24 (F-03): no-op 200 followed by refresh failure and identical authorized GET unlocks the form with zero no-op writes and zero recovery POST', async ({
+    page,
+    context,
+  }) => {
+    // 1. Seed base asset
+    const testAssetId = crypto.randomUUID();
+    await pool.query(
+      `INSERT INTO assets (id, name, asset_number, serial_number, registered_by, recorded_at, created_at, updated_at)
+       VALUES ($1, $2, $3, $4, $5, now(), now(), now())`,
+      [testAssetId, 'เครื่องสำรองไฟ UPS คงเดิม', 'UPS-NOOP-001', 'SN-NOOP-001', adminUserId]
+    );
+    await pool.query(
+      `INSERT INTO asset_history (id, asset_id, action, actor_id, payload, recorded_at, created_at)
+       VALUES ($1, $2, 'REGISTERED', $3, $4, now(), now())`,
+      [crypto.randomUUID(), testAssetId, adminUserId, JSON.stringify({ name: 'เครื่องสำรองไฟ UPS คงเดิม' })]
+    );
+
+    // 2. Login as admin and navigate to asset detail
+    await loginAs(page, context, adminUserId);
+    await page.goto(`${targetBaseUrl}/assets/${testAssetId}`);
+    await expect(page.locator('#asset-detail-heading')).toBeVisible();
+
+    // 3. Set up route interception: let POST /correct return 200 (no-op), but fail the subsequent GET /assets/:id refresh
+    let failRefresh = false;
+    let postCallCount = 0;
+
+    await page.route(`**/assets/${testAssetId}/correct`, async (route) => {
+      postCallCount++;
+      await route.continue();
+    });
+
+    await page.route(`**/assets/${testAssetId}`, async (route) => {
+      const isHtmlNav =
+        route.request().isNavigationRequest() ||
+        route.request().headers()['accept']?.includes('text/html');
+
+      if (isHtmlNav) {
+        await route.continue();
+        return;
+      }
+
+      if (failRefresh) {
+        await route.fulfill({
+          status: 500,
+          contentType: 'application/json',
+          body: JSON.stringify({ message: 'Simulated refresh network error' }),
+        });
+        return;
+      }
+
+      await route.continue();
+    });
+
+    // 4. Submit form without changing any identifiers or name (pure no-op)
+    failRefresh = true;
+    await page.locator('button#submit-correct-btn').click();
+
+    // 5. Verify form locks in COMMITTED_AWAITING_REFRESH
+    const committedBanner = page.locator('[data-testid="committed-awaiting-refresh-banner"]');
+    await expect(committedBanner).toBeVisible();
+    await expect(page.locator('button#submit-correct-btn')).toBeDisabled();
+    expect(postCallCount).toBe(1);
+
+    // 6. DB check: zero CORRECTED history rows written for no-op
+    const noopHist = await pool.query(
+      "SELECT count(*)::int as count FROM asset_history WHERE asset_id = $1 AND action = 'CORRECTED'",
+      [testAssetId]
+    );
+    expect(noopHist.rows[0].count).toBe(0);
+
+    // 7. Allow refresh now and click retry refresh button
+    failRefresh = false;
+    const retryRefreshBtn = page.locator('button#retry-refresh-btn');
+    await expect(retryRefreshBtn).toBeVisible();
+    await retryRefreshBtn.click();
+
+    // 8. Form reconciles on identical authorized read and unlocks!
+    await expect(committedBanner).not.toBeVisible();
+    await expect(page.locator('button#submit-correct-btn')).toBeEnabled();
+
+    // 9. Valid next correction creates exactly one audit and one retry token
+    await page.locator('#asset-correction-form input#name').fill('เครื่องสำรองไฟ UPS รุ่นใหม่');
+    await page.locator('#asset-correction-form textarea#reason').fill('อัปเกรดรุ่น UPS');
+    await page.locator('button#submit-correct-btn').click();
+
+    await expect(page.locator('[data-testid="correction-success-message"]')).toHaveText(
+      'บันทึกการแก้ไขครุภัณฑ์สำเร็จ'
+    );
+    expect(postCallCount).toBe(2); // Only the initial no-op and this valid correction, zero recovery POST!
+
+    const validHist = await pool.query(
+      "SELECT count(*)::int as count FROM asset_history WHERE asset_id = $1 AND action = 'CORRECTED'",
+      [testAssetId]
+    );
+    expect(validHist.rows[0].count).toBe(1); // Exactly one audit record
+  });
+
+  test('Journey 25 (F-02): observed 401 and 403 suppress protected detail, deterministic supersession guards fail-closed against denied/permitted outcomes', async ({
+    page,
+    context,
+  }) => {
+    // Helper to create a deferred promise for deterministic request coordination
+    const createDeferred = () => {
+      let resolve!: () => void;
+      let reject!: (reason?: any) => void;
+      const promise = new Promise<void>((res, rej) => {
+        resolve = res;
+        reject = rej;
+      });
+      return { promise, resolve, reject };
+    };
+
+    // 1. Seed base asset
+    const testAssetId = crypto.randomUUID();
+    await pool.query(
+      `INSERT INTO assets (id, name, asset_number, serial_number, registered_by, recorded_at, created_at, updated_at)
+       VALUES ($1, $2, $3, $4, $5, now(), now(), now())`,
+      [testAssetId, 'เครื่องสแกนบาร์โค้ด Auth Test', 'SCAN-AUTH-001', 'SN-AUTH-001', adminUserId]
+    );
+    await pool.query(
+      `INSERT INTO asset_history (id, asset_id, action, actor_id, payload, recorded_at, created_at)
+       VALUES ($1, $2, 'REGISTERED', $3, $4, now(), now())`,
+      [crypto.randomUUID(), testAssetId, adminUserId, JSON.stringify({ name: 'เครื่องสแกนบาร์โค้ด' })]
+    );
+
+    // 2. Login as admin and navigate to asset detail
+    await loginAs(page, context, adminUserId);
+    await page.goto(`${targetBaseUrl}/assets/${testAssetId}`);
+    await expect(page.locator('#asset-detail-heading')).toBeVisible();
+
+    // Part A: Duplicate preview 401 immediately triggers auth loss redirect
+    await page.route(`**/assets/${testAssetId}/duplicate-candidates*`, async (route) => {
+      await route.fulfill({
+        status: 401,
+        contentType: 'application/json',
+        body: JSON.stringify({ message: 'Session expired' }),
+      });
+    });
+
+    // Trigger duplicate preview check by changing asset_number
+    await page.locator('#asset-correction-form input#asset_number').fill('SCAN-AUTH-002');
+    await page.locator('button#check-duplicate-btn').click();
+
+    // Form immediately handles 401 auth loss and redirects to /login!
+    await page.waitForURL('**/login', { timeout: 10_000 });
+    expect(page.url()).toContain('/login');
+    await expect(page.getByRole('heading', { level: 1, name: 'เข้าสู่ระบบ' })).toBeVisible();
+
+    // Part B: Duplicate preview 403 suppresses form and triggers reauthorization
+    await loginAs(page, context, adminUserId);
+    await page.goto(`${targetBaseUrl}/assets/${testAssetId}`);
+    await expect(page.locator('#asset-detail-heading')).toBeVisible();
+
+    await page.route(`**/assets/${testAssetId}/duplicate-candidates*`, async (route) => {
+      await route.fulfill({
+        status: 403,
+        contentType: 'application/json',
+        body: JSON.stringify({ message: 'Forbidden' }),
+      });
+    });
+
+    await page.locator('#asset-correction-form input#asset_number').fill('SCAN-AUTH-003');
+    await page.locator('button#check-duplicate-btn').click();
+
+    // Form suppresses correction form and displays read-only notice
+    await expect(page.locator('[data-testid="read-only-notice"]')).toBeVisible();
+
+    // Part C: Mutation 401 immediately redirects without entering uncertain retry
+    await loginAs(page, context, adminUserId);
+    await page.goto(`${targetBaseUrl}/assets/${testAssetId}`);
+    await expect(page.locator('#asset-detail-heading')).toBeVisible();
+
+    await page.route(`**/assets/${testAssetId}/correct`, async (route) => {
+      await route.fulfill({
+        status: 401,
+        contentType: 'application/json',
+        body: JSON.stringify({ message: 'Session expired' }),
+      });
+    });
+
+    await page.locator('#asset-correction-form input#name').fill('ชื่อใหม่ไม่ผ่าน 401');
+    await page.locator('#asset-correction-form textarea#reason').fill('เหตุผลทดสอบ 401');
+    await page.locator('button#submit-correct-btn').click();
+
+    // Must NOT enter uncertain retry state! Must redirect to /login!
+    await page.waitForURL('**/login', { timeout: 10_000 });
+    expect(page.url()).toContain('/login');
+    await expect(page.locator('button#retry-uncertain-btn')).not.toBeVisible();
+
+    // Part D: Mutation 403 immediately suppresses form without entering uncertain retry
+    await loginAs(page, context, adminUserId);
+    await page.goto(`${targetBaseUrl}/assets/${testAssetId}`);
+    await expect(page.locator('#asset-detail-heading')).toBeVisible();
+
+    await page.route(`**/assets/${testAssetId}/correct`, async (route) => {
+      await route.fulfill({
+        status: 403,
+        contentType: 'application/json',
+        body: JSON.stringify({ message: 'Forbidden' }),
+      });
+    });
+
+    await page.locator('#asset-correction-form input#name').fill('ชื่อใหม่ไม่ผ่าน 403');
+    await page.locator('#asset-correction-form textarea#reason').fill('เหตุผลทดสอบ 403');
+    await page.locator('button#submit-correct-btn').click();
+
+    // 403 suppresses form and replaces it with read-only notice without uncertain retry button!
+    await expect(page.locator('[data-testid="read-only-notice"]')).toBeVisible();
+    await expect(page.locator('button#retry-uncertain-btn')).not.toBeVisible();
+
+    // Part E: Deterministic RED->GREEN test: Held reauthorization superseded by focus -> DENIED outcome
+    // Dedicated user for denial test
+    const deniedUserRes = await pool.query(
+      `INSERT INTO users (username, password_hash, is_active)
+       VALUES ('denied_actor_${crypto.randomUUID().slice(0, 8)}', '${await UserService.hashPassword('Pass123!')}', true)
+       RETURNING id;`
+    );
+    const deniedUserId = deniedUserRes.rows[0].id;
+    await pool.query("INSERT INTO user_roles (user_id, role_id) VALUES ($1, 'ADMINISTRATOR')", [deniedUserId]);
+
+    const deniedAssetId = crypto.randomUUID();
+    await pool.query(
+      `INSERT INTO assets (id, name, asset_number, serial_number, registered_by, recorded_at, created_at, updated_at)
+       VALUES ($1, $2, $3, $4, $5, now(), now(), now())`,
+      [deniedAssetId, 'เครื่องแม่ข่ายทดสอบ Supersession Denied', 'DENIED-001', 'SN-DENIED-001', deniedUserId]
+    );
+    await pool.query(
+      `INSERT INTO asset_history (id, asset_id, action, actor_id, payload, recorded_at, created_at)
+       VALUES ($1, $2, 'REGISTERED', $3, $4, now(), now())`,
+      [crypto.randomUUID(), deniedAssetId, deniedUserId, JSON.stringify({ name: 'เครื่องแม่ข่ายทดสอบ Denied' })]
+    );
+
+    await loginAs(page, context, deniedUserId);
+    await page.goto(`${targetBaseUrl}/assets/${deniedAssetId}`);
+    await expect(page.locator('#asset-detail-heading')).toBeVisible();
+    await expect(page.locator('#asset-correction-form')).toBeVisible();
+
+    // Now remove ALL roles in PostgreSQL so subsequent GET /assets/:id returns 403
+    await pool.query('DELETE FROM user_roles WHERE user_id = $1', [deniedUserId]);
+
+    const reauth1Started = createDeferred();
+    const reauth1Release = createDeferred();
+    const focus2Started = createDeferred();
+    const focus2Release = createDeferred();
+    let sessionCallSeq = 0;
+
+    await page.route('**/auth/session-check', async (route) => {
+      sessionCallSeq++;
+      if (sessionCallSeq === 1) {
+        reauth1Started.resolve();
+        await reauth1Release.promise;
+        await route.continue();
+        return;
+      }
+      if (sessionCallSeq === 2) {
+        focus2Started.resolve();
+        await focus2Release.promise;
+        await route.continue();
+        return;
+      }
+      await route.continue();
+    });
+
+    // Trigger reauthorization by submitting correction (fails with real 403 on server)
+    await page.locator('#asset-correction-form input#name').fill('ชื่อแก้ไขที่ถูกปฏิเสธ');
+    await page.locator('#asset-correction-form textarea#reason').fill('เหตุผลทดสอบ');
+    await page.locator('button#submit-correct-btn').click();
+
+    // Wait for Reauthorization #1's session-check to start and hold it
+    await reauth1Started.promise;
+
+    // Verify protected detail is immediately suppressed while awaiting authorization
+    await expect(page.locator('#asset-detail-heading')).not.toBeVisible();
+    await expect(page.locator('#asset-correction-form')).not.toBeVisible();
+
+    // Dispatch focus event while session-check #1 is held
+    await page.evaluate(() => window.dispatchEvent(new Event('focus')));
+
+    // Wait for Focus session-check #2 to start and hold it
+    await focus2Started.promise;
+
+    // Release session-check #1 (which was superseded / aborted by session-check #2)
+    reauth1Release.resolve();
+
+    // CRITICAL ASSERTION: Protected data MUST REMAIN HIDDEN even after session-check #1 is released/aborted!
+    // In unpatched code, releasing check 1 improperly dropped isReauthorizing to false, exposing protected data!
+    await expect(page.locator('#asset-detail-heading')).not.toBeVisible();
+    await expect(page.locator('#asset-correction-form')).not.toBeVisible();
+    await expect(page.locator('[role="status"]')).toBeVisible();
+
+    // Now release focus session-check #2 (the surviving owner)
+    focus2Release.resolve();
+
+    // Check #2 completes -> triggers refetch() for asset:view -> returns 403 Forbidden
+    // Terminal 403 alert must appear and protected facts must NEVER be exposed
+    await expect(page.locator('div[role="alert"]')).toContainText(
+      'คุณไม่มีสิทธิ์เข้าถึงข้อมูลครุภัณฑ์นี้ (403 Forbidden)'
+    );
+    await expect(page.locator('#asset-detail-heading')).not.toBeVisible();
+    expect(await page.locator('text=เครื่องแม่ข่ายทดสอบ Supersession Denied').count()).toBe(0);
+
+    // Part F: Deterministic test: Held reauthorization superseded by focus -> PERMITTED outcome
+    const permUserRes = await pool.query(
+      `INSERT INTO users (username, password_hash, is_active)
+       VALUES ('perm_actor_${crypto.randomUUID().slice(0, 8)}', '${await UserService.hashPassword('Pass123!')}', true)
+       RETURNING id;`
+    );
+    const permUserId = permUserRes.rows[0].id;
+    await pool.query("INSERT INTO user_roles (user_id, role_id) VALUES ($1, 'ADMINISTRATOR')", [permUserId]);
+
+    const permAssetId = crypto.randomUUID();
+    await pool.query(
+      `INSERT INTO assets (id, name, asset_number, serial_number, registered_by, recorded_at, created_at, updated_at)
+       VALUES ($1, $2, $3, $4, $5, now(), now(), now())`,
+      [permAssetId, 'เครื่องแม่ข่ายทดสอบ Supersession Permitted', 'PERM-001', 'SN-PERM-001', permUserId]
+    );
+    await pool.query(
+      `INSERT INTO asset_history (id, asset_id, action, actor_id, payload, recorded_at, created_at)
+       VALUES ($1, $2, 'REGISTERED', $3, $4, now(), now())`,
+      [crypto.randomUUID(), permAssetId, permUserId, JSON.stringify({ name: 'เครื่องแม่ข่ายทดสอบ Permitted' })]
+    );
+
+    await loginAs(page, context, permUserId);
+    await page.goto(`${targetBaseUrl}/assets/${permAssetId}`);
+    await expect(page.locator('#asset-detail-heading')).toBeVisible();
+    await expect(page.locator('#asset-correction-form')).toBeVisible();
+
+    // Downgrade user in PostgreSQL to READ_ONLY (retains asset:view, loses asset:correct)
+    await pool.query('DELETE FROM user_roles WHERE user_id = $1', [permUserId]);
+    await pool.query("INSERT INTO user_roles (user_id, role_id) VALUES ($1, 'READ_ONLY')", [permUserId]);
+
+    const perm1Started = createDeferred();
+    const perm1Release = createDeferred();
+    const perm2Started = createDeferred();
+    const perm2Release = createDeferred();
+    let permCallSeq = 0;
+
+    await page.route('**/auth/session-check', async (route) => {
+      permCallSeq++;
+      if (permCallSeq === 1) {
+        perm1Started.resolve();
+        await perm1Release.promise;
+        await route.continue();
+        return;
+      }
+      if (permCallSeq === 2) {
+        perm2Started.resolve();
+        await perm2Release.promise;
+        await route.continue();
+        return;
+      }
+      await route.continue();
+    });
+
+    // Submit correction -> returns real 403 on server (since user is READ_ONLY)
+    await page.locator('#asset-correction-form input#name').fill('ชื่อใหม่ไม่ผ่านสิทธิ์แก้ไข');
+    await page.locator('#asset-correction-form textarea#reason').fill('เหตุผลทดสอบ');
+    await page.locator('button#submit-correct-btn').click();
+
+    // Wait for session-check #1 to start and hold it
+    await perm1Started.promise;
+
+    // Verify protected detail is immediately suppressed while awaiting authorization
+    await expect(page.locator('#asset-detail-heading')).not.toBeVisible();
+    await expect(page.locator('#asset-correction-form')).not.toBeVisible();
+
+    // Dispatch focus event
+    await page.evaluate(() => window.dispatchEvent(new Event('focus')));
+
+    // Wait for focus session-check #2 to start and hold it
+    await perm2Started.promise;
+
+    // Release session-check #1
+    perm1Release.resolve();
+
+    // Protected detail MUST REMAIN HIDDEN while check #2 is unverified
+    await expect(page.locator('#asset-detail-heading')).not.toBeVisible();
+    await expect(page.locator('#asset-correction-form')).not.toBeVisible();
+
+    // Release session-check #2 (surviving owner)
+    perm2Release.resolve();
+
+    // Check #2 completes -> refetch() succeeds with 200 (since user has READ_ONLY role)
+    // Read-only detail view reappears with read-only notice!
+    await expect(page.locator('[data-testid="read-only-notice"]')).toBeVisible();
+    await expect(page.locator('#asset-correction-form')).not.toBeVisible();
+    await expect(page.locator('#asset-detail-heading')).toBeVisible();
+    await expect(page.locator('#asset-detail-heading')).toContainText(
+      'เครื่องแม่ข่ายทดสอบ Supersession Permitted'
+    );
+
+    // Part G: Mounted AssetDetailContent held session-check released after navigation does not redirect to /login
+    // Uses explicit request-start/release/completion coordination instead of arbitrary sleep
+    await loginAs(page, context, adminUserId);
+    await page.goto(`${targetBaseUrl}/assets/${testAssetId}`);
+    await expect(page.locator('#asset-detail-heading')).toBeVisible();
+
+    const navSessionStarted = createDeferred();
+    const navSessionRelease = createDeferred();
+    const navSessionCompleted = createDeferred();
+    let navHoldFirst = true;
+
+    await page.route('**/auth/session-check', async (route) => {
+      if (navHoldFirst) {
+        navHoldFirst = false;
+        navSessionStarted.resolve();
+        await navSessionRelease.promise;
+        await route.fulfill({
+          status: 401,
+          contentType: 'application/json',
+          body: JSON.stringify({ message: 'Delayed session expiration' }),
+        });
+        navSessionCompleted.resolve();
+        return;
+      }
+      await route.continue();
+    });
+
+    // Trigger session check via window focus event while on AssetDetail
+    await page.evaluate(() => window.dispatchEvent(new Event('focus')));
+
+    // Explicitly await browser sending the request before navigation
+    await navSessionStarted.promise;
+
+    // Navigate to /dashboard while session check is held
+    await page.locator('#nav-dashboard-link').click();
+    await page.waitForURL(`${targetBaseUrl}/dashboard`);
+    await expect(page.getByRole('heading', { level: 1, name: 'แดชบอร์ด' })).toBeVisible();
+
+    // Explicitly release the held session check (which returns 401)
+    navSessionRelease.resolve();
+
+    // Deterministically await completion of the held session check request
+    await navSessionCompleted.promise;
+
+    expect(page.url()).toBe(`${targetBaseUrl}/dashboard`);
+    await expect(page.getByRole('heading', { level: 1, name: 'แดชบอร์ด' })).toBeVisible();
+    await expect(page.getByRole('heading', { level: 1, name: 'เข้าสู่ระบบ' })).not.toBeVisible();
+
+    await page.unroute('**/auth/session-check');
   });
 });
