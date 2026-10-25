@@ -110,6 +110,37 @@ export class RetryTokenConflictError extends Error {
   }
 }
 
+export type SearchAssetField = 'stable_id' | 'asset_number' | 'serial_number' | 'name';
+
+export interface SearchAssetItem {
+  id: string;
+  name: string | null;
+  asset_number: string | null;
+  serial_number: string | null;
+}
+
+export interface SearchAssetInput {
+  field?: SearchAssetField | string;
+  value?: string;
+  limit?: number | string;
+  offset?: number | string;
+}
+
+export interface SearchAssetResult {
+  items: SearchAssetItem[];
+  limit: number;
+  offset: number;
+  total_count: number;
+  has_more: boolean;
+}
+
+const EXACT_UUID_REGEX =
+  /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+
+function isValidExactUuid(val: unknown): val is string {
+  return typeof val === 'string' && val.length === 36 && EXACT_UUID_REGEX.test(val);
+}
+
 export class AssetService {
   private db: any;
 
@@ -575,6 +606,161 @@ export class AssetService {
         payload: row.payload,
         created_at: new Date(row.created_at).toISOString(),
       })),
+    };
+  }
+
+  /**
+   * Bounded identifier/description search (T3).
+   * Supports field-based exact matching for stable_id, asset_number, serial_number,
+   * case-insensitive literal substring for name, or empty browse when no criteria given.
+   */
+  async searchAssets(input: SearchAssetInput = {}): Promise<SearchAssetResult> {
+    const { field, value, limit = 25, offset = 0 } = input;
+
+    // Validate selector presence
+    if (field !== undefined && value === undefined) {
+      throw new ValidationError('Search value is required when field is specified');
+    }
+    if (value !== undefined && field === undefined) {
+      throw new ValidationError('Search field is required when value is specified');
+    }
+
+    if (field !== undefined) {
+      const allowedFields = ['stable_id', 'asset_number', 'serial_number', 'name'];
+      if (!allowedFields.includes(field)) {
+        throw new ValidationError(`Invalid search field: ${field}. Must be one of: ${allowedFields.join(', ')}`);
+      }
+    }
+
+    if (value !== undefined) {
+      if (typeof value !== 'string') {
+        throw new ValidationError('Search value must be a string');
+      }
+      if (value.includes('\0')) {
+        throw new ValidationError('Search value must not contain NUL bytes');
+      }
+      if (Buffer.byteLength(value, 'utf8') > 4096) {
+        throw new ValidationError('Search value exceeds maximum length of 4096 bytes');
+      }
+    }
+
+    // Validate limit
+    let parsedLimit = 25;
+    if (limit !== undefined) {
+      if (typeof limit === 'string') {
+        if (!/^[1-9]\d*$/.test(limit)) {
+          throw new ValidationError('Limit must be a canonical positive integer');
+        }
+        parsedLimit = Number(limit);
+      } else if (typeof limit === 'number') {
+        if (!Number.isInteger(limit)) {
+          throw new ValidationError('Limit must be an integer');
+        }
+        parsedLimit = limit;
+      } else {
+        throw new ValidationError('Invalid limit type');
+      }
+      if (parsedLimit < 1 || parsedLimit > 100) {
+        throw new ValidationError('Limit must be between 1 and 100');
+      }
+    }
+
+    // Validate offset
+    let parsedOffset = 0;
+    if (offset !== undefined) {
+      if (typeof offset === 'string') {
+        if (!/^(0|[1-9]\d*)$/.test(offset)) {
+          throw new ValidationError('Offset must be a canonical non-negative integer');
+        }
+        parsedOffset = Number(offset);
+      } else if (typeof offset === 'number') {
+        if (!Number.isInteger(offset)) {
+          throw new ValidationError('Offset must be an integer');
+        }
+        parsedOffset = offset;
+      } else {
+        throw new ValidationError('Invalid offset type');
+      }
+      if (parsedOffset < 0 || parsedOffset > 2147483647) {
+        throw new ValidationError('Offset must be between 0 and 2147483647');
+      }
+    }
+
+    // Determine filter condition and parameters
+    let whereClause = '';
+    const params: any[] = [];
+
+    const isBrowse = field === undefined || value === undefined || value === '';
+
+    if (!isBrowse && field && value !== undefined) {
+      if (field === 'stable_id') {
+        if (!isValidExactUuid(value)) {
+          throw new ValidationError('Search value for stable_id must be a valid UUID');
+        }
+        params.push(value);
+        whereClause = `WHERE id = $${params.length}`;
+      } else if (field === 'asset_number') {
+        params.push(value);
+        whereClause = `WHERE asset_number = $${params.length}`;
+      } else if (field === 'serial_number') {
+        params.push(value);
+        whereClause = `WHERE serial_number = $${params.length}`;
+      } else if (field === 'name') {
+        if (value.trim() === '') {
+          throw new ValidationError('Search value for name must not be whitespace-only');
+        }
+        const escaped = value.replace(/\\/g, '\\\\').replace(/%/g, '\\%').replace(/_/g, '\\_');
+        params.push(`%${escaped}%`);
+        whereClause = `WHERE name ILIKE $${params.length} ESCAPE '\\'`;
+      }
+    }
+
+    const limitParamIndex = params.length + 1;
+    params.push(parsedLimit);
+    const offsetParamIndex = params.length + 1;
+    params.push(parsedOffset);
+
+    const query = `
+      WITH filtered AS (
+        SELECT id, name, asset_number, serial_number, recorded_at
+        FROM assets
+        ${whereClause}
+      ),
+      counted AS (
+        SELECT COUNT(*)::bigint AS total_count FROM filtered
+      ),
+      paged AS (
+        SELECT id, name, asset_number, serial_number, recorded_at
+        FROM filtered
+        ORDER BY recorded_at DESC, id ASC
+        LIMIT $${limitParamIndex} OFFSET $${offsetParamIndex}
+      )
+      SELECT p.id, p.name, p.asset_number, p.serial_number, c.total_count
+      FROM counted c
+      LEFT JOIN paged p ON true
+      ORDER BY p.recorded_at DESC, p.id ASC
+    `;
+
+    const res = await this.db.query(query, params);
+
+    const totalCount = res.rows.length > 0 && res.rows[0].total_count != null ? Number(res.rows[0].total_count) : 0;
+    const items: SearchAssetItem[] = res.rows
+      .filter((row: any) => row.id != null)
+      .map((row: any) => ({
+        id: row.id,
+        name: row.name ?? null,
+        asset_number: row.asset_number ?? null,
+        serial_number: row.serial_number ?? null,
+      }));
+
+    const hasMore = parsedOffset + items.length < totalCount;
+
+    return {
+      items,
+      limit: parsedLimit,
+      offset: parsedOffset,
+      total_count: totalCount,
+      has_more: hasMore,
     };
   }
 }

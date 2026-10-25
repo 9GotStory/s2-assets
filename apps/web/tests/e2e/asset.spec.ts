@@ -29,6 +29,7 @@ test.describe.serial('Asset Registry Real SPA -> Composed API -> PostgreSQL Jour
 
   let custodianUserId: string;
   let readonlyUserId: string;
+  let maintainerUserId: string;
   let firstCreatedAssetId: string;
 
   test.beforeAll(async () => {
@@ -75,12 +76,14 @@ test.describe.serial('Asset Registry Real SPA -> Composed API -> PostgreSQL Jour
     const usersRes = await pool.query(`
       INSERT INTO users (username, password_hash, is_active) VALUES
         ('custodian_e2e', '${passwordHash}', true),
-        ('readonly_e2e', '${passwordHash}', true)
+        ('readonly_e2e', '${passwordHash}', true),
+        ('maintainer_e2e', '${passwordHash}', true)
       RETURNING id, username;
     `);
 
     custodianUserId = usersRes.rows.find((r) => r.username === 'custodian_e2e')!.id;
     readonlyUserId = usersRes.rows.find((r) => r.username === 'readonly_e2e')!.id;
+    maintainerUserId = usersRes.rows.find((r) => r.username === 'maintainer_e2e')!.id;
 
     // Assign roles
     await pool.query(
@@ -90,6 +93,10 @@ test.describe.serial('Asset Registry Real SPA -> Composed API -> PostgreSQL Jour
     await pool.query(
       `INSERT INTO user_roles (user_id, role_id) VALUES ($1, 'READ_ONLY')`,
       [readonlyUserId]
+    );
+    await pool.query(
+      `INSERT INTO user_roles (user_id, role_id) VALUES ($1, 'SYSTEM_MAINTAINER')`,
+      [maintainerUserId]
     );
 
     // 5. Start Vite dev server proxying to Fastify
@@ -585,5 +592,429 @@ test.describe.serial('Asset Registry Real SPA -> Composed API -> PostgreSQL Jour
     // Warning region must NOT be visible with candidate A
     await expect(page.locator('div[role="region"][aria-label="การแจ้งเตือนข้อมูลซ้ำ"]')).not.toBeVisible();
     await expect(page.locator('input#explicit_continuation')).not.toBeVisible();
+  });
+
+  test('Journey 10 (T3): discover search from Dashboard -> browse and exact identifier search -> open detail', async ({
+    page,
+    context,
+  }) => {
+    await loginAs(page, context, readonlyUserId);
+
+    // 1. Start on dashboard and click Search link
+    await page.goto(`${targetBaseUrl}/dashboard`);
+    await expect(page.locator('#nav-asset-search')).toBeVisible();
+    await page.locator('#nav-asset-search').click();
+
+    // 2. Navigates to /assets/search
+    await page.waitForURL(`${targetBaseUrl}/assets/search`);
+    await expect(page.getByRole('heading', { level: 1, name: 'ค้นหาและตรวจสอบครุภัณฑ์ (Asset Search)' })).toBeVisible();
+
+    // 3. Initial browse loads items registered in earlier journeys
+    await expect(page.locator('#asset-search-table')).toBeVisible();
+    await expect(page.locator('tbody tr')).not.toHaveCount(0);
+
+    // 4. Perform exact identifier search on asset_number
+    await page.locator('select#search-field').selectOption('asset_number');
+    await page.locator('input#search-value').fill('ASSET-2026-001');
+    await page.locator('button#search-submit-btn').click();
+
+    // 5. Results table updates to matches
+    await expect(page.locator('#asset-search-table')).toBeVisible();
+    await expect(page.locator('tbody tr')).toHaveCount(2);
+
+    // 6. Click Stable ID link to navigate to asset detail page
+    const detailLink = page.locator(`a#asset-link-${firstCreatedAssetId}`);
+    await expect(detailLink).toBeVisible();
+    await detailLink.click();
+
+    // 7. Navigates to /assets/:id
+    await page.waitForURL(`${targetBaseUrl}/assets/${firstCreatedAssetId}`);
+    await expect(page.locator('#asset-detail-heading')).toHaveText('MacBook Pro 16');
+  });
+
+  test('Journey 11 (T3): case-insensitive substring name search and empty state', async ({
+    page,
+    context,
+  }) => {
+    await loginAs(page, context, readonlyUserId);
+
+    await page.goto(`${targetBaseUrl}/assets/search`);
+    await expect(page.getByRole('heading', { level: 1, name: 'ค้นหาและตรวจสอบครุภัณฑ์ (Asset Search)' })).toBeVisible();
+
+    // Search by case-insensitive name substring
+    await page.locator('select#search-field').selectOption('name');
+    await page.locator('input#search-value').fill('distinct');
+    await page.locator('button#search-submit-btn').click();
+
+    await expect(page.locator('#asset-search-table')).toBeVisible();
+    await expect(page.locator('tbody tr')).toHaveCount(1);
+    await expect(page.locator('tbody tr td:has-text("Second Distinct MacBook")')).toBeVisible();
+
+    // Search for nonexistent query
+    await page.locator('input#search-value').fill('NONEXISTENT_QUERY_99999');
+    await page.locator('button#search-submit-btn').click();
+
+    await expect(page.locator('#no-results-message')).toBeVisible();
+    await expect(page.locator('#no-results-message')).toContainText('ไม่พบข้อมูลครุภัณฑ์ตามเงื่อนไขที่ระบุ');
+  });
+
+  test('Journey 12 (T3): unauthenticated access redirects to login and clears protected state', async ({
+    page,
+    context,
+  }) => {
+    // Clear cookies to simulate unauthenticated user
+    await context.clearCookies();
+
+    // Attempt direct navigation to /assets/search
+    await page.goto(`${targetBaseUrl}/assets/search`);
+
+    // Must be redirected to /login immediately
+    await page.waitForURL(`${targetBaseUrl}/login`);
+    await expect(page.getByRole('heading', { level: 1, name: 'เข้าสู่ระบบ' })).toBeVisible();
+  });
+
+  test('Journey 13 (T3 F2): whitespace-only identifier search is exact match, not broadened to browse; whitespace-only name search triggers validation error', async ({
+    page,
+    context,
+  }) => {
+    await loginAs(page, context, readonlyUserId);
+
+    await page.goto(`${targetBaseUrl}/assets/search`);
+    await expect(page.getByRole('heading', { level: 1, name: 'ค้นหาและตรวจสอบครุภัณฑ์ (Asset Search)' })).toBeVisible();
+
+    // 1. Exact whitespace search on asset_number does NOT browse all items
+    await page.locator('select#search-field').selectOption('asset_number');
+    await page.locator('input#search-value').fill('   ');
+    await page.locator('button#search-submit-btn').click();
+
+    // Must show no-results message and NOT browse table with items
+    await expect(page.locator('#no-results-message')).toBeVisible();
+    await expect(page.locator('#no-results-message')).toContainText('ไม่พบข้อมูลครุภัณฑ์ตามเงื่อนไขที่ระบุ');
+    await expect(page.locator('#asset-search-table')).not.toBeVisible();
+
+    // 2. Whitespace-only search on name triggers validation error
+    await page.locator('select#search-field').selectOption('name');
+    await page.locator('input#search-value').fill('   ');
+    await page.locator('button#search-submit-btn').click();
+
+    // Validation alert must be visible
+    await expect(page.locator('#search-error-alert')).toBeVisible();
+    await expect(page.locator('#search-error-alert')).toContainText('Search value for name must not be whitespace-only');
+    await expect(page.locator('#asset-search-table')).not.toBeVisible();
+
+    // 3. Reset or browse all recovers full list
+    await page.locator('button#search-reset-btn').click();
+    await expect(page.locator('#asset-search-table')).toBeVisible();
+    await expect(page.locator('tbody tr')).not.toHaveCount(0);
+  });
+
+  test('Journey 14 (T3 F3): actor transition and session revocation unmount detail page and clear protected search state on focus return', async ({
+    page,
+    context,
+  }) => {
+    // 1. Mount detail page with authenticated session
+    await loginAs(page, context, readonlyUserId);
+    await page.goto(`${targetBaseUrl}/assets/${firstCreatedAssetId}`);
+    await expect(page.locator('#asset-detail-heading')).toHaveText('MacBook Pro 16');
+
+    // 2. Revoke session by clearing cookies
+    await context.clearCookies();
+
+    // 3. Simulate focus return
+    await page.evaluate(() => {
+      window.dispatchEvent(new Event('blur'));
+      window.dispatchEvent(new Event('focus'));
+    });
+
+    // 4. Must be redirected to /login and detail must be completely unmounted
+    await page.waitForURL(`${targetBaseUrl}/login`);
+    await expect(page.getByRole('heading', { level: 1, name: 'เข้าสู่ระบบ' })).toBeVisible();
+    await expect(page.locator('#asset-detail-heading')).not.toBeVisible();
+
+    // 5. Test search page session revocation on focus
+    await loginAs(page, context, readonlyUserId);
+    await page.goto(`${targetBaseUrl}/assets/search`);
+    await expect(page.locator('#asset-search-table')).toBeVisible();
+
+    // Revoke session and trigger focus return
+    await context.clearCookies();
+    await page.evaluate(() => {
+      window.dispatchEvent(new Event('blur'));
+      window.dispatchEvent(new Event('focus'));
+    });
+
+    // Must be redirected to /login and table unmounted
+    await page.waitForURL(`${targetBaseUrl}/login`);
+    await expect(page.getByRole('heading', { level: 1, name: 'เข้าสู่ระบบ' })).toBeVisible();
+    await expect(page.locator('#asset-search-table')).not.toBeVisible();
+  });
+
+  test('Journey 15 (T3 F3): detail boundary preflight blocks unauthorized role (maintainer without asset:view) with 403 Forbidden without mounting AssetDetail', async ({
+    page,
+    context,
+  }) => {
+    // 1. Login as maintainer_e2e who has valid session but role SYSTEM_MAINTAINER (lacks asset:view)
+    await loginAs(page, context, maintainerUserId);
+
+    // 2. Navigate to asset detail page
+    await page.goto(`${targetBaseUrl}/assets/${firstCreatedAssetId}`);
+
+    // 3. Preflight GET /assets/:id returns 403 Forbidden; detail boundary catches 403 and halts
+    await expect(page.locator('#detail-boundary-error')).toBeVisible();
+    await expect(page.locator('#detail-boundary-error')).toContainText('คุณไม่มีสิทธิ์เข้าถึงข้อมูลครุภัณฑ์นี้ (403 Forbidden)');
+
+    // 4. AssetDetail component is never mounted
+    await expect(page.locator('#asset-detail-heading')).not.toBeVisible();
+    await expect(page.locator('#detail-verifying-boundary')).not.toBeVisible();
+
+    // 5. Back button navigates to dashboard
+    await page.locator('#back-dashboard-btn').click();
+    await page.waitForURL(`${targetBaseUrl}/dashboard`);
+  });
+
+  test('Journey 16 (T3 F3): actor switch on search page resets search criteria and prevents stale data leakage', async ({
+    page,
+    context,
+  }) => {
+    // 1. Login as readonly_e2e (Actor A)
+    await loginAs(page, context, readonlyUserId);
+    await page.goto(`${targetBaseUrl}/assets/search`);
+    await expect(page.locator('#asset-search-table')).toBeVisible();
+
+    // 2. Perform filtered search for 'distinct' -> 1 match
+    await page.locator('select#search-field').selectOption('name');
+    await page.locator('input#search-value').fill('distinct');
+    await page.locator('button#search-submit-btn').click();
+    await expect(page.locator('#asset-search-table')).toBeVisible();
+    await expect(page.locator('tbody tr')).toHaveCount(1);
+    await expect(page.locator('tbody tr td:has-text("Second Distinct MacBook")')).toBeVisible();
+
+    // 3. Switch actor to custodian_e2e (Actor B) by swapping session cookie
+    const sessionB = await sessionService.createSession(custodianUserId);
+    await context.addCookies([
+      {
+        name: 'session',
+        value: sessionB.token,
+        url: targetBaseUrl,
+      },
+    ]);
+
+    // 4. Trigger blur/focus event (revalidation)
+    await page.evaluate(() => {
+      window.dispatchEvent(new Event('blur'));
+      window.dispatchEvent(new Event('focus'));
+    });
+
+    // 5. Revalidation detects actor switch: criteria must reset to 'all' / '' and table shows all rows
+    await expect(page.locator('select#search-field')).toHaveValue('all');
+    await expect(page.locator('input#search-value')).toHaveValue('');
+    await expect(page.locator('#asset-search-table')).toBeVisible();
+    // Table shows full browse results, not just the 1 filtered row of Actor A
+    await expect(page.locator('tbody tr')).toHaveCount(7);
+  });
+
+  test('Journey 17 (T3 F3): stale out-of-order session-check response is discarded and cannot clear or redirect a newer valid search', async ({
+    page,
+    context,
+  }) => {
+    // 1. Login as readonly_e2e
+    await loginAs(page, context, readonlyUserId);
+    await page.goto(`${targetBaseUrl}/assets/search`);
+    await expect(page.locator('#asset-search-table')).toBeVisible();
+
+    // 2. Set up controlled delay on the first session-check request
+    let resolveFirstSessionCheck!: () => void;
+    const firstCheckHold = new Promise<void>((resolve) => {
+      resolveFirstSessionCheck = resolve;
+    });
+
+    let checkCount = 0;
+    await page.route('**/auth/session-check', async (route) => {
+      checkCount++;
+      if (checkCount === 1) {
+        // Hold the first session check
+        await firstCheckHold;
+        // Fulfill with 401 Unauthorized (simulating stale session failure)
+        await route.fulfill({
+          status: 401,
+          contentType: 'application/json',
+          body: JSON.stringify({ error: { code: 'UNAUTHORIZED', message: 'Session expired' } }),
+        });
+        return;
+      }
+      // Subsequent session checks proceed normally
+      await route.continue();
+    });
+
+    // 3. Trigger first search (Request 1 - session check is held)
+    await page.locator('select#search-field').selectOption('name');
+    await page.locator('input#search-value').fill('MacBook');
+    await page.locator('button#search-submit-btn').click();
+
+    // Verify data is hidden during revalidation
+    await expect(page.locator('#search-loading-indicator')).toBeVisible();
+    await expect(page.locator('#asset-search-table')).not.toBeVisible();
+
+    // 4. Trigger second search (Request 2) before Request 1 finishes, advancing searchGenRef
+    await page.locator('input#search-value').fill('Second Distinct');
+    await page.locator('button#search-submit-btn').click();
+
+    // Request 2 completes and displays results
+    await expect(page.locator('#asset-search-table')).toBeVisible();
+    await expect(page.locator('tbody tr')).toHaveCount(1);
+    await expect(page.locator('tbody tr td:has-text("Second Distinct MacBook")')).toBeVisible();
+
+    // 5. Now release the obsolete Request 1 session check (which returns 401)
+    resolveFirstSessionCheck();
+    // Allow any event loop cycles to process
+    await page.waitForTimeout(500);
+
+    // 6. Assert obsolete 401 does NOT redirect to /login and does NOT clear Request 2's results
+    expect(page.url()).toBe(`${targetBaseUrl}/assets/search`);
+    await expect(page.locator('#asset-search-table')).toBeVisible();
+    await expect(page.locator('tbody tr')).toHaveCount(1);
+    await expect(page.getByRole('heading', { level: 1, name: 'เข้าสู่ระบบ' })).not.toBeVisible();
+  });
+
+  test('Journey 18 (T3 F3): in-flight search execution hides protected data until response arrives', async ({
+    page,
+    context,
+  }) => {
+    await loginAs(page, context, readonlyUserId);
+    await page.goto(`${targetBaseUrl}/assets/search`);
+    await expect(page.locator('#asset-search-table')).toBeVisible();
+
+    let resolveSearchReq!: () => void;
+    const searchHold = new Promise<void>((resolve) => {
+      resolveSearchReq = resolve;
+    });
+
+    let interceptedSearch = false;
+    await page.route('**/assets/search*', async (route) => {
+      if (!interceptedSearch) {
+        interceptedSearch = true;
+        await searchHold;
+      }
+      await route.continue();
+    });
+
+    // Trigger search
+    await page.locator('button#search-submit-btn').click();
+
+    // While search is in-flight:
+    // Loading indicator must be visible and table rows must be completely hidden
+    await expect(page.locator('#search-loading-indicator')).toBeVisible();
+    await expect(page.locator('#asset-search-table')).not.toBeVisible();
+
+    // Release search request
+    resolveSearchReq();
+
+    // Results reappear once search finishes
+    await expect(page.locator('#asset-search-table')).toBeVisible();
+    await expect(page.locator('#search-loading-indicator')).not.toBeVisible();
+  });
+
+  test('Journey 19 (T3 F3 Pass 3 RED/GREEN): unmounting search page during session verification retires ownership and cannot redirect newly mounted route to login', async ({
+    page,
+    context,
+  }) => {
+    await loginAs(page, context, readonlyUserId);
+
+    // Instrument browser fetch: when simulating unmount body abort, headers succeed immediately (200 OK),
+    // but body json() rejects with AbortError when unmount cleanup calls abortController.abort()
+    await page.addInitScript(() => {
+      const origFetch = window.fetch;
+      (window as any).__origFetch = origFetch;
+      window.fetch = async (...args) => {
+        const url = String(args[0]);
+        if (url.includes('/auth/session-check') && location.pathname.includes('/assets/search')) {
+          const signal: AbortSignal | undefined = args[1]?.signal;
+          return {
+            ok: true,
+            status: 200,
+            json: () =>
+              new Promise((resolve, reject) => {
+                if (signal?.aborted) {
+                  reject(new DOMException('The user aborted a request.', 'AbortError'));
+                } else {
+                  signal?.addEventListener('abort', () => {
+                    reject(new DOMException('The user aborted a request.', 'AbortError'));
+                  });
+                }
+              }),
+          } as any;
+        }
+        return origFetch(...args);
+      };
+    });
+
+    // 1. Navigate to search page directly
+    await page.goto(`${targetBaseUrl}/assets/search`);
+    await expect(page.locator('#back-dashboard-link')).toBeVisible();
+
+    // 2. Click back to dashboard while body parsing is pending
+    // This unmounts AssetSearch, calling its cleanup: abortController.abort()
+    await page.locator('#back-dashboard-link').click();
+
+    // Wait for microtask / obsolete continuation
+    await page.waitForTimeout(1000);
+
+    // 3. In unpatched code, the obsolete completion navigates to /login
+    // The user must remain safely on /dashboard!
+    expect(page.url()).toBe(`${targetBaseUrl}/dashboard`);
+    await expect(page.getByRole('heading', { level: 1, name: 'แดชบอร์ด' })).toBeVisible();
+    await expect(page.getByRole('heading', { level: 1, name: 'เข้าสู่ระบบ' })).not.toBeVisible();
+  });
+
+  test('Journey 20 (T3 F3 Pass 3 RED/GREEN): unmounting detail boundary during session verification retires ownership and cannot redirect newly mounted route to login', async ({
+    page,
+    context,
+  }) => {
+    await loginAs(page, context, readonlyUserId);
+
+    // Instrument browser fetch: when simulating unmount body abort, headers succeed immediately (200 OK),
+    // but body json() rejects with AbortError when unmount cleanup calls abortController.abort()
+    await page.addInitScript(() => {
+      const origFetch = window.fetch;
+      (window as any).__origFetch = origFetch;
+      window.fetch = async (...args) => {
+        const url = String(args[0]);
+        if (url.includes('/auth/session-check') && location.pathname.includes('/assets/')) {
+          const signal: AbortSignal | undefined = args[1]?.signal;
+          return {
+            ok: true,
+            status: 200,
+            json: () =>
+              new Promise((resolve, reject) => {
+                if (signal?.aborted) {
+                  reject(new DOMException('The user aborted a request.', 'AbortError'));
+                } else {
+                  signal?.addEventListener('abort', () => {
+                    reject(new DOMException('The user aborted a request.', 'AbortError'));
+                  });
+                }
+              }),
+          } as any;
+        }
+        return origFetch(...args);
+      };
+    });
+
+    // 1. Navigate to detail page directly
+    await page.goto(`${targetBaseUrl}/assets/${firstCreatedAssetId}`);
+    await expect(page.locator('#detail-boundary-back-link')).toBeVisible();
+
+    // 2. Click back to dashboard while body parsing is pending
+    // This unmounts ProtectedDetailBoundary, calling its cleanup: abortController.abort()
+    await page.locator('#detail-boundary-back-link').click();
+
+    // Wait for microtask / obsolete continuation
+    await page.waitForTimeout(1000);
+
+    // 3. In unpatched code, the obsolete completion navigates to /login
+    // The user must remain safely on /dashboard!
+    expect(page.url()).toBe(`${targetBaseUrl}/dashboard`);
+    await expect(page.getByRole('heading', { level: 1, name: 'แดชบอร์ด' })).toBeVisible();
+    await expect(page.getByRole('heading', { level: 1, name: 'เข้าสู่ระบบ' })).not.toBeVisible();
   });
 });
