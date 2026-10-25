@@ -7,9 +7,11 @@ export interface AssetCorrectionFormProps {
   asset: AssetRecord;
   isLegacy?: boolean;
   csrfToken?: string | null;
+  dataUpdatedAt?: number;
   onSuccess: (updatedAsset: AssetRecord) => Promise<boolean> | boolean | void;
   onCancel?: () => void;
-  onPermissionRevoked?: () => void;
+  onPermissionRevoked?: (status?: number) => void;
+  onRefresh?: () => Promise<AssetRecord | null>;
 }
 
 interface FormValues {
@@ -31,11 +33,17 @@ export const AssetCorrectionForm: React.FC<AssetCorrectionFormProps> = ({
   asset,
   isLegacy = false,
   csrfToken,
+  dataUpdatedAt,
   onSuccess,
   onCancel,
   onPermissionRevoked,
+  onRefresh,
 }) => {
   const retryTokenRef = useRef<string>(crypto.randomUUID());
+  const serverOffsetRef = useRef<number>(0);
+  const stalledPageCountRef = useRef<number>(0);
+  const awaitingRefreshSinceTimestampRef = useRef<number>(0);
+  const [isReloadingLatest, setIsReloadingLatest] = useState(false);
 
   // Baseline expected-before state to prevent silent rebasing during edits
   const [baselineExpected, setBaselineExpected] = useState({
@@ -96,36 +104,26 @@ export const AssetCorrectionForm: React.FC<AssetCorrectionFormProps> = ({
 
   const { errors, isDirty } = formState;
 
-  const lastReconciledRef = useRef({
-    name: asset.name,
-    asset_number: asset.asset_number,
-    serial_number: asset.serial_number,
-    updated_at: asset.updated_at,
-  });
-
-  // Rebase baseline only when asset props from parent actually change/refetch
+  // Rebase baseline only when not dirty, or reconcile on confirmed read (F-01, F-03)
   useEffect(() => {
-    const isAssetChanged =
-      asset.updated_at !== lastReconciledRef.current.updated_at ||
-      asset.name !== lastReconciledRef.current.name ||
-      asset.asset_number !== lastReconciledRef.current.asset_number ||
-      asset.serial_number !== lastReconciledRef.current.serial_number;
+    // F-03: If form was awaiting refresh after commit (even if data is identical, e.g. no-op 200)
+    if (isCommittedAwaitingRefresh) {
+      if (dataUpdatedAt && dataUpdatedAt > awaitingRefreshSinceTimestampRef.current) {
+        setIsCommittedAwaitingRefresh(false);
+        setSuccessMessage('บันทึกการแก้ไขครุภัณฑ์สำเร็จ');
+        setSubmitError(null);
+        retryTokenRef.current = crypto.randomUUID(); // Fresh new token for next intent
+        setCandidates([]);
+        setTotalCandidateCount(0);
+        setHasMoreCandidates(false);
+        serverOffsetRef.current = 0;
 
-    if (isAssetChanged) {
-      lastReconciledRef.current = {
-        name: asset.name,
-        asset_number: asset.asset_number,
-        serial_number: asset.serial_number,
-        updated_at: asset.updated_at,
-      };
+        setBaselineExpected({
+          name: asset.name,
+          asset_number: asset.asset_number,
+          serial_number: asset.serial_number,
+        });
 
-      setBaselineExpected({
-        name: asset.name,
-        asset_number: asset.asset_number,
-        serial_number: asset.serial_number,
-      });
-
-      if (!isDirty || isCommittedAwaitingRefresh) {
         reset({
           name: asset.name || '',
           asset_number: asset.asset_number || '',
@@ -134,23 +132,38 @@ export const AssetCorrectionForm: React.FC<AssetCorrectionFormProps> = ({
           explicit_continuation: false,
         });
       }
-
-      if (isCommittedAwaitingRefresh) {
-        setIsCommittedAwaitingRefresh(false);
-        setSuccessMessage('บันทึกการแก้ไขครุภัณฑ์สำเร็จ');
-        setSubmitError(null);
-        retryTokenRef.current = crypto.randomUUID(); // Fresh new token for next intent
-        setCandidates([]);
-        setTotalCandidateCount(0);
-        setHasMoreCandidates(false);
-      }
+      return;
     }
+
+    // F-01: If form is dirty, or currently submitting / uncertain, DO NOT silently rebase baseline!
+    // Preserve the original before-image through dirty/submitted/uncertain intent.
+    if (isDirty || isSubmitting || isPendingUncertain) {
+      return;
+    }
+
+    // When not dirty or submitting/uncertain, adopt refreshed baseline:
+    setBaselineExpected({
+      name: asset.name,
+      asset_number: asset.asset_number,
+      serial_number: asset.serial_number,
+    });
+
+    reset({
+      name: asset.name || '',
+      asset_number: asset.asset_number || '',
+      serial_number: asset.serial_number || '',
+      reason: '',
+      explicit_continuation: false,
+    });
   }, [
     asset.name,
     asset.asset_number,
     asset.serial_number,
     asset.updated_at,
+    dataUpdatedAt,
     isDirty,
+    isSubmitting,
+    isPendingUncertain,
     isCommittedAwaitingRefresh,
     reset,
   ]);
@@ -184,6 +197,8 @@ export const AssetCorrectionForm: React.FC<AssetCorrectionFormProps> = ({
       submitAbortRef.current.abort();
       submitAbortRef.current = null;
     }
+    serverOffsetRef.current = 0;
+    stalledPageCountRef.current = 0;
     setIsCheckingDuplicates(false);
     setIsLoadingMoreCandidates(false);
     setIsSubmitting(false);
@@ -194,12 +209,16 @@ export const AssetCorrectionForm: React.FC<AssetCorrectionFormProps> = ({
     setValue('explicit_continuation', false);
   };
 
-  // Duplicate candidates preview
+  // Duplicate candidates preview (F-04: frozen predicate and raw server offset continuation)
   const handleCheckDuplicates = async (offsetToFetch = 0, isAppend = false) => {
     const curAssetNumber = watchedAssetNumber || '';
     const curSerialNumber = watchedSerialNumber || '';
 
-    if (!curAssetNumber && !curSerialNumber) {
+    // F-04: Freeze actual warning predicate: only check identifiers that changed from baselineExpected
+    const isAssetNumberChanged = curAssetNumber !== (baselineExpected.asset_number || '');
+    const isSerialNumberChanged = curSerialNumber !== (baselineExpected.serial_number || '');
+
+    if (!isAssetNumberChanged && !isSerialNumberChanged) {
       setIsCheckingDuplicates(false);
       setIsLoadingMoreCandidates(false);
       setCandidates([]);
@@ -225,8 +244,8 @@ export const AssetCorrectionForm: React.FC<AssetCorrectionFormProps> = ({
 
     try {
       const params = new URLSearchParams();
-      if (curAssetNumber) params.append('asset_number', curAssetNumber);
-      if (curSerialNumber) params.append('serial_number', curSerialNumber);
+      if (isAssetNumberChanged && curAssetNumber) params.append('asset_number', curAssetNumber);
+      if (isSerialNumberChanged && curSerialNumber) params.append('serial_number', curSerialNumber);
       params.append('limit', '10');
       params.append('offset', String(offsetToFetch));
 
@@ -238,9 +257,18 @@ export const AssetCorrectionForm: React.FC<AssetCorrectionFormProps> = ({
 
       if (currentSeq !== lookupSeqRef.current) return;
 
+      // F-02: Immediate auth loss handling
+      if (res.status === 401) {
+        setDuplicateCheckError('เซสชันหมดอายุ กรุณาเข้าสู่ระบบใหม่ (401 Unauthorized)');
+        onPermissionRevoked?.(401);
+        setIsCheckingDuplicates(false);
+        setIsLoadingMoreCandidates(false);
+        return;
+      }
+
       if (res.status === 403) {
         setDuplicateCheckError('คุณไม่มีสิทธิ์ตรวจสอบข้อมูลซ้ำ (403 Forbidden)');
-        onPermissionRevoked?.();
+        onPermissionRevoked?.(403);
         setIsCheckingDuplicates(false);
         setIsLoadingMoreCandidates(false);
         return;
@@ -264,7 +292,32 @@ export const AssetCorrectionForm: React.FC<AssetCorrectionFormProps> = ({
       setTotalCandidateCount(
         typeof data.total_count === 'number' ? data.total_count : updatedCandidates.length
       );
-      setHasMoreCandidates(Boolean(data.has_more));
+
+      // F-04: Bounded no-progress and inconsistent page handling
+      if (isAppend) {
+        if (fetchedCandidates.length === 0) {
+          // Empty page on continuation: stop with visible error state rather than silently dropping
+          setHasMoreCandidates(false);
+          setDuplicateCheckError('ไม่พบข้อมูลรายการซ้ำเพิ่มเติมจากเซิร์ฟเวอร์');
+        } else if (newUnique.length === 0) {
+          // Repeated page without unique progress: bound repeated non-unique pages
+          stalledPageCountRef.current += 1;
+          if (stalledPageCountRef.current >= 2) {
+            setHasMoreCandidates(false);
+            setDuplicateCheckError('รายการซ้ำไม่มีความคืบหน้าเพิ่มเติม กรุณาลองใหม่อีกครั้ง');
+          } else {
+            serverOffsetRef.current = offsetToFetch + fetchedCandidates.length;
+          }
+        } else {
+          stalledPageCountRef.current = 0;
+          setHasMoreCandidates(Boolean(data.has_more));
+          serverOffsetRef.current = offsetToFetch + fetchedCandidates.length;
+        }
+      } else {
+        stalledPageCountRef.current = 0;
+        setHasMoreCandidates(Boolean(data.has_more));
+        serverOffsetRef.current = offsetToFetch + fetchedCandidates.length;
+      }
 
       if (updatedCandidates.length === 0) {
         setValue('explicit_continuation', false);
@@ -337,9 +390,12 @@ export const AssetCorrectionForm: React.FC<AssetCorrectionFormProps> = ({
           errJson?.code === 'DUPLICATE_WARNING' ||
           errJson?.code === 'DUPLICATE_CANDIDATES_FOUND'
         ) {
-          setCandidates(errJson.candidates || []);
-          setTotalCandidateCount(errJson.total_count ?? (errJson.candidates?.length || 0));
+          const warningCandidates = errJson.candidates || [];
+          setCandidates(warningCandidates);
+          setTotalCandidateCount(errJson.total_count ?? warningCandidates.length);
           setHasMoreCandidates(Boolean(errJson.has_more));
+          // Advance raw server offset position from 409 warning response:
+          serverOffsetRef.current = (errJson.offset ?? 0) + warningCandidates.length;
           setSubmitError(
             'พบข้อมูลครุภัณฑ์ใกล้เคียงกันในระบบ หากประสงค์จะบันทึกข้อมูลนี้ กรุณาทำเครื่องหมายยืนยันด้านล่าง'
           );
@@ -358,11 +414,20 @@ export const AssetCorrectionForm: React.FC<AssetCorrectionFormProps> = ({
         return;
       }
 
+      // F-02: Definitive auth loss on mutation
+      if (res.status === 401) {
+        setIsPendingUncertain(false);
+        setIsSubmitting(false);
+        setSubmitError('เซสชันหมดอายุ กรุณาเข้าสู่ระบบใหม่ (401 Unauthorized)');
+        onPermissionRevoked?.(401);
+        return;
+      }
+
       if (res.status === 403) {
         setIsPendingUncertain(false);
-        setSubmitError('คุณไม่มีสิทธิ์แก้ไขข้อมูลครุภัณฑ์นี้ (403 Forbidden)');
-        onPermissionRevoked?.();
         setIsSubmitting(false);
+        setSubmitError('คุณไม่มีสิทธิ์แก้ไขข้อมูลครุภัณฑ์นี้ (403 Forbidden)');
+        onPermissionRevoked?.(403);
         return;
       }
 
@@ -389,6 +454,7 @@ export const AssetCorrectionForm: React.FC<AssetCorrectionFormProps> = ({
 
       if (!refreshSuccess) {
         // Refresh failed: lock form in COMMITTED_AWAITING_REFRESH, keep committed token, do not allow edits
+        awaitingRefreshSinceTimestampRef.current = dataUpdatedAt || Date.now();
         setIsSubmitting(false);
         setIsPendingUncertain(false);
         setIsCommittedAwaitingRefresh(true);
@@ -440,6 +506,60 @@ export const AssetCorrectionForm: React.FC<AssetCorrectionFormProps> = ({
   const retryUncertain = async () => {
     if (frozenPayloadRef.current) {
       await executeSubmission(frozenPayloadRef.current);
+    }
+  };
+
+  // F-01: Explicit adoption of latest baseline via authoritative read
+  const handleReloadLatest = async () => {
+    if (isReloadingLatest) return;
+    setIsReloadingLatest(true);
+    try {
+      let freshAsset: AssetRecord | null = null;
+      if (onRefresh) {
+        freshAsset = await onRefresh();
+      } else {
+        const res = await fetch(`/assets/${asset.id}`, {
+          method: 'GET',
+          credentials: 'include',
+        });
+        if (res.ok) {
+          const json = await res.json();
+          freshAsset = json.asset || null;
+        }
+      }
+
+      if (!freshAsset) {
+        // Authoritative read failed: preserve dirty intent, do not rebase baseline, report error
+        setSubmitError('ไม่สามารถดึงข้อมูลล่าสุดได้ กรุณาลองใหม่อีกครั้ง (409 Conflict)');
+        return;
+      }
+
+      // Authoritative read succeeded: adopt new baseline
+      setBaselineExpected({
+        name: freshAsset.name,
+        asset_number: freshAsset.asset_number,
+        serial_number: freshAsset.serial_number,
+      });
+
+      reset({
+        name: freshAsset.name || '',
+        asset_number: freshAsset.asset_number || '',
+        serial_number: freshAsset.serial_number || '',
+        reason: '',
+        explicit_continuation: false,
+      });
+
+      setSubmitError(null);
+      setCandidates([]);
+      setTotalCandidateCount(0);
+      setHasMoreCandidates(false);
+      serverOffsetRef.current = 0;
+      stalledPageCountRef.current = 0;
+    } catch {
+      // Preserve dirty intent on read failure
+      setSubmitError('เกิดข้อผิดพลาดในการดึงข้อมูลล่าสุด กรุณาลองใหม่อีกครั้ง (409 Conflict)');
+    } finally {
+      setIsReloadingLatest(false);
     }
   };
 
@@ -619,6 +739,28 @@ export const AssetCorrectionForm: React.FC<AssetCorrectionFormProps> = ({
               }}
             >
               {isSubmitting ? 'กำลังส่งซ้ำ...' : 'ลองส่งซ้ำ (Retry with same token)'}
+            </button>
+          )}
+          {submitError.includes('409 Conflict') && (
+            <button
+              type="button"
+              id="stale-reload-btn"
+              onClick={handleReloadLatest}
+              disabled={isReloadingLatest}
+              style={{
+                marginLeft: '1rem',
+                padding: '0.375rem 0.75rem',
+                backgroundColor: '#991b1b',
+                color: '#ffffff',
+                border: 'none',
+                borderRadius: '4px',
+                cursor: isReloadingLatest ? 'not-allowed' : 'pointer',
+                fontWeight: 600,
+                fontSize: '0.8125rem',
+                whiteSpace: 'nowrap',
+              }}
+            >
+              {isReloadingLatest ? 'กำลังดึงข้อมูลล่าสุด...' : 'โหลดข้อมูลล่าสุด'}
             </button>
           )}
         </div>
@@ -830,7 +972,7 @@ export const AssetCorrectionForm: React.FC<AssetCorrectionFormProps> = ({
               <button
                 type="button"
                 id="load-more-candidates-btn"
-                onClick={() => handleCheckDuplicates(candidates.length, true)}
+                onClick={() => handleCheckDuplicates(serverOffsetRef.current, true)}
                 disabled={isLoadingMoreCandidates || isFormDisabled}
                 style={{
                   padding: '0.25rem 0.5rem',
@@ -844,6 +986,44 @@ export const AssetCorrectionForm: React.FC<AssetCorrectionFormProps> = ({
                 }}
               >
                 {isLoadingMoreCandidates ? 'กำลังโหลด...' : 'โหลดข้อมูลเพิ่มเติม (Load More)'}
+              </button>
+            </div>
+          )}
+
+          {duplicateCheckError && (
+            <div
+              data-testid="duplicate-pagination-error"
+              style={{
+                color: '#b91c1c',
+                fontSize: '0.75rem',
+                marginBottom: '0.75rem',
+                fontWeight: 500,
+                display: 'flex',
+                alignItems: 'center',
+                gap: '0.5rem',
+              }}
+            >
+              <span>⚠️ {duplicateCheckError}</span>
+              <button
+                type="button"
+                id="retry-load-more-btn"
+                onClick={() => {
+                  setDuplicateCheckError(null);
+                  handleCheckDuplicates(serverOffsetRef.current, true);
+                }}
+                disabled={isLoadingMoreCandidates || isFormDisabled}
+                style={{
+                  padding: '0.125rem 0.375rem',
+                  fontSize: '0.75rem',
+                  backgroundColor: '#fee2e2',
+                  border: '1px solid #f87171',
+                  borderRadius: '4px',
+                  cursor: isLoadingMoreCandidates || isFormDisabled ? 'not-allowed' : 'pointer',
+                  color: '#991b1b',
+                  fontWeight: 600,
+                }}
+              >
+                {isLoadingMoreCandidates ? 'กำลังโหลด...' : 'ลองใหม่ (Retry)'}
               </button>
             </div>
           )}
@@ -934,7 +1114,27 @@ export const AssetCorrectionForm: React.FC<AssetCorrectionFormProps> = ({
           <button
             type="button"
             id="cancel-correct-btn"
-            onClick={onCancel}
+            onClick={() => {
+              setBaselineExpected({
+                name: asset.name,
+                asset_number: asset.asset_number,
+                serial_number: asset.serial_number,
+              });
+              reset({
+                name: asset.name || '',
+                asset_number: asset.asset_number || '',
+                serial_number: asset.serial_number || '',
+                reason: '',
+                explicit_continuation: false,
+              });
+              setCandidates([]);
+              setTotalCandidateCount(0);
+              setHasMoreCandidates(false);
+              serverOffsetRef.current = 0;
+              setSubmitError(null);
+              setSuccessMessage(null);
+              onCancel();
+            }}
             disabled={isSubmitting || isPendingUncertain || isCommittedAwaitingRefresh}
             style={{
               padding: '0.5rem 1rem',

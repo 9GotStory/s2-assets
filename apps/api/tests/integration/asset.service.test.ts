@@ -752,6 +752,109 @@ describe('AssetService Integration Tests (Seam A - Core Service & Transactions)'
       expect(res.asset.asset_number).toBe('AST-COLLIDE-99');
     });
 
+    it('F-04: evaluates duplicate warning predicate on changed identifiers only (changed-number/unchanged-matching-serial, inverse, and both-changed)', async () => {
+      // 1. Seed existing asset A
+      await assetService.registerAsset(testActorId, {
+        name: 'Asset Alpha',
+        asset_number: 'AST-PRED-ALPHA',
+        serial_number: 'SN-PRED-SHARED',
+      });
+
+      // 2. Seed asset B sharing serial_number with Asset A via explicit continuation
+      const assetB = await assetService.registerAsset(testActorId, {
+        name: 'Asset Beta',
+        asset_number: 'AST-PRED-BETA',
+        serial_number: 'SN-PRED-SHARED',
+        explicit_continuation: true,
+      });
+
+      // Case A: Changed asset_number to a unique value, unchanged serial_number (which matches Asset Alpha)
+      // Because serial_number did NOT change, it must NOT warn on the unchanged serial_number match!
+      const corrA = await assetService.correctAsset(
+        testActorId,
+        assetB.asset.id,
+        {
+          asset_number: 'AST-PRED-BETA-UNIQUE',
+          expected_name: 'Asset Beta',
+          expected_asset_number: 'AST-PRED-BETA',
+          expected_serial_number: 'SN-PRED-SHARED',
+          reason: 'Updating asset number uniquely',
+          explicit_continuation: false,
+        },
+        { retryToken: crypto.randomUUID() }
+      );
+      expect(corrA.asset.asset_number).toBe('AST-PRED-BETA-UNIQUE');
+
+      // Case B: Changed asset_number to match Asset Alpha's asset_number -> triggers duplicate warning!
+      await expect(
+        assetService.correctAsset(
+          testActorId,
+          assetB.asset.id,
+          {
+            asset_number: 'AST-PRED-ALPHA',
+            expected_name: 'Asset Beta',
+            expected_asset_number: 'AST-PRED-BETA-UNIQUE',
+            expected_serial_number: 'SN-PRED-SHARED',
+            reason: 'Colliding number',
+            explicit_continuation: false,
+          },
+          { retryToken: crypto.randomUUID() }
+        )
+      ).rejects.toThrow(DuplicateCandidateWarningError);
+
+      // Case C: Inverse - unchanged asset_number, changed serial_number to a unique value
+      // Does not warn on unchanged asset_number, succeeds cleanly
+      const corrC = await assetService.correctAsset(
+        testActorId,
+        assetB.asset.id,
+        {
+          serial_number: 'SN-PRED-BETA-UNIQUE',
+          expected_name: 'Asset Beta',
+          expected_asset_number: 'AST-PRED-BETA-UNIQUE',
+          expected_serial_number: 'SN-PRED-SHARED',
+          reason: 'Updating serial uniquely',
+          explicit_continuation: false,
+        },
+        { retryToken: crypto.randomUUID() }
+      );
+      expect(corrC.asset.serial_number).toBe('SN-PRED-BETA-UNIQUE');
+
+      // Case D: Changed serial_number to match Asset Alpha's serial_number -> triggers duplicate warning!
+      await expect(
+        assetService.correctAsset(
+          testActorId,
+          assetB.asset.id,
+          {
+            serial_number: 'SN-PRED-SHARED',
+            expected_name: 'Asset Beta',
+            expected_asset_number: 'AST-PRED-BETA-UNIQUE',
+            expected_serial_number: 'SN-PRED-BETA-UNIQUE',
+            reason: 'Colliding serial',
+            explicit_continuation: false,
+          },
+          { retryToken: crypto.randomUUID() }
+        )
+      ).rejects.toThrow(DuplicateCandidateWarningError);
+
+      // Case E: Both changed - changing both to collide with Asset Alpha -> warns
+      await expect(
+        assetService.correctAsset(
+          testActorId,
+          assetB.asset.id,
+          {
+            asset_number: 'AST-PRED-ALPHA',
+            serial_number: 'SN-PRED-SHARED',
+            expected_name: 'Asset Beta',
+            expected_asset_number: 'AST-PRED-BETA-UNIQUE',
+            expected_serial_number: 'SN-PRED-BETA-UNIQUE',
+            reason: 'Colliding both',
+            explicit_continuation: false,
+          },
+          { retryToken: crypto.randomUUID() }
+        )
+      ).rejects.toThrow(DuplicateCandidateWarningError);
+    });
+
     it('supports idempotent retries with scoped retry tokens and replaying matching committed results', async () => {
       const reg = await assetService.registerAsset(testActorId, {
         name: 'Original Laptop',
@@ -1393,6 +1496,299 @@ describe('AssetService Integration Tests (Seam A - Core Service & Transactions)'
         [losingToken]
       );
       expect(tokenLoseRes.rows[0].count).toBe(0);
+    });
+  });
+
+  describe('searchAssets Integration Tests (Seam A - T3)', () => {
+    it('performs exact identifier search on asset_number, serial_number, and stable_id', async () => {
+      const a1 = await assetService.registerAsset(testActorId, {
+        name: 'Server Rack A',
+        asset_number: 'SRV-001',
+        serial_number: 'SN-RACK-01',
+      });
+      const a2 = await assetService.registerAsset(testActorId, {
+        name: 'Server Rack B',
+        asset_number: 'SRV-002',
+        serial_number: 'SN-RACK-02',
+      });
+
+      // Exact asset_number
+      const resAssetNum = await assetService.searchAssets({
+        field: 'asset_number',
+        value: 'SRV-001',
+      });
+      expect(resAssetNum.items).toHaveLength(1);
+      expect(resAssetNum.items[0].id).toBe(a1.asset.id);
+      expect(resAssetNum.items[0].asset_number).toBe('SRV-001');
+      expect(resAssetNum.total_count).toBe(1);
+      expect(resAssetNum.has_more).toBe(false);
+
+      // Exact serial_number
+      const resSerial = await assetService.searchAssets({
+        field: 'serial_number',
+        value: 'SN-RACK-02',
+      });
+      expect(resSerial.items).toHaveLength(1);
+      expect(resSerial.items[0].id).toBe(a2.asset.id);
+      expect(resSerial.total_count).toBe(1);
+
+      // Exact stable_id UUID
+      const resId = await assetService.searchAssets({
+        field: 'stable_id',
+        value: a1.asset.id,
+      });
+      expect(resId.items).toHaveLength(1);
+      expect(resId.items[0].id).toBe(a1.asset.id);
+      expect(resId.total_count).toBe(1);
+    });
+
+    it('performs case-insensitive literal substring search on name with literal %, _, \\ escaping', async () => {
+      const a1 = await assetService.registerAsset(testActorId, {
+        name: 'Special %_\\ Asset Item',
+        asset_number: 'SPEC-01',
+      });
+      const a2 = await assetService.registerAsset(testActorId, {
+        name: 'Ordinary Asset Item',
+        asset_number: 'ORD-01',
+      });
+
+      // Substring match case-insensitive
+      const resSubstring = await assetService.searchAssets({
+        field: 'name',
+        value: 'special',
+      });
+      expect(resSubstring.items).toHaveLength(1);
+      expect(resSubstring.items[0].id).toBe(a1.asset.id);
+
+      // Literal %_\ matching
+      const resLiteral = await assetService.searchAssets({
+        field: 'name',
+        value: '%_\\',
+      });
+      expect(resLiteral.items).toHaveLength(1);
+      expect(resLiteral.items[0].id).toBe(a1.asset.id);
+
+      // Verify that % was not treated as a wildcard matching all items
+      expect(resLiteral.total_count).toBe(1);
+    });
+
+    it('performs empty browse returning all items ordered by recorded_at DESC, id ASC', async () => {
+      const a1 = await assetService.registerAsset(testActorId, { name: 'Item One' });
+      const a2 = await assetService.registerAsset(testActorId, { name: 'Item Two' });
+
+      // No field or value -> browse
+      const resBrowse = await assetService.searchAssets({});
+      expect(resBrowse.items.length).toBeGreaterThanOrEqual(2);
+      expect(resBrowse.total_count).toBeGreaterThanOrEqual(2);
+      // Items must be ordered recorded_at DESC, id ASC
+      expect(resBrowse.items[0].id).toBe(a2.asset.id);
+      expect(resBrowse.items[1].id).toBe(a1.asset.id);
+
+      // Field provided with empty string value -> also browse
+      const resBrowseEmptyVal = await assetService.searchAssets({ field: 'name', value: '' });
+      expect(resBrowseEmptyVal.total_count).toBe(resBrowse.total_count);
+    });
+
+    it('supports pagination with limit, offset, total_count, and has_more', async () => {
+      for (let i = 1; i <= 5; i++) {
+        await assetService.registerAsset(testActorId, { name: `Batch Item ${i}` });
+      }
+
+      // Page 1: limit 2, offset 0
+      const page1 = await assetService.searchAssets({ limit: 2, offset: 0 });
+      expect(page1.items).toHaveLength(2);
+      expect(page1.total_count).toBe(5);
+      expect(page1.has_more).toBe(true);
+
+      // Page 2: limit 2, offset 2
+      const page2 = await assetService.searchAssets({ limit: 2, offset: 2 });
+      expect(page2.items).toHaveLength(2);
+      expect(page2.total_count).toBe(5);
+      expect(page2.has_more).toBe(true);
+
+      // Page 3: limit 2, offset 4
+      const page3 = await assetService.searchAssets({ limit: 2, offset: 4 });
+      expect(page3.items).toHaveLength(1);
+      expect(page3.total_count).toBe(5);
+      expect(page3.has_more).toBe(false);
+
+      // Beyond last page: offset 10
+      const pageBeyond = await assetService.searchAssets({ limit: 2, offset: 10 });
+      expect(pageBeyond.items).toHaveLength(0);
+      expect(pageBeyond.total_count).toBe(5);
+      expect(pageBeyond.has_more).toBe(false);
+    });
+
+    it('rejects invalid inputs with ValidationError', async () => {
+      // Field without value
+      await expect(assetService.searchAssets({ field: 'name' })).rejects.toThrow(ValidationError);
+
+      // Value without field
+      await expect(assetService.searchAssets({ value: 'some-value' })).rejects.toThrow(ValidationError);
+
+      // Invalid UUID for stable_id
+      await expect(
+        assetService.searchAssets({ field: 'stable_id', value: 'not-a-uuid' })
+      ).rejects.toThrow(ValidationError);
+
+      // Non-empty whitespace-only query for name
+      await expect(
+        assetService.searchAssets({ field: 'name', value: '   ' })
+      ).rejects.toThrow(ValidationError);
+
+      // NUL character in value
+      await expect(
+        assetService.searchAssets({ field: 'name', value: 'null\0byte' })
+      ).rejects.toThrow(ValidationError);
+
+      // Oversized value > 4096 bytes
+      const bigValue = 'a'.repeat(4097);
+      await expect(
+        assetService.searchAssets({ field: 'name', value: bigValue })
+      ).rejects.toThrow(ValidationError);
+
+      // Leading-zero limit and offset (F1)
+      await expect(
+        assetService.searchAssets({ limit: '01' })
+      ).rejects.toThrow(ValidationError);
+
+      await expect(
+        assetService.searchAssets({ limit: '025' })
+      ).rejects.toThrow(ValidationError);
+
+      await expect(
+        assetService.searchAssets({ offset: '00' })
+      ).rejects.toThrow(ValidationError);
+
+      await expect(
+        assetService.searchAssets({ offset: '01' })
+      ).rejects.toThrow(ValidationError);
+
+      // IR-F1: Padded UUID with leading/trailing/surrounding whitespace must be rejected with ValidationError
+      const sampleUuid = 'f81d4fae-7dec-11d0-a765-00a0c91e6bf6';
+      await expect(
+        assetService.searchAssets({ field: 'stable_id', value: ` ${sampleUuid}` })
+      ).rejects.toThrow(ValidationError);
+
+      await expect(
+        assetService.searchAssets({ field: 'stable_id', value: `${sampleUuid} ` })
+      ).rejects.toThrow(ValidationError);
+
+      await expect(
+        assetService.searchAssets({ field: 'stable_id', value: `  ${sampleUuid}  ` })
+      ).rejects.toThrow(ValidationError);
+
+      await expect(
+        assetService.searchAssets({ field: 'stable_id', value: `\t${sampleUuid}` })
+      ).rejects.toThrow(ValidationError);
+
+      await expect(
+        assetService.searchAssets({ field: 'stable_id', value: `${sampleUuid}\n` })
+      ).rejects.toThrow(ValidationError);
+    });
+
+    it('IR-F1: handles valid UUID formats, empty-value browse, and non-matching valid UUID', async () => {
+      const reg = await assetService.registerAsset(testActorId, { name: 'UUID Test Asset' });
+      const validId = reg.asset.id;
+
+      // Lowercase valid UUID
+      const resLower = await assetService.searchAssets({
+        field: 'stable_id',
+        value: validId.toLowerCase(),
+      });
+      expect(resLower.items).toHaveLength(1);
+      expect(resLower.items[0].id).toBe(validId);
+
+      // Uppercase valid UUID
+      const resUpper = await assetService.searchAssets({
+        field: 'stable_id',
+        value: validId.toUpperCase(),
+      });
+      expect(resUpper.items).toHaveLength(1);
+      expect(resUpper.items[0].id).toBe(validId);
+
+      // Non-matching valid UUID
+      const resNoMatch = await assetService.searchAssets({
+        field: 'stable_id',
+        value: '00000000-0000-0000-0000-000000000000',
+      });
+      expect(resNoMatch.items).toHaveLength(0);
+      expect(resNoMatch.total_count).toBe(0);
+
+      // Empty-value stable_id -> browse mode preserved
+      const resBrowse = await assetService.searchAssets({
+        field: 'stable_id',
+        value: '',
+      });
+      expect(resBrowse.total_count).toBeGreaterThan(0);
+    });
+
+    it('IR-F2: guarantees recorded_at DESC, id ASC order across page boundaries with tie-breaking and truthful counts', async () => {
+      // Clean assets table before deterministic tie test
+      await pool.query('DELETE FROM asset_history');
+      await pool.query('DELETE FROM assets');
+
+      // Seed 4 items: two with same recorded_at timestamp (tie), two with distinct timestamps
+      const t1 = new Date('2026-01-01T10:00:00.000Z');
+      const t2 = new Date('2026-01-01T12:00:00.000Z');
+      const t3 = new Date('2026-01-01T14:00:00.000Z');
+
+      const idA = '11111111-1111-1111-1111-111111111111';
+      const idB = '22222222-2222-2222-2222-222222222222';
+      const idC = '33333333-3333-3333-3333-333333333333';
+      const idD = '44444444-4444-4444-4444-444444444444';
+
+      // Insert: idD at t1 (oldest), idC at t3 (newest), idA and idB both at t2 (tie)
+      await pool.query(
+        `INSERT INTO assets (id, name, asset_number, serial_number, registered_by, recorded_at) VALUES
+          ($1, 'Item D', 'AST-D', 'SN-D', $5, $6),
+          ($2, 'Item C', 'AST-C', 'SN-C', $5, $7),
+          ($3, 'Item A', 'AST-A', 'SN-A', $5, $8),
+          ($4, 'Item B', 'AST-B', 'SN-B', $5, $8)`,
+        [idD, idC, idA, idB, testActorId, t1, t3, t2]
+      );
+
+      // Expected order:
+      // 1st: idC (t3, newest)
+      // 2nd: idA (t2, tie broken by id ASC: idA < idB)
+      // 3rd: idB (t2, tie broken by id ASC)
+      // 4th: idD (t1, oldest)
+
+      // Full browse
+      const full = await assetService.searchAssets({ limit: 10, offset: 0 });
+      expect(full.total_count).toBe(4);
+      expect(full.items.map((i) => i.id)).toEqual([idC, idA, idB, idD]);
+
+      // Public items must have strictly id, name, asset_number, serial_number and NO internal sort keys
+      expect(Object.keys(full.items[0]).sort()).toEqual(
+        ['asset_number', 'id', 'name', 'serial_number'].sort()
+      );
+      expect((full.items[0] as any).recorded_at).toBeUndefined();
+
+      // Page 1: limit 2, offset 0 -> [idC, idA]
+      const p1 = await assetService.searchAssets({ limit: 2, offset: 0 });
+      expect(p1.items.map((i) => i.id)).toEqual([idC, idA]);
+      expect(p1.total_count).toBe(4);
+      expect(p1.has_more).toBe(true);
+
+      // Page 2: limit 2, offset 2 -> [idB, idD]
+      const p2 = await assetService.searchAssets({ limit: 2, offset: 2 });
+      expect(p2.items.map((i) => i.id)).toEqual([idB, idD]);
+      expect(p2.total_count).toBe(4);
+      expect(p2.has_more).toBe(false);
+
+      // Beyond-end page: offset 10 -> empty items, truthful total_count 4, has_more false
+      const beyond = await assetService.searchAssets({ limit: 2, offset: 10 });
+      expect(beyond.items).toEqual([]);
+      expect(beyond.total_count).toBe(4);
+      expect(beyond.has_more).toBe(false);
+
+      // Empty table count
+      await pool.query('DELETE FROM assets');
+      const empty = await assetService.searchAssets({ limit: 10, offset: 0 });
+      expect(empty.items).toEqual([]);
+      expect(empty.total_count).toBe(0);
+      expect(empty.has_more).toBe(false);
     });
   });
 });

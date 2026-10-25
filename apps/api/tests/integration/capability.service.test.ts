@@ -153,7 +153,29 @@ describe('CapabilityService Real PostgreSQL Integration Tests (T024 - US2)', () 
       expect(roles).toEqual(['READ_ONLY']);
 
       const caps = await service.getCapabilities(user.id);
-      expect(caps).toEqual(['asset:view']);
+      expect(caps.sort()).toEqual(['asset:search', 'asset:view'].sort());
+    });
+
+    it('grants asset:search for user with READ_ONLY, ADMINISTRATOR, and ASSET_CUSTODIAN roles', async () => {
+      // READ_ONLY
+      const readOnlyUser = await createTestUser({ roles: ['READ_ONLY'] });
+      const service = new CapabilityService({ db: pool });
+      expect(await service.hasCapability(readOnlyUser.id, 'asset:search')).toBe(true);
+
+      // ADMINISTRATOR
+      const adminUser = await createTestUser({ roles: ['ADMINISTRATOR'] });
+      expect(await service.hasCapability(adminUser.id, 'asset:search')).toBe(true);
+
+      // ASSET_CUSTODIAN
+      await pool.query(
+        `INSERT INTO roles (id, description) VALUES ('ASSET_CUSTODIAN', 'Asset custodian role') ON CONFLICT (id) DO NOTHING`
+      );
+      const custodianUser = await createTestUser({ roles: ['ASSET_CUSTODIAN'] });
+      expect(await service.hasCapability(custodianUser.id, 'asset:search')).toBe(true);
+
+      // SYSTEM_MAINTAINER must NOT have asset:search
+      const maintainerUser = await createTestUser({ roles: ['SYSTEM_MAINTAINER'] });
+      expect(await service.hasCapability(maintainerUser.id, 'asset:search')).toBe(false);
     });
 
     it('Case 4: unknown role identifiers in PostgreSQL do not grant system:maintain', async () => {

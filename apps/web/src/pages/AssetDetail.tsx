@@ -1,4 +1,4 @@
-import React, { useEffect, useState, useCallback } from 'react';
+import React, { useEffect, useState, useCallback, useRef } from 'react';
 import { useParams, useNavigate, Link } from 'react-router';
 import { QueryClient, QueryClientProvider, useQuery, useQueryClient } from '@tanstack/react-query';
 import { AssetCorrectionForm } from '../components/AssetCorrectionForm';
@@ -72,17 +72,62 @@ const AssetDetailContent: React.FC = () => {
   const [refreshError, setRefreshError] = useState<string | null>(null);
   const [isCorrectionRevoked, setIsCorrectionRevoked] = useState(false);
   const [terminalError, setTerminalError] = useState<string | null>(null);
+  const [isReauthorizing, setIsReauthorizing] = useState(false);
+
+  // F-02: Lifecycle ownership and request cancellation refs
+  const isMountedRef = useRef<boolean>(true);
+  const sessionGenRef = useRef<number>(0);
+  const sessionAbortRef = useRef<AbortController | null>(null);
+  const reauthGenRef = useRef<number>(0);
+  const reauthAbortRef = useRef<AbortController | null>(null);
+  const isReauthorizingRef = useRef<boolean>(false);
 
   const verifySession = useCallback(
     async (signal?: AbortSignal) => {
+      const currentGen = ++sessionGenRef.current;
+      if (sessionAbortRef.current) {
+        sessionAbortRef.current.abort();
+      }
+      const controller = new AbortController();
+      sessionAbortRef.current = controller;
+
+      const handleExternalAbort = () => controller.abort();
+      if (signal) {
+        if (signal.aborted) {
+          controller.abort();
+        } else {
+          signal.addEventListener('abort', handleExternalAbort);
+        }
+      }
+
       try {
         const sessionRes = await fetch('/auth/session-check', {
           method: 'GET',
           credentials: 'include',
-          signal,
+          signal: controller.signal,
         });
 
+        if (signal) {
+          signal.removeEventListener('abort', handleExternalAbort);
+        }
+
+        // Guard: check mounted and generation before applying any side-effects
+        if (
+          !isMountedRef.current ||
+          currentGen !== sessionGenRef.current ||
+          controller.signal.aborted
+        ) {
+          return null;
+        }
+
         if (!sessionRes.ok) {
+          if (
+            !isMountedRef.current ||
+            currentGen !== sessionGenRef.current ||
+            controller.signal.aborted
+          ) {
+            return null;
+          }
           queryClient.clear();
           setCurrentUser(null);
           setCsrfToken(null);
@@ -91,7 +136,23 @@ const AssetDetailContent: React.FC = () => {
         }
 
         const data = await sessionRes.json();
+        if (
+          !isMountedRef.current ||
+          currentGen !== sessionGenRef.current ||
+          controller.signal.aborted
+        ) {
+          return null;
+        }
+
         const user = data.user || null;
+        if (!user) {
+          queryClient.clear();
+          setCurrentUser(null);
+          setCsrfToken(null);
+          navigate('/login', { replace: true });
+          return null;
+        }
+
         setCurrentUser((prevUser) => {
           if (prevUser && user && prevUser.id !== user.id) {
             queryClient.clear();
@@ -102,7 +163,15 @@ const AssetDetailContent: React.FC = () => {
         setSessionLoading(false);
         return user;
       } catch (err: unknown) {
-        if (err instanceof DOMException && err.name === 'AbortError') {
+        if (signal) {
+          signal.removeEventListener('abort', handleExternalAbort);
+        }
+        if (
+          !isMountedRef.current ||
+          currentGen !== sessionGenRef.current ||
+          controller.signal.aborted ||
+          (err instanceof DOMException && err.name === 'AbortError')
+        ) {
           return null;
         }
         queryClient.clear();
@@ -115,28 +184,11 @@ const AssetDetailContent: React.FC = () => {
     [navigate, queryClient]
   );
 
-  useEffect(() => {
-    const controller = new AbortController();
-    verifySession(controller.signal);
-
-    const handleFocus = () => {
-      verifySession();
-    };
-
-    window.addEventListener('focus', handleFocus);
-    document.addEventListener('visibilitychange', handleFocus);
-
-    return () => {
-      controller.abort();
-      window.removeEventListener('focus', handleFocus);
-      document.removeEventListener('visibilitychange', handleFocus);
-    };
-  }, [verifySession]);
-
   const {
     data: assetData,
     isLoading: isAssetLoading,
     error: assetError,
+    dataUpdatedAt,
     refetch,
   } = useQuery<AssetDetailResponse, Error & { status?: number }>({
     queryKey: ['asset', currentUser?.id, id],
@@ -154,10 +206,12 @@ const AssetDetailContent: React.FC = () => {
       });
 
       if (res.status === 401) {
-        navigate('/login', { replace: true });
+        if (isMountedRef.current) {
+          navigate('/login', { replace: true });
+          setTerminalError('Session expired');
+        }
         const err = new Error('Session expired') as Error & { status?: number };
         err.status = 401;
-        setTerminalError('Session expired');
         throw err;
       }
 
@@ -166,14 +220,18 @@ const AssetDetailContent: React.FC = () => {
           status?: number;
         };
         err.status = 403;
-        setTerminalError(err.message);
+        if (isMountedRef.current) {
+          setTerminalError(err.message);
+        }
         throw err;
       }
 
       if (res.status === 404) {
         const err = new Error('ไม่พบข้อมูลครุภัณฑ์ตามรหัสที่ระบุ') as Error & { status?: number };
         err.status = 404;
-        setTerminalError(err.message);
+        if (isMountedRef.current) {
+          setTerminalError(err.message);
+        }
         throw err;
       }
 
@@ -189,32 +247,153 @@ const AssetDetailContent: React.FC = () => {
   });
 
   useEffect(() => {
-    if (
-      assetError &&
-      (assetError.status === 401 ||
-        assetError.status === 403 ||
-        assetError.status === 404)
-    ) {
-      setTerminalError(assetError.message);
-      queryClient.setQueryData(['asset', currentUser?.id, id], null);
+    if (!isMountedRef.current) return;
+    if (assetError) {
+      if (assetError.status === 401) {
+        queryClient.clear();
+        setCurrentUser(null);
+        setCsrfToken(null);
+        setTerminalError('Session expired');
+        navigate('/login', { replace: true });
+      } else if (assetError.status === 403 || assetError.status === 404) {
+        setTerminalError(assetError.message);
+        queryClient.setQueryData(['asset', currentUser?.id, id], null);
+      }
     }
-  }, [assetError, currentUser?.id, id, queryClient]);
+  }, [assetError, currentUser?.id, id, queryClient, navigate]);
 
-  const handlePermissionRevoked = useCallback(async () => {
-    setIsCorrectionRevoked(true);
-    const survivingUser = await verifySession();
-    if (!survivingUser) return;
+  // F-02: Reauthorization flow with fail-closed suppression and generation tracking
+  const reauthorize = useCallback(async () => {
+    const currentGen = ++reauthGenRef.current;
+    if (reauthAbortRef.current) {
+      reauthAbortRef.current.abort();
+    }
+    const controller = new AbortController();
+    reauthAbortRef.current = controller;
 
-    // Freshly revalidate asset:view read authorization
-    const freshResult = await refetch();
-    if (freshResult.isError) {
-      // Full view revocation: immediately suppress all protected cached content
+    // Fail-closed suppression: immediately hide protected data
+    setIsReauthorizing(true);
+    isReauthorizingRef.current = true;
+
+    try {
+      const user = await verifySession(controller.signal);
+      if (
+        !isMountedRef.current ||
+        currentGen !== reauthGenRef.current ||
+        controller.signal.aborted
+      ) {
+        return;
+      }
+
+      if (!user) {
+        queryClient.clear();
+        setCurrentUser(null);
+        setCsrfToken(null);
+        setTerminalError('Session expired');
+        navigate('/login', { replace: true });
+        return;
+      }
+
+      // Freshly revalidate asset:view read authorization
+      const freshResult = await refetch();
+      if (
+        !isMountedRef.current ||
+        currentGen !== reauthGenRef.current ||
+        controller.signal.aborted
+      ) {
+        return;
+      }
+
+      if (freshResult.isError) {
+        // Full view revocation: immediately suppress all protected cached content
+        queryClient.clear();
+        setTerminalError(
+          freshResult.error?.message ||
+            'คุณไม่มีสิทธิ์เข้าถึงข้อมูลครุภัณฑ์นี้ (403 Forbidden)'
+        );
+        return;
+      }
+
+      // Both session and asset:view verified successfully!
+      if (
+        isMountedRef.current &&
+        currentGen === reauthGenRef.current &&
+        !controller.signal.aborted
+      ) {
+        setIsReauthorizing(false);
+        isReauthorizingRef.current = false;
+      }
+    } catch (err: unknown) {
+      if (
+        !isMountedRef.current ||
+        currentGen !== reauthGenRef.current ||
+        controller.signal.aborted ||
+        (err instanceof DOMException && err.name === 'AbortError')
+      ) {
+        return;
+      }
       queryClient.clear();
-      setTerminalError(freshResult.error?.message || 'คุณไม่มีสิทธิ์เข้าถึงข้อมูลครุภัณฑ์นี้ (403 Forbidden)');
+      setTerminalError('เกิดข้อผิดพลาดในการตรวจสอบสิทธิ์');
     }
-  }, [verifySession, refetch, queryClient]);
+  }, [verifySession, refetch, queryClient, navigate]);
+
+  const handlePermissionRevoked = useCallback(
+    async (statusCode?: number) => {
+      setIsCorrectionRevoked(true);
+
+      if (statusCode === 401) {
+        if (!isMountedRef.current) return;
+        queryClient.clear();
+        setCurrentUser(null);
+        setCsrfToken(null);
+        setTerminalError('Session expired');
+        navigate('/login', { replace: true });
+        return;
+      }
+
+      // F-02: Evict cached asset facts immediately so cancellation cannot restore them
+      queryClient.setQueryData(['asset', currentUser?.id, id], null);
+      await reauthorize();
+    },
+    [reauthorize, currentUser?.id, id, queryClient, navigate]
+  );
+
+  useEffect(() => {
+    isMountedRef.current = true;
+    verifySession();
+
+    const handleFocus = () => {
+      if (!isMountedRef.current) return;
+      if (isReauthorizingRef.current) {
+        // If reauthorization suppression is in progress, focus supersedes
+        // the owning reauthorization and starts a new full revalidation cycle
+        reauthorize();
+      } else {
+        verifySession();
+      }
+    };
+
+    window.addEventListener('focus', handleFocus);
+    document.addEventListener('visibilitychange', handleFocus);
+
+    return () => {
+      isMountedRef.current = false;
+      isReauthorizingRef.current = false;
+      sessionGenRef.current += 1;
+      reauthGenRef.current += 1;
+      if (sessionAbortRef.current) {
+        sessionAbortRef.current.abort();
+      }
+      if (reauthAbortRef.current) {
+        reauthAbortRef.current.abort();
+      }
+      window.removeEventListener('focus', handleFocus);
+      document.removeEventListener('visibilitychange', handleFocus);
+    };
+  }, [verifySession, reauthorize, id]);
 
   if (
+    isReauthorizing ||
     !assetData ||
     terminalError ||
     (assetError &&
@@ -222,7 +401,11 @@ const AssetDetailContent: React.FC = () => {
         assetError.status === 403 ||
         assetError.status === 404))
   ) {
-    if (!terminalError && !assetError && (sessionLoading || isAssetLoading || !assetData)) {
+    if (
+      !terminalError &&
+      !assetError &&
+      (sessionLoading || isAssetLoading || isReauthorizing || !assetData)
+    ) {
       return (
         <main
           style={{
@@ -235,7 +418,9 @@ const AssetDetailContent: React.FC = () => {
           }}
         >
           <div role="status" aria-live="polite" style={{ color: '#4b5563' }}>
-            กำลังโหลดข้อมูลครุภัณฑ์...
+            {isReauthorizing
+              ? 'กำลังตรวจสอบสิทธิ์การเข้าถึงข้อมูล...'
+              : 'กำลังโหลดข้อมูลครุภัณฑ์...'}
           </div>
         </main>
       );
@@ -276,6 +461,7 @@ const AssetDetailContent: React.FC = () => {
           </div>
           <Link
             to="/dashboard"
+            id="nav-dashboard-link"
             style={{
               color: '#2563eb',
               textDecoration: 'none',
@@ -338,6 +524,7 @@ const AssetDetailContent: React.FC = () => {
           >
             <Link
               to="/dashboard"
+              id="nav-dashboard-link"
               style={{
                 color: '#2563eb',
                 textDecoration: 'none',
@@ -411,6 +598,23 @@ const AssetDetailContent: React.FC = () => {
                 ปกติ
               </span>
             )}
+            <button
+              type="button"
+              id="refresh-asset-detail-btn"
+              onClick={() => refetch()}
+              style={{
+                marginLeft: 'auto',
+                padding: '0.375rem 0.75rem',
+                backgroundColor: '#f3f4f6',
+                border: '1px solid #d1d5db',
+                borderRadius: '4px',
+                cursor: 'pointer',
+                fontSize: '0.875rem',
+                color: '#374151',
+              }}
+            >
+              รีเฟรชข้อมูล
+            </button>
           </div>
           <p
             style={{
@@ -719,7 +923,15 @@ const AssetDetailContent: React.FC = () => {
               asset={asset}
               isLegacy={isLegacy}
               csrfToken={csrfToken}
+              dataUpdatedAt={dataUpdatedAt}
               onPermissionRevoked={handlePermissionRevoked}
+              onRefresh={async () => {
+                const res = await refetch();
+                if (!res.isError && res.data?.asset) {
+                  return res.data.asset;
+                }
+                return null;
+              }}
               onSuccess={async () => {
                 setRefreshError(null);
                 const refetchResult = await refetch();
