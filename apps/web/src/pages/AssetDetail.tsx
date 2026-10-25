@@ -2,6 +2,7 @@ import React, { useEffect, useState, useCallback, useRef } from 'react';
 import { useParams, useNavigate, Link } from 'react-router';
 import { QueryClient, QueryClientProvider, useQuery, useQueryClient } from '@tanstack/react-query';
 import { AssetCorrectionForm } from '../components/AssetCorrectionForm';
+import { AssetQrLabel } from '../components/AssetQrLabel';
 
 export interface AssetRecord {
   id: string;
@@ -725,6 +726,16 @@ const AssetDetailContent: React.FC = () => {
             </dd>
           </dl>
         </section>
+
+        {/* QR Code and Minimal Printing Panel (T8) */}
+        <AssetQrLabel
+          assetId={id!}
+          asset={asset}
+          currentUser={currentUser}
+          dataUpdatedAt={dataUpdatedAt}
+          refreshError={refreshError}
+          onPermissionRevoked={handlePermissionRevoked}
+        />
 
         {/* Timeline Starting and Correction History */}
         <section aria-labelledby="history-heading" style={{ marginBottom: '2rem' }}>

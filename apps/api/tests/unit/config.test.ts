@@ -123,4 +123,234 @@ describe('Configuration Validation (T010)', () => {
       expect(errorMessage).not.toContain(secretPassword);
     });
   });
+
+  describe('PUBLIC_APP_ORIGIN Validation (T8)', () => {
+    describe('Valid Configurations & Normalization', () => {
+      it('allows omitting PUBLIC_APP_ORIGIN and leaves it undefined', () => {
+        const config = loadConfig(validBaseEnv);
+        expect(config.PUBLIC_APP_ORIGIN).toBeUndefined();
+      });
+
+      it('treats empty string as omitted/undefined', () => {
+        const config = loadConfig({ ...validBaseEnv, PUBLIC_APP_ORIGIN: '' });
+        expect(config.PUBLIC_APP_ORIGIN).toBeUndefined();
+      });
+
+      it('accepts loopback http in development and test environments', () => {
+        const devConfig = loadConfig({
+          ...validBaseEnv,
+          NODE_ENV: 'development',
+          PUBLIC_APP_ORIGIN: 'http://localhost:3000',
+        });
+        expect(devConfig.PUBLIC_APP_ORIGIN).toBe('http://localhost:3000');
+
+        const testConfig = loadConfig({
+          ...validBaseEnv,
+          NODE_ENV: 'test',
+          PUBLIC_APP_ORIGIN: 'http://127.0.0.1:8080',
+        });
+        expect(testConfig.PUBLIC_APP_ORIGIN).toBe('http://127.0.0.1:8080');
+
+        const ipv6Config = loadConfig({
+          ...validBaseEnv,
+          NODE_ENV: 'development',
+          PUBLIC_APP_ORIGIN: 'http://[::1]:3000',
+        });
+        expect(ipv6Config.PUBLIC_APP_ORIGIN).toBe('http://[::1]:3000');
+      });
+
+      it('normalizes trailing slash by removing it', () => {
+        const config = loadConfig({
+          ...validBaseEnv,
+          PUBLIC_APP_ORIGIN: 'http://localhost:3000/',
+        });
+        expect(config.PUBLIC_APP_ORIGIN).toBe('http://localhost:3000');
+
+        const prodConfig = loadConfig({
+          ...validBaseEnv,
+          NODE_ENV: 'production',
+          PUBLIC_APP_ORIGIN: 'https://assets.example.com/',
+        });
+        expect(prodConfig.PUBLIC_APP_ORIGIN).toBe('https://assets.example.com');
+      });
+
+      it('accepts https origins in development and production', () => {
+        const devConfig = loadConfig({
+          ...validBaseEnv,
+          NODE_ENV: 'development',
+          PUBLIC_APP_ORIGIN: 'https://dev-assets.internal.example:8443',
+        });
+        expect(devConfig.PUBLIC_APP_ORIGIN).toBe('https://dev-assets.internal.example:8443');
+
+        const prodConfig = loadConfig({
+          ...validBaseEnv,
+          NODE_ENV: 'production',
+          PUBLIC_APP_ORIGIN: 'https://assets.example.com',
+        });
+        expect(prodConfig.PUBLIC_APP_ORIGIN).toBe('https://assets.example.com');
+      });
+    });
+
+    describe('Invalid Configurations & Safety', () => {
+      it('rejects HTTP in production even for loopback', () => {
+        expect(() =>
+          loadConfig({
+            ...validBaseEnv,
+            NODE_ENV: 'production',
+            PUBLIC_APP_ORIGIN: 'http://assets.example.com',
+          })
+        ).toThrow();
+
+        expect(() =>
+          loadConfig({
+            ...validBaseEnv,
+            NODE_ENV: 'production',
+            PUBLIC_APP_ORIGIN: 'http://localhost:3000',
+          })
+        ).toThrow();
+      });
+
+      it('rejects non-loopback HTTP in non-production', () => {
+        expect(() =>
+          loadConfig({
+            ...validBaseEnv,
+            NODE_ENV: 'development',
+            PUBLIC_APP_ORIGIN: 'http://assets.internal.example',
+          })
+        ).toThrow();
+
+        expect(() =>
+          loadConfig({
+            ...validBaseEnv,
+            NODE_ENV: 'test',
+            PUBLIC_APP_ORIGIN: 'http://192.168.1.100:3000',
+          })
+        ).toThrow();
+      });
+
+      it('rejects userinfo, query, fragment, and non-root paths', () => {
+        expect(() =>
+          loadConfig({ ...validBaseEnv, PUBLIC_APP_ORIGIN: 'https://user:pass@example.com' })
+        ).toThrow();
+
+        expect(() =>
+          loadConfig({ ...validBaseEnv, PUBLIC_APP_ORIGIN: 'https://example.com/assets' })
+        ).toThrow();
+
+        expect(() =>
+          loadConfig({ ...validBaseEnv, PUBLIC_APP_ORIGIN: 'https://example.com?query=1' })
+        ).toThrow();
+
+        expect(() =>
+          loadConfig({ ...validBaseEnv, PUBLIC_APP_ORIGIN: 'https://example.com#section' })
+        ).toThrow();
+      });
+
+      it('rejects wildcard bind hosts', () => {
+        expect(() =>
+          loadConfig({ ...validBaseEnv, PUBLIC_APP_ORIGIN: 'http://0.0.0.0:3000' })
+        ).toThrow();
+
+        expect(() =>
+          loadConfig({ ...validBaseEnv, PUBLIC_APP_ORIGIN: 'http://[::]:3000' })
+        ).toThrow();
+
+        expect(() =>
+          loadConfig({ ...validBaseEnv, PUBLIC_APP_ORIGIN: 'https://*' })
+        ).toThrow();
+      });
+
+      it('rejects whitespace, control characters, and backslashes', () => {
+        expect(() =>
+          loadConfig({ ...validBaseEnv, PUBLIC_APP_ORIGIN: 'http://localhost:3000 ' })
+        ).toThrow();
+
+        expect(() =>
+          loadConfig({ ...validBaseEnv, PUBLIC_APP_ORIGIN: 'https://example\x00.com' })
+        ).toThrow();
+
+        expect(() =>
+          loadConfig({ ...validBaseEnv, PUBLIC_APP_ORIGIN: 'https://example.com\\path' })
+        ).toThrow();
+      });
+
+      it('rejects invalid ports and values exceeding 512 bytes', () => {
+        expect(() =>
+          loadConfig({ ...validBaseEnv, PUBLIC_APP_ORIGIN: 'https://example.com:0' })
+        ).toThrow();
+
+        expect(() =>
+          loadConfig({ ...validBaseEnv, PUBLIC_APP_ORIGIN: 'https://example.com:65536' })
+        ).toThrow();
+
+        const longDomain = 'https://' + 'a'.repeat(510) + '.com';
+        expect(() =>
+          loadConfig({ ...validBaseEnv, PUBLIC_APP_ORIGIN: longDomain })
+        ).toThrow();
+
+        // Multibyte string under 512 characters but exceeding 512 UTF-8 bytes (180 Thai chars * 3 bytes + 20 bytes = 560 bytes)
+        const multibyteOrigin = 'https://example.com/' + 'ก'.repeat(180);
+        expect(multibyteOrigin.length).toBeLessThan(512);
+        expect(Buffer.byteLength(multibyteOrigin, 'utf8')).toBeGreaterThan(512);
+        expect(() =>
+          loadConfig({ ...validBaseEnv, PUBLIC_APP_ORIGIN: multibyteOrigin })
+        ).toThrow();
+      });
+
+      it('rejects raw syntax bypasses prior to WHATWG parser normalization', () => {
+        // Missing slash after scheme
+        expect(() =>
+          loadConfig({ ...validBaseEnv, PUBLIC_APP_ORIGIN: 'https:example.com' })
+        ).toThrow();
+
+        // Query string marker
+        expect(() =>
+          loadConfig({ ...validBaseEnv, PUBLIC_APP_ORIGIN: 'https://example.com?' })
+        ).toThrow();
+
+        // Fragment marker
+        expect(() =>
+          loadConfig({ ...validBaseEnv, PUBLIC_APP_ORIGIN: 'https://example.com#' })
+        ).toThrow();
+
+        // Userinfo marker (including empty userinfo)
+        expect(() =>
+          loadConfig({ ...validBaseEnv, PUBLIC_APP_ORIGIN: 'https://@example.com' })
+        ).toThrow();
+
+        // Relative path segments
+        expect(() =>
+          loadConfig({ ...validBaseEnv, PUBLIC_APP_ORIGIN: 'https://example.com/./' })
+        ).toThrow();
+        expect(() =>
+          loadConfig({ ...validBaseEnv, PUBLIC_APP_ORIGIN: 'https://example.com/../' })
+        ).toThrow();
+
+        // Empty authority
+        expect(() =>
+          loadConfig({ ...validBaseEnv, PUBLIC_APP_ORIGIN: 'https://' })
+        ).toThrow();
+        expect(() =>
+          loadConfig({ ...validBaseEnv, PUBLIC_APP_ORIGIN: 'https:///example.com' })
+        ).toThrow();
+      });
+
+      it('does not echo invalid origin input in error messages', () => {
+        const sensitiveHost = 'very-secret-internal-host-do-not-echo.corp';
+        const invalidOrigin = `http://${sensitiveHost}/forbidden-path`;
+
+        let thrownError: unknown;
+        try {
+          loadConfig({ ...validBaseEnv, PUBLIC_APP_ORIGIN: invalidOrigin });
+        } catch (err) {
+          thrownError = err;
+        }
+
+        expect(thrownError).toBeDefined();
+        const msg = thrownError instanceof Error ? thrownError.message : String(thrownError);
+        expect(msg).not.toContain(sensitiveHost);
+        expect(msg).not.toContain(invalidOrigin);
+      });
+    });
+  });
 });

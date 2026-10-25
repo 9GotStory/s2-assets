@@ -17,6 +17,7 @@ export interface AssetRoutesOptions {
   assetService?: AssetService;
   capabilityService?: CapabilityService;
   db?: any;
+  publicAppOrigin?: string;
 }
 
 const RegisterAssetSchema = z
@@ -75,6 +76,10 @@ export const assetRoutes: FastifyPluginAsync<AssetRoutesOptions> = async (
     options.assetService ??
     new AssetService({ db: options.db });
 
+  const getPublicAppOrigin = (): string | undefined => {
+    return (fastify as any).publicAppOrigin ?? options.publicAppOrigin;
+  };
+
   const isSearchRequest = (request: FastifyRequest): boolean => {
     if ((request as any).isSearchRoute) {
       return true;
@@ -88,9 +93,22 @@ export const assetRoutes: FastifyPluginAsync<AssetRoutesOptions> = async (
     return cleanPath === '/assets/search' || cleanPath === '/search';
   };
 
-  // Search-specific response policy (IR-F3):
-  // Establish no-store Cache-Control covering 200, 400, 401, 403, 5xx, early denials and pre-handler failures.
-  // Also redact query-bearing URLs from raw.url to prevent disclosure in operational logs.
+  const isQrLabelRequest = (request: FastifyRequest): boolean => {
+    if ((request as any).isQrLabelRoute) {
+      return true;
+    }
+    const routerPath = request.routeOptions?.url || (request as any).routerPath;
+    if (routerPath?.replace(/\/$/, '').endsWith('/qr-label')) {
+      return true;
+    }
+    const rawUrl = (request as any).originalRawUrl || request.raw?.url || request.url || '';
+    const cleanPath = rawUrl.split('?')[0].replace(/\/$/, '');
+    return cleanPath.endsWith('/qr-label');
+  };
+
+  // Search-specific and QR-specific response policy (IR-F3, T8):
+  // Establish no-store Cache-Control covering 200, 400, 401, 403, 404, 5xx, early denials and pre-handler failures.
+  // Also redact query-bearing URLs from raw.url to prevent disclosure in operational logs for search.
   fastify.addHook('onRequest', async (request: FastifyRequest, reply: FastifyReply) => {
     const rawUrl = request.raw?.url || '';
     (request as any).rawUrlLength = rawUrl.length;
@@ -103,10 +121,15 @@ export const assetRoutes: FastifyPluginAsync<AssetRoutesOptions> = async (
         request.raw.url = cleanPath;
       }
     }
+    const normalizedPath = cleanPath.replace(/\/$/, '');
+    if (normalizedPath.endsWith('/qr-label')) {
+      (request as any).isQrLabelRoute = true;
+      reply.header('Cache-Control', 'no-store');
+    }
   });
 
   fastify.addHook('onSend', async (request: FastifyRequest, reply: FastifyReply, payload: unknown) => {
-    if (isSearchRequest(request)) {
+    if (isSearchRequest(request) || isQrLabelRequest(request)) {
       reply.header('Cache-Control', 'no-store');
     }
     return payload;
@@ -429,6 +452,67 @@ export const assetRoutes: FastifyPluginAsync<AssetRoutesOptions> = async (
       return reply.status(200).send({
         ...result,
         can_correct: canCorrect,
+      });
+    }
+  );
+
+  /**
+   * GET /:id/qr-label
+   * Retrieve single-asset QR label payload and locator URL (T8, AR-02, AR-07)
+   * Office-wide visibility: accessible to all authorized registry roles with 'asset:view'
+   * Protected: requires 'asset:view' capability (Asset Custodian, Administrator, Read-only User)
+   * Enforces Cache-Control: no-store on 200, 400, 401, 403, 404, 500, 503
+   */
+  fastify.get(
+    '/:id/qr-label',
+    {
+      preHandler: [requireCapability('asset:view')],
+    },
+    async (request: FastifyRequest, reply: FastifyReply) => {
+      reply.header('Cache-Control', 'no-store');
+
+      const { id } = (request.params || {}) as { id: string };
+
+      if (!isValidExactUuid(id)) {
+        return reply.status(400).send({
+          statusCode: 400,
+          code: 'INVALID_ID',
+          error: 'INVALID_ID',
+          message: 'Asset ID must be a valid UUID string',
+        });
+      }
+
+      const canonicalId = id.toLowerCase();
+
+      const currentPublicAppOrigin = getPublicAppOrigin();
+
+      if (!currentPublicAppOrigin) {
+        return reply.status(503).send({
+          statusCode: 503,
+          code: 'SERVICE_UNAVAILABLE',
+          error: 'SERVICE_UNAVAILABLE',
+          message: 'Public application origin is not configured',
+        });
+      }
+
+      const result = await assetService.getAssetById(canonicalId);
+      if (!result) {
+        return reply.status(404).send({
+          statusCode: 404,
+          code: 'NOT_FOUND',
+          error: 'NOT_FOUND',
+          message: 'Asset not found',
+        });
+      }
+
+      const responseId = result.asset.id.toLowerCase();
+
+      return reply.status(200).send({
+        id: responseId,
+        locator: `${currentPublicAppOrigin}/assets/${responseId}`,
+        name: result.asset.name,
+        asset_number: result.asset.asset_number,
+        serial_number: result.asset.serial_number,
       });
     }
   );
