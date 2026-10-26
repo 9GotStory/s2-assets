@@ -2201,4 +2201,718 @@ describe('Asset Routes & Security Matrix Integration Tests (Seam A)', () => {
       expect(resNonexistent.statusCode).toBe(400);
     });
   });
+
+  describe('POST /assets/bulk-register (Seam A - Routes & D3 Security)', () => {
+    const validItemKey1 = '11111111-1111-4111-8111-111111111111';
+    const validItemKey2 = '22222222-2222-4222-8222-222222222222';
+
+    it('requires authentication (fails closed with 401 or 403 for unauthenticated requests)', async () => {
+      const res = await app.inject({
+        method: 'POST',
+        url: '/assets/bulk-register',
+        headers: {
+          'x-retry-token': 'auth-test-token',
+        },
+        payload: {
+          items: [{ item_key: validItemKey1, name: 'Item 1' }],
+        },
+      });
+      expect([401, 403]).toContain(res.statusCode);
+      expect(res.headers['cache-control']).toBe('no-store');
+    });
+
+    it('enforces D3 capability matrix: ASSET_CUSTODIAN allowed, ADMINISTRATOR, READ_ONLY, and MAINTAINER denied 403', async () => {
+      const payload = {
+        items: [{ item_key: validItemKey1, name: 'D3 Matrix Test Asset' }],
+      };
+
+      // 1. ASSET_CUSTODIAN: succeeds (201)
+      const resCustodian = await app.inject({
+        method: 'POST',
+        url: '/assets/bulk-register',
+        headers: {
+          cookie: custodianUser.cookie,
+          'x-csrf-token': custodianUser.csrf,
+          'x-retry-token': 'd3-custodian-token',
+        },
+        payload,
+      });
+      expect(resCustodian.statusCode).toBe(201);
+      expect(resCustodian.headers['cache-control']).toBe('no-store');
+      const bodyCustodian = JSON.parse(resCustodian.body);
+      expect(bodyCustodian.total_registered).toBe(1);
+
+      // 2. ADMINISTRATOR: denied (403)
+      const resAdmin = await app.inject({
+        method: 'POST',
+        url: '/assets/bulk-register',
+        headers: {
+          cookie: adminUser.cookie,
+          'x-csrf-token': adminUser.csrf,
+          'x-retry-token': 'd3-admin-token',
+        },
+        payload,
+      });
+      expect(resAdmin.statusCode).toBe(403);
+      expect(resAdmin.headers['cache-control']).toBe('no-store');
+
+      // 3. READ_ONLY: denied (403)
+      const resReadOnly = await app.inject({
+        method: 'POST',
+        url: '/assets/bulk-register',
+        headers: {
+          cookie: readonlyUser.cookie,
+          'x-csrf-token': readonlyUser.csrf,
+          'x-retry-token': 'd3-readonly-token',
+        },
+        payload,
+      });
+      expect(resReadOnly.statusCode).toBe(403);
+      expect(resReadOnly.headers['cache-control']).toBe('no-store');
+
+      // 4. SYSTEM_MAINTAINER: denied (403)
+      const resMaintainer = await app.inject({
+        method: 'POST',
+        url: '/assets/bulk-register',
+        headers: {
+          cookie: maintainerUser.cookie,
+          'x-csrf-token': maintainerUser.csrf,
+          'x-retry-token': 'd3-maintainer-token',
+        },
+        payload,
+      });
+      expect(resMaintainer.statusCode).toBe(403);
+      expect(resMaintainer.headers['cache-control']).toBe('no-store');
+    });
+
+    it('validates x-retry-token header presence, non-emptiness, and max length', async () => {
+      // Missing x-retry-token
+      const resMissing = await app.inject({
+        method: 'POST',
+        url: '/assets/bulk-register',
+        headers: {
+          cookie: custodianUser.cookie,
+          'x-csrf-token': custodianUser.csrf,
+        },
+        payload: {
+          items: [{ item_key: validItemKey1, name: 'Item 1' }],
+        },
+      });
+      expect(resMissing.statusCode).toBe(400);
+      expect(resMissing.headers['cache-control']).toBe('no-store');
+
+      // Blank x-retry-token
+      const resBlank = await app.inject({
+        method: 'POST',
+        url: '/assets/bulk-register',
+        headers: {
+          cookie: custodianUser.cookie,
+          'x-csrf-token': custodianUser.csrf,
+          'x-retry-token': '   ',
+        },
+        payload: {
+          items: [{ item_key: validItemKey1, name: 'Item 1' }],
+        },
+      });
+      expect(resBlank.statusCode).toBe(400);
+
+      // Over 128 characters
+      const resTooLong = await app.inject({
+        method: 'POST',
+        url: '/assets/bulk-register',
+        headers: {
+          cookie: custodianUser.cookie,
+          'x-csrf-token': custodianUser.csrf,
+          'x-retry-token': 'a'.repeat(129),
+        },
+        payload: {
+          items: [{ item_key: validItemKey1, name: 'Item 1' }],
+        },
+      });
+      expect(resTooLong.statusCode).toBe(400);
+    });
+
+    it('rejects batch with 0 items, > 100 items, or duplicate item_keys', async () => {
+      // 0 items
+      const resZero = await app.inject({
+        method: 'POST',
+        url: '/assets/bulk-register',
+        headers: {
+          cookie: custodianUser.cookie,
+          'x-csrf-token': custodianUser.csrf,
+          'x-retry-token': 'validation-zero-items',
+        },
+        payload: {
+          items: [],
+        },
+      });
+      expect(resZero.statusCode).toBe(400);
+
+      // > 100 items
+      const tooMany = Array.from({ length: 101 }, (_, i) => ({
+        item_key: `33333333-3333-4333-8333-${String(i + 1).padStart(12, '0')}`,
+        name: `Item ${i + 1}`,
+      }));
+      const resTooMany = await app.inject({
+        method: 'POST',
+        url: '/assets/bulk-register',
+        headers: {
+          cookie: custodianUser.cookie,
+          'x-csrf-token': custodianUser.csrf,
+          'x-retry-token': 'validation-too-many',
+        },
+        payload: {
+          items: tooMany,
+        },
+      });
+      expect(resTooMany.statusCode).toBe(400);
+
+      // Duplicate item_keys
+      const resDupKey = await app.inject({
+        method: 'POST',
+        url: '/assets/bulk-register',
+        headers: {
+          cookie: custodianUser.cookie,
+          'x-csrf-token': custodianUser.csrf,
+          'x-retry-token': 'validation-dup-keys',
+        },
+        payload: {
+          items: [
+            { item_key: validItemKey1, name: 'Item 1' },
+            { item_key: validItemKey1, name: 'Item 2' },
+          ],
+        },
+      });
+      expect(resDupKey.statusCode).toBe(400);
+    });
+
+    it('rejects unexpected fields at top level or item level', async () => {
+      // Unexpected top-level field
+      const resRootUnknown = await app.inject({
+        method: 'POST',
+        url: '/assets/bulk-register',
+        headers: {
+          cookie: custodianUser.cookie,
+          'x-csrf-token': custodianUser.csrf,
+          'x-retry-token': 'unknown-field-token-1',
+        },
+        payload: {
+          items: [{ item_key: validItemKey1, name: 'Item 1' }],
+          extra_field: 'illegal',
+        },
+      });
+      expect(resRootUnknown.statusCode).toBe(400);
+
+      // Unexpected item-level field
+      const resItemUnknown = await app.inject({
+        method: 'POST',
+        url: '/assets/bulk-register',
+        headers: {
+          cookie: custodianUser.cookie,
+          'x-csrf-token': custodianUser.csrf,
+          'x-retry-token': 'unknown-field-token-2',
+        },
+        payload: {
+          items: [{ item_key: validItemKey1, name: 'Item 1', bad_prop: 123 }],
+        },
+      });
+      expect(resItemUnknown.statusCode).toBe(400);
+    });
+
+    it('handles duplicate warnings (409) and allows continuation when explicit_continuation is true', async () => {
+      // First, register an asset
+      await app.inject({
+        method: 'POST',
+        url: '/assets',
+        headers: {
+          cookie: custodianUser.cookie,
+          'x-csrf-token': custodianUser.csrf,
+          'x-retry-token': 'seed-single-for-bulk-dup',
+        },
+        payload: {
+          name: 'Existing Single Asset',
+          asset_number: 'AST-ROUTE-DUP-1',
+        },
+      });
+
+      // Try bulk registering item with the same asset_number without continuation
+      const resConflict = await app.inject({
+        method: 'POST',
+        url: '/assets/bulk-register',
+        headers: {
+          cookie: custodianUser.cookie,
+          'x-csrf-token': custodianUser.csrf,
+          'x-retry-token': 'conflict-bulk-token',
+        },
+        payload: {
+          items: [
+            {
+              item_key: validItemKey1,
+              name: 'Duplicate Candidate Asset',
+              asset_number: 'AST-ROUTE-DUP-1',
+            },
+          ],
+          explicit_continuation: false,
+        },
+      });
+      expect(resConflict.statusCode).toBe(409);
+      expect(resConflict.headers['cache-control']).toBe('no-store');
+      const conflictBody = JSON.parse(resConflict.body);
+      expect(conflictBody.code).toBe('DUPLICATE_CANDIDATES_FOUND');
+      expect(conflictBody.warnings).toBeDefined();
+      expect(conflictBody.warnings[0].field).toBe('asset_number');
+      expect(conflictBody.warnings[0].value).toBe('AST-ROUTE-DUP-1');
+
+      // Now register with explicit_continuation = true
+      const resContinued = await app.inject({
+        method: 'POST',
+        url: '/assets/bulk-register',
+        headers: {
+          cookie: custodianUser.cookie,
+          'x-csrf-token': custodianUser.csrf,
+          'x-retry-token': 'continued-bulk-token',
+        },
+        payload: {
+          items: [
+            {
+              item_key: validItemKey1,
+              name: 'Duplicate Candidate Asset',
+              asset_number: 'AST-ROUTE-DUP-1',
+            },
+          ],
+          explicit_continuation: true,
+        },
+      });
+      expect(resContinued.statusCode).toBe(201);
+      const continuedBody = JSON.parse(resContinued.body);
+      expect(continuedBody.total_registered).toBe(1);
+    });
+
+    it('enforces retry token idempotency contract across identical retries and conflicting payloads', async () => {
+      const token = 'route-bulk-retry-token-100';
+      const payload = {
+        items: [
+          {
+            item_key: validItemKey1,
+            name: 'Bulk Item A',
+            asset_number: 'AST-ROUTE-RETRY-A',
+          },
+          {
+            item_key: validItemKey2,
+            name: 'Bulk Item B',
+            asset_number: 'AST-ROUTE-RETRY-B',
+          },
+        ],
+      };
+
+      // 1. Initial request succeeds
+      const res1 = await app.inject({
+        method: 'POST',
+        url: '/assets/bulk-register',
+        headers: {
+          cookie: custodianUser.cookie,
+          'x-csrf-token': custodianUser.csrf,
+          'x-retry-token': token,
+        },
+        payload,
+      });
+      expect(res1.statusCode).toBe(201);
+      const body1 = JSON.parse(res1.body);
+
+      // 2. Identical retry returns 201 with identical body
+      const res2 = await app.inject({
+        method: 'POST',
+        url: '/assets/bulk-register',
+        headers: {
+          cookie: custodianUser.cookie,
+          'x-csrf-token': custodianUser.csrf,
+          'x-retry-token': token,
+        },
+        payload,
+      });
+      expect(res2.statusCode).toBe(201);
+      const body2 = JSON.parse(res2.body);
+      expect(body2).toEqual(body1);
+
+      // 3. Changed payload with same token returns 409 RETRY_TOKEN_PAYLOAD_MISMATCH
+      const resConflict = await app.inject({
+        method: 'POST',
+        url: '/assets/bulk-register',
+        headers: {
+          cookie: custodianUser.cookie,
+          'x-csrf-token': custodianUser.csrf,
+          'x-retry-token': token,
+        },
+        payload: {
+          items: [
+            {
+              item_key: validItemKey1,
+              name: 'Different Name Here',
+              asset_number: 'AST-ROUTE-RETRY-A',
+            },
+          ],
+        },
+      });
+      expect(resConflict.statusCode).toBe(409);
+      expect(resConflict.headers['cache-control']).toBe('no-store');
+      const conflictBody = JSON.parse(resConflict.body);
+      expect(conflictBody.code).toBe('RETRY_TOKEN_PAYLOAD_MISMATCH');
+    });
+
+    it('links optional acquisition when provided and applies to all items in batch', async () => {
+      const acqRes = await pool.query(`
+        INSERT INTO acquisitions (acquisition_type, source_reference, created_by)
+        VALUES ('BulkAcquisition', 'REF-BULK-LINK-01', '${custodianUser.id}')
+        RETURNING id;
+      `);
+      const acqId = acqRes.rows[0].id;
+
+      const res = await app.inject({
+        method: 'POST',
+        url: '/assets/bulk-register',
+        headers: {
+          cookie: custodianUser.cookie,
+          'x-csrf-token': custodianUser.csrf,
+          'x-retry-token': 'bulk-with-acq-token',
+        },
+        payload: {
+          acquisition_id: acqId,
+          items: [
+            { item_key: validItemKey1, name: 'Item Linked 1' },
+            { item_key: validItemKey2, name: 'Item Linked 2' },
+          ],
+        },
+      });
+      expect(res.statusCode).toBe(201);
+      const body = JSON.parse(res.body);
+      expect(body.shared_acquisition_id).toBe(acqId);
+      expect(body.results).toHaveLength(2);
+    });
+
+    it('rejects payload exceeding 1 MiB body limit with 413 and Cache-Control: no-store', async () => {
+      const hugeString = 'x'.repeat(1024 * 1024 + 100);
+      const res = await app.inject({
+        method: 'POST',
+        url: '/assets/bulk-register',
+        headers: {
+          cookie: custodianUser.cookie,
+          'x-csrf-token': custodianUser.csrf,
+          'x-retry-token': 'huge-payload-token',
+        },
+        payload: {
+          items: [
+            {
+              item_key: validItemKey1,
+              name: 'Huge Payload Item',
+              source_notes: hugeString,
+            },
+          ],
+        },
+      });
+      expect(res.statusCode).toBe(413);
+      expect(res.headers['cache-control']).toBe('no-store');
+    });
+
+    it('rejects contradictory body retry_token (including empty string) with 400', async () => {
+      const token = 'header-token-contract-01';
+
+      // 1. Contradictory token with empty string
+      const resEmpty = await app.inject({
+        method: 'POST',
+        url: '/assets/bulk-register',
+        headers: {
+          cookie: custodianUser.cookie,
+          'x-csrf-token': custodianUser.csrf,
+          'x-retry-token': token,
+        },
+        payload: {
+          items: [{ item_key: validItemKey1, name: 'Item Token Test 1' }],
+          retry_token: '',
+        },
+      });
+      expect(resEmpty.statusCode).toBe(400);
+      const bodyEmpty = JSON.parse(resEmpty.body);
+      expect(bodyEmpty.message).toContain(
+        'x-retry-token header and body retry_token must match'
+      );
+
+      // 2. Contradictory token with mismatched value
+      const resMismatch = await app.inject({
+        method: 'POST',
+        url: '/assets/bulk-register',
+        headers: {
+          cookie: custodianUser.cookie,
+          'x-csrf-token': custodianUser.csrf,
+          'x-retry-token': token,
+        },
+        payload: {
+          items: [{ item_key: validItemKey1, name: 'Item Token Test 2' }],
+          retry_token: 'mismatched-body-token',
+        },
+      });
+      expect(resMismatch.statusCode).toBe(400);
+      const bodyMismatch = JSON.parse(resMismatch.body);
+      expect(bodyMismatch.message).toContain(
+        'x-retry-token header and body retry_token must match'
+      );
+
+      // 3. Matching token succeeds
+      const resMatch = await app.inject({
+        method: 'POST',
+        url: '/assets/bulk-register',
+        headers: {
+          cookie: custodianUser.cookie,
+          'x-csrf-token': custodianUser.csrf,
+          'x-retry-token': token,
+        },
+        payload: {
+          items: [{ item_key: validItemKey1, name: 'Item Token Test 3' }],
+          retry_token: token,
+        },
+      });
+      expect(resMatch.statusCode).toBe(201);
+    });
+
+    it('rejects replay after capability revocation with 403', async () => {
+      const replayToken = 'revoked-replay-token-01';
+      const payload = {
+        items: [{ item_key: validItemKey2, name: 'Revocation Test Item' }],
+      };
+
+      // 1. Initial execution succeeds as custodian
+      const res1 = await app.inject({
+        method: 'POST',
+        url: '/assets/bulk-register',
+        headers: {
+          cookie: custodianUser.cookie,
+          'x-csrf-token': custodianUser.csrf,
+          'x-retry-token': replayToken,
+        },
+        payload,
+      });
+      expect(res1.statusCode).toBe(201);
+
+      // 2. Revoke ASSET_CUSTODIAN role from custodianUser
+      await pool.query(
+        `DELETE FROM user_roles WHERE user_id = $1 AND role_id = 'ASSET_CUSTODIAN'`,
+        [custodianUser.id]
+      );
+
+      try {
+        // 3. Replay with same retry token is rejected with 403 Forbidden
+        const resReplay = await app.inject({
+          method: 'POST',
+          url: '/assets/bulk-register',
+          headers: {
+            cookie: custodianUser.cookie,
+            'x-csrf-token': custodianUser.csrf,
+            'x-retry-token': replayToken,
+          },
+          payload,
+        });
+        expect(resReplay.statusCode).toBe(403);
+      } finally {
+        // Restore role
+        await pool.query(
+          `INSERT INTO user_roles (user_id, role_id) VALUES ($1, 'ASSET_CUSTODIAN')`,
+          [custodianUser.id]
+        );
+      }
+    });
+
+    it('enforces CSRF protection: rejects bulk registration requests with missing or invalid x-csrf-token with 403 Forbidden', async () => {
+      // 1. Missing CSRF token
+      const resMissing = await app.inject({
+        method: 'POST',
+        url: '/assets/bulk-register',
+        headers: {
+          cookie: custodianUser.cookie,
+          'x-retry-token': 'csrf-bulk-test-token-1',
+        },
+        payload: {
+          items: [{ item_key: crypto.randomUUID(), name: 'CSRF Missing Asset' }],
+        },
+      });
+      expect(resMissing.statusCode).toBe(403);
+      expect(resMissing.headers['cache-control']).toBe('no-store');
+
+      // 2. Invalid CSRF token
+      const resInvalid = await app.inject({
+        method: 'POST',
+        url: '/assets/bulk-register',
+        headers: {
+          cookie: custodianUser.cookie,
+          'x-csrf-token': 'invalid-csrf-token-bytes',
+          'x-retry-token': 'csrf-bulk-test-token-2',
+        },
+        payload: {
+          items: [{ item_key: crypto.randomUUID(), name: 'CSRF Invalid Asset' }],
+        },
+      });
+      expect(resInvalid.statusCode).toBe(403);
+      expect(resInvalid.headers['cache-control']).toBe('no-store');
+    });
+
+    it('enforces actor and operation retry token isolation', async () => {
+      // Create a second custodian user
+      const otherPass = await UserService.hashPassword('Pass123!');
+      const userRes = await pool.query(
+        `INSERT INTO users (username, password_hash, is_active) VALUES ('other_custodian_iso', $1, true) RETURNING id`,
+        [otherPass]
+      );
+      const otherCustodianId = userRes.rows[0].id;
+      await pool.query(
+        `INSERT INTO user_roles (user_id, role_id) VALUES ($1, 'ASSET_CUSTODIAN')`,
+        [otherCustodianId]
+      );
+      const otherCustodianUser = await createAuthenticatedSession(otherCustodianId);
+
+      const sharedToken = `iso-token-${crypto.randomUUID()}`;
+      const payload1 = {
+        items: [{ item_key: crypto.randomUUID(), name: 'Custodian 1 Isolated Asset' }],
+      };
+
+      // 1. Custodian 1 registers successfully with sharedToken
+      const res1 = await app.inject({
+        method: 'POST',
+        url: '/assets/bulk-register',
+        headers: {
+          cookie: custodianUser.cookie,
+          'x-csrf-token': custodianUser.csrf,
+          'x-retry-token': sharedToken,
+        },
+        payload: payload1,
+      });
+      expect(res1.statusCode).toBe(201);
+      const res1Body = JSON.parse(res1.body);
+      const asset1Id = res1Body.results[0].asset_id;
+
+      // 2. Custodian 2 uses the same retry token string:
+      // Actor isolation ensures Custodian 2 does NOT hijack Custodian 1's replay or response,
+      // but executes independently under their own actor-scoped token partition.
+      const resOtherActor = await app.inject({
+        method: 'POST',
+        url: '/assets/bulk-register',
+        headers: {
+          cookie: otherCustodianUser.cookie,
+          'x-csrf-token': otherCustodianUser.csrf,
+          'x-retry-token': sharedToken,
+        },
+        payload: {
+          items: [{ item_key: crypto.randomUUID(), name: 'Custodian 2 Isolated Asset' }],
+        },
+      });
+      expect(resOtherActor.statusCode).toBe(201);
+      const resOtherBody = JSON.parse(resOtherActor.body);
+      const assetOtherId = resOtherBody.results[0].asset_id;
+      expect(assetOtherId).not.toBe(asset1Id);
+
+      // Verify both tokens exist in DB isolated by actor_id
+      const tokensInDb = await pool.query(
+        `SELECT actor_id, operation, token FROM registration_retry_tokens WHERE token = $1`,
+        [sharedToken]
+      );
+      expect(tokensInDb.rows).toHaveLength(2);
+      expect(tokensInDb.rows.map((r: any) => r.actor_id)).toContain(custodianUser.id);
+      expect(tokensInDb.rows.map((r: any) => r.actor_id)).toContain(otherCustodianId);
+
+      // 3. Operation isolation: retry token registered for single-asset register (operation: 'asset:register')
+      // is isolated from bulk-register (operation: 'asset:bulk-register').
+      const singleOpToken = `single-op-token-${crypto.randomUUID()}`;
+      const resSingle = await app.inject({
+        method: 'POST',
+        url: '/assets',
+        headers: {
+          cookie: custodianUser.cookie,
+          'x-csrf-token': custodianUser.csrf,
+          'x-retry-token': singleOpToken,
+        },
+        payload: {
+          name: 'Single Asset Token Op',
+        },
+      });
+      expect(resSingle.statusCode).toBe(201);
+
+      const resBulkWithSingleToken = await app.inject({
+        method: 'POST',
+        url: '/assets/bulk-register',
+        headers: {
+          cookie: custodianUser.cookie,
+          'x-csrf-token': custodianUser.csrf,
+          'x-retry-token': singleOpToken,
+        },
+        payload: {
+          items: [{ item_key: crypto.randomUUID(), name: 'Bulk Cross Op Reuse' }],
+        },
+      });
+      expect(resBulkWithSingleToken.statusCode).toBe(201);
+
+      // 4. Within the same actor and operation, conflicting payload produces 409
+      const resConflict = await app.inject({
+        method: 'POST',
+        url: '/assets/bulk-register',
+        headers: {
+          cookie: custodianUser.cookie,
+          'x-csrf-token': custodianUser.csrf,
+          'x-retry-token': sharedToken,
+        },
+        payload: {
+          items: [{ item_key: crypto.randomUUID(), name: 'Different Payload Conflict' }],
+        },
+      });
+      expect(resConflict.statusCode).toBe(409);
+    });
+
+    it('supports acquisition-free truthful legacy bulk registration with null shared_acquisition_id and proper history entry', async () => {
+      const itemKey = crypto.randomUUID();
+      const legacyPayload = {
+        acquisition_id: null,
+        items: [
+          {
+            item_key: itemKey,
+            name: 'Acquisition Free Legacy Asset',
+            asset_number: `AST-ACQFREE-LEG-${Date.now()}`,
+            is_legacy: true,
+            source_reference: 'Pre-system inventory sheet #4',
+            source_notes: 'Found in storage archive B',
+          },
+        ],
+      };
+
+      const res = await app.inject({
+        method: 'POST',
+        url: '/assets/bulk-register',
+        headers: {
+          cookie: custodianUser.cookie,
+          'x-csrf-token': custodianUser.csrf,
+          'x-retry-token': `acqfree-legacy-${crypto.randomUUID()}`,
+        },
+        payload: legacyPayload,
+      });
+
+      expect(res.statusCode).toBe(201);
+      const body = JSON.parse(res.body);
+      expect(body.total_registered).toBe(1);
+      expect(body.shared_acquisition_id).toBeNull();
+      expect(body.results).toHaveLength(1);
+      const createdAssetId = body.results[0].asset_id;
+
+      // Verify in DB that asset has acquisition_id null
+      const assetRow = await pool.query(
+        `SELECT id, name, asset_number, serial_number, acquisition_id FROM assets WHERE id = $1`,
+        [createdAssetId]
+      );
+      expect(assetRow.rows[0].acquisition_id).toBeNull();
+
+      // Verify history row records REGISTERED action and is_legacy: true in payload
+      const histRow = await pool.query(
+        `SELECT action, actor_id, payload FROM asset_history WHERE asset_id = $1`,
+        [createdAssetId]
+      );
+      expect(histRow.rows).toHaveLength(1);
+      expect(histRow.rows[0].action).toBe('REGISTERED');
+      expect(histRow.rows[0].payload.is_legacy).toBe(true);
+      expect(histRow.rows[0].payload.acquisition_id).toBeUndefined();
+    });
+  });
 });

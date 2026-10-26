@@ -42,6 +42,36 @@ export interface RegisterAssetInput {
   acquisition_id?: string | null;
 }
 
+export interface BulkRegisterItemInput {
+  item_key: string;
+  name?: string | null;
+  asset_number?: string | null;
+  serial_number?: string | null;
+  source_reference?: string | null;
+  source_notes?: string | null;
+  is_legacy?: boolean;
+  category?: null;
+  organization_unit?: null;
+}
+
+export interface BulkRegisterAssetInput {
+  acquisition_id?: string | null;
+  explicit_continuation?: boolean;
+  items: BulkRegisterItemInput[];
+}
+
+export interface BulkRegisterResultItem {
+  item_key: string;
+  asset_id: string;
+  history_id: string;
+}
+
+export interface BulkRegisterAssetResult {
+  results: BulkRegisterResultItem[];
+  total_registered: number;
+  shared_acquisition_id: string | null;
+}
+
 export interface CorrectAssetInput {
   name?: string | null;
   asset_number?: string | null;
@@ -149,6 +179,36 @@ export class DuplicateCandidateWarningError extends Error {
   }
 }
 
+export interface BulkDuplicateWarning {
+  item_key: string;
+  field: 'asset_number' | 'serial_number';
+  value: string;
+  intra_batch: boolean;
+  intra_batch_keys?: string[];
+  candidates: AssetRecord[];
+  total_count: number;
+  has_more: boolean;
+  limit: number;
+  offset: number;
+}
+
+export class BulkDuplicateCandidateWarningError extends Error {
+  statusCode: number;
+  code: string;
+  warnings: BulkDuplicateWarning[];
+
+  constructor(
+    message: string = 'Exact nonempty identifier matches existing asset records or intra-batch items. Explicit continuation required to register distinct items.',
+    warnings: BulkDuplicateWarning[]
+  ) {
+    super(message);
+    this.name = 'BulkDuplicateCandidateWarningError';
+    this.statusCode = 409;
+    this.code = 'DUPLICATE_CANDIDATES_FOUND';
+    this.warnings = warnings;
+  }
+}
+
 export class RetryTokenConflictError extends Error {
   statusCode: number;
   code: string;
@@ -241,6 +301,30 @@ export class AssetService {
     }
     const jsonStr = JSON.stringify(normalized, Object.keys(normalized).sort());
     return crypto.createHash('sha256').update(jsonStr).digest('hex');
+  }
+
+  /**
+   * Computes a deterministic versioned SHA-256 fingerprint for bulk registration intent and idempotency contract.
+   * Scoped to ordered rows/item keys, normalized facts, shared association, and explicit continuation.
+   */
+  computeBulkPayloadFingerprint(input: BulkRegisterAssetInput): string {
+    const normalized = {
+      version: 1,
+      acquisition_id: input.acquisition_id ?? null,
+      explicit_continuation: input.explicit_continuation === true,
+      items: (input.items || []).map((item) => ({
+        item_key: item.item_key,
+        name: item.name?.trim() || null,
+        asset_number: item.asset_number ?? null,
+        serial_number: item.serial_number ?? null,
+        category: null,
+        organization_unit: null,
+        source_reference: item.source_reference?.trim() || null,
+        source_notes: item.source_notes?.trim() || null,
+        is_legacy: item.is_legacy === true,
+      })),
+    };
+    return crypto.createHash('sha256').update(canonicalJson(normalized)).digest('hex');
   }
 
   /**
@@ -351,6 +435,216 @@ export class AssetService {
   }
 
   /**
+   * Internal helper: validates factual item inputs according to T1 registration rules.
+   * Preserves verbatim nonempty identifiers and truthful name requirement for ordinary items.
+   */
+  private normalizeAndValidateRegistrationItem(
+    item: {
+      name?: string | null;
+      asset_number?: string | null;
+      serial_number?: string | null;
+      source_reference?: string | null;
+      source_notes?: string | null;
+      is_legacy?: boolean;
+      category?: string | null;
+      organization_unit?: string | null;
+    },
+    itemKeyLabel?: string
+  ): {
+    name: string | null;
+    asset_number: string | null;
+    serial_number: string | null;
+    source_reference: string | null;
+    source_notes: string | null;
+    is_legacy: boolean;
+  } {
+    const label = itemKeyLabel ? ` (${itemKeyLabel})` : '';
+
+    if (item.is_legacy !== undefined && typeof item.is_legacy !== 'boolean') {
+      throw new ValidationError(`is_legacy must be a boolean${label}`);
+    }
+    if (item.category !== undefined && item.category !== null) {
+      throw new ValidationError(
+        itemKeyLabel ? `category must remain unset for ${itemKeyLabel}` : 'Category must remain unset in T1 (R2)'
+      );
+    }
+    if (item.organization_unit !== undefined && item.organization_unit !== null) {
+      throw new ValidationError(
+        itemKeyLabel
+          ? `organization_unit must remain unset for ${itemKeyLabel}`
+          : 'Organization unit is not accepted in T1 registration (D7)'
+      );
+    }
+
+    if (item.name !== undefined && item.name !== null && typeof item.name !== 'string') {
+      throw new ValidationError(`name must be a string${label}`);
+    }
+    if (
+      item.asset_number !== undefined &&
+      item.asset_number !== null &&
+      typeof item.asset_number !== 'string'
+    ) {
+      throw new ValidationError(`asset_number must be a string${label}`);
+    }
+    if (
+      item.serial_number !== undefined &&
+      item.serial_number !== null &&
+      typeof item.serial_number !== 'string'
+    ) {
+      throw new ValidationError(`serial_number must be a string${label}`);
+    }
+    if (
+      item.source_reference !== undefined &&
+      item.source_reference !== null &&
+      typeof item.source_reference !== 'string'
+    ) {
+      throw new ValidationError(`source_reference must be a string${label}`);
+    }
+    if (
+      item.source_notes !== undefined &&
+      item.source_notes !== null &&
+      typeof item.source_notes !== 'string'
+    ) {
+      throw new ValidationError(`source_notes must be a string${label}`);
+    }
+
+    const isLegacy = item.is_legacy === true;
+    const rawName = item.name?.trim();
+
+    if (!isLegacy) {
+      if (!rawName || rawName.length === 0) {
+        throw new ValidationError(
+          itemKeyLabel
+            ? `Truthful item name/description is required for ordinary registration (${itemKeyLabel})`
+            : 'Truthful item name/description is required for ordinary registration'
+        );
+      }
+    }
+
+    const name = rawName && rawName.length > 0 ? rawName : null;
+
+    // Preserve supplied identifiers without trimming or normalization (Spec Finding 8, D2 verbatim semantics)
+    const assetNumber =
+      item.asset_number !== undefined && item.asset_number !== null && item.asset_number !== ''
+        ? item.asset_number
+        : null;
+    const serialNumber =
+      item.serial_number !== undefined && item.serial_number !== null && item.serial_number !== ''
+        ? item.serial_number
+        : null;
+
+    const sourceRef =
+      item.source_reference !== undefined &&
+      item.source_reference !== null &&
+      item.source_reference.trim() !== ''
+        ? item.source_reference.trim()
+        : null;
+    const sourceNotes =
+      item.source_notes !== undefined &&
+      item.source_notes !== null &&
+      item.source_notes.trim() !== ''
+        ? item.source_notes.trim()
+        : null;
+
+    return {
+      name,
+      asset_number: assetNumber,
+      serial_number: serialNumber,
+      source_reference: sourceRef,
+      source_notes: sourceNotes,
+      is_legacy: isLegacy,
+    };
+  }
+
+  /**
+   * Internal helper: inserts a single asset row and corresponding starting 'REGISTERED' history row
+   * within an existing caller-owned database transaction client.
+   * Guarantees atomic writes and exact historical payload schema.
+   */
+  private async insertRegisteredAssetRecord(
+    client: pg.PoolClient | pg.Pool,
+    actorId: string,
+    item: {
+      name: string | null;
+      asset_number: string | null;
+      serial_number: string | null;
+      source_reference: string | null;
+      source_notes: string | null;
+      is_legacy: boolean;
+    },
+    acquisitionId: string | null,
+    assetId: string = crypto.randomUUID(),
+    historyId: string = crypto.randomUUID()
+  ): Promise<{
+    assetRow: AssetRecord;
+    historyRow: AssetHistoryRecord;
+    assetId: string;
+    historyId: string;
+  }> {
+    const insertAssetQuery = `
+      INSERT INTO assets (
+        id, asset_number, serial_number, name, category,
+        organization_unit, source_reference, source_notes,
+        registered_by, recorded_at, created_at, updated_at,
+        acquisition_id
+      ) VALUES (
+        $1, $2, $3, $4, NULL,
+        NULL, $5, $6,
+        $7, now(), now(), now(),
+        $8
+      )
+      RETURNING *;
+    `;
+    const assetRes = await client.query(insertAssetQuery, [
+      assetId,
+      item.asset_number,
+      item.serial_number,
+      item.name,
+      item.source_reference,
+      item.source_notes,
+      actorId,
+      acquisitionId,
+    ]);
+    const assetRow: AssetRecord = assetRes.rows[0];
+
+    const historyPayload: Record<string, any> = {
+      is_legacy: item.is_legacy,
+      name: item.name,
+      asset_number: item.asset_number,
+      serial_number: item.serial_number,
+      source_reference: item.source_reference,
+      source_notes: item.source_notes,
+    };
+    if (acquisitionId) {
+      historyPayload.acquisition_id = acquisitionId;
+    }
+
+    const insertHistoryQuery = `
+      INSERT INTO asset_history (
+        id, asset_id, action, actor_id, recorded_at, payload, created_at
+      ) VALUES (
+        $1, $2, 'REGISTERED', $3, $4, $5, $4
+      )
+      RETURNING *;
+    `;
+    const historyRes = await client.query(insertHistoryQuery, [
+      historyId,
+      assetId,
+      actorId,
+      assetRow.recorded_at,
+      JSON.stringify(historyPayload),
+    ]);
+    const historyRow: AssetHistoryRecord = historyRes.rows[0];
+
+    return {
+      assetRow,
+      historyRow,
+      assetId,
+      historyId,
+    };
+  }
+
+  /**
    * Registers a single truthful or incomplete-legacy Asset and creates starting history fact in one transaction.
    * Supports retry token idempotency contract (D4) and duplicate warning/explicit continuation (D2).
    */
@@ -363,10 +657,6 @@ export class AssetService {
       throw new ValidationError('Valid actorId UUID is required for asset registration');
     }
 
-    // Strict boolean type validation (Standards Finding 1)
-    if (input.is_legacy !== undefined && typeof input.is_legacy !== 'boolean') {
-      throw new ValidationError('is_legacy must be a boolean');
-    }
     if (
       input.explicit_continuation !== undefined &&
       typeof input.explicit_continuation !== 'boolean'
@@ -374,48 +664,15 @@ export class AssetService {
       throw new ValidationError('explicit_continuation must be a boolean');
     }
 
-    // Strict category restriction - unset in T1 (Spec Finding 6, R2)
-    if (input.category !== undefined && input.category !== null) {
-      throw new ValidationError('Category must remain unset in T1 (R2)');
-    }
-
-    // Strict organization unit restriction - separately gated (Spec Finding 7, D7)
-    if (input.organization_unit !== undefined && input.organization_unit !== null) {
-      throw new ValidationError('Organization unit is not accepted in T1 registration (D7)');
-    }
-
-    // String type validation
-    if (input.name !== undefined && input.name !== null && typeof input.name !== 'string') {
-      throw new ValidationError('name must be a string');
-    }
-    if (
-      input.asset_number !== undefined &&
-      input.asset_number !== null &&
-      typeof input.asset_number !== 'string'
-    ) {
-      throw new ValidationError('asset_number must be a string');
-    }
-    if (
-      input.serial_number !== undefined &&
-      input.serial_number !== null &&
-      typeof input.serial_number !== 'string'
-    ) {
-      throw new ValidationError('serial_number must be a string');
-    }
-    if (
-      input.source_reference !== undefined &&
-      input.source_reference !== null &&
-      typeof input.source_reference !== 'string'
-    ) {
-      throw new ValidationError('source_reference must be a string');
-    }
-    if (
-      input.source_notes !== undefined &&
-      input.source_notes !== null &&
-      typeof input.source_notes !== 'string'
-    ) {
-      throw new ValidationError('source_notes must be a string');
-    }
+    const normalized = this.normalizeAndValidateRegistrationItem(input);
+    const {
+      name,
+      asset_number: assetNumber,
+      serial_number: serialNumber,
+      is_legacy: isLegacy,
+      source_reference: sourceRef,
+      source_notes: sourceNotes,
+    } = normalized;
 
     let acquisitionId: string | null = null;
     if (input.acquisition_id !== undefined && input.acquisition_id !== null) {
@@ -424,46 +681,6 @@ export class AssetService {
       }
       acquisitionId = input.acquisition_id;
     }
-
-    const isLegacy = input.is_legacy === true;
-    const rawName = input.name?.trim();
-
-    if (!isLegacy) {
-      if (!rawName || rawName.length === 0) {
-        throw new ValidationError('Truthful item name/description is required for ordinary registration');
-      }
-    }
-
-    const name = rawName && rawName.length > 0 ? rawName : null;
-
-    // Preserve supplied identifiers without trimming or normalization (Spec Finding 8)
-    const assetNumber =
-      input.asset_number !== undefined &&
-      input.asset_number !== null &&
-      input.asset_number !== ''
-        ? input.asset_number
-        : null;
-    const serialNumber =
-      input.serial_number !== undefined &&
-      input.serial_number !== null &&
-      input.serial_number !== ''
-        ? input.serial_number
-        : null;
-
-    const category = null;
-    const orgUnit = null;
-    const sourceRef =
-      input.source_reference !== undefined &&
-      input.source_reference !== null &&
-      input.source_reference.trim() !== ''
-        ? input.source_reference.trim()
-        : null;
-    const sourceNotes =
-      input.source_notes !== undefined &&
-      input.source_notes !== null &&
-      input.source_notes.trim() !== ''
-        ? input.source_notes.trim()
-        : null;
 
     const explicitContinuation = input.explicit_continuation === true;
 
@@ -543,38 +760,18 @@ export class AssetService {
         }
       }
 
-      // 3. Insert asset record (AR-01, AR-02, AR-04, R1, R2, T5)
+      // 3 & 4. Insert asset record and starting history fact via shared helper
       const assetId = crypto.randomUUID();
-      const insertAssetQuery = `
-        INSERT INTO assets (
-          id, asset_number, serial_number, name, category,
-          organization_unit, source_reference, source_notes,
-          registered_by, recorded_at, created_at, updated_at,
-          acquisition_id
-        ) VALUES (
-          $1, $2, $3, $4, $5,
-          $6, $7, $8,
-          $9, now(), now(), now(),
-          $10
-        )
-        RETURNING *;
-      `;
-      const assetRes = await client.query(insertAssetQuery, [
-        assetId,
-        assetNumber,
-        serialNumber,
-        name,
-        category,
-        orgUnit,
-        sourceRef,
-        sourceNotes,
-        actorId,
-        acquisitionId,
-      ]);
-      const assetRow = assetRes.rows[0];
-
-      // 4. Insert starting history fact (AR-07, AC-16, T5)
       const historyId = crypto.randomUUID();
+      const { assetRow, historyRow } = await this.insertRegisteredAssetRecord(
+        client,
+        actorId,
+        normalized,
+        acquisitionId,
+        assetId,
+        historyId
+      );
+
       const historyPayload: Record<string, any> = {
         is_legacy: isLegacy,
         name,
@@ -586,23 +783,6 @@ export class AssetService {
       if (acquisitionId) {
         historyPayload.acquisition_id = acquisitionId;
       }
-
-      const insertHistoryQuery = `
-        INSERT INTO asset_history (
-          id, asset_id, action, actor_id, recorded_at, payload, created_at
-        ) VALUES (
-          $1, $2, 'REGISTERED', $3, $4, $5, $4
-        )
-        RETURNING *;
-      `;
-      const historyRes = await client.query(insertHistoryQuery, [
-        historyId,
-        assetId,
-        actorId,
-        assetRow.recorded_at,
-        JSON.stringify(historyPayload),
-      ]);
-      const historyRow = historyRes.rows[0];
 
       const result: AssetRegistrationResult = {
         asset: {
@@ -616,8 +796,8 @@ export class AssetService {
           source_notes: assetRow.source_notes,
           registered_by: assetRow.registered_by,
           recorded_at: new Date(assetRow.recorded_at).toISOString(),
-          created_at: new Date(assetRow.created_at).toISOString(),
-          updated_at: new Date(assetRow.updated_at).toISOString(),
+          created_at: new Date(assetRow.created_at!).toISOString(),
+          updated_at: new Date(assetRow.updated_at!).toISOString(),
           acquisition_id: assetRow.acquisition_id || null,
         },
         history: {
@@ -627,7 +807,7 @@ export class AssetService {
           actor_id: historyRow.actor_id,
           recorded_at: new Date(historyRow.recorded_at).toISOString(),
           payload: historyPayload,
-          created_at: new Date(historyRow.created_at).toISOString(),
+          created_at: new Date(historyRow.created_at!).toISOString(),
         },
       };
 
@@ -663,6 +843,334 @@ export class AssetService {
 
       await client.query('COMMIT');
       return result;
+    } catch (err) {
+      try {
+        await client.query('ROLLBACK');
+      } catch {
+        // ignore rollback error on closed connection
+      }
+      throw err;
+    } finally {
+      if (shouldRelease) {
+        client.release();
+      }
+    }
+  }
+
+  /**
+   * Registers 1 to 100 assets from an optional shared acquisition reference in a single atomic transaction.
+   * Enforces D4 retry token idempotency contract, duplicate candidate warnings with explicit continuation,
+   * truthful ordinary name requirements, legacy exceptions, within-batch unique item_keys, and intra-batch
+   * identifier duplicate detection.
+   */
+  async bulkRegisterAssets(
+    actorId: string,
+    input: BulkRegisterAssetInput,
+    options: { retryToken: string }
+  ): Promise<BulkRegisterAssetResult> {
+    if (!isValidUuid(actorId)) {
+      throw new ValidationError('Valid actorId UUID is required for bulk registration');
+    }
+
+    const rawToken = options?.retryToken;
+    if (
+      typeof rawToken !== 'string' ||
+      rawToken.trim() === '' ||
+      rawToken.length > 128
+    ) {
+      throw new ValidationError(
+        'Non-empty x-retry-token header is required for bulk registration (max 128 characters)'
+      );
+    }
+    const retryToken = rawToken.trim();
+
+    if (!input || typeof input !== 'object' || Array.isArray(input)) {
+      throw new ValidationError('Request body must be an object');
+    }
+
+    if (
+      input.explicit_continuation !== undefined &&
+      typeof input.explicit_continuation !== 'boolean'
+    ) {
+      throw new ValidationError('explicit_continuation must be a boolean');
+    }
+
+    let acquisitionId: string | null = null;
+    if (input.acquisition_id !== undefined && input.acquisition_id !== null) {
+      if (typeof input.acquisition_id !== 'string' || !isValidExactUuid(input.acquisition_id)) {
+        throw new ValidationError('acquisition_id must be a valid exact UUID string');
+      }
+      acquisitionId = input.acquisition_id;
+    }
+
+    if (!Array.isArray(input.items)) {
+      throw new ValidationError('items must be an array');
+    }
+
+    if (input.items.length < 1 || input.items.length > 100) {
+      throw new ValidationError('Bulk registration requires between 1 and 100 items');
+    }
+
+    const seenItemKeys = new Set<string>();
+    const normalizedItems: Array<{
+      item_key: string;
+      name: string | null;
+      asset_number: string | null;
+      serial_number: string | null;
+      source_reference: string | null;
+      source_notes: string | null;
+      is_legacy: boolean;
+    }> = [];
+
+    for (let i = 0; i < input.items.length; i++) {
+      const item = input.items[i];
+      if (!item || typeof item !== 'object' || Array.isArray(item)) {
+        throw new ValidationError(`Item at index ${i} must be an object`);
+      }
+
+      if (typeof item.item_key !== 'string' || !isValidExactUuid(item.item_key)) {
+        throw new ValidationError(`Item at index ${i} must have a valid exact UUID item_key`);
+      }
+
+      if (seenItemKeys.has(item.item_key)) {
+        throw new ValidationError(`Duplicate item_key in batch: ${item.item_key}`);
+      }
+      seenItemKeys.add(item.item_key);
+      const normalized = this.normalizeAndValidateRegistrationItem(item, `item ${item.item_key}`);
+      normalizedItems.push({
+        item_key: item.item_key,
+        ...normalized,
+      });
+    }
+
+    const explicitContinuation = input.explicit_continuation === true;
+    const fingerprint = this.computeBulkPayloadFingerprint(input);
+
+    const pool = this.db;
+    const client = typeof pool.connect === 'function' ? await pool.connect() : pool;
+    const shouldRelease = typeof pool.connect === 'function';
+
+    try {
+      await client.query('BEGIN');
+
+      // 1. Transaction-scoped advisory lock and retry token check
+      await client.query('SELECT pg_advisory_xact_lock(hashtext($1))', [
+        `asset_bulk_retry:${actorId}:${retryToken}`,
+      ]);
+
+      const tokenRes = await client.query(
+        `SELECT payload_fingerprint, response_status, response_body
+         FROM registration_retry_tokens
+         WHERE actor_id = $1 AND operation = 'asset:bulk-register' AND token = $2`,
+        [actorId, retryToken]
+      );
+
+      if (tokenRes.rows.length > 0) {
+        const existing = tokenRes.rows[0];
+        if (existing.payload_fingerprint === fingerprint) {
+          await client.query('COMMIT');
+          return existing.response_body as BulkRegisterAssetResult;
+        } else {
+          await client.query('ROLLBACK');
+          throw new RetryTokenConflictError(
+            'Retry token reused with different payload is rejected without writes'
+          );
+        }
+      }
+
+      // 2. Check referenced acquisition existence early
+      if (acquisitionId) {
+        const acqCheck = await client.query('SELECT id FROM acquisitions WHERE id = $1', [
+          acquisitionId,
+        ]);
+        if (acqCheck.rows.length === 0) {
+          await client.query('ROLLBACK');
+          throw new ValidationError('Referenced acquisition not found');
+        }
+      }
+
+      // 3. Duplicate candidate check if explicit continuation is false
+      if (!explicitContinuation) {
+        const warnings: BulkDuplicateWarning[] = [];
+
+        // A. Intra-batch duplicate checks
+        const anToKeys = new Map<string, string[]>();
+        const snToKeys = new Map<string, string[]>();
+
+        for (const item of normalizedItems) {
+          if (item.asset_number) {
+            const keys = anToKeys.get(item.asset_number) || [];
+            keys.push(item.item_key);
+            anToKeys.set(item.asset_number, keys);
+          }
+          if (item.serial_number) {
+            const keys = snToKeys.get(item.serial_number) || [];
+            keys.push(item.item_key);
+            snToKeys.set(item.serial_number, keys);
+          }
+        }
+
+        // Record intra-batch warnings
+        for (const [an, keys] of anToKeys.entries()) {
+          if (keys.length > 1) {
+            for (const k of keys) {
+              warnings.push({
+                item_key: k,
+                field: 'asset_number',
+                value: an,
+                intra_batch: true,
+                intra_batch_keys: keys.filter((otherKey) => otherKey !== k),
+                candidates: [],
+                total_count: keys.length - 1,
+                has_more: false,
+                limit: 50,
+                offset: 0,
+              });
+            }
+          }
+        }
+
+        for (const [sn, keys] of snToKeys.entries()) {
+          if (keys.length > 1) {
+            for (const k of keys) {
+              warnings.push({
+                item_key: k,
+                field: 'serial_number',
+                value: sn,
+                intra_batch: true,
+                intra_batch_keys: keys.filter((otherKey) => otherKey !== k),
+                candidates: [],
+                total_count: keys.length - 1,
+                has_more: false,
+                limit: 50,
+                offset: 0,
+              });
+            }
+          }
+        }
+
+        // B. Committed database duplicate checks (cache per distinct identifier)
+        const checkedAn = new Map<string, DuplicateCandidatesResult>();
+        const checkedSn = new Map<string, DuplicateCandidatesResult>();
+
+        for (const item of normalizedItems) {
+          if (item.asset_number) {
+            if (!checkedAn.has(item.asset_number)) {
+              const dupRes = await this.getDuplicateCandidates(
+                item.asset_number,
+                null,
+                client,
+                50,
+                0
+              );
+              checkedAn.set(item.asset_number, dupRes);
+            }
+            const dupRes = checkedAn.get(item.asset_number)!;
+            if (dupRes.candidates.length > 0) {
+              warnings.push({
+                item_key: item.item_key,
+                field: 'asset_number',
+                value: item.asset_number,
+                intra_batch: false,
+                candidates: dupRes.candidates,
+                total_count: dupRes.total_count,
+                has_more: dupRes.has_more,
+                limit: dupRes.limit,
+                offset: dupRes.offset,
+              });
+            }
+          }
+
+          if (item.serial_number) {
+            if (!checkedSn.has(item.serial_number)) {
+              const dupRes = await this.getDuplicateCandidates(
+                null,
+                item.serial_number,
+                client,
+                50,
+                0
+              );
+              checkedSn.set(item.serial_number, dupRes);
+            }
+            const dupRes = checkedSn.get(item.serial_number)!;
+            if (dupRes.candidates.length > 0) {
+              warnings.push({
+                item_key: item.item_key,
+                field: 'serial_number',
+                value: item.serial_number,
+                intra_batch: false,
+                candidates: dupRes.candidates,
+                total_count: dupRes.total_count,
+                has_more: dupRes.has_more,
+                limit: dupRes.limit,
+                offset: dupRes.offset,
+              });
+            }
+          }
+        }
+
+        if (warnings.length > 0) {
+          await client.query('ROLLBACK');
+          throw new BulkDuplicateCandidateWarningError(
+            'Exact nonempty identifier matches existing asset records or intra-batch items. Explicit continuation required to register distinct items.',
+            warnings
+          );
+        }
+      }
+
+      // 4. Insert each asset and history row via shared helper
+      const results: BulkRegisterResultItem[] = [];
+
+      for (const item of normalizedItems) {
+        const { assetId, historyId } = await this.insertRegisteredAssetRecord(
+          client,
+          actorId,
+          item,
+          acquisitionId
+        );
+
+        results.push({
+          item_key: item.item_key,
+          asset_id: assetId,
+          history_id: historyId,
+        });
+      }
+
+      const finalResult: BulkRegisterAssetResult = {
+        results,
+        total_registered: results.length,
+        shared_acquisition_id: acquisitionId,
+      };
+
+      // 5. Store retry token
+      try {
+        await client.query(
+          `INSERT INTO registration_retry_tokens (
+            token, actor_id, operation, payload_fingerprint, response_status, response_body
+          ) VALUES ($1, $2, 'asset:bulk-register', $3, 201, $4)`,
+          [retryToken, actorId, fingerprint, JSON.stringify(finalResult)]
+        );
+      } catch (insertErr: any) {
+        if (insertErr?.code === '23505') {
+          const existingRes = await client.query(
+            `SELECT payload_fingerprint, response_body
+             FROM registration_retry_tokens
+             WHERE actor_id = $1 AND operation = 'asset:bulk-register' AND token = $2`,
+            [actorId, retryToken]
+          );
+          if (
+            existingRes.rows.length > 0 &&
+            existingRes.rows[0].payload_fingerprint === fingerprint
+          ) {
+            await client.query('COMMIT');
+            return existingRes.rows[0].response_body as BulkRegisterAssetResult;
+          }
+        }
+        throw insertErr;
+      }
+
+      await client.query('COMMIT');
+      return finalResult;
     } catch (err) {
       try {
         await client.query('ROLLBACK');

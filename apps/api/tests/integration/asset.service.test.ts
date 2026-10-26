@@ -1,17 +1,19 @@
 import * as path from 'node:path';
 import * as fs from 'node:fs';
 import { fileURLToPath } from 'node:url';
-import { describe, it, expect, beforeAll, afterAll, beforeEach } from 'vitest';
+import { describe, it, expect, beforeAll, afterAll, beforeEach, vi } from 'vitest';
 import { PostgreSqlContainer, type StartedPostgreSqlContainer } from '@testcontainers/postgresql';
 import pg from 'pg';
 import { runMigrator } from '../../../../packages/db/src/migrator.ts';
 import {
   AssetService,
   DuplicateCandidateWarningError,
+  BulkDuplicateCandidateWarningError,
   RetryTokenConflictError,
   StaleBeforeConflictError,
   ValidationError,
   type RegisterAssetInput,
+  type BulkRegisterAssetInput,
 } from '../../src/services/asset.service.ts';
 
 const { Pool } = pg;
@@ -1905,6 +1907,810 @@ describe('AssetService Integration Tests (Seam A - Core Service & Transactions)'
           { retryToken: token }
         )
       ).rejects.toThrow(RetryTokenConflictError);
+    });
+  });
+
+  describe('T6: Atomic retry-safe bulk registration (Seam A - Service)', () => {
+    it('registers 1 to 100 items atomically and returns ordered results with total count and shared acquisition', async () => {
+      const acqId = (
+        await pool.query(
+          "INSERT INTO acquisitions (acquisition_type, created_by) VALUES ('BulkLot', $1) RETURNING id",
+          [testActorId]
+        )
+      ).rows[0].id;
+
+      const items = [
+        {
+          item_key: '00000000-0000-4000-8000-000000000001',
+          name: 'Monitor A',
+          asset_number: 'AST-BULK-001',
+          serial_number: 'SN-BULK-001',
+          source_reference: 'REF-001',
+          source_notes: 'Delivered',
+        },
+        {
+          item_key: '00000000-0000-4000-8000-000000000002',
+          name: null,
+          asset_number: 'AST-BULK-002',
+          serial_number: null,
+          is_legacy: true,
+        },
+        {
+          item_key: '00000000-0000-4000-8000-000000000003',
+          name: 'Desk Chair',
+          asset_number: null,
+          serial_number: 'SN-BULK-003',
+        },
+      ];
+
+      const input: BulkRegisterAssetInput = {
+        acquisition_id: acqId,
+        items,
+      };
+
+      const result = await assetService.bulkRegisterAssets(testActorId, input, {
+        retryToken: 'test-bulk-token-1',
+      });
+
+      expect(result.total_registered).toBe(3);
+      expect(result.shared_acquisition_id).toBe(acqId);
+      expect(result.results).toHaveLength(3);
+      expect(result.results[0].item_key).toBe('00000000-0000-4000-8000-000000000001');
+      expect(result.results[1].item_key).toBe('00000000-0000-4000-8000-000000000002');
+      expect(result.results[2].item_key).toBe('00000000-0000-4000-8000-000000000003');
+
+      // Verify all 3 assets exist in the database with distinct IDs
+      const assetIds = result.results.map((r) => r.asset_id);
+      expect(new Set(assetIds).size).toBe(3);
+
+      const dbAssets = await pool.query('SELECT * FROM assets WHERE id = ANY($1)', [assetIds]);
+      expect(dbAssets.rows).toHaveLength(3);
+
+      // Verify all assets have shared acquisition_id
+      for (const row of dbAssets.rows) {
+        expect(row.acquisition_id).toBe(acqId);
+      }
+
+      // Verify history rows
+      const historyRows = await pool.query(
+        'SELECT * FROM asset_history WHERE asset_id = ANY($1)',
+        [assetIds]
+      );
+      expect(historyRows.rows).toHaveLength(3);
+      for (const h of historyRows.rows) {
+        expect(h.action).toBe('REGISTERED');
+        expect(h.actor_id).toBe(testActorId);
+        expect(h.payload.acquisition_id).toBe(acqId);
+      }
+
+      // Verify retry token record
+      const tokenRow = await pool.query(
+        "SELECT * FROM registration_retry_tokens WHERE operation = 'asset:bulk-register' AND token = $1",
+        ['test-bulk-token-1']
+      );
+      expect(tokenRow.rows).toHaveLength(1);
+      expect(tokenRow.rows[0].response_status).toBe(201);
+    });
+
+    it('rejects batch with 0 items or > 100 items with ValidationError', async () => {
+      await expect(
+        assetService.bulkRegisterAssets(
+          testActorId,
+          { items: [] },
+          { retryToken: 'empty-batch-token' }
+        )
+      ).rejects.toThrow(ValidationError);
+
+      const tooManyItems = Array.from({ length: 101 }, (_, i) => ({
+        item_key: `00000000-0000-4000-8000-${String(i + 1).padStart(12, '0')}`,
+        name: `Item ${i + 1}`,
+      }));
+
+      await expect(
+        assetService.bulkRegisterAssets(
+          testActorId,
+          { items: tooManyItems },
+          { retryToken: 'huge-batch-token' }
+        )
+      ).rejects.toThrow(ValidationError);
+    });
+
+    it('rejects duplicate item_key within batch', async () => {
+      const duplicateKey = '00000000-0000-4000-8000-000000000099';
+      const items = [
+        { item_key: duplicateKey, name: 'Item 1' },
+        { item_key: duplicateKey, name: 'Item 2' },
+      ];
+
+      await expect(
+        assetService.bulkRegisterAssets(
+          testActorId,
+          { items },
+          { retryToken: 'dup-key-token' }
+        )
+      ).rejects.toThrow(ValidationError);
+    });
+
+    it('rejects ordinary item without name', async () => {
+      const items = [
+        {
+          item_key: '00000000-0000-4000-8000-000000000010',
+          name: '   ',
+          is_legacy: false,
+        },
+      ];
+
+      await expect(
+        assetService.bulkRegisterAssets(
+          testActorId,
+          { items },
+          { retryToken: 'blank-name-token' }
+        )
+      ).rejects.toThrow(ValidationError);
+    });
+
+    it('detects intra-batch and database duplicates and throws BulkDuplicateCandidateWarningError without writes', async () => {
+      // Seed an existing asset in database
+      await assetService.registerAsset(testActorId, {
+        name: 'Existing Asset',
+        asset_number: 'AST-EXISTING-1',
+        serial_number: 'SN-EXISTING-1',
+      });
+
+      // Prepare batch with 1 DB duplicate and 2 intra-batch duplicates
+      const items = [
+        {
+          item_key: '00000000-0000-4000-8000-000000000021',
+          name: 'Batch Item 1',
+          asset_number: 'AST-EXISTING-1', // Matches DB
+        },
+        {
+          item_key: '00000000-0000-4000-8000-000000000022',
+          name: 'Batch Item 2',
+          asset_number: 'AST-INTRA-SHARED', // Intra-batch dup
+        },
+        {
+          item_key: '00000000-0000-4000-8000-000000000023',
+          name: 'Batch Item 3',
+          asset_number: 'AST-INTRA-SHARED', // Intra-batch dup
+        },
+      ];
+
+      let thrownErr: any;
+      try {
+        await assetService.bulkRegisterAssets(
+          testActorId,
+          { items, explicit_continuation: false },
+          { retryToken: 'dup-warning-token' }
+        );
+      } catch (err: any) {
+        thrownErr = err;
+      }
+
+      expect(thrownErr).toBeInstanceOf(BulkDuplicateCandidateWarningError);
+      expect(thrownErr.statusCode).toBe(409);
+      expect(thrownErr.code).toBe('DUPLICATE_CANDIDATES_FOUND');
+      expect(thrownErr.warnings.length).toBeGreaterThanOrEqual(3);
+
+      // Verify zero new assets written
+      const allAssets = await pool.query("SELECT * FROM assets WHERE asset_number != 'AST-EXISTING-1'");
+      expect(allAssets.rows).toHaveLength(0);
+
+      // Verify no retry token written
+      const token = await pool.query(
+        "SELECT * FROM registration_retry_tokens WHERE token = 'dup-warning-token'"
+      );
+      expect(token.rows).toHaveLength(0);
+    });
+
+    it('registers distinct assets when explicit_continuation is true despite duplicate identifiers', async () => {
+      // Existing asset in DB
+      await assetService.registerAsset(testActorId, {
+        name: 'Original Laptop',
+        asset_number: 'AST-DUP-ALLOW',
+      });
+
+      const items = [
+        {
+          item_key: '00000000-0000-4000-8000-000000000031',
+          name: 'Continued Laptop 1',
+          asset_number: 'AST-DUP-ALLOW',
+        },
+        {
+          item_key: '00000000-0000-4000-8000-000000000032',
+          name: 'Continued Laptop 2',
+          asset_number: 'AST-DUP-ALLOW',
+        },
+      ];
+
+      const result = await assetService.bulkRegisterAssets(
+        testActorId,
+        { items, explicit_continuation: true },
+        { retryToken: 'continuation-token' }
+      );
+
+      expect(result.total_registered).toBe(2);
+      expect(result.results).toHaveLength(2);
+
+      // Check all 3 exist with distinct IDs
+      const matchingAssets = await pool.query(
+        "SELECT id FROM assets WHERE asset_number = 'AST-DUP-ALLOW'"
+      );
+      expect(matchingAssets.rows).toHaveLength(3);
+    });
+
+    it('enforces retry token idempotency and detects conflict on altered payload', async () => {
+      const token = 'retry-bulk-idempotency-test';
+      const items = [
+        {
+          item_key: '00000000-0000-4000-8000-000000000041',
+          name: 'Item Alpha',
+          asset_number: 'AST-RETRY-A',
+        },
+        {
+          item_key: '00000000-0000-4000-8000-000000000042',
+          name: 'Item Beta',
+          asset_number: 'AST-RETRY-B',
+        },
+      ];
+
+      // 1. Initial execution succeeds
+      const res1 = await assetService.bulkRegisterAssets(
+        testActorId,
+        { items },
+        { retryToken: token }
+      );
+
+      // 2. Exact retry replay succeeds and returns identical results
+      const res2 = await assetService.bulkRegisterAssets(
+        testActorId,
+        { items },
+        { retryToken: token }
+      );
+      expect(res2).toEqual(res1);
+
+      // 3. Changed order of items fails with RetryTokenConflictError
+      const reversedItems = [...items].reverse();
+      await expect(
+        assetService.bulkRegisterAssets(
+          testActorId,
+          { items: reversedItems },
+          { retryToken: token }
+        )
+      ).rejects.toThrow(RetryTokenConflictError);
+
+      // 4. Different actor using same token succeeds independently (actor-scoped)
+      const otherItems = [
+        {
+          item_key: '00000000-0000-4000-8000-000000000043',
+          name: 'Other Actor Item',
+          asset_number: 'AST-RETRY-OTHER',
+        },
+      ];
+      const resOther = await assetService.bulkRegisterAssets(
+        otherActorId,
+        { items: otherItems },
+        { retryToken: token }
+      );
+      expect(resOther.total_registered).toBe(1);
+      expect(resOther.results[0].asset_id).not.toBe(res1.results[0].asset_id);
+    });
+
+    it('rolls back completely if a database error occurs midway through the batch', async () => {
+      // Mock db failure by pointing to non-existent acquisition_id
+      const fakeAcqId = '99999999-9999-4999-8999-999999999999';
+      const items = [
+        {
+          item_key: '00000000-0000-4000-8000-000000000051',
+          name: 'Item That Should Not Persist',
+          asset_number: 'AST-ROLLBACK-TEST',
+        },
+      ];
+
+      await expect(
+        assetService.bulkRegisterAssets(
+          testActorId,
+          { items, acquisition_id: fakeAcqId },
+          { retryToken: 'rollback-token' }
+        )
+      ).rejects.toThrow(ValidationError);
+
+      // Check on separate query that 0 assets were created
+      const checkAsset = await pool.query(
+        "SELECT * FROM assets WHERE asset_number = 'AST-ROLLBACK-TEST'"
+      );
+      expect(checkAsset.rows).toHaveLength(0);
+
+      // Verify no retry token was saved
+      const checkToken = await pool.query(
+        "SELECT * FROM registration_retry_tokens WHERE token = 'rollback-token'"
+      );
+      expect(checkToken.rows).toHaveLength(0);
+    });
+
+    it('successfully registers exactly 100 items at the boundary limit and rejects 101 items', async () => {
+      const hundredItems = Array.from({ length: 100 }, (_, i) => ({
+        item_key: `00000000-0000-4000-8000-${String(i + 1).padStart(12, '0')}`,
+        name: `Boundary Item ${i + 1}`,
+        asset_number: `AST-BND-${String(i + 1).padStart(4, '0')}`,
+      }));
+
+      const res = await assetService.bulkRegisterAssets(
+        testActorId,
+        { items: hundredItems },
+        { retryToken: 'boundary-100-token' }
+      );
+      expect(res.total_registered).toBe(100);
+      expect(res.results).toHaveLength(100);
+
+      const dbAssets = await pool.query(
+        "SELECT count(*)::int as count FROM assets WHERE asset_number LIKE 'AST-BND-%'"
+      );
+      expect(dbAssets.rows[0].count).toBe(100);
+
+      const dbHistory = await pool.query(
+        "SELECT count(*)::int as count FROM asset_history WHERE payload->>'asset_number' LIKE 'AST-BND-%'"
+      );
+      expect(dbHistory.rows[0].count).toBe(100);
+
+      const tokenRow = await pool.query(
+        "SELECT count(*)::int as count FROM registration_retry_tokens WHERE token = 'boundary-100-token'"
+      );
+      expect(tokenRow.rows[0].count).toBe(1);
+
+      // 101 items must be rejected
+      const hundredOneItems = Array.from({ length: 101 }, (_, i) => ({
+        item_key: `00000000-0000-4001-8000-${String(i + 1).padStart(12, '0')}`,
+        name: `Over Limit Item ${i + 1}`,
+      }));
+
+      await expect(
+        assetService.bulkRegisterAssets(
+          testActorId,
+          { items: hundredOneItems },
+          { retryToken: 'boundary-101-token' }
+        )
+      ).rejects.toThrow(ValidationError);
+    });
+
+    it('handles simultaneous concurrent duplicate requests deterministically (identical retries vs conflicting payloads)', async () => {
+      const token = 'concurrent-bulk-token-01';
+      const items = [
+        {
+          item_key: '00000000-0000-4000-8000-000000000071',
+          name: 'Concurrent Item A',
+          asset_number: 'AST-CONCURRENT-A',
+        },
+        {
+          item_key: '00000000-0000-4000-8000-000000000072',
+          name: 'Concurrent Item B',
+          asset_number: 'AST-CONCURRENT-B',
+        },
+      ];
+
+      // Concurrent execution with identical payloads
+      const [res1, res2] = await Promise.all([
+        assetService.bulkRegisterAssets(testActorId, { items }, { retryToken: token }),
+        assetService.bulkRegisterAssets(testActorId, { items }, { retryToken: token }),
+      ]);
+
+      expect(res1).toEqual(res2);
+      expect(res1.total_registered).toBe(2);
+
+      // Verify only 2 assets exist in DB
+      const dbAssets = await pool.query(
+        "SELECT id FROM assets WHERE asset_number IN ('AST-CONCURRENT-A', 'AST-CONCURRENT-B')"
+      );
+      expect(dbAssets.rows).toHaveLength(2);
+
+      // Verify exactly 1 retry token row in DB
+      const tokenRows = await pool.query(
+        'SELECT * FROM registration_retry_tokens WHERE token = $1',
+        [token]
+      );
+      expect(tokenRows.rows).toHaveLength(1);
+
+      // Conflicting payload under same token fails with RetryTokenConflictError
+      const conflictingItems = [
+        {
+          item_key: '00000000-0000-4000-8000-000000000071',
+          name: 'Conflict Name Changed',
+          asset_number: 'AST-CONCURRENT-A',
+        },
+      ];
+      await expect(
+        assetService.bulkRegisterAssets(
+          testActorId,
+          { items: conflictingItems },
+          { retryToken: token }
+        )
+      ).rejects.toThrow(RetryTokenConflictError);
+    });
+
+    it('handles genuinely concurrent conflicting requests under the same fresh token deterministically (one winner, one conflict, one committed batch)', async () => {
+      const freshToken = 'concurrent-conflict-fresh-token-' + crypto.randomUUID();
+      const payloadA = {
+        items: [
+          {
+            item_key: '00000000-0000-4000-8000-000000000081',
+            name: 'Payload A Item',
+            asset_number: 'AST-CONCURRENT-CONF-01',
+          },
+        ],
+      };
+      const payloadB = {
+        items: [
+          {
+            item_key: '00000000-0000-4000-8000-000000000081',
+            name: 'Payload B Different Name',
+            asset_number: 'AST-CONCURRENT-CONF-01',
+          },
+        ],
+      };
+
+      // Execute both simultaneously
+      const results = await Promise.allSettled([
+        assetService.bulkRegisterAssets(testActorId, payloadA, { retryToken: freshToken }),
+        assetService.bulkRegisterAssets(testActorId, payloadB, { retryToken: freshToken }),
+      ]);
+
+      const fulfilled = results.filter((r) => r.status === 'fulfilled');
+      const rejected = results.filter((r) => r.status === 'rejected');
+
+      expect(fulfilled).toHaveLength(1);
+      expect(rejected).toHaveLength(1);
+
+      // Winner returned 201 bulk result with 1 item
+      const winnerResult = (fulfilled[0] as PromiseFulfilledResult<any>).value;
+      expect(winnerResult.total_registered).toBe(1);
+
+      // Loser threw RetryTokenConflictError
+      const loserError = (rejected[0] as PromiseRejectedResult).reason;
+      expect(loserError).toBeInstanceOf(RetryTokenConflictError);
+
+      // Independent connection DB check: exactly one asset committed
+      const dbAssets = await pool.query(
+        "SELECT id, name FROM assets WHERE asset_number = 'AST-CONCURRENT-CONF-01'"
+      );
+      expect(dbAssets.rows).toHaveLength(1);
+
+      // Exactly one retry token row committed
+      const dbTokens = await pool.query(
+        'SELECT * FROM registration_retry_tokens WHERE token = $1',
+        [freshToken]
+      );
+      expect(dbTokens.rows).toHaveLength(1);
+
+      // Exactly one history row committed
+      const dbHistory = await pool.query(
+        'SELECT * FROM asset_history WHERE asset_id = $1',
+        [dbAssets.rows[0].id]
+      );
+      expect(dbHistory.rows).toHaveLength(1);
+    });
+
+    it('guarantees atomic rollback on late history insertion database failure and allows clean post-fault retry', async () => {
+      const historyFaultToken = 'late-history-fault-token-' + crypto.randomUUID();
+      const testAssetNumber = 'AST-LATE-HIST-FAULT-01';
+      const items = [
+        {
+          item_key: '00000000-0000-4000-8000-000000000091',
+          name: 'History Fault Test Item',
+          asset_number: testAssetNumber,
+        },
+      ];
+
+      // Spy on pool.connect to inject failure specifically on INSERT INTO asset_history
+      const originalConnect = pool.connect.bind(pool);
+      let historyQueryIntercepted = false;
+
+      const connectSpy = vi.spyOn(pool, 'connect').mockImplementation(async () => {
+        const client = await originalConnect();
+        const originalClientQuery = client.query.bind(client);
+        client.query = (function (...args: any[]) {
+          const sql = typeof args[0] === 'string' ? args[0] : args[0]?.text || '';
+          if (sql.includes('INSERT INTO asset_history') && !historyQueryIntercepted) {
+            historyQueryIntercepted = true;
+            return Promise.reject(new Error('Simulated late history insertion database failure'));
+          }
+          return (originalClientQuery as any)(...args);
+        }) as any;
+        return client;
+      });
+
+      try {
+        await expect(
+          assetService.bulkRegisterAssets(
+            testActorId,
+            { items },
+            { retryToken: historyFaultToken }
+          )
+        ).rejects.toThrow('Simulated late history insertion database failure');
+      } finally {
+        connectSpy.mockRestore();
+      }
+
+      expect(historyQueryIntercepted).toBe(true);
+
+      // Separate connection observations: 0 assets, 0 history, 0 retry tokens
+      const checkAsset = await pool.query(
+        'SELECT * FROM assets WHERE asset_number = $1',
+        [testAssetNumber]
+      );
+      expect(checkAsset.rows).toHaveLength(0);
+
+      const checkHistory = await pool.query(
+        "SELECT * FROM asset_history WHERE payload->>'asset_number' = $1",
+        [testAssetNumber]
+      );
+      expect(checkHistory.rows).toHaveLength(0);
+
+      const checkToken = await pool.query(
+        'SELECT * FROM registration_retry_tokens WHERE token = $1',
+        [historyFaultToken]
+      );
+      expect(checkToken.rows).toHaveLength(0);
+
+      // Clean same-intent post-fault control
+      const retryRes = await assetService.bulkRegisterAssets(
+        testActorId,
+        { items },
+        { retryToken: historyFaultToken }
+      );
+      expect(retryRes.total_registered).toBe(1);
+
+      const postCheck = await pool.query(
+        'SELECT * FROM assets WHERE asset_number = $1',
+        [testAssetNumber]
+      );
+      expect(postCheck.rows).toHaveLength(1);
+    });
+
+    it('guarantees atomic rollback on late retry-result persistence database failure and allows clean post-fault retry', async () => {
+      const tokenFaultToken = 'late-token-fault-token-' + crypto.randomUUID();
+      const testAssetNumber = 'AST-LATE-TOKEN-FAULT-01';
+      const items = [
+        {
+          item_key: '00000000-0000-4000-8000-000000000092',
+          name: 'Token Fault Test Item',
+          asset_number: testAssetNumber,
+        },
+      ];
+
+      // Spy on pool.connect to inject failure specifically on INSERT INTO registration_retry_tokens
+      const originalConnect = pool.connect.bind(pool);
+      let tokenQueryIntercepted = false;
+
+      const connectSpy = vi.spyOn(pool, 'connect').mockImplementation(async () => {
+        const client = await originalConnect();
+        const originalClientQuery = client.query.bind(client);
+        client.query = (function (...args: any[]) {
+          const sql = typeof args[0] === 'string' ? args[0] : args[0]?.text || '';
+          if (sql.includes('INSERT INTO registration_retry_tokens') && !tokenQueryIntercepted) {
+            tokenQueryIntercepted = true;
+            return Promise.reject(new Error('Simulated late retry-result persistence database failure'));
+          }
+          return (originalClientQuery as any)(...args);
+        }) as any;
+        return client;
+      });
+
+      try {
+        await expect(
+          assetService.bulkRegisterAssets(
+            testActorId,
+            { items },
+            { retryToken: tokenFaultToken }
+          )
+        ).rejects.toThrow('Simulated late retry-result persistence database failure');
+      } finally {
+        connectSpy.mockRestore();
+      }
+
+      expect(tokenQueryIntercepted).toBe(true);
+
+      // Separate connection observations: 0 assets, 0 history, 0 retry tokens
+      const checkAsset = await pool.query(
+        'SELECT * FROM assets WHERE asset_number = $1',
+        [testAssetNumber]
+      );
+      expect(checkAsset.rows).toHaveLength(0);
+
+      const checkHistory = await pool.query(
+        "SELECT * FROM asset_history WHERE payload->>'asset_number' = $1",
+        [testAssetNumber]
+      );
+      expect(checkHistory.rows).toHaveLength(0);
+
+      const checkToken = await pool.query(
+        'SELECT * FROM registration_retry_tokens WHERE token = $1',
+        [tokenFaultToken]
+      );
+      expect(checkToken.rows).toHaveLength(0);
+
+      // Clean same-intent post-fault control
+      const retryRes = await assetService.bulkRegisterAssets(
+        testActorId,
+        { items },
+        { retryToken: tokenFaultToken }
+      );
+      expect(retryRes.total_registered).toBe(1);
+
+      const postCheck = await pool.query(
+        'SELECT * FROM assets WHERE asset_number = $1',
+        [testAssetNumber]
+      );
+      expect(postCheck.rows).toHaveLength(1);
+    });
+
+    it('guarantees atomic rollback on late Nth-asset database constraint failure and allows clean post-fault retry', async () => {
+      const rollbackToken = 'late-rollback-token-01';
+      const itemsWithFault = [
+        {
+          item_key: '00000000-0000-4000-8000-000000000061',
+          name: 'Valid First Item Before Rollback',
+          asset_number: 'AST-LATE-ROLLBACK-01',
+        },
+        {
+          item_key: '00000000-0000-4000-8000-000000000062',
+          name: 'Fault Item \u0000 Null Byte',
+          asset_number: 'AST-LATE-ROLLBACK-02',
+        },
+      ];
+
+      await expect(
+        assetService.bulkRegisterAssets(
+          testActorId,
+          { items: itemsWithFault },
+          { retryToken: rollbackToken }
+        )
+      ).rejects.toThrow();
+
+      // Independent connection check: Item 1 must NOT exist
+      const checkAsset1 = await pool.query(
+        "SELECT * FROM assets WHERE asset_number = 'AST-LATE-ROLLBACK-01'"
+      );
+      expect(checkAsset1.rows).toHaveLength(0);
+
+      // No history rows
+      const checkHistory = await pool.query(
+        "SELECT * FROM asset_history WHERE payload->>'asset_number' = 'AST-LATE-ROLLBACK-01'"
+      );
+      expect(checkHistory.rows).toHaveLength(0);
+
+      // No retry token row saved
+      const checkToken = await pool.query(
+        'SELECT * FROM registration_retry_tokens WHERE token = $1',
+        [rollbackToken]
+      );
+      expect(checkToken.rows).toHaveLength(0);
+
+      // Now perform clean post-fault retry with corrected second item
+      const correctedItems = [
+        {
+          item_key: '00000000-0000-4000-8000-000000000061',
+          name: 'Valid First Item Before Rollback',
+          asset_number: 'AST-LATE-ROLLBACK-01',
+        },
+        {
+          item_key: '00000000-0000-4000-8000-000000000062',
+          name: 'Valid Second Item Corrected',
+          asset_number: 'AST-LATE-ROLLBACK-02',
+        },
+      ];
+
+      const retryRes = await assetService.bulkRegisterAssets(
+        testActorId,
+        { items: correctedItems },
+        { retryToken: rollbackToken }
+      );
+      expect(retryRes.total_registered).toBe(2);
+
+      const checkBoth = await pool.query(
+        "SELECT * FROM assets WHERE asset_number IN ('AST-LATE-ROLLBACK-01', 'AST-LATE-ROLLBACK-02')"
+      );
+      expect(checkBoth.rows).toHaveLength(2);
+    });
+
+    it('detects mismatch on association, order, and acknowledgment under identical retry token', async () => {
+      const token = 'mismatch-check-token';
+      const items = [
+        {
+          item_key: '00000000-0000-4000-8000-000000000091',
+          name: 'Mismatch Check A',
+          asset_number: 'AST-MISMATCH-A',
+        },
+        {
+          item_key: '00000000-0000-4000-8000-000000000092',
+          name: 'Mismatch Check B',
+          asset_number: 'AST-MISMATCH-B',
+        },
+      ];
+
+      // Seed acquisitions
+      const acqRes1 = await pool.query(`
+        INSERT INTO acquisitions (acquisition_type, source_reference, created_by)
+        VALUES ('Purchase', 'ACQ-MISMATCH-01', '${testActorId}')
+        RETURNING id;
+      `);
+      const acqId1 = acqRes1.rows[0].id;
+
+      const acqRes2 = await pool.query(`
+        INSERT INTO acquisitions (acquisition_type, source_reference, created_by)
+        VALUES ('Purchase', 'ACQ-MISMATCH-02', '${testActorId}')
+        RETURNING id;
+      `);
+      const acqId2 = acqRes2.rows[0].id;
+
+      // 1. Initial success with acqId1 and explicit_continuation: false
+      await assetService.bulkRegisterAssets(
+        testActorId,
+        { items, acquisition_id: acqId1, explicit_continuation: false },
+        { retryToken: token }
+      );
+
+      // 2. Association mismatch: acqId2
+      await expect(
+        assetService.bulkRegisterAssets(
+          testActorId,
+          { items, acquisition_id: acqId2, explicit_continuation: false },
+          { retryToken: token }
+        )
+      ).rejects.toThrow(RetryTokenConflictError);
+
+      // 3. Acknowledgment mismatch: explicit_continuation = true
+      await expect(
+        assetService.bulkRegisterAssets(
+          testActorId,
+          { items, acquisition_id: acqId1, explicit_continuation: true },
+          { retryToken: token }
+        )
+      ).rejects.toThrow(RetryTokenConflictError);
+
+      // 4. Order mismatch: items reversed
+      await expect(
+        assetService.bulkRegisterAssets(
+          testActorId,
+          {
+            items: [items[1], items[0]],
+            acquisition_id: acqId1,
+            explicit_continuation: false,
+          },
+          { retryToken: token }
+        )
+      ).rejects.toThrow(RetryTokenConflictError);
+    });
+
+    it('preserves padded and whitespace-only identifiers verbatim at the database layer', async () => {
+      const items = [
+        {
+          item_key: '00000000-0000-4000-8000-000000000081',
+          name: 'Padded Identifiers Item',
+          asset_number: '  AST-PADDED-01  ',
+          serial_number: '  SN-PADDED-01  ',
+        },
+        {
+          item_key: '00000000-0000-4000-8000-000000000082',
+          name: 'Whitespace Identifier Item',
+          asset_number: '   ',
+          serial_number: '\t\t',
+        },
+      ];
+
+      const res = await assetService.bulkRegisterAssets(
+        testActorId,
+        { items },
+        { retryToken: 'verbatim-padded-token' }
+      );
+
+      const dbAssets = await pool.query(
+        'SELECT asset_number, serial_number FROM assets WHERE id = ANY($1) ORDER BY created_at ASC',
+        [[res.results[0].asset_id, res.results[1].asset_id]]
+      );
+      expect(dbAssets.rows[0].asset_number).toBe('  AST-PADDED-01  ');
+      expect(dbAssets.rows[0].serial_number).toBe('  SN-PADDED-01  ');
+      expect(dbAssets.rows[1].asset_number).toBe('   ');
+      expect(dbAssets.rows[1].serial_number).toBe('\t\t');
     });
   });
 });

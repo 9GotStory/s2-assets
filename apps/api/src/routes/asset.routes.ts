@@ -4,12 +4,14 @@ import { requireCapability } from '../middleware/authorization.ts';
 import {
   AssetService,
   DuplicateCandidateWarningError,
+  BulkDuplicateCandidateWarningError,
   NotFoundError,
   RetryTokenConflictError,
   StaleBeforeConflictError,
   ValidationError,
   type CorrectAssetInput,
   type RegisterAssetInput,
+  type BulkRegisterAssetInput,
 } from '../services/asset.service.ts';
 import { isValidUuid, CapabilityService } from '../services/capability.service.ts';
 
@@ -33,6 +35,29 @@ const RegisterAssetSchema = z
     category: z.null().optional(),
     organization_unit: z.null().optional(),
     acquisition_id: z.string().nullable().optional(),
+  })
+  .strict();
+
+const BulkRegisterItemSchema = z
+  .object({
+    item_key: z.string().uuid(),
+    name: z.string().nullable().optional(),
+    asset_number: z.string().nullable().optional(),
+    serial_number: z.string().nullable().optional(),
+    source_reference: z.string().nullable().optional(),
+    source_notes: z.string().nullable().optional(),
+    is_legacy: z.boolean().optional(),
+    category: z.null().optional(),
+    organization_unit: z.null().optional(),
+  })
+  .strict();
+
+const BulkRegisterAssetSchema = z
+  .object({
+    acquisition_id: z.string().nullable().optional(),
+    explicit_continuation: z.boolean().optional(),
+    items: z.array(BulkRegisterItemSchema).min(1).max(100),
+    retry_token: z.string().optional(),
   })
   .strict();
 
@@ -127,10 +152,20 @@ export const assetRoutes: FastifyPluginAsync<AssetRoutesOptions> = async (
       (request as any).isQrLabelRoute = true;
       reply.header('Cache-Control', 'no-store');
     }
+    if (normalizedPath === '/assets/bulk-register' || normalizedPath === '/bulk-register') {
+      (request as any).isBulkRegisterRoute = true;
+      reply.header('Cache-Control', 'no-store');
+    }
   });
 
   fastify.addHook('onSend', async (request: FastifyRequest, reply: FastifyReply, payload: unknown) => {
-    if (isSearchRequest(request) || isQrLabelRequest(request)) {
+    if (
+      isSearchRequest(request) ||
+      isQrLabelRequest(request) ||
+      (request as any).isBulkRegisterRoute ||
+      request.routeOptions?.url === '/bulk-register' ||
+      request.routeOptions?.url === '/assets/bulk-register'
+    ) {
       reply.header('Cache-Control', 'no-store');
     }
     return payload;
@@ -246,6 +281,152 @@ export const assetRoutes: FastifyPluginAsync<AssetRoutesOptions> = async (
             has_more: err.has_more,
             limit: err.limit,
             offset: err.offset,
+          });
+        }
+
+        if (err instanceof RetryTokenConflictError) {
+          return reply.status(409).send({
+            statusCode: 409,
+            code: 'RETRY_TOKEN_PAYLOAD_MISMATCH',
+            error: 'RETRY_TOKEN_PAYLOAD_MISMATCH',
+            message: err.message,
+          });
+        }
+
+        if (err instanceof ValidationError) {
+          return reply.status(400).send({
+            statusCode: 400,
+            code: 'VALIDATION_FAILED',
+            error: 'VALIDATION_FAILED',
+            message: err.message,
+          });
+        }
+
+        throw err;
+      }
+    }
+  );
+
+  /**
+   * POST /bulk-register
+   * Atomic, retry-safe bulk registration of 1 to 100 assets from an optional shared acquisition reference.
+   * Protected: requires BOTH 'asset:bulk-register' AND 'asset:register' capabilities.
+   * If acquisition_id is provided, also requires 'acquisition:view' capability.
+   * Protected duplicate disclosure requires 'asset:view' AND 'asset:duplicate-check'.
+   * Enforces 1 MiB body limit, Cache-Control: no-store, and required x-retry-token header.
+   */
+  fastify.post(
+    '/bulk-register',
+    {
+      bodyLimit: 1048576,
+      onRequest: async (_request: FastifyRequest, reply: FastifyReply) => {
+        reply.header('Cache-Control', 'no-store');
+      },
+      preHandler: [
+        requireCapability('asset:bulk-register'),
+        requireCapability('asset:register'),
+      ],
+    },
+    async (request: FastifyRequest, reply: FastifyReply) => {
+      reply.header('Cache-Control', 'no-store');
+      const user = (request as any).user;
+      if (!user || !user.id) {
+        return reply.status(401).send({
+          statusCode: 401,
+          code: 'UNAUTHORIZED',
+          error: 'UNAUTHORIZED',
+          message: 'Authenticated session required',
+        });
+      }
+
+      // 1. Validate x-retry-token header
+      const headerToken = request.headers['x-retry-token'];
+      if (
+        typeof headerToken !== 'string' ||
+        headerToken.trim() === '' ||
+        headerToken.length > 128
+      ) {
+        return reply.status(400).send({
+          statusCode: 400,
+          code: 'VALIDATION_FAILED',
+          error: 'VALIDATION_FAILED',
+          message:
+            'Non-empty x-retry-token header is required for bulk registration (max 128 characters)',
+        });
+      }
+      const retryToken = headerToken.trim();
+
+      // 2. Validate payload schema
+      const parsed = BulkRegisterAssetSchema.safeParse(request.body || {});
+      if (!parsed.success) {
+        return reply.status(400).send({
+          statusCode: 400,
+          code: 'VALIDATION_FAILED',
+          error: 'VALIDATION_FAILED',
+          message:
+            'Invalid request payload: ' +
+            parsed.error.issues
+              .map((i) => `${i.path.join('.')}: ${i.message}`)
+              .join(', '),
+        });
+      }
+
+      const body = parsed.data as BulkRegisterAssetInput & { retry_token?: string };
+
+      // Contradictory token check (checked by presence, including empty string)
+      if (body.retry_token !== undefined && body.retry_token !== retryToken) {
+        return reply.status(400).send({
+          statusCode: 400,
+          code: 'VALIDATION_FAILED',
+          error: 'VALIDATION_FAILED',
+          message: 'x-retry-token header and body retry_token must match',
+        });
+      }
+
+      // 3. Acquisition link capability check
+      if (body.acquisition_id !== undefined && body.acquisition_id !== null) {
+        const canViewAcq = capabilityService
+          ? await capabilityService.hasCapability(user.id, 'acquisition:view')
+          : false;
+        if (!canViewAcq) {
+          return reply.status(403).send({
+            statusCode: 403,
+            code: 'FORBIDDEN',
+            error: 'FORBIDDEN',
+            message:
+              "Forbidden: requires 'acquisition:view' capability to link an acquisition",
+          });
+        }
+      }
+
+      try {
+        const result = await assetService.bulkRegisterAssets(user.id, body, {
+          retryToken,
+        });
+        return reply.status(201).send(result);
+      } catch (err: any) {
+        if (err instanceof BulkDuplicateCandidateWarningError) {
+          // Protected duplicate candidate disclosure check (D3)
+          const canView = capabilityService
+            ? await capabilityService.hasCapability(user.id, 'asset:view')
+            : true;
+          const canCheck = capabilityService
+            ? await capabilityService.hasCapability(user.id, 'asset:duplicate-check')
+            : true;
+
+          const sanitizedWarnings = (canView && canCheck)
+            ? err.warnings
+            : err.warnings.map(({ candidates, ...w }) => ({
+                ...w,
+                candidates: [],
+              }));
+
+          return reply.status(409).send({
+            statusCode: 409,
+            code: 'DUPLICATE_CANDIDATES_FOUND',
+            error: 'DUPLICATE_CANDIDATES_FOUND',
+            message: err.message,
+            warnings: sanitizedWarnings,
           });
         }
 

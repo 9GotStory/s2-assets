@@ -3293,4 +3293,691 @@ test.describe.serial('Asset Registry Real SPA -> Composed API -> PostgreSQL Jour
 
     await page.unrouteAll({ behavior: 'ignoreErrors' });
   });
+
+  test('T6 Journey 1: Navigation shortcuts to Bulk Register (Dashboard and Acquisition Detail)', async ({ page, context }) => {
+    await loginAs(page, context, custodianUserId);
+
+    // 1. From Dashboard to Bulk Register
+    await page.goto(`${targetBaseUrl}/dashboard`);
+    await expect(page.locator('#nav-asset-bulk-register')).toBeVisible();
+    await page.locator('#nav-asset-bulk-register').click();
+    await expect(page).toHaveURL(`${targetBaseUrl}/assets/bulk-register`);
+    await expect(page.locator('#bulk-register-heading')).toBeVisible();
+
+    // 2. Create an acquisition in DB to verify shortcut on detail page
+    const acqRes = await pool.query(`
+      INSERT INTO acquisitions (acquisition_type, acquisition_date, total_amount, source_reference, notes, created_by)
+      VALUES ('จัดซื้อปกติ', '2026-03-22', '50000.00', 'PO-BULK-NAV-01', 'Acquisition for bulk shortcut test', $1)
+      RETURNING id
+    `, [custodianUserId]);
+    const seededAcqId = acqRes.rows[0].id;
+
+    // 3. From Acquisition Detail to Bulk Register prefilled with acquisition_id
+    await page.goto(`${targetBaseUrl}/acquisitions/${seededAcqId}`);
+    await expect(page.locator('#bulk-register-linked-asset-btn')).toBeVisible();
+    await page.locator('#bulk-register-linked-asset-btn').click();
+    await expect(page).toHaveURL(`${targetBaseUrl}/assets/bulk-register?acquisition_id=${seededAcqId}`);
+    await expect(page.locator('#bulk-register-heading')).toBeVisible();
+    await expect(page.locator('#shared-acquisition-id')).toHaveValue(seededAcqId);
+  });
+
+  test('T6 Journey 2: Atomic bulk registration of multiple assets with shared acquisition', async ({ page, context }) => {
+    await loginAs(page, context, custodianUserId);
+
+    // Seed acquisition for link
+    const acqRes = await pool.query(`
+      INSERT INTO acquisitions (acquisition_type, acquisition_date, total_amount, source_reference, notes, created_by)
+      VALUES ('จัดซื้อปกติ', '2026-03-22', '80000.00', 'PO-BULK-2026-A', 'Shared batch acquisition', $1)
+      RETURNING id
+    `, [custodianUserId]);
+    const sharedAcqId = acqRes.rows[0].id;
+
+    await page.goto(`${targetBaseUrl}/assets/bulk-register?acquisition_id=${sharedAcqId}`);
+    await expect(page.locator('#shared-acquisition-id')).toHaveValue(sharedAcqId);
+
+    // Fill Item 1
+    await page.locator('#item-name-0').fill('Workstation Server Alpha');
+    await page.locator('#item-asset-number-0').fill('AST-E2E-BLK-001');
+    await page.locator('#item-serial-number-0').fill('SN-E2E-BLK-001');
+    await page.locator('#item-source-ref-0').fill('PO-BULK-2026-A');
+
+    // Add Item 2
+    await page.locator('#add-row-btn').click();
+    await expect(page.locator('#bulk-item-row-1')).toBeVisible();
+    await page.locator('#item-name-1').fill('Workstation Server Beta');
+    await page.locator('#item-asset-number-1').fill('AST-E2E-BLK-002');
+    await page.locator('#item-serial-number-1').fill('SN-E2E-BLK-002');
+    await page.locator('#item-source-ref-1').fill('PO-BULK-2026-A');
+
+    // Submit registration
+    await page.locator('#submit-bulk-register-btn').click();
+
+    // Verify success result screen
+    await expect(page.locator('#bulk-register-success')).toBeVisible();
+    await expect(page.locator('#total-registered-count')).toHaveText('2');
+    await expect(page.locator('#registered-asset-link-0')).toBeVisible();
+    await expect(page.locator('#registered-asset-link-1')).toBeVisible();
+    await expect(page.locator('#linked-acquisition-link')).toHaveText(sharedAcqId);
+
+    // Database verification: both assets committed atomically with shared acquisition_id
+    const dbAssets = await pool.query(
+      `SELECT * FROM assets WHERE asset_number IN ('AST-E2E-BLK-001', 'AST-E2E-BLK-002') ORDER BY asset_number ASC`
+    );
+    expect(dbAssets.rows).toHaveLength(2);
+    expect(dbAssets.rows[0].name).toBe('Workstation Server Alpha');
+    expect(dbAssets.rows[0].acquisition_id).toBe(sharedAcqId);
+    expect(dbAssets.rows[1].name).toBe('Workstation Server Beta');
+    expect(dbAssets.rows[1].acquisition_id).toBe(sharedAcqId);
+
+    // Verify asset history records
+    const assetIds = dbAssets.rows.map((r: any) => r.id);
+    const dbHistory = await pool.query(
+      `SELECT * FROM asset_history WHERE asset_id = ANY($1) AND action = 'REGISTERED'`,
+      [assetIds]
+    );
+    expect(dbHistory.rows).toHaveLength(2);
+
+    // Follow link to registered asset detail
+    await page.locator('#registered-asset-link-0').click();
+    await expect(page).toHaveURL(`${targetBaseUrl}/assets/${assetIds[0]}`);
+    await expect(page.locator('#asset-detail-heading')).toHaveText('Workstation Server Alpha');
+    await expect(page.locator(`dd:has-text("AST-E2E-BLK-001")`)).toBeVisible();
+  });
+
+  test('T6 Journey 3: Duplicate candidate detection and explicit continuation flow', async ({ page, context }) => {
+    await loginAs(page, context, custodianUserId);
+
+    await page.goto(`${targetBaseUrl}/assets/bulk-register`);
+
+    // Enter an item that duplicates AST-E2E-BLK-001 from previous test
+    await page.locator('#item-name-0').fill('Duplicate Unit Test');
+    await page.locator('#item-asset-number-0').fill('AST-E2E-BLK-001');
+
+    // Submit registration without explicit continuation
+    await page.locator('#submit-bulk-register-btn').click();
+
+    // Verify duplicate warning banner appears
+    await expect(page.locator('#duplicate-warnings-banner')).toBeVisible();
+    await expect(page.locator('#explicit-continuation-checkbox')).toBeVisible();
+    await expect(page.locator('#explicit-continuation-checkbox')).not.toBeChecked();
+
+    // Verify no new asset was created in database
+    const dbCheckBefore = await pool.query(
+      `SELECT * FROM assets WHERE name = 'Duplicate Unit Test'`
+    );
+    expect(dbCheckBefore.rows).toHaveLength(0);
+
+    // Now check explicit continuation checkbox and submit again
+    await page.locator('#explicit-continuation-checkbox').check();
+    await page.locator('#submit-bulk-register-btn').click();
+
+    // Verify successful registration after explicit confirmation
+    await expect(page.locator('#bulk-register-success')).toBeVisible();
+    await expect(page.locator('#total-registered-count')).toHaveText('1');
+
+    // Verify new asset now exists in database with identical asset_number
+    const dbCheckAfter = await pool.query(
+      `SELECT * FROM assets WHERE name = 'Duplicate Unit Test'`
+    );
+    expect(dbCheckAfter.rows).toHaveLength(1);
+    expect(dbCheckAfter.rows[0].asset_number).toBe('AST-E2E-BLK-001');
+  });
+
+  test('T6 Journey 4: Role capability enforcement for non-custodian (Read-Only user)', async ({ page, context }) => {
+    await loginAs(page, context, readonlyUserId);
+
+    await page.goto(`${targetBaseUrl}/assets/bulk-register`);
+
+    await page.locator('#item-name-0').fill('Unauthorized Bulk Item');
+    await page.locator('#item-asset-number-0').fill('AST-UNAUTH-001');
+
+    // Attempt submission
+    await page.locator('#submit-bulk-register-btn').click();
+
+    // Verify 403 Forbidden alert message appears
+    await expect(page.locator('#bulk-error-message, #forbidden-alert').first()).toBeVisible();
+    await expect(page.locator('#bulk-error-message, #forbidden-alert').first()).toContainText('ไม่มีสิทธิ์');
+
+    // Verify asset was not registered in database
+    const dbCheck = await pool.query(
+      `SELECT * FROM assets WHERE asset_number = 'AST-UNAUTH-001'`
+    );
+    expect(dbCheck.rows).toHaveLength(0);
+  });
+
+  test('T6 Journey 5: In-flight bulk submit unmounted via SPA link cannot redirect active route or cause error upon completion', async ({ page, context }) => {
+    await loginAs(page, context, custodianUserId);
+
+    await page.goto(`${targetBaseUrl}/assets/bulk-register`);
+    await page.locator('#item-name-0').fill('In-Flight Unmount Bulk Asset');
+    await page.locator('#item-asset-number-0').fill('AST-E2E-UNMOUNT-001');
+
+    let resolveSubmit!: () => void;
+    const submitHeldPromise = new Promise<void>((resolve) => {
+      resolveSubmit = resolve;
+    });
+    let resolveFulfill!: () => void;
+    const fulfillDonePromise = new Promise<void>((resolve) => {
+      resolveFulfill = resolve;
+    });
+
+    let interceptedPost = false;
+    await page.route('**/assets/bulk-register', async (route) => {
+      if (route.request().method() === 'POST' && !interceptedPost) {
+        interceptedPost = true;
+        const response = await route.fetch();
+        const bodyText = await response.text();
+        await submitHeldPromise;
+        try {
+          await route.fulfill({ response, body: bodyText });
+        } catch {
+          // Component unmounted and request aborted
+        } finally {
+          resolveFulfill();
+        }
+        return;
+      }
+      await route.continue();
+    });
+
+    await page.locator('#submit-bulk-register-btn').click();
+
+    // While submit is held, click actual SPA link to navigate to Dashboard (unmounting AssetBulkRegister)
+    await page.locator('#back-to-dashboard-link').click();
+    await expect(page).toHaveURL(`${targetBaseUrl}/dashboard`);
+    await expect(page.locator('#bulk-register-heading')).not.toBeVisible();
+
+    // Release held submit response and deterministically wait for fulfill completion
+    resolveSubmit();
+    await fulfillDonePromise;
+
+    // Ensure we deterministically remain on dashboard and obsolete completion did not redirect back
+    await expect(page).toHaveURL(`${targetBaseUrl}/dashboard`);
+    await expect(page.locator('#bulk-register-heading')).not.toBeVisible();
+
+    // Confirm that the server transaction committed
+    const dbCheck = await pool.query(
+      `SELECT * FROM assets WHERE asset_number = 'AST-E2E-UNMOUNT-001'`
+    );
+    expect(dbCheck.rows).toHaveLength(1);
+
+    await page.unrouteAll({ behavior: 'ignoreErrors' });
+  });
+
+  test('T6 Journey 6: Verbatim preservation of padded and whitespace-inclusive identifiers', async ({ page, context }) => {
+    await loginAs(page, context, custodianUserId);
+
+    await page.goto(`${targetBaseUrl}/assets/bulk-register`);
+    await page.locator('#item-name-0').fill('Verbatim Identifier Asset');
+    await page.locator('#item-asset-number-0').fill('   AST-VERBATIM-001   ');
+    await page.locator('#item-serial-number-0').fill('   SN-VERBATIM-001   ');
+
+    await page.locator('#submit-bulk-register-btn').click();
+
+    await expect(page.locator('#bulk-register-success')).toBeVisible();
+    await expect(page.locator('#total-registered-count')).toHaveText('1');
+
+    // Confirm in PostgreSQL database that leading/trailing spaces are preserved verbatim
+    const dbCheck = await pool.query(
+      `SELECT asset_number, serial_number FROM assets WHERE name = 'Verbatim Identifier Asset'`
+    );
+    expect(dbCheck.rows).toHaveLength(1);
+    expect(dbCheck.rows[0].asset_number).toBe('   AST-VERBATIM-001   ');
+    expect(dbCheck.rows[0].serial_number).toBe('   SN-VERBATIM-001   ');
+  });
+
+  test('T6 Journey 7: Duplicate candidate review with links, 3+ pages load-more, and intent acknowledgment reset', async ({ page, context }) => {
+    await loginAs(page, context, custodianUserId);
+
+    // Seed 110 existing assets for 3 pages of duplicate candidates (50 + 50 + 10)
+    await pool.query(`
+      INSERT INTO assets (name, asset_number, registered_by)
+      SELECT 'Candidate Asset ' || i, 'AST-E2E-DUP-PAGINATION', '${custodianUserId}'
+      FROM generate_series(1, 110) i;
+    `);
+
+    await page.goto(`${targetBaseUrl}/assets/bulk-register`);
+    await page.locator('#item-name-0').fill('Review Subject Unit');
+    await page.locator('#item-asset-number-0').fill('AST-E2E-DUP-PAGINATION');
+
+    // Submit -> triggers duplicate warning
+    await page.locator('#submit-bulk-register-btn').click();
+
+    await expect(page.locator('#duplicate-warnings-banner')).toBeVisible();
+    await expect(page.locator('#duplicate-warning-item-0')).toBeVisible();
+
+    // Check candidate link
+    const candidateLink = page.locator('a[id^="dup-candidate-link-"]').first();
+    await expect(candidateLink).toBeVisible();
+    await expect(candidateLink).toHaveAttribute('href', /\/assets\/[0-9a-f-]{36}/);
+
+    // Page 1 initial state: 50 items displayed, button indicates 50/110
+    const loadMoreBtn = page.locator('#load-more-candidates-btn-0');
+    await expect(loadMoreBtn).toBeVisible();
+    await expect(loadMoreBtn).toHaveText(/50\/110/);
+
+    // Click load more -> fetches Page 2 (offset 50)
+    await loadMoreBtn.click();
+    await expect(loadMoreBtn).toHaveText(/100\/110/);
+
+    // Click load more again -> fetches Page 3 (offset 100)
+    await loadMoreBtn.click();
+    // All 110 items loaded -> has_more is false and load more button disappears
+    await expect(loadMoreBtn).not.toBeVisible();
+
+    // Check acknowledgment checkbox
+    await page.locator('#explicit-continuation-checkbox').check();
+    await expect(page.locator('#explicit-continuation-checkbox')).toBeChecked();
+
+    // Modifying form input immediately resets acknowledgment and dismisses warnings banner
+    await page.locator('#item-name-0').fill('Review Subject Unit Modified');
+    await expect(page.locator('#duplicate-warnings-banner')).not.toBeVisible();
+    await expect(page.locator('#explicit-continuation-checkbox')).not.toBeAttached();
+
+    // Re-submitting without checkbox produces duplicate warning again
+    await page.locator('#submit-bulk-register-btn').click();
+    await expect(page.locator('#duplicate-warnings-banner')).toBeVisible();
+    await expect(page.locator('#explicit-continuation-checkbox')).not.toBeChecked();
+
+    // Check checkbox and re-submit -> succeeds
+    await page.locator('#explicit-continuation-checkbox').check();
+    await page.locator('#submit-bulk-register-btn').click();
+
+    await expect(page.locator('#bulk-register-success')).toBeVisible();
+    await expect(page.locator('#total-registered-count')).toHaveText('1');
+  });
+
+  test('T6 Journey 8: Committed-but-lost recovery across permission loss: denied replay retains quarantined intent, restored authority replays exact UUIDs', async ({ page, context }) => {
+    await loginAs(page, context, custodianUserId);
+
+    await page.goto(`${targetBaseUrl}/assets/bulk-register`);
+    await page.locator('#item-name-0').fill('Committed Lost Recovery Asset');
+    await page.locator('#item-asset-number-0').fill('AST-COMMITTED-LOST-01');
+
+    // Intercept POST /assets/bulk-register:
+    // Forward request to backend server (route.fetch()) so server COMMITS the transaction in DB,
+    // but abort network delivery to the page to simulate connection drop after server commit.
+    let dropResponseOnce = true;
+    await page.route('**/assets/bulk-register', async (route) => {
+      if (route.request().method() === 'POST' && dropResponseOnce) {
+        dropResponseOnce = false;
+        // Execute request on the backend so PostgreSQL commits the row!
+        await route.fetch();
+        // Drop the network response before the browser receives it
+        await route.abort('failed');
+        return;
+      }
+      await route.continue();
+    });
+
+    await page.locator('#submit-bulk-register-btn').click();
+
+    // Verify uncertain state alert is rendered and inputs are locked
+    await expect(page.locator('#uncertain-state-alert')).toBeVisible();
+    await expect(page.locator('#item-name-0')).toBeDisabled();
+    await expect(page.locator('#item-asset-number-0')).toBeDisabled();
+    await expect(page.locator('#submit-bulk-register-btn')).toBeDisabled();
+    await expect(page.locator('#retry-uncertain-btn')).toBeVisible();
+    await expect(page.locator('#discard-uncertain-btn')).toBeVisible();
+
+    // Confirm PostgreSQL ALREADY committed the asset
+    const initialDbCheck = await pool.query(
+      `SELECT id, asset_number FROM assets WHERE asset_number = 'AST-COMMITTED-LOST-01'`
+    );
+    expect(initialDbCheck.rows).toHaveLength(1);
+    const committedAssetId = initialDbCheck.rows[0].id;
+
+    // 1. Revoke ASSET_CUSTODIAN role while in uncertain state
+    await pool.query(
+      `DELETE FROM user_roles WHERE user_id = $1 AND role_id = 'ASSET_CUSTODIAN'`,
+      [custodianUserId]
+    );
+
+    try {
+      // 2. Click retry while permission is revoked -> receives 403 Forbidden
+      await page.locator('#retry-uncertain-btn').click();
+
+      // Verify forbidden alert is visible, but quarantined intent is NOT destroyed: form remains locked!
+      await expect(page.locator('#forbidden-alert')).toBeVisible();
+      await expect(page.locator('#item-name-0')).toBeDisabled();
+      await expect(page.locator('#submit-bulk-register-btn')).toBeDisabled();
+    } finally {
+      // 3. Restore ASSET_CUSTODIAN role
+      await pool.query(
+        `INSERT INTO user_roles (user_id, role_id) VALUES ($1, 'ASSET_CUSTODIAN')`,
+        [custodianUserId]
+      );
+    }
+
+    // 4. Trigger window focus event to revalidate session
+    await page.evaluate(() => {
+      window.dispatchEvent(new Event('focus'));
+    });
+
+    // Verify forbidden alert clears and retry button is available again
+    await expect(page.locator('#forbidden-alert')).not.toBeVisible();
+    await expect(page.locator('#uncertain-state-alert')).toBeVisible();
+    await expect(page.locator('#retry-uncertain-btn')).toBeEnabled();
+
+    // 5. Retry using the exact stored snapshot via #retry-uncertain-btn
+    await page.locator('#retry-uncertain-btn').click();
+
+    // Verifies successful recovery without duplicating or creating invalid state
+    await expect(page.locator('#bulk-register-success')).toBeVisible();
+    await expect(page.locator('#total-registered-count')).toHaveText('1');
+    await expect(page.locator('#registered-asset-link-0')).toHaveAttribute(
+      'href',
+      `/assets/${committedAssetId}`
+    );
+
+    // Verify strictly one asset, one history, one token in DB
+    const finalDbCheck = await pool.query(
+      `SELECT id FROM assets WHERE asset_number = 'AST-COMMITTED-LOST-01'`
+    );
+    expect(finalDbCheck.rows).toHaveLength(1);
+
+    const historyCheck = await pool.query(
+      `SELECT id FROM asset_history WHERE asset_id = $1`,
+      [committedAssetId]
+    );
+    expect(historyCheck.rows).toHaveLength(1);
+
+    await page.unrouteAll({ behavior: 'ignoreErrors' });
+  });
+
+  test('T6 Journey 9: In-place actor switch in mounted component clears draft and pending intent', async ({ page, context }) => {
+    // 1. Custodian Alice logs in and enters draft data
+    await loginAs(page, context, custodianUserId);
+    await page.goto(`${targetBaseUrl}/assets/bulk-register`);
+    await page.locator('#item-name-0').fill('Custodian Draft Secret');
+    await expect(page.locator('#item-name-0')).toHaveValue('Custodian Draft Secret');
+
+    // 2. Create another custodian user (Bob)
+    const otherCustodianPass = await UserService.hashPassword('Password123!');
+    const userRes = await pool.query(`
+      INSERT INTO users (username, password_hash, is_active)
+      VALUES ('other_custodian_inplace', '${otherCustodianPass}', true)
+      RETURNING id;
+    `);
+    const otherCustodianId = userRes.rows[0].id;
+    await pool.query(
+      `INSERT INTO user_roles (user_id, role_id) VALUES ($1, 'ASSET_CUSTODIAN')`,
+      [otherCustodianId]
+    );
+
+    // 3. Switch login session in-place via API login using same cookie jar (WITHOUT page navigation!)
+    await page.request.post(`${targetBaseUrl}/auth/login`, {
+      data: {
+        username: 'other_custodian_inplace',
+        password: 'Password123!',
+      },
+    });
+
+    // 4. Trigger window focus event on the still-mounted page to fire verifySession()
+    await page.evaluate(() => {
+      window.dispatchEvent(new Event('focus'));
+    });
+
+    // 5. Verify the mounted component retired the previous actor draft without page navigation
+    await expect(page.locator('#item-name-0')).toHaveValue('');
+  });
+
+  test('T6 Journey 10: Suppresses protected duplicate warnings and facts during session verification and after 403', async ({ page, context }) => {
+    await loginAs(page, context, custodianUserId);
+
+    // Seed duplicate asset
+    await pool.query(`
+      INSERT INTO assets (name, asset_number, registered_by)
+      VALUES ('Protected Fact Asset', 'AST-PROTECTED-SUPPRESS-01', '${custodianUserId}')
+    `);
+
+    await page.goto(`${targetBaseUrl}/assets/bulk-register`);
+    await page.locator('#item-name-0').fill('Attempting Unit');
+    await page.locator('#item-asset-number-0').fill('AST-PROTECTED-SUPPRESS-01');
+
+    // Submit to trigger duplicate warning banner
+    await page.locator('#submit-bulk-register-btn').click();
+    await expect(page.locator('#duplicate-warnings-banner')).toBeVisible();
+
+    // Part A: Intercept /auth/session-check to hold it pending
+    let fulfillSessionCheck: (() => void) | null = null;
+    await page.route('**/auth/session-check', async (route) => {
+      await new Promise<void>((resolve) => {
+        fulfillSessionCheck = () => {
+          route.fulfill({
+            status: 403,
+            contentType: 'application/json',
+            body: JSON.stringify({ message: 'Forbidden' }),
+          });
+          resolve();
+        };
+      });
+    });
+
+    // Trigger focus to start verification
+    await page.evaluate(() => {
+      window.dispatchEvent(new Event('focus'));
+    });
+
+    // While session check is in-flight, verifying indicator is visible AND duplicate warnings banner is suppressed!
+    await expect(page.locator('#verifying-session-indicator')).toBeVisible();
+    await expect(page.locator('#duplicate-warnings-banner')).not.toBeVisible();
+
+    // Now resolve session check with 403 Forbidden
+    fulfillSessionCheck!();
+
+    // After 403, forbidden alert is visible and duplicate warnings remain suppressed
+    await expect(page.locator('#forbidden-alert')).toBeVisible();
+    await expect(page.locator('#duplicate-warnings-banner')).not.toBeVisible();
+
+    await page.unrouteAll({ behavior: 'ignoreErrors' });
+
+    // Part B: Unmocked regression: genuine same-actor DB role revocation (ASSET_CUSTODIAN -> READ_ONLY)
+    // with exact whitespace-only duplicate candidate (F1)
+    // Seed an asset with whitespace-only asset_number = '   '
+    const wsAssetRes = await pool.query(`
+      INSERT INTO assets (name, asset_number, registered_by)
+      VALUES ('Whitespace Existing Asset', '   ', '${custodianUserId}')
+      RETURNING id
+    `);
+    const wsAssetId = wsAssetRes.rows[0].id;
+
+    // Reset form and enter whitespace asset_number
+    await page.goto(`${targetBaseUrl}/assets/bulk-register`);
+    await page.locator('#item-name-0').fill('Whitespace Test Unit');
+    await page.locator('#item-asset-number-0').fill('   ');
+
+    // Submit as authorized Custodian -> positive control: Fastify API returns 409 DUPLICATE_CANDIDATES_FOUND
+    await page.locator('#submit-bulk-register-btn').click();
+    await expect(page.locator('#duplicate-warnings-banner')).toBeVisible();
+    await expect(page.locator('#duplicate-warnings-banner')).toContainText('Whitespace Existing Asset');
+    await expect(page.locator(`#dup-candidate-link-${wsAssetId}`)).toBeVisible();
+
+    // Now revoke ASSET_CUSTODIAN in PostgreSQL and set READ_ONLY
+    await pool.query(
+      `DELETE FROM user_roles WHERE user_id = $1 AND role_id = 'ASSET_CUSTODIAN'`,
+      [custodianUserId]
+    );
+    await pool.query(
+      `INSERT INTO user_roles (user_id, role_id) VALUES ($1, 'READ_ONLY')`,
+      [custodianUserId]
+    );
+
+    try {
+      // Trigger focus revalidation: real /auth/session-check returns 200 for same actor,
+      // and real /assets/duplicate-candidates?asset_number=%20%20%20 denies with 403 Forbidden!
+      await page.evaluate(() => {
+        window.dispatchEvent(new Event('focus'));
+      });
+
+      // Verify that whitespace-only candidate facts are purged, warnings banner is not visible,
+      // candidate link is not visible, and forbidden alert is rendered
+      await expect(page.locator('#forbidden-alert')).toBeVisible();
+      await expect(page.locator('#duplicate-warnings-banner')).not.toBeVisible();
+      await expect(page.locator(`#dup-candidate-link-${wsAssetId}`)).not.toBeVisible();
+      await expect(page.locator('text=Whitespace Existing Asset')).not.toBeVisible();
+    } finally {
+      // Restore role in DB
+      await pool.query(
+        `DELETE FROM user_roles WHERE user_id = $1 AND role_id = 'READ_ONLY'`,
+        [custodianUserId]
+      );
+      await pool.query(
+        `INSERT INTO user_roles (user_id, role_id) VALUES ($1, 'ASSET_CUSTODIAN')`,
+        [custodianUserId]
+      );
+    }
+  });
+
+  test('T6 Journey 11: Candidate pagination preserves raw offset across overlapping records, deterministic error on repeated page, and retry recovery', async ({ page, context }) => {
+    await loginAs(page, context, custodianUserId);
+
+    await page.goto(`${targetBaseUrl}/assets/bulk-register`);
+    await page.locator('#item-name-0').fill('Pagination Candidate Subject');
+    await page.locator('#item-asset-number-0').fill('AST-PAG-RAW-OFFSET-01');
+
+    // Intercept initial bulk register 409 DUPLICATE_CANDIDATES response
+    const mockCandidatesPage1 = Array.from({ length: 50 }, (_, i) => ({
+      id: `00000000-0000-4000-8000-${String(i + 1).padStart(12, '0')}`,
+      name: `Candidate ${i + 1}`,
+      asset_number: 'AST-PAG-RAW-OFFSET-01',
+      serial_number: null,
+    }));
+
+    await page.route('**/assets/bulk-register', async (route) => {
+      if (route.request().method() === 'POST') {
+        await route.fulfill({
+          status: 409,
+          contentType: 'application/json',
+          body: JSON.stringify({
+            code: 'DUPLICATE_CANDIDATES_FOUND',
+            warnings: [
+              {
+                item_key: 'item-0',
+                field: 'asset_number',
+                value: 'AST-PAG-RAW-OFFSET-01',
+                intra_batch: false,
+                candidates: mockCandidatesPage1,
+                total_count: 120,
+                has_more: true,
+                limit: 50,
+                offset: 0,
+              },
+            ],
+          }),
+        });
+        return;
+      }
+      await route.continue();
+    });
+
+    await page.locator('#submit-bulk-register-btn').click();
+    await expect(page.locator('#duplicate-warnings-banner')).toBeVisible();
+    const loadMoreBtn = page.locator('#load-more-candidates-btn-0');
+    await expect(loadMoreBtn).toBeVisible();
+
+    // Track offsets requested by client
+    const requestedOffsets: number[] = [];
+    await page.route('**/assets/duplicate-candidates*', async (route) => {
+      const url = new URL(route.request().url());
+      const offsetParam = parseInt(url.searchParams.get('offset') || '0', 10);
+      requestedOffsets.push(offsetParam);
+
+      if (offsetParam === 50) {
+        // Page 2: returns 50 records with 10 overlaps (IDs 41..50 overlap, 51..90 are new)
+        const mockPage2 = [
+          ...mockCandidatesPage1.slice(40), // 10 overlapping items
+          ...Array.from({ length: 40 }, (_, i) => ({
+            id: `00000000-0000-4000-8000-${String(i + 51).padStart(12, '0')}`,
+            name: `Candidate ${i + 51}`,
+            asset_number: 'AST-PAG-RAW-OFFSET-01',
+            serial_number: null,
+          })),
+        ];
+        await route.fulfill({
+          status: 200,
+          contentType: 'application/json',
+          body: JSON.stringify({
+            candidates: mockPage2,
+            total_count: 120,
+            has_more: true,
+            limit: 50,
+            offset: 50,
+          }),
+        });
+        return;
+      }
+
+      if (offsetParam === 100) {
+        // Page 3: server reports has_more = true, but returns 0 new unique items (stall/repeated page)
+        await route.fulfill({
+          status: 200,
+          contentType: 'application/json',
+          body: JSON.stringify({
+            candidates: mockCandidatesPage1.slice(0, 5), // old items only -> 0 new unique items
+            total_count: 120,
+            has_more: true,
+            limit: 50,
+            offset: 100,
+          }),
+        });
+        return;
+      }
+
+      if (offsetParam === 150) {
+        // Page 4 (Recovery): returns remaining 20 new items (IDs 91..110) with has_more = false
+        const mockPage4 = Array.from({ length: 20 }, (_, i) => ({
+          id: `00000000-0000-4000-8000-${String(i + 91).padStart(12, '0')}`,
+          name: `Candidate ${i + 91}`,
+          asset_number: 'AST-PAG-RAW-OFFSET-01',
+          serial_number: null,
+        }));
+        await route.fulfill({
+          status: 200,
+          contentType: 'application/json',
+          body: JSON.stringify({
+            candidates: mockPage4,
+            total_count: 120,
+            has_more: false,
+            limit: 50,
+            offset: 150,
+          }),
+        });
+        return;
+      }
+
+      await route.continue();
+    });
+
+    // Click load more for page 2
+    await loadMoreBtn.click();
+
+    // Display shows 90 unique items (50 initial + 40 new), NOT 100
+    await expect(loadMoreBtn).toBeVisible();
+    await expect(page.locator('#bulk-error-message')).not.toBeVisible();
+
+    // Click load more for page 3 (returns 0 new unique items)
+    await loadMoreBtn.click();
+
+    // Verify raw requested offsets: offset 50 was followed by offset 100 (NOT offset 90!)
+    expect(requestedOffsets).toEqual([50, 100]);
+
+    // On repeated page with 0 new progress:
+    // 1. Recoverable continuation error is surfaced with explicit message
+    await expect(page.locator('#bulk-error-message')).toBeVisible();
+    await expect(page.locator('#bulk-error-message')).toContainText(
+      'ไม่พบข้อมูลรายการซ้ำเพิ่มเติมจากเซิร์ฟเวอร์ (หน้าซ้ำ) กรุณากดลองโหลดใหม่อีกครั้ง'
+    );
+    // 2. Load more button remains attached and visible (NOT silently hidden, has_more preserved)
+    await expect(loadMoreBtn).toBeVisible();
+
+    // 3. Retry recovery: clicking load more for page 4 delivers new records, recovers cleanly,
+    // clears error message, and updates candidate count
+    await loadMoreBtn.click();
+    expect(requestedOffsets).toEqual([50, 100, 150]);
+    await expect(page.locator('#bulk-error-message')).not.toBeVisible();
+    await expect(loadMoreBtn).not.toBeVisible(); // has_more became false!
+
+    await page.unrouteAll({ behavior: 'ignoreErrors' });
+  });
 });

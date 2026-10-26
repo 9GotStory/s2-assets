@@ -8,6 +8,7 @@ import { AssetSearch } from './pages/AssetSearch';
 import { AssetDetail } from './pages/AssetDetail';
 import { AcquisitionCreate } from './pages/AcquisitionCreate';
 import { AcquisitionDetail } from './pages/AcquisitionDetail';
+import { AssetBulkRegister } from './pages/AssetBulkRegister';
 
 export const ProtectedDetailBoundary: React.FC = () => {
   const navigate = useNavigate();
@@ -305,6 +306,10 @@ export const routes: RouteObject[] = [
   {
     path: '/assets/register',
     element: <AssetRegister />,
+  },
+  {
+    path: '/assets/bulk-register',
+    element: <AssetBulkRegister />,
   },
   {
     path: '/assets/search',
