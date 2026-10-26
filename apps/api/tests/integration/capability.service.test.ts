@@ -153,7 +153,7 @@ describe('CapabilityService Real PostgreSQL Integration Tests (T024 - US2)', () 
       expect(roles).toEqual(['READ_ONLY']);
 
       const caps = await service.getCapabilities(user.id);
-      expect(caps.sort()).toEqual(['asset:search', 'asset:view'].sort());
+      expect(caps.sort()).toEqual(['acquisition:view', 'asset:search', 'asset:view'].sort());
     });
 
     it('grants asset:search for user with READ_ONLY, ADMINISTRATOR, and ASSET_CUSTODIAN roles', async () => {
@@ -400,6 +400,33 @@ describe('CapabilityService Real PostgreSQL Integration Tests (T024 - US2)', () 
       );
       await pool.query('UPDATE users SET is_active = false WHERE id = $1', [admin.id]);
       expect(await service.hasCapability(admin.id, 'asset:correct')).toBe(false);
+    });
+  });
+
+  describe('T5 D3: acquisition:create and acquisition:view Capability Matrix', () => {
+    it('enforces exact D3 capability grants per role', async () => {
+      const custodian = await createTestUser({ roles: ['ASSET_CUSTODIAN'] });
+      const admin = await createTestUser({ roles: ['ADMINISTRATOR'] });
+      const readOnly = await createTestUser({ roles: ['READ_ONLY'] });
+      const maintainer = await createTestUser({ roles: ['SYSTEM_MAINTAINER'] });
+
+      const service = new CapabilityService({ db: pool });
+
+      // ASSET_CUSTODIAN: acquisition:create = true, acquisition:view = true
+      expect(await service.hasCapability(custodian.id, 'acquisition:create')).toBe(true);
+      expect(await service.hasCapability(custodian.id, 'acquisition:view')).toBe(true);
+
+      // ADMINISTRATOR: acquisition:create = false, acquisition:view = true
+      expect(await service.hasCapability(admin.id, 'acquisition:create')).toBe(false);
+      expect(await service.hasCapability(admin.id, 'acquisition:view')).toBe(true);
+
+      // READ_ONLY: acquisition:create = false, acquisition:view = true
+      expect(await service.hasCapability(readOnly.id, 'acquisition:create')).toBe(false);
+      expect(await service.hasCapability(readOnly.id, 'acquisition:view')).toBe(true);
+
+      // SYSTEM_MAINTAINER: acquisition:create = false, acquisition:view = false
+      expect(await service.hasCapability(maintainer.id, 'acquisition:create')).toBe(false);
+      expect(await service.hasCapability(maintainer.id, 'acquisition:view')).toBe(false);
     });
   });
 });

@@ -15,6 +15,7 @@ export interface AssetRecord {
   recorded_at: string | Date;
   created_at?: string | Date;
   updated_at?: string | Date;
+  acquisition_id?: string | null;
 }
 
 export interface AssetHistoryRecord {
@@ -38,6 +39,7 @@ export interface RegisterAssetInput {
   source_notes?: string | null;
   is_legacy?: boolean;
   explicit_continuation?: boolean;
+  acquisition_id?: string | null;
 }
 
 export interface CorrectAssetInput {
@@ -224,7 +226,7 @@ export class AssetService {
    * Computes a deterministic SHA-256 fingerprint for the normalized registration payload.
    */
   computePayloadFingerprint(input: RegisterAssetInput): string {
-    const normalized = {
+    const normalized: Record<string, any> = {
       name: input.name?.trim() || null,
       asset_number: input.asset_number ?? null,
       serial_number: input.serial_number ?? null,
@@ -234,6 +236,9 @@ export class AssetService {
       source_notes: input.source_notes?.trim() || null,
       is_legacy: input.is_legacy === true,
     };
+    if (input.acquisition_id !== undefined && input.acquisition_id !== null) {
+      normalized.acquisition_id = input.acquisition_id;
+    }
     const jsonStr = JSON.stringify(normalized, Object.keys(normalized).sort());
     return crypto.createHash('sha256').update(jsonStr).digest('hex');
   }
@@ -412,6 +417,14 @@ export class AssetService {
       throw new ValidationError('source_notes must be a string');
     }
 
+    let acquisitionId: string | null = null;
+    if (input.acquisition_id !== undefined && input.acquisition_id !== null) {
+      if (typeof input.acquisition_id !== 'string' || !isValidExactUuid(input.acquisition_id)) {
+        throw new ValidationError('acquisition_id must be a valid exact UUID string');
+      }
+      acquisitionId = input.acquisition_id;
+    }
+
     const isLegacy = input.is_legacy === true;
     const rawName = input.name?.trim();
 
@@ -518,17 +531,31 @@ export class AssetService {
         }
       }
 
-      // 3. Insert asset record (AR-01, AR-02, AR-04, R1, R2)
+      // Check referenced acquisition existence
+      if (acquisitionId) {
+        const acqCheck = await client.query(
+          'SELECT id FROM acquisitions WHERE id = $1',
+          [acquisitionId]
+        );
+        if (acqCheck.rows.length === 0) {
+          await client.query('ROLLBACK');
+          throw new ValidationError('Referenced acquisition not found');
+        }
+      }
+
+      // 3. Insert asset record (AR-01, AR-02, AR-04, R1, R2, T5)
       const assetId = crypto.randomUUID();
       const insertAssetQuery = `
         INSERT INTO assets (
           id, asset_number, serial_number, name, category,
           organization_unit, source_reference, source_notes,
-          registered_by, recorded_at, created_at, updated_at
+          registered_by, recorded_at, created_at, updated_at,
+          acquisition_id
         ) VALUES (
           $1, $2, $3, $4, $5,
           $6, $7, $8,
-          $9, now(), now(), now()
+          $9, now(), now(), now(),
+          $10
         )
         RETURNING *;
       `;
@@ -542,12 +569,13 @@ export class AssetService {
         sourceRef,
         sourceNotes,
         actorId,
+        acquisitionId,
       ]);
       const assetRow = assetRes.rows[0];
 
-      // 4. Insert starting history fact (AR-07, AC-16)
+      // 4. Insert starting history fact (AR-07, AC-16, T5)
       const historyId = crypto.randomUUID();
-      const historyPayload = {
+      const historyPayload: Record<string, any> = {
         is_legacy: isLegacy,
         name,
         asset_number: assetNumber,
@@ -555,6 +583,9 @@ export class AssetService {
         source_reference: sourceRef,
         source_notes: sourceNotes,
       };
+      if (acquisitionId) {
+        historyPayload.acquisition_id = acquisitionId;
+      }
 
       const insertHistoryQuery = `
         INSERT INTO asset_history (
@@ -587,6 +618,7 @@ export class AssetService {
           recorded_at: new Date(assetRow.recorded_at).toISOString(),
           created_at: new Date(assetRow.created_at).toISOString(),
           updated_at: new Date(assetRow.updated_at).toISOString(),
+          acquisition_id: assetRow.acquisition_id || null,
         },
         history: {
           id: historyRow.id,
@@ -1072,7 +1104,8 @@ export class AssetService {
 
       const assetRes = await client.query(
         `SELECT id, asset_number, serial_number, name, category, organization_unit,
-                source_reference, source_notes, registered_by, recorded_at, created_at, updated_at
+                source_reference, source_notes, registered_by, recorded_at, created_at, updated_at,
+                acquisition_id
          FROM assets
          WHERE id = $1`,
         [id.trim()]
@@ -1109,6 +1142,7 @@ export class AssetService {
           recorded_at: new Date(assetRes.rows[0].recorded_at).toISOString(),
           created_at: new Date(assetRes.rows[0].created_at).toISOString(),
           updated_at: new Date(assetRes.rows[0].updated_at).toISOString(),
+          acquisition_id: assetRes.rows[0].acquisition_id || null,
         },
         history: historyRes.rows.map((row: any) => ({
           id: row.id,

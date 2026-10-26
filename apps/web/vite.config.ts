@@ -1,4 +1,33 @@
-import { defineConfig } from 'vite';
+import { defineConfig, type ProxyOptions } from 'vite';
+
+export const repositoryProxyConfig: Record<string, ProxyOptions> = {
+  '/auth': {
+    target: 'http://api:3000',
+    changeOrigin: true,
+  },
+  '/system': {
+    target: 'http://api:3000',
+    changeOrigin: true,
+  },
+  '/assets': {
+    target: 'http://api:3000',
+    changeOrigin: true,
+    bypass: (req) => {
+      if (req.headers.accept?.includes('text/html')) {
+        return '/index.html';
+      }
+    },
+  },
+  '/acquisitions': {
+    target: 'http://api:3000',
+    changeOrigin: true,
+    bypass: (req) => {
+      if (req.headers.accept?.includes('text/html')) {
+        return '/index.html';
+      }
+    },
+  },
+};
 
 export default defineConfig({
   server: {
@@ -6,24 +35,6 @@ export default defineConfig({
     port: 5173,
     strictPort: true,
     allowedHosts: ['web'],
-    proxy: {
-      '/auth': {
-        target: 'http://api:3000',
-        changeOrigin: true,
-      },
-      '/system': {
-        target: 'http://api:3000',
-        changeOrigin: true,
-      },
-      '/assets': {
-        target: 'http://api:3000',
-        changeOrigin: true,
-        bypass: (req) => {
-          if (req.headers.accept?.includes('text/html')) {
-            return '/index.html';
-          }
-        },
-      },
-    },
+    proxy: repositoryProxyConfig,
   },
 });

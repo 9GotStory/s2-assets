@@ -1791,4 +1791,120 @@ describe('AssetService Integration Tests (Seam A - Core Service & Transactions)'
       expect(empty.has_more).toBe(false);
     });
   });
+
+  describe('T5: Lightweight Acquisition Linking & Fingerprint Invariants', () => {
+    it('preserves exact legacy fingerprint when acquisition_id is null or omitted', () => {
+      const basePayload: RegisterAssetInput = {
+        name: 'Legacy Test Asset',
+        asset_number: 'AST-FP-001',
+        serial_number: 'SN-FP-001',
+      };
+
+      const fpOmitted = assetService.computePayloadFingerprint(basePayload);
+      const fpNull = assetService.computePayloadFingerprint({
+        ...basePayload,
+        acquisition_id: null,
+      });
+
+      expect(fpNull).toBe(fpOmitted);
+
+      const fpWithAcq = assetService.computePayloadFingerprint({
+        ...basePayload,
+        acquisition_id: '11111111-1111-1111-1111-111111111111',
+      });
+      expect(fpWithAcq).not.toBe(fpOmitted);
+    });
+
+    it('successfully links asset to existing acquisition and discloses acquisition_id', async () => {
+      const acqRes = await pool.query(
+        `INSERT INTO acquisitions (acquisition_type, source_reference, created_by)
+         VALUES ('จัดซื้อปกติ', 'REF-ASSET-SVC-01', $1)
+         RETURNING id`,
+        [testActorId]
+      );
+      const acqId = acqRes.rows[0].id;
+
+      const result = await assetService.registerAsset(testActorId, {
+        name: 'Linked Laptop',
+        asset_number: 'AST-LINK-001',
+        serial_number: 'SN-LINK-001',
+        acquisition_id: acqId,
+      });
+
+      expect(result.asset.acquisition_id).toBe(acqId);
+
+      // Verify read-back via getAssetById
+      const readBack = await assetService.getAssetById(result.asset.id);
+      expect(readBack).not.toBeNull();
+      expect(readBack!.asset.acquisition_id).toBe(acqId);
+    });
+
+    it('rejects registration with nonexistent acquisition_id with ValidationError', async () => {
+      const fakeId = 'ffffffff-ffff-ffff-ffff-ffffffffffff';
+      await expect(
+        assetService.registerAsset(testActorId, {
+          name: 'Orphan Asset',
+          asset_number: 'AST-ORPHAN-001',
+          serial_number: 'SN-ORPHAN-001',
+          acquisition_id: fakeId,
+        })
+      ).rejects.toThrow(ValidationError);
+    });
+
+    it('detects retry token conflict when acquisition_id differs under same token', async () => {
+      const acq1 = (
+        await pool.query(
+          "INSERT INTO acquisitions (acquisition_type, created_by) VALUES ('Type1', $1) RETURNING id",
+          [testActorId]
+        )
+      ).rows[0].id;
+      const acq2 = (
+        await pool.query(
+          "INSERT INTO acquisitions (acquisition_type, created_by) VALUES ('Type2', $1) RETURNING id",
+          [testActorId]
+        )
+      ).rows[0].id;
+
+      const token = 'retry-acq-conflict-token';
+
+      // First call succeeds
+      await assetService.registerAsset(
+        testActorId,
+        {
+          name: 'Item 1',
+          asset_number: 'AST-RETRY-001',
+          serial_number: 'SN-RETRY-001',
+          acquisition_id: acq1,
+        },
+        { retryToken: token }
+      );
+
+      // Replay with identical payload succeeds
+      const replay = await assetService.registerAsset(
+        testActorId,
+        {
+          name: 'Item 1',
+          asset_number: 'AST-RETRY-001',
+          serial_number: 'SN-RETRY-001',
+          acquisition_id: acq1,
+        },
+        { retryToken: token }
+      );
+      expect(replay.asset.acquisition_id).toBe(acq1);
+
+      // Replay with different acquisition_id fails with RetryTokenConflictError
+      await expect(
+        assetService.registerAsset(
+          testActorId,
+          {
+            name: 'Item 1',
+            asset_number: 'AST-RETRY-001',
+            serial_number: 'SN-RETRY-001',
+            acquisition_id: acq2,
+          },
+          { retryToken: token }
+        )
+      ).rejects.toThrow(RetryTokenConflictError);
+    });
+  });
 });

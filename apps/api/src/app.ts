@@ -4,11 +4,10 @@ import Fastify, {
 } from 'fastify';
 import pg from 'pg';
 import { validatePublicAppOrigin, type Config } from './config/env.ts';
-import { createLogger, getLoggerOptions, type AppLoggerOptions } from './plugins/logger.ts';
+import { getLoggerOptions, type AppLoggerOptions } from './plugins/logger.ts';
 import { errorHandler, errorHandlerPlugin } from './plugins/error-handler.ts';
 import {
   csrfPlugin,
-  isValidSigningSecret,
   type CsrfPluginOptions,
 } from './plugins/csrf.ts';
 import { authPlugin, type AuthPluginOptions } from './plugins/auth.ts';
@@ -16,10 +15,12 @@ import { authRoutes } from './routes/auth.routes.ts';
 import { systemRoutes } from './routes/system.routes.ts';
 import { healthRoutes } from './routes/health.routes.ts';
 import { assetRoutes } from './routes/asset.routes.ts';
+import { acquisitionRoutes } from './routes/acquisition.routes.ts';
 import { UserService, type DatabaseClient } from './services/user.service.ts';
 import { SessionService } from './services/session.service.ts';
 import { CapabilityService } from './services/capability.service.ts';
 import { AssetService } from './services/asset.service.ts';
+import { AcquisitionService } from './services/acquisition.service.ts';
 
 export interface AppOptions {
   config?: Partial<Config>;
@@ -176,6 +177,7 @@ export async function buildApp(options: AppOptions = {}): Promise<FastifyInstanc
     const capabilityService = new CapabilityService({ db: dbClient });
 
     const assetService = new AssetService({ db: dbClient });
+    const acquisitionService = new AcquisitionService({ db: dbClient });
 
     if (!app.hasDecorator('capabilityService')) {
       app.decorate('capabilityService', capabilityService);
@@ -183,6 +185,10 @@ export async function buildApp(options: AppOptions = {}): Promise<FastifyInstanc
 
     if (!app.hasDecorator('assetService')) {
       app.decorate('assetService', assetService);
+    }
+
+    if (!app.hasDecorator('acquisitionService')) {
+      app.decorate('acquisitionService', acquisitionService);
     }
 
     if (!app.hasDecorator('publicAppOrigin')) {
@@ -227,6 +233,14 @@ export async function buildApp(options: AppOptions = {}): Promise<FastifyInstanc
       capabilityService,
       db: dbClient,
       publicAppOrigin,
+    });
+
+    // Acquisition routes mounted under /acquisitions
+    await app.register(acquisitionRoutes, {
+      prefix: '/acquisitions',
+      acquisitionService,
+      capabilityService,
+      db: dbClient,
     });
 
     // Health and readiness routes mounted at root

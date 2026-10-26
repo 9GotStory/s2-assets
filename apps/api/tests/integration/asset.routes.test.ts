@@ -2121,4 +2121,84 @@ describe('Asset Routes & Security Matrix Integration Tests (Seam A)', () => {
       expect(afterSnapshot).toEqual(beforeSnapshot);
     });
   });
+
+  describe('T5: Acquisition Linking & Read Suppression on Asset Routes', () => {
+    let linkedAcqId: string;
+
+    beforeAll(async () => {
+      const acqRes = await pool.query(`
+        INSERT INTO acquisitions (acquisition_type, source_reference, created_by)
+        VALUES ('จัดซื้อปกติ', 'REF-ROUTE-LINK-01', '${custodianUser.id}')
+        RETURNING id;
+      `);
+      linkedAcqId = acqRes.rows[0].id;
+    });
+
+    it('successfully registers an asset with acquisition_id and returns acquisition_id in response', async () => {
+      const res = await app.inject({
+        method: 'POST',
+        url: '/assets',
+        headers: {
+          cookie: custodianUser.cookie,
+          'x-csrf-token': custodianUser.csrf,
+        },
+        payload: {
+          name: 'Acquisition Linked Asset',
+          asset_number: 'AST-ACQ-LINK-001',
+          serial_number: 'SN-ACQ-LINK-001',
+          acquisition_id: linkedAcqId,
+        },
+      });
+
+      expect(res.statusCode).toBe(201);
+      const body = JSON.parse(res.body);
+      expect(body.asset.acquisition_id).toBe(linkedAcqId);
+
+      // Verify GET /assets/:id by custodian (who has acquisition:view) discloses acquisition_id
+      const getRes = await app.inject({
+        method: 'GET',
+        url: `/assets/${body.asset.id}`,
+        headers: {
+          cookie: custodianUser.cookie,
+        },
+      });
+      expect(getRes.statusCode).toBe(200);
+      const getBody = JSON.parse(getRes.body);
+      expect(getBody.asset.acquisition_id).toBe(linkedAcqId);
+    });
+
+    it('rejects registration with invalid or nonexistent acquisition_id', async () => {
+      // Invalid UUID
+      const resInvalid = await app.inject({
+        method: 'POST',
+        url: '/assets',
+        headers: {
+          cookie: custodianUser.cookie,
+          'x-csrf-token': custodianUser.csrf,
+        },
+        payload: {
+          name: 'Invalid UUID Asset',
+          asset_number: 'AST-INV-001',
+          acquisition_id: 'not-a-uuid',
+        },
+      });
+      expect(resInvalid.statusCode).toBe(400);
+
+      // Nonexistent UUID
+      const resNonexistent = await app.inject({
+        method: 'POST',
+        url: '/assets',
+        headers: {
+          cookie: custodianUser.cookie,
+          'x-csrf-token': custodianUser.csrf,
+        },
+        payload: {
+          name: 'Nonexistent UUID Asset',
+          asset_number: 'AST-NON-001',
+          acquisition_id: 'aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa',
+        },
+      });
+      expect(resNonexistent.statusCode).toBe(400);
+    });
+  });
 });

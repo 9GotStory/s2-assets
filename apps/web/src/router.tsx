@@ -6,6 +6,8 @@ import { Dashboard } from './pages/Dashboard';
 import { AssetRegister } from './pages/AssetRegister';
 import { AssetSearch } from './pages/AssetSearch';
 import { AssetDetail } from './pages/AssetDetail';
+import { AcquisitionCreate } from './pages/AcquisitionCreate';
+import { AcquisitionDetail } from './pages/AcquisitionDetail';
 
 export const ProtectedDetailBoundary: React.FC = () => {
   const navigate = useNavigate();
@@ -311,6 +313,14 @@ export const routes: RouteObject[] = [
   {
     path: '/assets/:id',
     element: <ProtectedDetailBoundary />,
+  },
+  {
+    path: '/acquisitions/new',
+    element: <AcquisitionCreate />,
+  },
+  {
+    path: '/acquisitions/:id',
+    element: <AcquisitionDetail />,
   },
 ];
 

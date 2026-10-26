@@ -11,6 +11,7 @@ import { buildApp } from '../../../api/src/app.ts';
 import { UserService } from '../../../api/src/services/user.service.ts';
 import { SessionService } from '../../../api/src/services/session.service.ts';
 import { AssetService } from '../../../api/src/services/asset.service.ts';
+import { repositoryProxyConfig } from '../../vite.config.ts';
 import jsQR from 'jsqr';
 
 const { Pool } = pg;
@@ -108,32 +109,22 @@ test.describe.serial('Asset Registry Real SPA -> Composed API -> PostgreSQL Jour
       [maintainerUserId]
     );
 
-    // 5. Start Vite dev server proxying to Fastify
+    // 5. Start Vite dev server proxying to Fastify using actual repository proxy config
+    const testProxy: Record<string, any> = {};
+    for (const [route, opts] of Object.entries(repositoryProxyConfig)) {
+      testProxy[route] = {
+        ...opts,
+        target: `http://127.0.0.1:${fastifyPort}`,
+      };
+    }
+
     viteServer = await createServer({
       root: webRoot,
       configFile: path.resolve(webRoot, 'vite.config.ts'),
       server: {
         port: 0,
         strictPort: false,
-        proxy: {
-          '/auth': {
-            target: `http://127.0.0.1:${fastifyPort}`,
-            changeOrigin: true,
-          },
-          '/system': {
-            target: `http://127.0.0.1:${fastifyPort}`,
-            changeOrigin: true,
-          },
-          '/assets': {
-            target: `http://127.0.0.1:${fastifyPort}`,
-            changeOrigin: true,
-            bypass: (req) => {
-              if (req.headers.accept?.includes('text/html')) {
-                return '/index.html';
-              }
-            },
-          },
-        },
+        proxy: testProxy,
       },
     });
     await viteServer.listen();
@@ -2916,5 +2907,390 @@ test.describe.serial('Asset Registry Real SPA -> Composed API -> PostgreSQL Jour
     expect(finalCounts.history).toBe(baselineCounts.history);
     expect(finalCounts.retry).toBe(baselineCounts.retry);
     expect(finalAsset).toEqual(baselineAsset);
+  });
+
+  test('Journey 12: Lightweight Acquisition lifecycle (Seam B) -> create acquisition -> link two assets -> verify whole-acquisition total separation and truthful details', async ({ page, context }) => {
+    // 1. Login as Asset Custodian
+    await loginAs(page, context, custodianUserId);
+
+    // 2. Navigate to Dashboard and verify Acquisition section exists
+    await page.goto(`${targetBaseUrl}/dashboard`);
+    await expect(page.locator('#acquisition-heading')).toBeVisible();
+    await expect(page.locator('#nav-acquisition-create')).toBeVisible();
+
+    // 3. Navigate to Acquisition Create page
+    await page.locator('#nav-acquisition-create').click();
+    await expect(page).toHaveURL(`${targetBaseUrl}/acquisitions/new`);
+    await expect(page.locator('#create-acquisition-heading')).toBeVisible();
+
+    // Fill acquisition facts
+    await page.locator('input#acquisition_type').fill('จัดซื้อปกติ');
+    await page.locator('input#acquisition_date').fill('2026-03-20');
+    await page.locator('input#total_amount').fill('120000.00');
+    await page.locator('input#source_reference').fill('PO-2026-BATCH-01');
+    await page.locator('textarea#notes').fill('จัดซื้อคอมพิวเตอร์พร้อมใช้งานจำนวน 2 เครื่อง');
+
+    // Submit acquisition
+    await page.locator('#submit-acquisition-btn').click();
+
+    // 4. Verify redirected to Acquisition Detail page
+    await expect(page).toHaveURL(new RegExp(`${targetBaseUrl}/acquisitions/[0-9a-f-]{36}`));
+    const acqUrl = page.url();
+    const acqIdMatch = acqUrl.match(/\/acquisitions\/([0-9a-f-]{36})/);
+    expect(acqIdMatch).not.toBeNull();
+    const createdAcqId = acqIdMatch![1];
+
+    // Verify facts on page
+    await expect(page.locator('#acquisition-detail-heading')).toBeVisible();
+    await expect(page.locator('#fact-id')).toContainText(createdAcqId);
+    await expect(page.locator('#fact-type')).toContainText('จัดซื้อปกติ');
+    await expect(page.locator('#fact-date')).toContainText('2026-03-20');
+    await expect(page.locator('#fact-amount')).toContainText('120000.00 THB');
+    await expect(page.locator('#fact-reference')).toContainText('PO-2026-BATCH-01');
+    await expect(page.locator('#fact-notes')).toContainText('จัดซื้อคอมพิวเตอร์พร้อมใช้งานจำนวน 2 เครื่อง');
+
+    // Verify Whole Total Warning banner
+    await expect(page.locator('#whole-total-warning')).toBeVisible();
+    await expect(page.locator('#whole-total-warning')).toContainText('คำเตือนเรื่องมูลค่ารวม: มูลค่า 120000.00 THB');
+    await expect(page.locator('#whole-total-warning')).toContainText('ยอดรวมของการได้มาทั้งชุด (Whole-Acquisition Total)');
+
+    // Verify empty linked assets notice initially
+    await expect(page.locator('#no-linked-assets-notice')).toBeVisible();
+
+    // 5. Click link to register an asset pre-linked to this acquisition
+    await page.locator('#register-linked-asset-btn').click();
+    await expect(page).toHaveURL(`${targetBaseUrl}/assets/register?acquisition_id=${createdAcqId}`);
+    await expect(page.locator('input#acquisition_id')).toHaveValue(createdAcqId);
+
+    // Register Asset 1
+    await page.locator('input#name').fill('Office Workstation Alpha');
+    await page.locator('input#asset_number').fill('E2E-ACQ-AST-01');
+    await page.locator('input#serial_number').fill('E2E-ACQ-SN-01');
+    await page.locator('#submit-register-btn').click();
+
+    // Navigates to Asset 1 Detail
+    await expect(page).toHaveURL(new RegExp(`${targetBaseUrl}/assets/[0-9a-f-]{36}`));
+    const asset1Url = page.url();
+    const asset1IdMatch = asset1Url.match(/\/assets\/([0-9a-f-]{36})/);
+    expect(asset1IdMatch).not.toBeNull();
+    const asset1Id = asset1IdMatch![1];
+
+    // Verify acquisition linkage link is displayed on Asset 1 Detail
+    await expect(page.locator('#link-to-acquisition')).toBeVisible();
+    await expect(page.locator('#link-to-acquisition')).toContainText(createdAcqId);
+
+    // 6. Click link-to-acquisition to return to Acquisition Detail
+    await page.locator('#link-to-acquisition').click();
+    await expect(page).toHaveURL(`${targetBaseUrl}/acquisitions/${createdAcqId}`);
+
+    // Verify linked assets table now contains Asset 1
+    await expect(page.locator('#linked-assets-table')).toBeVisible();
+    await expect(page.locator('#linked-assets-table')).toContainText('E2E-ACQ-AST-01');
+    await expect(page.locator('#linked-assets-table')).toContainText('Office Workstation Alpha');
+
+    // 7. Register Asset 2 linked to the same acquisition
+    await page.locator('#register-linked-asset-btn').click();
+    await expect(page).toHaveURL(`${targetBaseUrl}/assets/register?acquisition_id=${createdAcqId}`);
+
+    await page.locator('input#name').fill('Office Workstation Beta');
+    await page.locator('input#asset_number').fill('E2E-ACQ-AST-02');
+    await page.locator('input#serial_number').fill('E2E-ACQ-SN-02');
+    await page.locator('#submit-register-btn').click();
+
+    // Navigates to Asset 2 Detail
+    await expect(page).toHaveURL(new RegExp(`${targetBaseUrl}/assets/[0-9a-f-]{36}`));
+    await expect(page.locator('#link-to-acquisition')).toBeVisible();
+    await page.locator('#link-to-acquisition').click();
+    await expect(page).toHaveURL(`${targetBaseUrl}/acquisitions/${createdAcqId}`);
+
+    // 8. Verify both assets appear in the Acquisition Detail table
+    await expect(page.locator('#linked-assets-heading')).toContainText('2 รายการ');
+    await expect(page.locator('#linked-assets-table')).toContainText('E2E-ACQ-AST-01');
+    await expect(page.locator('#linked-assets-table')).toContainText('E2E-ACQ-AST-02');
+
+    // Verify Total Separation: total_amount on acquisition remains untouched (120000.00 THB)
+    await expect(page.locator('#fact-amount')).toContainText('120000.00 THB');
+
+    // 9. Read-only user access: can view acquisition facts and linked assets
+    await loginAs(page, context, readonlyUserId);
+    await page.goto(`${targetBaseUrl}/acquisitions/${createdAcqId}`);
+    await expect(page.locator('#acquisition-detail-heading')).toBeVisible();
+    await expect(page.locator('#fact-amount')).toContainText('120000.00 THB');
+    await expect(page.locator('#linked-assets-table')).toContainText('E2E-ACQ-AST-01');
+
+    // 10. Maintainer user access: denied with 403 Forbidden
+    await loginAs(page, context, maintainerUserId);
+    await page.goto(`${targetBaseUrl}/acquisitions/${createdAcqId}`);
+    await expect(page.locator('#acquisition-error-alert')).toBeVisible();
+    await expect(page.locator('#acquisition-error-alert')).toContainText('403 Forbidden');
+  });
+
+  test('Lead T5: repository DEV proxy must route acquisition requests to the actual API and bypass HTML to SPA', async ({ page, context }) => {
+    await loginAs(page, context, custodianUserId);
+    const auth = await (await page.request.get(`${targetBaseUrl}/auth/session-check`)).json();
+    const cookie = (await context.cookies()).map((x: any) => `${x.name}=${x.value}`).join('; ');
+
+    // Direct API positive control
+    const control = await fastifyApp.inject({
+      method: 'POST',
+      url: '/acquisitions',
+      headers: { cookie, 'x-csrf-token': auth.csrfToken, 'x-retry-token': crypto.randomUUID() },
+      payload: { notes: 'Direct API positive control' },
+    });
+    expect(control.statusCode).toBe(201);
+
+    // Via Vite proxy
+    const viaProxy = await page.request.post(`${targetBaseUrl}/acquisitions`, {
+      headers: { 'x-csrf-token': auth.csrfToken, 'x-retry-token': crypto.randomUUID() },
+      data: { notes: 'Repository DEV proxy path' },
+    });
+    expect(viaProxy.status(), 'Actual application DEV routing must reach the Acquisition API').toBe(201);
+
+    // HTML navigation SPA bypass
+    const htmlReq = await page.request.get(`${targetBaseUrl}/acquisitions/new`, {
+      headers: { accept: 'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8' },
+    });
+    expect(htmlReq.status()).toBe(200);
+    const htmlText = await htmlReq.text();
+    expect(htmlText.toLowerCase()).toContain('<!doctype html>');
+    expect(htmlText).toContain('<div id="root"></div>');
+  });
+
+  test('Lead T5: browser transmits and persists exact decimal amount (NUMERIC(18,2) capacity)', async ({ page, context }) => {
+    await loginAs(page, context, custodianUserId);
+    await page.goto(`${targetBaseUrl}/acquisitions/new`);
+    await page.locator('#notes').fill('Exact sourced total; no allocation');
+    await page.locator('#total_amount').fill('1234567890123456.78');
+
+    const sent = page.waitForRequest((r) => r.method() === 'POST' && r.url().endsWith('/acquisitions'));
+    const completed = page.waitForResponse((r) => r.request().method() === 'POST' && r.url().endsWith('/acquisitions'));
+
+    await page.locator('#submit-acquisition-btn').click();
+
+    const req = await sent;
+    const response = await completed;
+    expect(response.status()).toBe(201);
+
+    const created = await response.json();
+    const stored = (await pool.query('SELECT total_amount::text AS amount FROM acquisitions WHERE id=$1', [created.id])).rows[0].amount;
+
+    expect(req.postDataJSON().total_amount).toBe('1234567890123456.78');
+    expect(stored).toBe('1234567890123456.78');
+
+    await expect(page.locator('#fact-amount')).toContainText('1234567890123456.78 THB');
+
+    // Test rejection of excess precision (> 2 decimal places) without rounding
+    await page.goto(`${targetBaseUrl}/acquisitions/new`);
+    await page.locator('#notes').fill('Excess precision test');
+    await page.locator('#total_amount').fill('100.555');
+    await page.locator('#submit-acquisition-btn').click();
+    await expect(page.locator('main')).toContainText('ทศนิยมไม่เกิน 2 ตำแหน่ง');
+  });
+
+  test('Lead T5: current permission loss suppresses protected acquisition facts on focus immediately during reauthorization', async ({ page, context }) => {
+    await loginAs(page, context, custodianUserId);
+    const auth = await (await page.request.get(`${targetBaseUrl}/auth/session-check`)).json();
+
+    const res = await page.request.post(`${targetBaseUrl}/acquisitions`, {
+      headers: { 'x-csrf-token': auth.csrfToken, 'x-retry-token': crypto.randomUUID() },
+      data: { notes: 'Sensitive group fact', total_amount: '9876.54', currency: 'THB' },
+    });
+    expect(res.status()).toBe(201);
+    const a = await res.json();
+
+    await context.clearCookies();
+    await loginAs(page, context, readonlyUserId);
+    await page.goto(`${targetBaseUrl}/acquisitions/${a.id}`);
+    await expect(page.locator('#fact-amount')).toContainText('9876.54');
+
+    await pool.query('DELETE FROM user_roles WHERE user_id=$1', [readonlyUserId]);
+
+    try {
+      let fulfillHeld: (() => void) | null = null;
+      const heldPromise = new Promise<void>((resolve) => {
+        fulfillHeld = resolve;
+      });
+
+      // Intercept revalidation request and hold it
+      await page.route(`**/acquisitions/${a.id}*`, async (route) => {
+        await heldPromise;
+        await route.continue();
+      });
+
+      // Trigger focus and visibilitychange
+      await page.evaluate(() => {
+        window.dispatchEvent(new Event('focus'));
+        document.dispatchEvent(new Event('visibilitychange'));
+      });
+
+      // While request is held in-flight, protected facts MUST be suppressed immediately!
+      await expect(page.locator('#fact-amount'), 'Protected facts must be suppressed immediately during pending reauthorization').toBeHidden();
+
+      // Release the held route
+      if (fulfillHeld) {
+        (fulfillHeld as () => void)();
+      }
+
+      // After 403 finishes, facts remain hidden and 403 alert is displayed
+      await expect(page.locator('#fact-amount')).toBeHidden();
+      await expect(page.locator('#acquisition-error-alert')).toBeVisible();
+      await expect(page.locator('#acquisition-error-alert')).toContainText('403 Forbidden');
+    } finally {
+      await page.unrouteAll({ behavior: 'ignoreErrors' });
+      await pool.query("INSERT INTO user_roles(user_id, role_id) VALUES($1, 'READ_ONLY')", [readonlyUserId]);
+    }
+  });
+
+  test('Lead T5: obsolete submit completion during pending actor/session verification cannot navigate or mutate active route', async ({ page, context }) => {
+    // 1. Log in as Custodian and navigate to AcquisitionCreate
+    await loginAs(page, context, custodianUserId);
+    await page.goto(`${targetBaseUrl}/acquisitions/new`);
+    await expect(page.locator('#submit-acquisition-btn')).toBeEnabled();
+
+    // Fill in dirty form intent
+    await page.locator('#notes').fill('Obsolescence test during pending verification');
+    await page.locator('#total_amount').fill('99999.00');
+
+    let resolvePost!: () => void;
+    const postHeldPromise = new Promise<void>((resolve) => {
+      resolvePost = resolve;
+    });
+
+    let interceptedPost = false;
+    let committedAcquisitionId: string | null = null;
+    await page.route('**/acquisitions', async (route) => {
+      const req = route.request();
+      if (req.method() === 'POST' && !interceptedPost) {
+        interceptedPost = true;
+        // Fetch real response (201) from backend (commits to PG)
+        const response = await route.fetch();
+        expect(response.status()).toBe(201);
+        const bodyText = await response.text();
+        const bodyJson = JSON.parse(bodyText);
+        committedAcquisitionId = bodyJson.id;
+        // Hold response delivery to browser
+        await postHeldPromise;
+        const headers = { ...response.headers() };
+        delete headers['set-cookie'];
+        try {
+          await route.fulfill({ response, headers, body: bodyText });
+        } catch {
+          // Client may have aborted the request
+        }
+        return;
+      }
+      await route.continue();
+    });
+
+    // 2. Custodian submits -> POST is in flight
+    await page.locator('#submit-acquisition-btn').click();
+
+    // 3. Switch cookies to Read-only actor
+    await context.clearCookies();
+    await loginAs(page, context, readonlyUserId);
+
+    let resolveSession!: () => void;
+    const sessionHeldPromise = new Promise<void>((resolve) => {
+      resolveSession = resolve;
+    });
+
+    // Intercept session-check to hold the pending verification
+    await page.route('**/auth/session-check', async (route) => {
+      await sessionHeldPromise;
+      await route.continue();
+    });
+
+    // Trigger focus and visibilitychange to start revalidation
+    await page.evaluate(() => {
+      window.dispatchEvent(new Event('focus'));
+      document.dispatchEvent(new Event('visibilitychange'));
+    });
+
+    // 4. Verify form is gated while session verification is pending
+    await expect(page.locator('#submit-acquisition-btn'), 'Submit button must be disabled while session verification is pending').toBeDisabled();
+    await expect(page.locator('#verifying-session-indicator')).toBeVisible();
+
+    // 5. Release the old successful POST response while the new verification remains held
+    resolvePost();
+    await page.waitForTimeout(100);
+
+    // 6. Assert: obsolete submit completion CANNOT supersede current verification or navigate!
+    expect(page.url()).toBe(`${targetBaseUrl}/acquisitions/new`);
+    await expect(page.locator('#submit-acquisition-btn')).toBeDisabled();
+    await expect(page.locator('#verifying-session-indicator')).toBeVisible();
+
+    // 7. Release the held session check and wait for verification indicator to clear
+    resolveSession();
+    await expect(page.locator('#verifying-session-indicator')).not.toBeVisible();
+
+    // 8. Assert: browser is STILL on /acquisitions/new, not navigated away to old acquisition id
+    expect(page.url()).toBe(`${targetBaseUrl}/acquisitions/new`);
+    if (committedAcquisitionId) {
+      expect(page.url()).not.toContain(committedAcquisitionId);
+    }
+
+    // 9. Verify dirty form intent is preserved in fields without silent transfer or data mutation
+    await expect(page.locator('#notes')).toHaveValue('Obsolescence test during pending verification');
+    await expect(page.locator('#total_amount')).toHaveValue('99999.00');
+
+    // 10. Read-only actor attempts submit -> rejected with 403 Forbidden, shows alert and disables submit
+    await loginAs(page, context, readonlyUserId);
+    await page.locator('#submit-acquisition-btn').click();
+    await expect(page.locator('#forbidden-alert')).toBeVisible();
+    await expect(page.locator('#submit-acquisition-btn')).toBeDisabled();
+
+    // Independent database check: the original Custodian transaction committed
+    if (committedAcquisitionId) {
+      const dbCheck = await pool.query('SELECT id, created_by FROM acquisitions WHERE id = $1', [committedAcquisitionId]);
+      expect(dbCheck.rows.length).toBe(1);
+      expect(dbCheck.rows[0].created_by).toBe(custodianUserId);
+    }
+
+    await page.unrouteAll({ behavior: 'ignoreErrors' });
+  });
+
+  test('Lead T5: in-flight submit unmounted via SPA link cannot redirect active route or cause error upon completion', async ({ page, context }) => {
+    await loginAs(page, context, custodianUserId);
+    await page.goto(`${targetBaseUrl}/acquisitions/new`);
+    await page.locator('#notes').fill('SPA unmount submit test');
+
+    let resolveSubmit!: () => void;
+    const submitHeldPromise = new Promise<void>((resolve) => {
+      resolveSubmit = resolve;
+    });
+
+    let interceptedPost = false;
+    await page.route('**/acquisitions', async (route) => {
+      if (route.request().method() === 'POST' && !interceptedPost) {
+        interceptedPost = true;
+        const response = await route.fetch();
+        const bodyText = await response.text();
+        await submitHeldPromise;
+        try {
+          await route.fulfill({ response, body: bodyText });
+        } catch {
+          // Component unmounted and request aborted
+        }
+        return;
+      }
+      await route.continue();
+    });
+
+    await page.locator('#submit-acquisition-btn').click();
+
+    // While submit is held, click actual SPA link to navigate to Dashboard (unmounting AcquisitionCreate)
+    await page.locator('#back-to-dashboard-link').click();
+    await expect(page).toHaveURL(`${targetBaseUrl}/dashboard`);
+    await expect(page.locator('#create-acquisition-heading')).not.toBeVisible();
+
+    // Release held submit response
+    resolveSubmit();
+    await page.waitForTimeout(100);
+
+    // Ensure we deterministically remain on dashboard and obsolete completion did not redirect back
+    await expect(page).toHaveURL(`${targetBaseUrl}/dashboard`);
+    await expect(page.locator('#create-acquisition-heading')).not.toBeVisible();
+
+    await page.unrouteAll({ behavior: 'ignoreErrors' });
   });
 });

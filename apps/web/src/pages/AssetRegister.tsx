@@ -1,5 +1,5 @@
 import React, { useEffect, useState, useRef } from 'react';
-import { useNavigate, Link } from 'react-router';
+import { useNavigate, Link, useSearchParams } from 'react-router';
 
 export interface DuplicateCandidate {
   id: string;
@@ -41,12 +41,16 @@ export interface RegisterAssetResponse {
 }
 
 export const AssetRegister: React.FC = () => {
+  const [searchParams] = useSearchParams();
+  const initialAcquisitionId = searchParams.get('acquisition_id') || '';
+
   const [name, setName] = useState('');
   const [assetNumber, setAssetNumber] = useState('');
   const [serialNumber, setSerialNumber] = useState('');
   const [sourceReference, setSourceReference] = useState('');
   const [isLegacy, setIsLegacy] = useState(false);
   const [explicitContinuation, setExplicitContinuation] = useState(false);
+  const [acquisitionId, setAcquisitionId] = useState(initialAcquisitionId);
 
   // Maintain persistent retry token across retries for the same registration intent (Spec Finding 5)
   const [retryToken] = useState(() => crypto.randomUUID());
@@ -278,6 +282,7 @@ export const AssetRegister: React.FC = () => {
         is_legacy: isLegacy,
         explicit_continuation: explicitContinuation,
         retry_token: retryToken,
+        acquisition_id: acquisitionId.trim() ? acquisitionId.trim() : null,
       };
 
       const response = await fetch('/assets', {
@@ -874,6 +879,50 @@ export const AssetRegister: React.FC = () => {
                   boxSizing: 'border-box',
                 }}
               />
+            </div>
+
+            {/* Acquisition Linkage */}
+            <div style={{ marginBottom: '1.5rem' }}>
+              <label
+                htmlFor="acquisition_id"
+                style={{
+                  display: 'block',
+                  fontSize: '0.875rem',
+                  fontWeight: 600,
+                  color: '#374151',
+                  marginBottom: '0.375rem',
+                }}
+              >
+                การได้มาที่เชื่อมโยง (Linked Acquisition ID - UUID)
+              </label>
+              <input
+                type="text"
+                id="acquisition_id"
+                value={acquisitionId}
+                onChange={(e) => setAcquisitionId(e.target.value)}
+                placeholder="เช่น 123e4567-e89b-12d3-a456-426614174000 (เว้นว่างได้)"
+                style={{
+                  width: '100%',
+                  padding: '0.625rem 0.75rem',
+                  border: '1px solid #d1d5db',
+                  borderRadius: '6px',
+                  fontSize: '0.9375rem',
+                  boxSizing: 'border-box',
+                  fontFamily: 'monospace',
+                }}
+              />
+              {acquisitionId.trim() && (
+                <div style={{ marginTop: '0.375rem', fontSize: '0.75rem', color: '#059669' }}>
+                  ✓ เชื่อมโยงกับการได้มา:{' '}
+                  <Link
+                    to={`/acquisitions/${acquisitionId.trim()}`}
+                    target="_blank"
+                    style={{ color: '#2563eb', textDecoration: 'underline' }}
+                  >
+                    ดูข้อมูลการได้มา
+                  </Link>
+                </div>
+              )}
             </div>
 
             {/* Submit Button */}
