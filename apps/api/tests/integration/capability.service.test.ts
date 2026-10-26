@@ -429,4 +429,39 @@ describe('CapabilityService Real PostgreSQL Integration Tests (T024 - US2)', () 
       expect(await service.hasCapability(maintainer.id, 'acquisition:view')).toBe(false);
     });
   });
+
+  describe('T6 D3: asset:bulk-register Capability Matrix', () => {
+    it('grants asset:bulk-register ONLY to ASSET_CUSTODIAN, denies ADMINISTRATOR, READ_ONLY, and SYSTEM_MAINTAINER', async () => {
+      const custodian = await createTestUser({ roles: ['ASSET_CUSTODIAN'] });
+      const admin = await createTestUser({ roles: ['ADMINISTRATOR'] });
+      const readOnly = await createTestUser({ roles: ['READ_ONLY'] });
+      const maintainer = await createTestUser({ roles: ['SYSTEM_MAINTAINER'] });
+
+      const service = new CapabilityService({ db: pool });
+
+      expect(await service.hasCapability(custodian.id, 'asset:bulk-register')).toBe(true);
+      expect(await service.hasCapability(admin.id, 'asset:bulk-register')).toBe(false);
+      expect(await service.hasCapability(readOnly.id, 'asset:bulk-register')).toBe(false);
+      expect(await service.hasCapability(maintainer.id, 'asset:bulk-register')).toBe(false);
+    });
+
+    it('denies asset:bulk-register fail-closed when custodian is deactivated or role revoked', async () => {
+      const custodian = await createTestUser({ roles: ['ASSET_CUSTODIAN'] });
+      const service = new CapabilityService({ db: pool });
+
+      expect(await service.hasCapability(custodian.id, 'asset:bulk-register')).toBe(true);
+
+      // Revoke role
+      await pool.query('DELETE FROM user_roles WHERE user_id = $1', [custodian.id]);
+      expect(await service.hasCapability(custodian.id, 'asset:bulk-register')).toBe(false);
+
+      // Restore role but deactivate user
+      await pool.query(
+        "INSERT INTO user_roles (user_id, role_id) VALUES ($1, 'ASSET_CUSTODIAN')",
+        [custodian.id]
+      );
+      await pool.query('UPDATE users SET is_active = false WHERE id = $1', [custodian.id]);
+      expect(await service.hasCapability(custodian.id, 'asset:bulk-register')).toBe(false);
+    });
+  });
 });

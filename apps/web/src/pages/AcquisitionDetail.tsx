@@ -275,6 +275,21 @@ export const AcquisitionDetail: React.FC = () => {
             >
               + ลงทะเบียนครุภัณฑ์เชื่อมโยงกับการได้มานี้
             </Link>
+            <Link
+              to={`/assets/bulk-register?acquisition_id=${acquisition.id}`}
+              id="bulk-register-linked-asset-btn"
+              style={{
+                padding: '0.375rem 0.75rem',
+                backgroundColor: '#1d4ed8',
+                borderRadius: '4px',
+                fontSize: '0.8125rem',
+                color: '#ffffff',
+                textDecoration: 'none',
+                fontWeight: 500,
+              }}
+            >
+              + ลงทะเบียนแบบกลุ่มเชื่อมโยงกับการได้มานี้ (Bulk)
+            </Link>
           </div>
 
           <h1

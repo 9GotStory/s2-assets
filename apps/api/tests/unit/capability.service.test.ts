@@ -54,11 +54,12 @@ describe('CapabilityService Unit Tests (T024 - US2)', () => {
       expect(ROLE_CAPABILITY_MAP.READ_ONLY).not.toContain('acquisition:create');
     });
 
-    it('maps ASSET_CUSTODIAN to asset:view, asset:duplicate-check, asset:register, asset:correct, asset:search, acquisition:create, and acquisition:view', () => {
+    it('maps ASSET_CUSTODIAN to asset:view, asset:duplicate-check, asset:register, asset:bulk-register, asset:correct, asset:search, acquisition:create, and acquisition:view', () => {
       expect(ROLE_CAPABILITY_MAP.ASSET_CUSTODIAN).toEqual([
         'asset:view',
         'asset:duplicate-check',
         'asset:register',
+        'asset:bulk-register',
         'asset:correct',
         'asset:search',
         'acquisition:create',
@@ -81,6 +82,7 @@ describe('CapabilityService Unit Tests (T024 - US2)', () => {
       expect(isKnownCapability('asset:view')).toBe(true);
       expect(isKnownCapability('asset:duplicate-check')).toBe(true);
       expect(isKnownCapability('asset:register')).toBe(true);
+      expect(isKnownCapability('asset:bulk-register')).toBe(true);
       expect(isKnownCapability('asset:correct')).toBe(true);
       expect(isKnownCapability('asset:search')).toBe(true);
       expect(isKnownCapability('unknown:capability')).toBe(false);

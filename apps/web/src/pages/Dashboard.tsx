@@ -320,6 +320,22 @@ export const Dashboard: React.FC = () => {
               + ลงทะเบียนครุภัณฑ์ใหม่
             </Link>
             <Link
+              to="/assets/bulk-register"
+              id="nav-asset-bulk-register"
+              style={{
+                display: 'inline-block',
+                padding: '0.5rem 1rem',
+                backgroundColor: '#1d4ed8',
+                color: '#ffffff',
+                textDecoration: 'none',
+                borderRadius: '4px',
+                fontSize: '0.875rem',
+                fontWeight: 500,
+              }}
+            >
+              + ลงทะเบียนแบบกลุ่ม (Bulk)
+            </Link>
+            <Link
               to="/assets/search"
               id="nav-asset-search"
               style={{

@@ -23,6 +23,7 @@ export const KNOWN_CAPABILITIES = [
   'asset:view',
   'asset:duplicate-check',
   'asset:register',
+  'asset:bulk-register',
   'asset:correct',
   'asset:search',
   'acquisition:create',
@@ -32,12 +33,12 @@ export const KNOWN_CAPABILITIES = [
 export type Capability = (typeof KNOWN_CAPABILITIES)[number];
 
 /**
- * Immutable role-to-capability mapping (T1, T2, T3 & T5 approved matrix).
+ * Immutable role-to-capability mapping (T1, T2, T3, T5 & T6 approved matrix).
  *
  * - SYSTEM_MAINTAINER: grants 'system:maintain' (preserves foundation maintenance grant)
  * - ADMINISTRATOR: grants 'system:maintain', 'asset:view', 'asset:correct', 'asset:search', 'acquisition:view'
  * - READ_ONLY: grants 'asset:view', 'asset:search', 'acquisition:view' (view and search for registry & acquisitions)
- * - ASSET_CUSTODIAN: grants 'asset:view', 'asset:duplicate-check', 'asset:register', 'asset:correct', 'asset:search', 'acquisition:create', 'acquisition:view'
+ * - ASSET_CUSTODIAN: grants 'asset:view', 'asset:duplicate-check', 'asset:register', 'asset:bulk-register', 'asset:correct', 'asset:search', 'acquisition:create', 'acquisition:view'
  * - Unknown roles: empty / unmapped
  */
 export const ROLE_CAPABILITY_MAP: Readonly<Record<string, readonly string[]>> = Object.freeze({
@@ -54,6 +55,7 @@ export const ROLE_CAPABILITY_MAP: Readonly<Record<string, readonly string[]>> = 
     'asset:view',
     'asset:duplicate-check',
     'asset:register',
+    'asset:bulk-register',
     'asset:correct',
     'asset:search',
     'acquisition:create',
