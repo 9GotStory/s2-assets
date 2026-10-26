@@ -15,6 +15,7 @@ export interface AssetRecord {
   source_notes: string | null;
   registered_by: string;
   recorded_at: string;
+  acquisition_id?: string | null;
   created_at?: string;
   updated_at?: string;
 }
@@ -724,6 +725,27 @@ const AssetDetailContent: React.FC = () => {
             >
               {asset.registered_by}
             </dd>
+
+            {asset.acquisition_id && (
+              <>
+                <dt style={{ fontWeight: 500, color: '#4b5563' }}>
+                  การได้มา (Acquisition):
+                </dt>
+                <dd style={{ margin: 0 }}>
+                  <Link
+                    to={`/acquisitions/${asset.acquisition_id}`}
+                    id="link-to-acquisition"
+                    style={{
+                      color: '#2563eb',
+                      textDecoration: 'underline',
+                      fontFamily: 'monospace',
+                    }}
+                  >
+                    {asset.acquisition_id} →
+                  </Link>
+                </dd>
+              </>
+            )}
           </dl>
         </section>
 

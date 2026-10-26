@@ -29,33 +29,40 @@ describe('CapabilityService Unit Tests (T024 - US2)', () => {
 
     it('maps SYSTEM_MAINTAINER to system:maintain', () => {
       expect(ROLE_CAPABILITY_MAP.SYSTEM_MAINTAINER).toEqual(['system:maintain']);
+      expect(ROLE_CAPABILITY_MAP.SYSTEM_MAINTAINER).not.toContain('acquisition:create');
+      expect(ROLE_CAPABILITY_MAP.SYSTEM_MAINTAINER).not.toContain('acquisition:view');
     });
 
-    it('maps ADMINISTRATOR to system:maintain, asset:view, asset:correct, and asset:search without wildcards or registration capabilities', () => {
+    it('maps ADMINISTRATOR to system:maintain, asset:view, asset:correct, asset:search, and acquisition:view without wildcards or registration capabilities', () => {
       expect(ROLE_CAPABILITY_MAP.ADMINISTRATOR).toEqual([
         'system:maintain',
         'asset:view',
         'asset:correct',
         'asset:search',
+        'acquisition:view',
       ]);
       expect(ROLE_CAPABILITY_MAP.ADMINISTRATOR).not.toContain('*');
       expect(ROLE_CAPABILITY_MAP.ADMINISTRATOR).not.toContain('asset:register');
       expect(ROLE_CAPABILITY_MAP.ADMINISTRATOR).not.toContain('asset:duplicate-check');
+      expect(ROLE_CAPABILITY_MAP.ADMINISTRATOR).not.toContain('acquisition:create');
     });
 
-    it('maps READ_ONLY to asset:view and asset:search (no mutation or duplicate-check grants)', () => {
-      expect(ROLE_CAPABILITY_MAP.READ_ONLY).toEqual(['asset:view', 'asset:search']);
+    it('maps READ_ONLY to asset:view, asset:search, and acquisition:view (no mutation or duplicate-check grants)', () => {
+      expect(ROLE_CAPABILITY_MAP.READ_ONLY).toEqual(['asset:view', 'asset:search', 'acquisition:view']);
       expect(ROLE_CAPABILITY_MAP.READ_ONLY).not.toContain('asset:correct');
       expect(ROLE_CAPABILITY_MAP.READ_ONLY).not.toContain('asset:register');
+      expect(ROLE_CAPABILITY_MAP.READ_ONLY).not.toContain('acquisition:create');
     });
 
-    it('maps ASSET_CUSTODIAN to asset:view, asset:duplicate-check, asset:register, asset:correct, and asset:search', () => {
+    it('maps ASSET_CUSTODIAN to asset:view, asset:duplicate-check, asset:register, asset:correct, asset:search, acquisition:create, and acquisition:view', () => {
       expect(ROLE_CAPABILITY_MAP.ASSET_CUSTODIAN).toEqual([
         'asset:view',
         'asset:duplicate-check',
         'asset:register',
         'asset:correct',
         'asset:search',
+        'acquisition:create',
+        'acquisition:view',
       ]);
     });
 
@@ -260,7 +267,9 @@ describe('CapabilityService Unit Tests (T024 - US2)', () => {
       expect(roles).toEqual(['READ_ONLY', 'SYSTEM_MAINTAINER']);
 
       const caps = await service.getCapabilities(validUserId);
-      expect(caps.sort()).toEqual(['asset:search', 'asset:view', 'system:maintain'].sort());
+      expect(caps.sort()).toEqual(
+        ['asset:search', 'asset:view', 'system:maintain', 'acquisition:view'].sort()
+      );
     });
 
     it('Case 13: externally injected database clients remain externally owned', async () => {

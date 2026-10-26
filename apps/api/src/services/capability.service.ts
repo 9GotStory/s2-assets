@@ -25,29 +25,39 @@ export const KNOWN_CAPABILITIES = [
   'asset:register',
   'asset:correct',
   'asset:search',
+  'acquisition:create',
+  'acquisition:view',
 ] as const;
 
 export type Capability = (typeof KNOWN_CAPABILITIES)[number];
 
 /**
- * Immutable role-to-capability mapping (T1, T2 & T3 approved matrix).
+ * Immutable role-to-capability mapping (T1, T2, T3 & T5 approved matrix).
  *
  * - SYSTEM_MAINTAINER: grants 'system:maintain' (preserves foundation maintenance grant)
- * - ADMINISTRATOR: grants 'system:maintain', 'asset:view', 'asset:correct', 'asset:search'
- * - READ_ONLY: grants 'asset:view', 'asset:search' (view and search for registry)
- * - ASSET_CUSTODIAN: grants 'asset:view', 'asset:duplicate-check', 'asset:register', 'asset:correct', 'asset:search'
+ * - ADMINISTRATOR: grants 'system:maintain', 'asset:view', 'asset:correct', 'asset:search', 'acquisition:view'
+ * - READ_ONLY: grants 'asset:view', 'asset:search', 'acquisition:view' (view and search for registry & acquisitions)
+ * - ASSET_CUSTODIAN: grants 'asset:view', 'asset:duplicate-check', 'asset:register', 'asset:correct', 'asset:search', 'acquisition:create', 'acquisition:view'
  * - Unknown roles: empty / unmapped
  */
 export const ROLE_CAPABILITY_MAP: Readonly<Record<string, readonly string[]>> = Object.freeze({
   SYSTEM_MAINTAINER: Object.freeze(['system:maintain'] as const),
-  ADMINISTRATOR: Object.freeze(['system:maintain', 'asset:view', 'asset:correct', 'asset:search'] as const),
-  READ_ONLY: Object.freeze(['asset:view', 'asset:search'] as const),
+  ADMINISTRATOR: Object.freeze([
+    'system:maintain',
+    'asset:view',
+    'asset:correct',
+    'asset:search',
+    'acquisition:view',
+  ] as const),
+  READ_ONLY: Object.freeze(['asset:view', 'asset:search', 'acquisition:view'] as const),
   ASSET_CUSTODIAN: Object.freeze([
     'asset:view',
     'asset:duplicate-check',
     'asset:register',
     'asset:correct',
     'asset:search',
+    'acquisition:create',
+    'acquisition:view',
   ] as const),
 });
 

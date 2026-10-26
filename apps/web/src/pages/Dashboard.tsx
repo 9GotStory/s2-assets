@@ -337,6 +337,50 @@ export const Dashboard: React.FC = () => {
             </Link>
           </div>
         </section>
+
+        <section
+          aria-labelledby="acquisition-heading"
+          style={{
+            backgroundColor: '#f9fafb',
+            borderRadius: '6px',
+            padding: '1.25rem',
+            marginBottom: '1.5rem',
+          }}
+        >
+          <h2
+            id="acquisition-heading"
+            style={{
+              fontSize: '1.125rem',
+              fontWeight: 600,
+              marginTop: 0,
+              marginBottom: '0.5rem',
+              color: '#374151',
+            }}
+          >
+            การได้มาของครุภัณฑ์ (Acquisitions)
+          </h2>
+          <p style={{ margin: '0 0 1rem 0', fontSize: '0.875rem', color: '#4b5563' }}>
+            บันทึกและจัดการรายการอ้างอิงการได้มาแบบกลุ่ม/จัดซื้อรวม (Lightweight Acquisition)
+          </p>
+          <div style={{ display: 'flex', gap: '0.75rem', flexWrap: 'wrap' }}>
+            <Link
+              to="/acquisitions/new"
+              id="nav-acquisition-create"
+              style={{
+                display: 'inline-block',
+                padding: '0.5rem 1rem',
+                backgroundColor: '#059669',
+                color: '#ffffff',
+                textDecoration: 'none',
+                borderRadius: '4px',
+                fontSize: '0.875rem',
+                fontWeight: 500,
+              }}
+            >
+              + บันทึกข้อมูลการได้มาใหม่
+            </Link>
+          </div>
+        </section>
       </div>
     </main>
   );

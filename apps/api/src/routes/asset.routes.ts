@@ -32,6 +32,7 @@ const RegisterAssetSchema = z
     retry_token: z.string().optional(),
     category: z.null().optional(),
     organization_unit: z.null().optional(),
+    acquisition_id: z.string().nullable().optional(),
   })
   .strict();
 
@@ -213,6 +214,20 @@ export const assetRoutes: FastifyPluginAsync<AssetRoutesOptions> = async (
       const body = parsed.data as RegisterAssetInput & { retry_token?: string };
       const retryToken =
         (request.headers['x-retry-token'] as string) || body.retry_token;
+
+      if (body.acquisition_id !== undefined && body.acquisition_id !== null) {
+        const canViewAcq = capabilityService
+          ? await capabilityService.hasCapability(user.id, 'acquisition:view')
+          : false;
+        if (!canViewAcq) {
+          return reply.status(403).send({
+            statusCode: 403,
+            code: 'FORBIDDEN',
+            error: 'FORBIDDEN',
+            message: "Forbidden: requires 'acquisition:view' capability to link an acquisition",
+          });
+        }
+      }
 
       try {
         const result = await assetService.registerAsset(user.id, body, {
@@ -445,8 +460,24 @@ export const assetRoutes: FastifyPluginAsync<AssetRoutesOptions> = async (
       }
 
       let canCorrect = false;
+      let canViewAcquisition = false;
       if (request.user && capabilityService) {
         canCorrect = await capabilityService.hasCapability(request.user.id, 'asset:correct');
+        canViewAcquisition = await capabilityService.hasCapability(request.user.id, 'acquisition:view');
+      }
+
+      // Disclose acquisition linkage only if user has 'acquisition:view'
+      if (!canViewAcquisition && result.asset) {
+        result.asset.acquisition_id = null;
+        if (result.history) {
+          result.history = result.history.map((h: any) => {
+            if (h.payload && typeof h.payload === 'object' && 'acquisition_id' in h.payload) {
+              const { acquisition_id, ...restPayload } = h.payload;
+              return { ...h, payload: restPayload };
+            }
+            return h;
+          });
+        }
       }
 
       return reply.status(200).send({
