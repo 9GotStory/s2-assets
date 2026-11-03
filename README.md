@@ -1,11 +1,11 @@
 # Office Asset & Consumable Management System
 
-> Canonical Blueprint baseline สำหรับระบบครุภัณฑ์สำนักงานและวัสดุสิ้นเปลือง; Feature 002 onward uses Matt Pocock Skills with Multica coordination and GitHub Issues tracking.
+> Canonical Blueprint baseline สำหรับระบบครุภัณฑ์สำนักงานและวัสดุสิ้นเปลือง; Feature 002 onward uses Claude Code CLI with Matt Pocock Skills and GitHub Issues tracking.
 
 | Baseline | Value |
 |---|---|
 | Blueprint | **v1.0.2 — FROZEN** |
-| Workflow | **Matt Pocock Skills from Feature 002 + Human-gated independent delivery** |
+| Workflow | **Claude Code CLI + Matt Pocock Skills from Feature 002 + Human-gated independent delivery** |
 | Technology Direction | **`TECHNOLOGY.md` v1.0.1 — SELECTED BASELINE** |
 | Business Rules | **252 canonical rules** |
 | Delivery decomposition | **14 Feature Briefs** |
@@ -30,9 +30,10 @@ Repository นี้เป็น ready-to-develop business/system baseline ไ�
 
 Approved feature specifications and tickets refine delivery details แต่ห้าม silent-redefine business meaning ที่อยู่ใน authority สูงกว่า
 
-Constitution v5.0.0 / `AGENTS.md` select Matt Pocock Skills for Feature 002 onward.
-Spec Kit workflow references in frozen/context documents are historical delivery
-context; business scope, rules and technical authority remain unchanged.
+Constitution v6.0.0 / `AGENTS.md` select Claude Code CLI and Matt Pocock Skills
+for Feature 002 onward. Spec Kit, Multica and AGY references in frozen/context
+documents are historical delivery context; business scope, rules and technical
+authority remain unchanged.
 
 ### Technical Direction
 
@@ -42,15 +43,15 @@ context; business scope, rules and technical authority remain unchanged.
 - exact minor/patch versions และ Deferred decisions ให้ Plan resolve ตาม environment จริง
 - material technology deviation ต้อง explicit พร้อมเหตุผล/ผลกระทบและ Product Owner decision ก่อน implementation
 - local application development runtime ใช้ **Rootless Podman**
-- Git, Git worktrees, engineering workflow tooling, Multica และ AGY agents อยู่บน host
+- Git, Git worktrees และ engineering workflow tooling (Claude Code CLI) อยู่บน host
 
 ### Project / Delivery Authority
 
 For Feature 002 onward:
 
-- Constitution v5.0.0 — project-wide engineering principles and feature-scoped workflow
+- Constitution v6.0.0 — project-wide engineering principles and feature-scoped workflow
 - approved feature specification/decisions — behavior, acceptance and implementation/testing decisions
-- approved GitHub Issues — bounded delivery tickets
+- approved GitHub Issues — bounded delivery tickets and recorded Product Owner decisions
 - implementation + tests — delivered behavior
 
 Feature 001 historical artifact roles remain:
@@ -61,8 +62,8 @@ Feature 001 historical artifact roles remain:
 - `tasks.md` — executable delivery decomposition
 - implementation + tests — delivered behavior
 
-Multica Issue/comments/run history เป็น coordination evidence; explicit Product Owner decisions remain authoritative, while agent-generated content cannot redefine business requirements.
-Agent assignment, delegation, mentions และ reviewer routing เป็น runtime coordination และไม่ใช่ repository governance
+Product Owner decisions บันทึกใน GitHub Issues และ remain authoritative; agent-generated content cannot redefine business requirements.
+Multica Issue/comments/run history ก่อน 2026-11-03 เป็น historical provenance เท่านั้น ไม่ใช่ช่องทาง coordination สำหรับงานใหม่ (ดู `AGENTS.md`)
 
 ---
 
@@ -82,20 +83,30 @@ Agent assignment, delegation, mentions และ reviewer routing เป็น r
 ### Feature 002 onward
 
 ```text
-setup-matt-pocock-skills (one-time repository setup)
-→ to-spec
+New feature:
+to-spec
 → to-tickets
-→ Human Gate
-→ implement / tdd at agreed seams / code-review
-→ independent Lead review
-→ ChatGPT Independent Review
-→ Product Owner acceptance
+→ Product Owner Gate
+→ implement + tdd
+→ code-review
+→ Independent Review (separate Claude Code session)
+→ Product Owner Merge Gate
+
+Issue with approved specification, ticket and authorization:
+Existing Authority
+→ implement + tdd
+→ code-review
+→ Independent Review (separate Claude Code session)
+→ Product Owner Gate
 ```
 
-Use native skill invocation. Specification/ticket publication and bounded
-implementation require applicable Product Owner approval. Multica handles
-delegation and result return; GitHub Issues tracks specifications and tickets.
-The amendment itself authorizes no next skill, publication or dispatch.
+Use native skill invocation, only for the skills the work needs; reuse approved
+specifications and tickets. Specification/ticket publication and bounded
+implementation require applicable Product Owner approval. The Product Owner
+starts each Claude Code session with a bounded handoff; GitHub Issues track
+specifications and tickets and record Product Owner decisions. Nothing is
+dispatched, claimed, merged or deployed automatically. The amendment itself
+authorizes no next skill, publication or implementation.
 
 ### Feature 001 before Human Gate — historical
 
@@ -125,10 +136,10 @@ Authorized bounded implementation
 กติกาหลัก:
 
 - implementation author ห้าม approve งานของตนเอง
-- independent review ต้องตรวจ repository evidence จริง
+- independent review ทำใน Claude Code session แยกต่างหาก และต้องตรวจ candidate/repository evidence จริง
 - corrective revision ต้องอยู่ใน scope เดิม
 - Human Product Owner เป็น final acceptance
-- การเลือก agent, delegation, mentions, retries และ routing กำหนดใน Multica/runtime configuration ไม่ hardcode ใน repository
+- ไม่มี automatic dispatch, claim, merge หรือ deployment; labels รวมถึง `ready-for-agent` ไม่ใช่ implementation authorization
 
 ---
 
@@ -158,7 +169,7 @@ specify init \
   --script sh
 ```
 
-ไม่ติดตั้ง Claude/Codex integration เป็น default workflow
+Feature 001 ไม่ติดตั้ง Spec Kit `--integration` แบบ Claude/Codex เป็น default workflow
 
 ---
 
@@ -169,9 +180,8 @@ Application runtime และ infrastructure dependencies สำหรับ nor
 ```text
 Fedora Host
 ├── Git / worktrees
-├── Engineering workflow tooling (Spec Kit for Feature 001 history)
-├── Multica
-├── AGY agents
+├── Claude Code CLI + Matt Pocock Skills
+├── Spec Kit (Feature 001 history)
 │
 └── Rootless Podman
     ├── web
@@ -237,7 +247,7 @@ Feature sequencing canonical อยู่ที่ `docs/09-feature-map.md`
 ### Implementation / review
 
 1. `AGENTS.md`
-2. `CLAUDE.md` เพิ่มเติมสำหรับ implementation executor เมื่อ applicable
+2. `CLAUDE.md` — Claude Code procedures สำหรับ author และ Independent Reviewer sessions
 3. relevant Business Authority / Technology Direction
 4. exact authorized feature specification, decisions and ticket context
 5. exact diff/tests/evidence for the authorized scope
@@ -256,7 +266,8 @@ Feature sequencing canonical อยู่ที่ `docs/09-feature-map.md`
 | `features/` | bounded delivery context + rule routing |
 | `.specify/memory/constitution.md` | project engineering constitution |
 | `AGENTS.md` | shared repository authority and engineering contract |
-| `CLAUDE.md` | implementation executor contract |
+| `CLAUDE.md` | Claude Code session contract (author / Independent Reviewer) |
+| `docs/agents/` | Matt Skills configuration: issue tracker, triage labels, domain docs |
 
 Repository text/source artifacts on the active canonical branch are source of truth; generated packages are not a second source of truth.
 
@@ -279,11 +290,12 @@ Do not add without a current requirement:
 
 ## 10. Current start point
 
-Feature 002 — `asset-registry` uses the accepted Matt Skills setup and the
-Constitution v5.0.0 amendment candidate. Independent Review and Product Owner
-acceptance of the amendment remain pending; `to-spec`, publication, dispatch and
-integration require their applicable authorization. See `AGENTS.md`,
-`docs/agents/issue-tracker.md` and `docs/agents/domain.md`.
+Feature 002 — `asset-registry` continues with Claude Code CLI and the accepted
+Matt Skills setup. The Constitution v6.0.0 amendment (Claude Code-only delivery)
+takes effect on Product Owner acceptance, recorded on #36;
+`to-spec`, publication, implementation and integration require their applicable
+authorization. See `AGENTS.md`, `docs/agents/issue-tracker.md` and
+`docs/agents/domain.md`.
 
 ### Feature 001 start-point record — historical
 
