@@ -13,7 +13,7 @@ Higher sources win; a lower source never silently overrides a higher one.
 2. `BLUEPRINT.md` v1.0.2, frozen.
 3. The active Feature Brief in `features/`.
 4. The canonical Business Rules in `docs/06-business-rules.md`.
-5. `TECHNOLOGY.md` v1.0.1, the selected technical baseline.
+5. `TECHNOLOGY.md` v1.1.0, the selected technical baseline.
 6. Approved specifications, decisions and tickets in the issue tracker.
 7. Code, tests and evidence.
 
@@ -135,3 +135,21 @@ databases and container tooling before relying on it:
   concurrency semantics that matter in production are verified against real PostgreSQL, not
   database mocks alone. Size verification to the scope: lint, typecheck, unit, integration,
   browser/E2E, migration, security or container checks as they apply.
+
+## Runtimes
+
+**Development: one runtime.** The UID-1000 rootless Podman + user systemd Quadlet runtime, with
+the Web at `http://127.0.0.1:5180` and the API at `http://127.0.0.1:3010`; its contract and
+commands are in `docs/operations/development-runtime.md`.
+- **Source:** a commit reaches the runtime only through
+  `~/dev/s2-assets-quadlet/scripts/dev-runtime-update.sh --sha <commit>`, which backs up the
+  database first. Promoting a merged commit is development work. Read results only against the
+  commit `dev-runtime-verify.sh` reports.
+- **Accounts:** the database holds no user accounts; a development login needs a Product Owner
+  decision.
+- **Data:** a task cleans only what it created. `podman volume prune`,
+  `podman system prune --volumes` and `dev-runtime-uninstall.sh --purge` delete the development
+  database, so they stay away from this runtime.
+
+**Production.** Rootless Podman + systemd Quadlet as `TECHNOLOGY.md` defines; its units in
+`deploy/podman/quadlet/` are a separate target from the development runtime.

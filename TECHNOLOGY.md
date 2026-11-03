@@ -1,10 +1,12 @@
 # TECHNOLOGY.md — Project Technology Direction
 ## Office Asset & Consumable Management System
 
-Version: **1.0.1**  
+Version: **1.1.0**\
 Status: **SELECTED BASELINE**
 
 > Technical direction สำหรับการพัฒนา `s2-assets`. เอกสารนี้ไม่ใช่ Business Authority และไม่เปลี่ยนความหมายของ Blueprint/Business Rules
+
+> **1.1.0 (2026-11-03):** Product Owner decision — ย้าย development runtime ออกจาก `multica-agent` (UID 1001) มาเป็น rootless Podman + user-level systemd Quadlet ของ workspace user (UID 1000) แบบเดียวกับ Songhealth แต่แยก resources กัน และเลิกใช้ Multica/AGY บน host (§9 Development environment / Development orchestration). Application stack และ production direction ไม่เปลี่ยน
 
 ---
 
@@ -255,18 +257,16 @@ Application ต้องไม่เขียนให้ผูกกับ Podm
 
 Local development MUST use **Rootless Podman** as the application runtime baseline.
 
-The source repository, Git worktrees, GitHub Spec Kit, Multica, and AI agents remain on the host operating system. Application services and infrastructure dependencies execute in Rootless Podman containers.
+The source repository, Git worktrees and Claude Code CLI remain on the host operating system under the workspace user (UID 1000). Application services and infrastructure dependencies execute in Rootless Podman containers owned by that same user.
 
 Baseline development topology:
 
 ```text
-Fedora Host
+Fedora Host — workspace user (UID 1000)
 ├── Git repository / worktrees
-├── GitHub Spec Kit
-├── Multica
-├── AGY agents
+├── Claude Code CLI
 │
-└── Rootless Podman
+└── Rootless Podman + user systemd Quadlet (development runtime)
     ├── web
     ├── api
     └── PostgreSQL
@@ -286,11 +286,13 @@ Development principles:
 
 ### Development orchestration
 
-Application Foundation Plan ต้องกำหนด local development orchestration ที่เรียบง่ายที่สุดและเพียงพอสำหรับ Rootless Podman
+Persistent development runtime ใช้ **user-level systemd Quadlet units** ของ workspace user (`deploy/dev-quadlet/`) ติดตั้ง/อัปเดต/ตรวจสอบด้วย repository scripts ขนาดเล็ก (`scripts/dev-runtime-*.sh`) ตามสัญญาใน `docs/operations/development-runtime.md`:
 
-สามารถใช้ Podman-compatible Compose configuration หรือ repository scripts ขนาดเล็กได้ แต่ห้ามสร้าง Kubernetes, custom orchestration framework หรือบังคับใช้ systemd/Quadlet สำหรับ day-to-day development โดยไม่มี requirement จริง
+- runtime รัน source checkout ที่ promoted commit เดียว และ promote commit ใหม่ผ่าน script ที่ backup ฐานข้อมูลก่อน
+- resources ทุกตัว (units, containers, network, volume, podman secrets, loopback ports) ใช้ชื่อเฉพาะ `s2-assets` และต้องไม่ใช้ร่วมกับ runtime ของโปรเจกต์อื่นบน host เดียวกัน
+- Podman-compatible Compose configuration (`deploy/podman/compose.yaml` + `scripts/dev.sh`) ยังใช้ได้สำหรับ disposable test stacks ของ Feature 001
 
-**Quadlet เป็น production service-management baseline ไม่ใช่ requirement สำหรับ ordinary local development.**
+ห้ามสร้าง Kubernetes หรือ custom orchestration framework
 
 ### Expected production topology
 
