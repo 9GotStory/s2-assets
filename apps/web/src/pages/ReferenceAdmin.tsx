@@ -9,11 +9,37 @@ import {
 
 // Codes the reference routes send; a 403 comes from the shared authorization layer instead.
 const WRITE_ERRORS: Record<string, string> = {
-  DUPLICATE_NAME: 'มีชื่อนี้อยู่แล้วในรายการ (ไม่นับตัวพิมพ์เล็ก-ใหญ่และช่องว่างหน้า-หลัง)',
+  // #25 PO decision 2: a different real entry with the same name gets a real distinguishing detail.
+  DUPLICATE_NAME:
+    'มีชื่อนี้อยู่แล้วในรายการ (ไม่นับตัวพิมพ์เล็ก-ใหญ่และช่องว่างหน้า-หลัง) ถ้าเป็นคนละรายการจริง ให้เติมรายละเอียดจริงที่ใช้แยกได้ต่อท้ายชื่อ เช่น หน่วยงาน ห้ามแต่งข้อมูลขึ้นเอง',
   VERSION_CONFLICT: 'รายการถูกแก้ไขโดยผู้อื่นแล้ว ระบบโหลดรายการล่าสุดให้ กรุณาตรวจสอบอีกครั้ง',
   NOT_FOUND: 'ไม่พบรายการนี้ ระบบโหลดรายการล่าสุดให้แล้ว',
   VALIDATION_FAILED: 'ชื่อต้องไม่ว่าง ยาวไม่เกิน 200 ตัวอักษร และไม่มีอักขระควบคุม',
 };
+
+// One maintenance change of an entry, as GET /references/:kind/:id/history returns it (#25 PO decision 3).
+interface ReferenceHistoryItem {
+  version: number;
+  action: 'CREATED' | 'CHANGED';
+  changes: Record<string, { before: string | boolean | null; after: string | boolean }>;
+  actor_id: string;
+  actor_username: string | null;
+  recorded_at: string;
+}
+
+const describeValue = (field: string, value: string | boolean | null) =>
+  field === 'is_active' ? (value ? 'ใช้งาน' : 'ปิดใช้งาน') : `“${String(value)}”`;
+
+// "ชื่อ: “A” → “B”, สถานะ: ใช้งาน → ปิดใช้งาน"; a first value shows alone.
+const describeChanges = (changes: ReferenceHistoryItem['changes']) =>
+  Object.entries(changes)
+    .map(([field, { before, after }]) => {
+      const label = field === 'name' ? 'ชื่อ' : field === 'is_active' ? 'สถานะ' : field;
+      return before === null
+        ? `${label}: ${describeValue(field, after)}`
+        : `${label}: ${describeValue(field, before)} → ${describeValue(field, after)}`;
+    })
+    .join(', ');
 
 const buttonStyle = (background: string, color = '#ffffff'): React.CSSProperties => ({
   padding: '0.375rem 0.75rem',
@@ -50,6 +76,11 @@ export const ReferenceAdmin: React.FC = () => {
   const [newName, setNewName] = useState('');
   const [editing, setEditing] = useState<{ id: string; name: string } | null>(null);
   const [isBusy, setIsBusy] = useState(false);
+  const [history, setHistory] = useState<{
+    entryId: string;
+    items: ReferenceHistoryItem[] | null;
+    error: string | null;
+  } | null>(null);
 
   useEffect(() => {
     const controller = new AbortController();
@@ -102,6 +133,7 @@ export const ReferenceAdmin: React.FC = () => {
     const controller = new AbortController();
     setEntries(null);
     setEditing(null);
+    setHistory(null);
     load(controller.signal).catch(() => {
       if (!controller.signal.aborted) {
         setEntries([]);
@@ -139,6 +171,7 @@ export const ReferenceAdmin: React.FC = () => {
         return false;
       }
       setMessage({ tone: 'success', text: success });
+      setHistory(null);
       await load();
       return true;
     } catch {
@@ -162,6 +195,34 @@ export const ReferenceAdmin: React.FC = () => {
     if (!editing) return;
     if (await write(`/references/${kind}/${entry.id}`, { expected_version: entry.version, name: editing.name }, 'แก้ชื่อแล้ว')) {
       setEditing(null);
+    }
+  };
+
+  // Shows or hides one entry's history; the list on screen stays as it is.
+  const handleHistory = async (entry: ReferenceEntry) => {
+    if (history?.entryId === entry.id) {
+      setHistory(null);
+      return;
+    }
+    setHistory({ entryId: entry.id, items: null, error: null });
+    try {
+      const res = await fetch(`/references/${kind}/${entry.id}/history`, { credentials: 'include' });
+      if (res.status === 401) {
+        navigate('/login', { replace: true });
+        return;
+      }
+      const items: ReferenceHistoryItem[] | null = res.ok ? (await res.json()).items : null;
+      setHistory((current) =>
+        current?.entryId === entry.id
+          ? { entryId: entry.id, items, error: items ? null : 'ไม่สามารถโหลดประวัติของรายการนี้ได้' }
+          : current
+      );
+    } catch {
+      setHistory((current) =>
+        current?.entryId === entry.id
+          ? { entryId: entry.id, items: null, error: 'เกิดข้อผิดพลาดในการเชื่อมต่อเครือข่าย' }
+          : current
+      );
     }
   };
 
@@ -303,72 +364,111 @@ export const ReferenceAdmin: React.FC = () => {
               <tr style={{ backgroundColor: '#f9fafb', borderBottom: '2px solid #e5e7eb', textAlign: 'left' }}>
                 <th style={{ padding: '0.625rem 0.75rem' }}>ชื่อ</th>
                 <th style={{ padding: '0.625rem 0.75rem' }}>สถานะ</th>
+                <th style={{ padding: '0.625rem 0.75rem' }}>ประวัติ</th>
                 {canMaintain && <th style={{ padding: '0.625rem 0.75rem' }}>การดูแล</th>}
               </tr>
             </thead>
             <tbody>
               {entries.map((entry) => (
-                <tr key={entry.id} data-testid={`reference-row-${entry.id}`} style={{ borderBottom: '1px solid #e5e7eb' }}>
-                  <td style={{ padding: '0.625rem 0.75rem', color: '#111827' }}>
-                    {editing?.id === entry.id ? (
-                      <input
-                        id={`reference-rename-${entry.id}`}
-                        type="text"
-                        aria-label={`ชื่อใหม่ของ ${entry.name}`}
-                        value={editing.name}
-                        maxLength={200}
-                        onChange={(e) => setEditing({ id: entry.id, name: e.target.value })}
-                        style={{ ...inputStyle, width: '100%' }}
-                      />
-                    ) : (
-                      entry.name
-                    )}
-                  </td>
-                  <td style={{ padding: '0.625rem 0.75rem', color: entry.is_active ? '#065f46' : '#9ca3af' }}>
-                    {entry.is_active ? 'ใช้งาน' : 'ปิดใช้งาน'}
-                  </td>
-                  {canMaintain && (
-                    <td style={{ padding: '0.625rem 0.75rem', display: 'flex', gap: '0.375rem', flexWrap: 'wrap' }}>
+                <React.Fragment key={entry.id}>
+                  <tr data-testid={`reference-row-${entry.id}`} style={{ borderBottom: '1px solid #e5e7eb' }}>
+                    <td style={{ padding: '0.625rem 0.75rem', color: '#111827' }}>
                       {editing?.id === entry.id ? (
-                        <>
-                          <button
-                            type="button"
-                            id={`reference-save-${entry.id}`}
-                            disabled={isBusy || editing.name.trim() === ''}
-                            onClick={() => handleRename(entry)}
-                            style={buttonStyle('#2563eb')}
-                          >
-                            บันทึกชื่อ
-                          </button>
-                          <button type="button" onClick={() => setEditing(null)} style={buttonStyle('#ffffff', '#374151')}>
-                            ยกเลิก
-                          </button>
-                        </>
+                        <input
+                          id={`reference-rename-${entry.id}`}
+                          type="text"
+                          aria-label={`ชื่อใหม่ของ ${entry.name}`}
+                          value={editing.name}
+                          maxLength={200}
+                          onChange={(e) => setEditing({ id: entry.id, name: e.target.value })}
+                          style={{ ...inputStyle, width: '100%' }}
+                        />
                       ) : (
-                        <>
-                          <button
-                            type="button"
-                            id={`reference-edit-${entry.id}`}
-                            disabled={isBusy}
-                            onClick={() => setEditing({ id: entry.id, name: entry.name })}
-                            style={buttonStyle('#ffffff', '#374151')}
-                          >
-                            แก้ชื่อ
-                          </button>
-                          <button
-                            type="button"
-                            id={`reference-toggle-${entry.id}`}
-                            disabled={isBusy}
-                            onClick={() => handleToggle(entry)}
-                            style={buttonStyle(entry.is_active ? '#b45309' : '#059669')}
-                          >
-                            {entry.is_active ? 'ปิดใช้งาน' : 'เปิดใช้งาน'}
-                          </button>
-                        </>
+                        entry.name
                       )}
                     </td>
+                    <td style={{ padding: '0.625rem 0.75rem', color: entry.is_active ? '#065f46' : '#9ca3af' }}>
+                      {entry.is_active ? 'ใช้งาน' : 'ปิดใช้งาน'}
+                    </td>
+                    <td style={{ padding: '0.625rem 0.75rem' }}>
+                      <button
+                        type="button"
+                        id={`reference-history-${entry.id}`}
+                        aria-expanded={history?.entryId === entry.id}
+                        onClick={() => handleHistory(entry)}
+                        style={buttonStyle('#ffffff', '#374151')}
+                      >
+                        {history?.entryId === entry.id ? 'ซ่อนประวัติ' : 'ดูประวัติ'}
+                      </button>
+                    </td>
+                    {canMaintain && (
+                      <td style={{ padding: '0.625rem 0.75rem', display: 'flex', gap: '0.375rem', flexWrap: 'wrap' }}>
+                        {editing?.id === entry.id ? (
+                          <>
+                            <button
+                              type="button"
+                              id={`reference-save-${entry.id}`}
+                              disabled={isBusy || editing.name.trim() === ''}
+                              onClick={() => handleRename(entry)}
+                              style={buttonStyle('#2563eb')}
+                            >
+                              บันทึกชื่อ
+                            </button>
+                            <button type="button" onClick={() => setEditing(null)} style={buttonStyle('#ffffff', '#374151')}>
+                              ยกเลิก
+                            </button>
+                          </>
+                        ) : (
+                          <>
+                            <button
+                              type="button"
+                              id={`reference-edit-${entry.id}`}
+                              disabled={isBusy}
+                              onClick={() => setEditing({ id: entry.id, name: entry.name })}
+                              style={buttonStyle('#ffffff', '#374151')}
+                            >
+                              แก้ชื่อ
+                            </button>
+                            <button
+                              type="button"
+                              id={`reference-toggle-${entry.id}`}
+                              disabled={isBusy}
+                              onClick={() => handleToggle(entry)}
+                              style={buttonStyle(entry.is_active ? '#b45309' : '#059669')}
+                            >
+                              {entry.is_active ? 'ปิดใช้งาน' : 'เปิดใช้งาน'}
+                            </button>
+                          </>
+                        )}
+                      </td>
+                    )}
+                  </tr>
+                  {history?.entryId === entry.id && (
+                    <tr data-testid={`reference-history-panel-${entry.id}`} style={{ backgroundColor: '#f9fafb' }}>
+                      <td colSpan={canMaintain ? 4 : 3} style={{ padding: '0.625rem 0.75rem', fontSize: '0.8125rem' }}>
+                        {history.error ? (
+                          <span role="alert" style={{ color: '#b91c1c' }}>
+                            {history.error}
+                          </span>
+                        ) : history.items === null ? (
+                          <span role="status" style={{ color: '#6b7280' }}>
+                            กำลังโหลดประวัติ...
+                          </span>
+                        ) : (
+                          <ol style={{ margin: 0, paddingLeft: '1.25rem', color: '#374151' }}>
+                            {history.items.map((item) => (
+                              <li key={item.version}>
+                                {item.action === 'CREATED' ? 'เพิ่มรายการ' : 'แก้ไขรายการ'} (ฉบับที่ {item.version}):{' '}
+                                {describeChanges(item.changes)} · โดย {item.actor_username ?? item.actor_id} ·{' '}
+                                {item.recorded_at}
+                              </li>
+                            ))}
+                          </ol>
+                        )}
+                      </td>
+                    </tr>
                   )}
-                </tr>
+                </React.Fragment>
               ))}
             </tbody>
           </table>

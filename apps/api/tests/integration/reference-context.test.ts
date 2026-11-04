@@ -106,6 +106,37 @@ describe('Reference Context Integration Tests (Seam A - T4)', () => {
       expect((await get(readonly, '/references/locations?limit=1&offset=0')).statusCode).toBe(200);
     });
 
+    it('records every add, rename, deactivation and reactivation with who, when and before → after (#25 PO decision 3)', async () => {
+      const room = await entry('locations', 'ห้องมีประวัติ');
+      const change = (body: Record<string, unknown>) => post(admin, `/references/locations/${room.id}`, body);
+      expect((await change({ expected_version: 1, name: 'ห้องมีประวัติ ชั้น 2' })).statusCode).toBe(200);
+      expect((await change({ expected_version: 2, is_active: false })).statusCode).toBe(200);
+      expect((await change({ expected_version: 3, is_active: true })).statusCode).toBe(200);
+      // A no-op and a refused change record nothing.
+      expect((await change({ expected_version: 4, is_active: true })).json().version).toBe(4);
+      expect((await change({ expected_version: 1, name: 'ค่าเก่า' })).statusCode).toBe(409);
+
+      for (const viewer of [readonly, custodian, admin]) {
+        const res = await get(viewer, `/references/locations/${room.id}/history`);
+        expect(res.statusCode).toBe(200);
+        const items = res.json().items;
+        expect(items.map((item: any) => [item.version, item.action, item.changes])).toEqual([
+          [1, 'CREATED', { name: { before: null, after: 'ห้องมีประวัติ' }, is_active: { before: null, after: true } }],
+          [2, 'CHANGED', { name: { before: 'ห้องมีประวัติ', after: 'ห้องมีประวัติ ชั้น 2' } }],
+          [3, 'CHANGED', { is_active: { before: true, after: false } }],
+          [4, 'CHANGED', { is_active: { before: false, after: true } }],
+        ]);
+        for (const item of items) {
+          expect(item).toMatchObject({ actor_id: admin.id, actor_username: 'admin_ref' });
+          expect(Number.isNaN(Date.parse(item.recorded_at))).toBe(false);
+        }
+      }
+      expect((await get(maintainer, `/references/locations/${room.id}/history`)).statusCode).toBe(403);
+      // History is per list: this id names no person.
+      expect((await get(readonly, `/references/persons/${room.id}/history`)).statusCode).toBe(404);
+      expect((await get(readonly, '/references/locations/not-a-uuid/history')).statusCode).toBe(400);
+    });
+
     it('lets only one of two concurrent changes made from the same version succeed', async () => {
       const room = await entry('locations', 'ห้องแข่งกันแก้');
       const results = await Promise.all([

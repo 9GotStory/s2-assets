@@ -5663,6 +5663,16 @@ test.describe.serial('Asset Registry Real SPA -> Composed API -> PostgreSQL Jour
     await page.locator('#reference-add-btn').click();
     await expect(page.locator('#reference-table')).toContainText('Somchai E2E');
 
+    // Each entry keeps its maintenance history: who, when, before → after (#25 PO decision 3).
+    await page.locator('#reference-tab-locations').click();
+    await page.locator(`#reference-history-${storeRoomId}`).click();
+    const storeRoomHistory = page.getByTestId(`reference-history-panel-${storeRoomId}`);
+    await expect(storeRoomHistory).toContainText('เพิ่มรายการ (ฉบับที่ 1): ชื่อ: “Store Room E2E”, สถานะ: ใช้งาน');
+    await expect(storeRoomHistory).toContainText('แก้ไขรายการ (ฉบับที่ 2): ชื่อ: “Store Room E2E” → “Store Room E2E North”');
+    await expect(storeRoomHistory).toContainText('โดย admin_e2e');
+    await page.locator(`#reference-history-${annexId}`).click();
+    await expect(page.getByTestId(`reference-history-panel-${annexId}`)).toContainText('สถานะ: ใช้งาน → ปิดใช้งาน');
+
     // There is no delete: every entry is still stored.
     const counts = await pool.query(
       `SELECT (SELECT count(*) FROM locations)::int AS l, (SELECT count(*) FROM organization_units)::int AS o, (SELECT count(*) FROM persons)::int AS p`
@@ -5676,6 +5686,8 @@ test.describe.serial('Asset Registry Real SPA -> Composed API -> PostgreSQL Jour
     await expect(page.locator('#reference-table')).toContainText('Store Room E2E North');
     await expect(page.locator('#reference-add-form')).toHaveCount(0);
     await expect(page.locator(`#reference-edit-${storeRoomId}`)).toHaveCount(0);
+    await page.locator(`#reference-history-${storeRoomId}`).click();
+    await expect(page.getByTestId(`reference-history-panel-${storeRoomId}`)).toContainText('“Store Room E2E North”');
   });
 
   test('Journey T4.2: a Custodian registers with optional context, sees it on detail, and finds it by each dimension and by legacy text', async ({ page, context }) => {

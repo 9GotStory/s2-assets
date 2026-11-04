@@ -8,9 +8,13 @@ import { hasStrictControlChars } from './control-characters.ts';
  * reactivates entries; nothing is deleted.
  */
 export const REFERENCE_LISTS = Object.freeze({
-  locations: { table: 'locations', assetColumn: 'location_id' },
-  'organization-units': { table: 'organization_units', assetColumn: 'organization_unit_id' },
-  persons: { table: 'persons', assetColumn: 'responsible_person_id' },
+  locations: { table: 'locations', assetColumn: 'location_id', historyColumn: 'location_id' },
+  'organization-units': {
+    table: 'organization_units',
+    assetColumn: 'organization_unit_id',
+    historyColumn: 'organization_unit_id',
+  },
+  persons: { table: 'persons', assetColumn: 'responsible_person_id', historyColumn: 'person_id' },
 } as const);
 
 export type ReferenceKind = keyof typeof REFERENCE_LISTS;
@@ -45,6 +49,17 @@ export interface ReferenceEntry {
   name: string;
   is_active: boolean;
   version: number;
+}
+
+// One maintenance change of an entry (#25 PO decision 3): CREATED or CHANGED, at the entry
+// version it produced, with each changed field's before and after.
+export interface ReferenceHistoryItem {
+  version: number;
+  action: 'CREATED' | 'CHANGED';
+  changes: Record<string, { before: string | boolean | null; after: string | boolean }>;
+  actor_id: string;
+  actor_username: string | null;
+  recorded_at: string;
 }
 
 export interface ReferenceListResult {
@@ -134,16 +149,59 @@ export class ReferenceService {
     };
   }
 
+  // Runs work in one transaction on one connection, rolling back on any error.
+  private async transaction<T>(work: (client: pg.PoolClient | pg.Pool) => Promise<T>): Promise<T> {
+    const client = typeof this.db.connect === 'function' ? await this.db.connect() : this.db;
+    const shouldRelease = typeof this.db.connect === 'function';
+    try {
+      await client.query('BEGIN');
+      const result = await work(client);
+      await client.query('COMMIT');
+      return result;
+    } catch (err) {
+      try {
+        await client.query('ROLLBACK');
+      } catch {
+        // ignore rollback error on closed connection
+      }
+      throw err;
+    } finally {
+      if (shouldRelease) client.release();
+    }
+  }
+
+  private async recordHistory(
+    client: pg.PoolClient | pg.Pool,
+    kind: ReferenceKind,
+    actorId: string,
+    entry: ReferenceEntry,
+    action: ReferenceHistoryItem['action'],
+    changes: ReferenceHistoryItem['changes']
+  ): Promise<void> {
+    await client.query(
+      `INSERT INTO reference_entry_history (${REFERENCE_LISTS[kind].historyColumn}, version, action, changes, actor_id)
+       VALUES ($1, $2, $3, $4, $5)`,
+      [entry.id, entry.version, action, JSON.stringify(changes), actorId]
+    );
+  }
+
   async create(kind: ReferenceKind, actorId: string, rawName: unknown): Promise<ReferenceEntry> {
     const name = normalizeReferenceName(rawName);
     const table = REFERENCE_LISTS[kind].table;
     try {
-      const res = await this.db.query(
-        `INSERT INTO ${table} (name, created_by, updated_by) VALUES ($1, $2, $2)
-         RETURNING id, name, is_active, version`,
-        [name, actorId]
-      );
-      return toEntry(res.rows[0]);
+      return await this.transaction(async (client) => {
+        const res = await client.query(
+          `INSERT INTO ${table} (name, created_by, updated_by) VALUES ($1, $2, $2)
+           RETURNING id, name, is_active, version`,
+          [name, actorId]
+        );
+        const created = toEntry(res.rows[0]);
+        await this.recordHistory(client, kind, actorId, created, 'CREATED', {
+          name: { before: null, after: created.name },
+          is_active: { before: null, after: created.is_active },
+        });
+        return created;
+      });
     } catch (err) {
       if (isUniqueViolation(err)) {
         throw new ReferenceListError(409, 'DUPLICATE_NAME', 'An entry with this name already exists');
@@ -168,50 +226,77 @@ export class ReferenceService {
     const table = REFERENCE_LISTS[kind].table;
     const newName = changes.name === undefined ? undefined : normalizeReferenceName(changes.name);
 
-    const client = typeof this.db.connect === 'function' ? await this.db.connect() : this.db;
-    const shouldRelease = typeof this.db.connect === 'function';
     try {
-      await client.query('BEGIN');
-      const currentRes = await client.query(
-        `SELECT id, name, is_active, version FROM ${table} WHERE id = $1 FOR UPDATE`,
-        [id]
-      );
-      if (currentRes.rows.length === 0) {
-        throw new ReferenceListError(404, 'NOT_FOUND', 'Reference entry not found');
-      }
-      const current = toEntry(currentRes.rows[0]);
-      if (current.version !== changes.expected_version) {
-        throw new ReferenceListError(409, 'VERSION_CONFLICT', 'The entry changed since it was read');
-      }
+      return await this.transaction(async (client) => {
+        const currentRes = await client.query(
+          `SELECT id, name, is_active, version FROM ${table} WHERE id = $1 FOR UPDATE`,
+          [id]
+        );
+        if (currentRes.rows.length === 0) {
+          throw new ReferenceListError(404, 'NOT_FOUND', 'Reference entry not found');
+        }
+        const current = toEntry(currentRes.rows[0]);
+        if (current.version !== changes.expected_version) {
+          throw new ReferenceListError(409, 'VERSION_CONFLICT', 'The entry changed since it was read');
+        }
 
-      const name = newName ?? current.name;
-      const isActive = changes.is_active ?? current.is_active;
-      if (name === current.name && isActive === current.is_active) {
-        await client.query('COMMIT');
-        return current;
-      }
+        const name = newName ?? current.name;
+        const isActive = changes.is_active ?? current.is_active;
+        const changed: ReferenceHistoryItem['changes'] = {};
+        if (name !== current.name) {
+          changed.name = { before: current.name, after: name };
+        }
+        if (isActive !== current.is_active) {
+          changed.is_active = { before: current.is_active, after: isActive };
+        }
+        if (Object.keys(changed).length === 0) {
+          return current;
+        }
 
-      const updated = await client.query(
-        `UPDATE ${table}
-         SET name = $2, is_active = $3, version = version + 1, updated_by = $4, updated_at = now()
-         WHERE id = $1
-         RETURNING id, name, is_active, version`,
-        [id, name, isActive, actorId]
-      );
-      await client.query('COMMIT');
-      return toEntry(updated.rows[0]);
+        const updatedRes = await client.query(
+          `UPDATE ${table}
+           SET name = $2, is_active = $3, version = version + 1, updated_by = $4, updated_at = now()
+           WHERE id = $1
+           RETURNING id, name, is_active, version`,
+          [id, name, isActive, actorId]
+        );
+        const updated = toEntry(updatedRes.rows[0]);
+        await this.recordHistory(client, kind, actorId, updated, 'CHANGED', changed);
+        return updated;
+      });
     } catch (err) {
-      try {
-        await client.query('ROLLBACK');
-      } catch {
-        // ignore rollback error on closed connection
-      }
       if (isUniqueViolation(err)) {
         throw new ReferenceListError(409, 'DUPLICATE_NAME', 'An entry with this name already exists');
       }
       throw err;
-    } finally {
-      if (shouldRelease) client.release();
     }
+  }
+
+  /** An entry's maintenance history, oldest first (#25 PO decision 3). */
+  async history(kind: ReferenceKind, id: string): Promise<ReferenceHistoryItem[]> {
+    if (!isValidUuid(id)) {
+      throw new ReferenceListError(400, 'VALIDATION_FAILED', 'id must be a UUID');
+    }
+    const { table, historyColumn } = REFERENCE_LISTS[kind];
+    const entryRes = await this.db.query(`SELECT 1 FROM ${table} WHERE id = $1`, [id]);
+    if (entryRes.rows.length === 0) {
+      throw new ReferenceListError(404, 'NOT_FOUND', 'Reference entry not found');
+    }
+    const res = await this.db.query(
+      `SELECT h.version, h.action, h.changes, h.actor_id, u.username AS actor_username, h.recorded_at
+       FROM reference_entry_history h
+       LEFT JOIN users u ON u.id = h.actor_id
+       WHERE h.${historyColumn} = $1
+       ORDER BY h.version ASC`,
+      [id]
+    );
+    return res.rows.map((row: any) => ({
+      version: row.version,
+      action: row.action,
+      changes: row.changes,
+      actor_id: row.actor_id,
+      actor_username: row.actor_username ?? null,
+      recorded_at: new Date(row.recorded_at).toISOString(),
+    }));
   }
 }

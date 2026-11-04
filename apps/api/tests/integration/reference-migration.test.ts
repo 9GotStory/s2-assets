@@ -147,8 +147,8 @@ describe('Reference Context Migration Integration (Seam C - T4)', () => {
         expect(await snapshot(client, table, order), table).toEqual(rows);
       }
 
-      // Every list starts empty: no entry is invented from legacy text (D7).
-      for (const table of ['locations', 'organization_units', 'persons']) {
+      // Every list, and its history, starts empty: no entry is invented from legacy text (D7).
+      for (const table of ['locations', 'organization_units', 'persons', 'reference_entry_history']) {
         expect((await client.query(`SELECT count(*)::int AS n FROM ${table}`)).rows[0].n, table).toBe(0);
       }
     });
@@ -182,6 +182,24 @@ describe('Reference Context Migration Integration (Seam C - T4)', () => {
       await expect(
         client.query(`UPDATE assets SET location_id = '00000000-0000-4000-8000-000000000000' WHERE id = $1`, [incompleteAssetId])
       ).rejects.toThrow(/assets_location_id_fkey/);
+
+      // History rows (#25 PO decision 3) name exactly one entry, once per version, and keep it.
+      const locationId = (await client.query(`SELECT id FROM locations WHERE name = 'Main Office'`)).rows[0].id;
+      const record = (columns: string, values: unknown[], version: number, action = 'CHANGED') =>
+        client.query(
+          `INSERT INTO reference_entry_history (${columns}, version, action, changes, actor_id)
+           VALUES (${values.map((_, i) => `$${i + 1}`).join(', ')}, ${version}, '${action}', '{}'::jsonb, '${userId}')`,
+          values
+        );
+      await record('location_id', [locationId], 1, 'CREATED');
+      await expect(record('location_id', [locationId], 1)).rejects.toThrow(/reference_entry_history_location_id_version/);
+      await expect(record('location_id, person_id', [locationId, personId], 2)).rejects.toThrow(
+        /reference_entry_history_one_entry/
+      );
+      await expect(record('location_id', [locationId], 2, 'MOVED')).rejects.toThrow(/reference_entry_history_action_check/);
+      await expect(client.query(`DELETE FROM locations WHERE id = $1`, [locationId])).rejects.toThrow(
+        /reference_entry_history_location_id_fkey/
+      );
     });
   });
 
@@ -192,6 +210,7 @@ describe('Reference Context Migration Integration (Seam C - T4)', () => {
     // Asset context alone, here legacy text, still refuses.
     await withClient(async (client) => {
       await client.query(`UPDATE assets SET responsible_person_id = NULL`);
+      await client.query(`DELETE FROM reference_entry_history`);
       await client.query(`DELETE FROM locations`);
       await client.query(`DELETE FROM organization_units`);
       await client.query(`DELETE FROM persons`);
@@ -219,6 +238,7 @@ describe('Reference Context Migration Integration (Seam C - T4)', () => {
       expect(tables).not.toContain('locations');
       expect(tables).not.toContain('organization_units');
       expect(tables).not.toContain('persons');
+      expect(tables).not.toContain('reference_entry_history');
       expect((await client.query(`SELECT count(*)::int AS n FROM assets`)).rows[0].n).toBe(2);
     });
 

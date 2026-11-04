@@ -61,6 +61,8 @@ const requireKnownKind = async (request: FastifyRequest, reply: FastifyReply) =>
  *   `can_maintain` telling the page whether to offer maintenance.
  * - POST /references/:kind adds and POST /references/:kind/:id renames, deactivates or
  *   reactivates an entry; both need 'reference:maintain' (ADMINISTRATOR, D3).
+ * - GET /references/:kind/:id/history reads an entry's maintenance history ('asset:view';
+ *   #25 PO decision 3).
  */
 export const referenceRoutes: FastifyPluginAsync<ReferenceRoutesOptions> = async (fastify, options) => {
   const referenceService = options.referenceService ?? new ReferenceService({ db: options.db });
@@ -97,6 +99,19 @@ export const referenceRoutes: FastifyPluginAsync<ReferenceRoutesOptions> = async
       return handleError(reply, err, request);
     }
   });
+
+  fastify.get(
+    '/:kind/:id/history',
+    { preHandler: [requireCapability('asset:view'), requireKnownKind] },
+    async (request, reply) => {
+      const { kind, id } = request.params as { kind: ReferenceKind; id: string };
+      try {
+        return { items: await referenceService.history(kind, id) };
+      } catch (err) {
+        return handleError(reply, err, request);
+      }
+    }
+  );
 
   fastify.post('/:kind', { preHandler: [requireCapability('reference:maintain'), requireKnownKind] }, async (request, reply) => {
     const { kind } = request.params as { kind: ReferenceKind };

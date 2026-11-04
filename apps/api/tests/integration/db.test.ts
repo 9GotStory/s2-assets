@@ -232,7 +232,7 @@ describe('Database Migrations Integration', () => {
     try {
       const listTables = await referenceClient.query(`
         SELECT table_name FROM information_schema.tables
-        WHERE table_schema = 'public' AND table_name IN ('locations', 'organization_units', 'persons');
+        WHERE table_schema = 'public' AND table_name IN ('locations', 'organization_units', 'persons', 'reference_entry_history');
       `);
       expect(listTables.rows).toHaveLength(0);
       const placeholder = await referenceClient.query(`
@@ -403,9 +403,9 @@ describe('Database Migrations Integration', () => {
     try {
       const tablesResult = await client.query(`
         SELECT table_name FROM information_schema.tables
-        WHERE table_schema = 'public' AND table_name IN ('users', 'sessions', 'roles', 'user_roles', 'assets', 'asset_history', 'registration_retry_tokens', 'acquisitions', 'evidence_records', 'evidence_asset_links', 'evidence_history', 'locations', 'organization_units', 'persons');
+        WHERE table_schema = 'public' AND table_name IN ('users', 'sessions', 'roles', 'user_roles', 'assets', 'asset_history', 'registration_retry_tokens', 'acquisitions', 'evidence_records', 'evidence_asset_links', 'evidence_history', 'locations', 'organization_units', 'persons', 'reference_entry_history');
       `);
-      expect(tablesResult.rows).toHaveLength(14);
+      expect(tablesResult.rows).toHaveLength(15);
 
       const colCheck = await client.query(`
         SELECT column_name FROM information_schema.columns
