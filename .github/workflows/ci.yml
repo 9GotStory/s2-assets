@@ -4,9 +4,11 @@ on:
   push:
     branches:
       - feature/001-application-foundation
+      - feature/002-asset-registry
   pull_request:
     branches:
       - feature/001-application-foundation
+      - feature/002-asset-registry
   workflow_dispatch:
 
 permissions:
@@ -616,19 +618,28 @@ jobs:
           test ! -d "$RUNNER_WORKSPACE/apps/web/node_modules"
           echo "Clean workspace verified (zero inherited node_modules or .git)."
 
-          echo "Asserting Node 24.21.0 and pnpm 12.9.1, and executing frozen install in isolated workspace..."
-          podman run --rm --userns=keep-id \
+          # Every spec must be wired into one of the two runs below.
+          SPECS=$(cd "$RUNNER_WORKSPACE/apps/web/tests/e2e" && ls -- *.spec.ts | sort | tr '\n' ' ')
+          if [ "$SPECS" != "asset.spec.ts auth.spec.ts " ]; then
+            echo "ERROR: the E2E specs changed (${SPECS}): wire each one into a run in ci.yml" >&2
+            exit 1
+          fi
+
+          # The install runs in the browser runner (glibc), so native bindings such as rolldown's
+          # and argon2's match the container that runs the specs.
+          echo "Asserting Node 24.21.0, pnpm 12.9.1 and Playwright 1.63.0, and executing frozen install in the browser runner..."
+          podman run --rm \
             -v "${RUNNER_WORKSPACE}:/work:z" \
             -w /work \
-            s2-assets-dev:local \
-            sh -c '
+            s2-assets-browser:ci \
+            bash -c '
               set -euo pipefail
               NODE_VER=$(node -v)
-              echo "Tooling Node version: $NODE_VER"
+              echo "Browser runner Node version: $NODE_VER"
               test "$NODE_VER" = "v24.21.0"
 
               PNPM_VER=$(pnpm -v)
-              echo "Tooling pnpm version: $PNPM_VER"
+              echo "Browser runner pnpm version: $PNPM_VER"
               test "$PNPM_VER" = "12.9.1"
 
               LOCK_BEFORE=$(sha256sum pnpm-lock.yaml | awk "{print \$1}")
@@ -636,35 +647,48 @@ jobs:
               LOCK_AFTER=$(sha256sum pnpm-lock.yaml | awk "{print \$1}")
               test "$LOCK_BEFORE" = "$LOCK_AFTER"
               echo "Frozen lockfile integrity verified: $LOCK_AFTER"
+
+              PW_VER=$(pnpm --filter web exec playwright --version)
+              echo "Playwright version: $PW_VER"
+              echo "$PW_VER" | grep -Eq "1\.63\.0"
             '
 
-          echo "Asserting Node v24.21.0, pnpm 12.9.1, Playwright 1.63.0, and executing E2E browser tests..."
+          # Run both specs, then fail once with both results.
+          E2E_STATUS=0
+          # The browser reaches the Web through its loopback port, as the readiness probes do:
+          # joining the Compose network made the Web container's DNS lose `api` (EAI_AGAIN).
+          echo "Executing auth.spec.ts against the Compose stack..."
           podman run --name s2_browser_runner --rm \
-            --network "${COMPOSE_PROJECT_NAME}_default" \
+            --network=host \
             --ipc=host \
             -v "${RUNNER_WORKSPACE}:/work:z" \
             -w /work \
-            -e E2E_BASE_URL="http://web:5173" \
+            -e E2E_BASE_URL="http://127.0.0.1:5173" \
             -e E2E_USERNAME="$E2E_USERNAME" \
             -e E2E_PASSWORD="$E2E_PASSWORD" \
             -e CI=true \
             s2-assets-browser:ci \
-            bash -c '
-              set -euo pipefail
-              NODE_VER=$(node -v)
-              echo "Browser container Node version: $NODE_VER"
-              test "$NODE_VER" = "v24.21.0"
+            pnpm --filter web exec playwright test tests/e2e/auth.spec.ts --output test-results/auth \
+            || E2E_STATUS=1
 
-              PNPM_VER=$(pnpm -v)
-              echo "Browser container pnpm version: $PNPM_VER"
-              test "$PNPM_VER" = "12.9.1"
+          # asset.spec.ts starts its own Testcontainers PostgreSQL, API and Vite server, so it runs
+          # like the integration job: host network and the rootless Podman socket.
+          echo "Executing asset.spec.ts with host network and socket control..."
+          podman run --name s2_browser_runner --rm \
+            --network=host \
+            --ipc=host \
+            -v "${RUNNER_WORKSPACE}:/work:z" \
+            -v "${XDG_RUNTIME_DIR}/podman/podman.sock:${XDG_RUNTIME_DIR}/podman/podman.sock:z" \
+            -w /work \
+            -e DOCKER_HOST="unix://${XDG_RUNTIME_DIR}/podman/podman.sock" \
+            -e TESTCONTAINERS_RYUK_DISABLED="true" \
+            -e TESTCONTAINERS_HOST_OVERRIDE="127.0.0.1" \
+            -e CI=true \
+            s2-assets-browser:ci \
+            pnpm --filter web exec playwright test tests/e2e/asset.spec.ts --output test-results/asset \
+            || E2E_STATUS=1
 
-              PW_VER=$(pnpm --filter web exec playwright --version)
-              echo "Playwright container version: $PW_VER"
-              echo "$PW_VER" | grep -Eq "1\.63\.0"
-
-              pnpm --filter web run test:e2e
-            '
+          exit "$E2E_STATUS"
 
       - name: Copy test diagnostics on failure
         if: failure()
