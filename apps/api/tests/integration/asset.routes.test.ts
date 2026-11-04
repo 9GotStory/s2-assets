@@ -630,9 +630,9 @@ describe('Asset Routes & Security Matrix Integration Tests (Seam A)', () => {
       });
       const idA = JSON.parse(regA.body).asset.id;
 
-      // 2. Direct seed of legacy Asset WITH OrganizationUnit
+      // 2. Direct seed of legacy Asset WITH legacy OrganizationUnit text (D7)
       const seedB = await pool.query(
-        `INSERT INTO assets (id, name, organization_unit, registered_by)
+        `INSERT INTO assets (id, name, legacy_organization_unit_text, registered_by)
          VALUES (gen_random_uuid(), 'Accounting Printer', 'Accounting Division', $1)
          RETURNING id;`,
         [custodianUser.id]
@@ -652,7 +652,7 @@ describe('Asset Routes & Security Matrix Integration Tests (Seam A)', () => {
       });
       expect(readA.statusCode).toBe(200);
       expect(JSON.parse(readA.body).asset.name).toBe('Office Common Projector');
-      expect(JSON.parse(readA.body).asset.organization_unit).toBeNull();
+      expect(JSON.parse(readA.body).asset.legacy_organization_unit_text).toBeNull();
 
       // 4. Administrator can view record B (specific org unit)
       const readB = await app.inject({
@@ -661,7 +661,7 @@ describe('Asset Routes & Security Matrix Integration Tests (Seam A)', () => {
         headers: { cookie: adminUser.cookie },
       });
       expect(readB.statusCode).toBe(200);
-      expect(JSON.parse(readB.body).asset.organization_unit).toBe('Accounting Division');
+      expect(JSON.parse(readB.body).asset.legacy_organization_unit_text).toBe('Accounting Division');
     });
   });
 
@@ -1465,11 +1465,17 @@ describe('Asset Routes & Security Matrix Integration Tests (Seam A)', () => {
         expect(body.total_count).toBe(1);
         expect(body.has_more).toBe(false);
 
-        // Strict projection: exactly id, name, asset_number, serial_number
+        // Strict projection: exactly id, name, asset_number, serial_number and, since T4, the reference context
         expect(Object.keys(body.items[0]).sort()).toEqual([
           'asset_number',
           'id',
+          'legacy_location_text',
+          'legacy_organization_unit_text',
+          'legacy_responsible_person_text',
+          'location',
           'name',
+          'organization_unit',
+          'responsible_person',
           'serial_number',
         ]);
       }
@@ -1880,7 +1886,7 @@ describe('Asset Routes & Security Matrix Integration Tests (Seam A)', () => {
       // Insert an asset for testing in each test (since outer beforeEach clears assets)
       const insertRes = await pool.query(
         `INSERT INTO assets (
-          name, asset_number, serial_number, registered_by, category, organization_unit
+          name, asset_number, serial_number, registered_by, category, legacy_organization_unit_text
         ) VALUES (
           'Test QR Asset', 'QR-ASSET-001', 'SN-QR-999', $1, NULL, NULL
         ) RETURNING id;`,

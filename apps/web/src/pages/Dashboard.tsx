@@ -351,6 +351,23 @@ export const Dashboard: React.FC = () => {
             >
               🔍 ค้นหาครุภัณฑ์
             </Link>
+            <Link
+              to="/admin/references"
+              id="nav-reference-lists"
+              style={{
+                display: 'inline-block',
+                padding: '0.5rem 1rem',
+                backgroundColor: '#ffffff',
+                color: '#374151',
+                border: '1px solid #d1d5db',
+                textDecoration: 'none',
+                borderRadius: '4px',
+                fontSize: '0.875rem',
+                fontWeight: 500,
+              }}
+            >
+              🗂️ รายการข้อมูลอ้างอิง
+            </Link>
           </div>
         </section>
 

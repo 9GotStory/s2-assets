@@ -1,11 +1,24 @@
 import React, { useEffect, useState, useRef, useCallback } from 'react';
 import { useNavigate, Link } from 'react-router';
+import {
+  REFERENCE_DIMENSIONS,
+  entryLabel,
+  useReferenceLists,
+  type ReferenceEntry,
+  type ReferenceIdField,
+} from '../components/ReferenceContextFields';
 
 export interface SearchAssetItem {
   id: string;
   name: string | null;
   asset_number: string | null;
   serial_number: string | null;
+  location?: ReferenceEntry | null;
+  organization_unit?: ReferenceEntry | null;
+  responsible_person?: ReferenceEntry | null;
+  legacy_location_text?: string | null;
+  legacy_organization_unit_text?: string | null;
+  legacy_responsible_person_text?: string | null;
 }
 
 export interface SearchAssetResult {
@@ -16,7 +29,19 @@ export interface SearchAssetResult {
   has_more: boolean;
 }
 
-export type SearchFieldType = 'all' | 'name' | 'asset_number' | 'serial_number' | 'stable_id';
+// T4 (#25): each legacy reference text is its own field, keeping the dimensions distinct.
+export type SearchFieldType =
+  | 'all'
+  | 'name'
+  | 'asset_number'
+  | 'serial_number'
+  | 'stable_id'
+  | (typeof REFERENCE_DIMENSIONS)[number]['legacyField'];
+
+// T4 (#25): one exact entry per dimension, '' for any; the server combines them with AND.
+export type ReferenceFilters = Record<ReferenceIdField, string>;
+
+const NO_REFERENCE_FILTERS: ReferenceFilters = { location_id: '', organization_unit_id: '', responsible_person_id: '' };
 
 export const AssetSearch: React.FC = () => {
   const navigate = useNavigate();
@@ -24,10 +49,12 @@ export const AssetSearch: React.FC = () => {
   // Form input state
   const [selectedField, setSelectedField] = useState<SearchFieldType>('all');
   const [searchValue, setSearchValue] = useState<string>('');
+  const [selectedFilters, setSelectedFilters] = useState<ReferenceFilters>(NO_REFERENCE_FILTERS);
 
   // Active query state (what the current results reflect)
   const [activeField, setActiveField] = useState<SearchFieldType>('all');
   const [activeValue, setActiveValue] = useState<string>('');
+  const [activeFilters, setActiveFilters] = useState<ReferenceFilters>(NO_REFERENCE_FILTERS);
   const [offset, setOffset] = useState<number>(0);
   const limit = 25;
 
@@ -39,6 +66,10 @@ export const AssetSearch: React.FC = () => {
   const [errorMessage, setErrorMessage] = useState<string | null>(null);
   const [isForbidden, setIsForbidden] = useState<boolean>(false);
 
+  // Filter lists, loaded for the verified actor (inactive entries included: Assets may still name them)
+  const [listActorId, setListActorId] = useState<string | null>(null);
+  const referenceLists = useReferenceLists(true, listActorId);
+
   // Generation tracking, abort control, and actor binding
   const searchGenRef = useRef<number>(0);
   const abortControllerRef = useRef<AbortController | null>(null);
@@ -48,13 +79,15 @@ export const AssetSearch: React.FC = () => {
   // Active query refs for revalidation re-fetch
   const activeFieldRef = useRef<SearchFieldType>(activeField);
   const activeValueRef = useRef<string>(activeValue);
+  const activeFiltersRef = useRef<ReferenceFilters>(activeFilters);
   const offsetRef = useRef<number>(offset);
 
   useEffect(() => {
     activeFieldRef.current = activeField;
     activeValueRef.current = activeValue;
+    activeFiltersRef.current = activeFilters;
     offsetRef.current = offset;
-  }, [activeField, activeValue, offset]);
+  }, [activeField, activeValue, activeFilters, offset]);
 
   // Clear in-memory protected search state
   const clearSearchState = useCallback(() => {
@@ -130,8 +163,10 @@ export const AssetSearch: React.FC = () => {
           clearSearchState();
           setSelectedField('all');
           setSearchValue('');
+          setSelectedFilters(NO_REFERENCE_FILTERS);
           activeFieldRef.current = 'all';
           activeValueRef.current = '';
+          activeFiltersRef.current = NO_REFERENCE_FILTERS;
           offsetRef.current = 0;
         }
         currentActorIdRef.current = actorId;
@@ -158,7 +193,7 @@ export const AssetSearch: React.FC = () => {
 
   // Execute search with generation tracking and actor epoch binding
   const executeSearch = useCallback(
-    async (field: SearchFieldType, value: string, targetOffset: number) => {
+    async (field: SearchFieldType, value: string, targetOffset: number, filters: ReferenceFilters) => {
       // 1. Invalidate/abort obsolete requests before awaiting
       if (abortControllerRef.current) {
         abortControllerRef.current.abort();
@@ -190,7 +225,9 @@ export const AssetSearch: React.FC = () => {
       const capturedActorId = session.actorId;
       const effectiveField = session.actorChanged ? 'all' : field;
       const effectiveValue = session.actorChanged ? '' : value;
+      const effectiveFilters = session.actorChanged ? NO_REFERENCE_FILTERS : filters;
       const effectiveOffset = session.actorChanged ? 0 : targetOffset;
+      setListActorId(capturedActorId ?? null);
 
       try {
         const queryParams = new URLSearchParams();
@@ -198,6 +235,11 @@ export const AssetSearch: React.FC = () => {
         if (effectiveField !== 'all' && effectiveValue !== '') {
           queryParams.set('field', effectiveField);
           queryParams.set('value', effectiveValue);
+        }
+        for (const [filter, entryId] of Object.entries(effectiveFilters)) {
+          if (entryId) {
+            queryParams.set(filter, entryId);
+          }
         }
         queryParams.set('limit', String(limit));
         queryParams.set('offset', String(effectiveOffset));
@@ -280,6 +322,7 @@ export const AssetSearch: React.FC = () => {
           setOffset(data.offset);
           setActiveField(effectiveField);
           setActiveValue(effectiveValue);
+          setActiveFilters(effectiveFilters);
         }
       } catch (err: unknown) {
         if (
@@ -322,14 +365,14 @@ export const AssetSearch: React.FC = () => {
     const handleFocus = () => {
       if (isWindowBlurred) {
         isWindowBlurred = false;
-        executeSearch(activeFieldRef.current, activeValueRef.current, offsetRef.current);
+        executeSearch(activeFieldRef.current, activeValueRef.current, offsetRef.current, activeFiltersRef.current);
       }
     };
 
     const handleVisibilityChange = () => {
       if (document.visibilityState === 'visible' && isWindowBlurred) {
         isWindowBlurred = false;
-        executeSearch(activeFieldRef.current, activeValueRef.current, offsetRef.current);
+        executeSearch(activeFieldRef.current, activeValueRef.current, offsetRef.current, activeFiltersRef.current);
       } else if (document.visibilityState === 'hidden') {
         isWindowBlurred = true;
       }
@@ -352,7 +395,7 @@ export const AssetSearch: React.FC = () => {
   // Initial browse on mount
   useEffect(() => {
     isMountedRef.current = true;
-    executeSearch('all', '', 0);
+    executeSearch('all', '', 0, NO_REFERENCE_FILTERS);
     return () => {
       isMountedRef.current = false;
       ++searchGenRef.current;
@@ -362,24 +405,25 @@ export const AssetSearch: React.FC = () => {
 
   const handleSubmit = (e: React.FormEvent) => {
     e.preventDefault();
-    executeSearch(selectedField, searchValue, 0);
+    executeSearch(selectedField, searchValue, 0, selectedFilters);
   };
 
   const handleReset = () => {
     setSelectedField('all');
     setSearchValue('');
-    executeSearch('all', '', 0);
+    setSelectedFilters(NO_REFERENCE_FILTERS);
+    executeSearch('all', '', 0, NO_REFERENCE_FILTERS);
   };
 
   const handlePrevPage = () => {
     const prevOffset = Math.max(0, offset - limit);
-    executeSearch(activeField, activeValue, prevOffset);
+    executeSearch(activeField, activeValue, prevOffset, activeFilters);
   };
 
   const handleNextPage = () => {
     if (hasMore) {
       const nextOffset = offset + limit;
-      executeSearch(activeField, activeValue, nextOffset);
+      executeSearch(activeField, activeValue, nextOffset, activeFilters);
     }
   };
 
@@ -531,6 +575,11 @@ export const AssetSearch: React.FC = () => {
                   <option value="asset_number">หมายเลขครุภัณฑ์ (Asset Number)</option>
                   <option value="serial_number">หมายเลขเครื่อง (Serial Number)</option>
                   <option value="stable_id">รหัสอ้างอิงถาวร (Stable ID UUID)</option>
+                  {REFERENCE_DIMENSIONS.map(({ legacyField, label }) => (
+                    <option key={legacyField} value={legacyField}>
+                      ข้อความเดิม: {label}
+                    </option>
+                  ))}
                 </select>
               </div>
 
@@ -609,6 +658,58 @@ export const AssetSearch: React.FC = () => {
                 </button>
               </div>
             </div>
+
+            {/* Reference filters (T4, D7-A): each dimension narrows the results on its own */}
+            <div
+              style={{
+                display: 'grid',
+                gridTemplateColumns: 'repeat(auto-fit, minmax(180px, 1fr))',
+                gap: '0.75rem',
+                marginTop: '0.75rem',
+              }}
+            >
+              {REFERENCE_DIMENSIONS.map(({ kind, idField, label }) => (
+                <div key={kind}>
+                  <label
+                    htmlFor={`search-filter-${idField}`}
+                    style={{
+                      display: 'block',
+                      fontSize: '0.875rem',
+                      fontWeight: 500,
+                      color: '#374151',
+                      marginBottom: '0.25rem',
+                    }}
+                  >
+                    {label}
+                  </label>
+                  <select
+                    id={`search-filter-${idField}`}
+                    value={selectedFilters[idField]}
+                    onChange={(e) => setSelectedFilters((current) => ({ ...current, [idField]: e.target.value }))}
+                    style={{
+                      width: '100%',
+                      padding: '0.5rem 0.75rem',
+                      borderRadius: '4px',
+                      border: '1px solid #d1d5db',
+                      fontSize: '0.875rem',
+                      backgroundColor: '#ffffff',
+                    }}
+                  >
+                    <option value="">ทั้งหมด</option>
+                    {referenceLists.lists[kind].map((entry) => (
+                      <option key={entry.id} value={entry.id}>
+                        {entryLabel(entry)}
+                      </option>
+                    ))}
+                  </select>
+                </div>
+              ))}
+            </div>
+            {referenceLists.error && (
+              <div role="alert" style={{ marginTop: '0.5rem', fontSize: '0.8125rem', color: '#b91c1c' }}>
+                {referenceLists.error}
+              </div>
+            )}
           </form>
         )}
 
@@ -696,6 +797,9 @@ export const AssetSearch: React.FC = () => {
                         หมายเลขเครื่อง
                       </th>
                       <th style={{ padding: '0.75rem 1rem', fontWeight: 600, color: '#374151' }}>
+                        ข้อมูลอ้างอิง
+                      </th>
+                      <th style={{ padding: '0.75rem 1rem', fontWeight: 600, color: '#374151' }}>
                         รหัสอ้างอิงถาวร (Stable ID)
                       </th>
                     </tr>
@@ -717,6 +821,24 @@ export const AssetSearch: React.FC = () => {
                         </td>
                         <td style={{ padding: '0.75rem 1rem', color: '#6b7280' }}>
                           {item.serial_number || '-'}
+                        </td>
+                        <td data-testid={`search-result-reference-${item.id}`} style={{ padding: '0.75rem 1rem', color: '#374151' }}>
+                          {REFERENCE_DIMENSIONS.every(({ entryField, legacyField }) => !item[entryField] && !item[legacyField])
+                            ? '-'
+                            : REFERENCE_DIMENSIONS.map(({ entryField, legacyField, label }) => {
+                                const entry = item[entryField];
+                                const legacyText = item[legacyField];
+                                return entry || legacyText ? (
+                                  <div key={entryField}>
+                                    {label}: {entry && entryLabel(entry)}
+                                    {legacyText && (
+                                      <span style={{ color: '#6b7280' }}>
+                                        {entry ? ' ' : ''}(ข้อความเดิม: {legacyText})
+                                      </span>
+                                    )}
+                                  </div>
+                                ) : null;
+                              })}
                         </td>
                         <td style={{ padding: '0.75rem 1rem' }}>
                           <Link

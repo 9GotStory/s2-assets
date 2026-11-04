@@ -9,6 +9,8 @@ import {
   RetryTokenConflictError,
   StaleBeforeConflictError,
   ValidationError,
+  REFERENCE_ID_FIELDS,
+  LEGACY_TEXT_FIELDS,
   type CorrectAssetInput,
   type RegisterAssetInput,
   type BulkRegisterAssetInput,
@@ -22,6 +24,26 @@ export interface AssetRoutesOptions {
   publicAppOrigin?: string;
 }
 
+// T4 (#25, D7-A): optional reference context, validated in AssetService.
+const referenceContextFields = {
+  location_id: z.string().nullable().optional(),
+  organization_unit_id: z.string().nullable().optional(),
+  responsible_person_id: z.string().nullable().optional(),
+  legacy_location_text: z.string().nullable().optional(),
+  legacy_organization_unit_text: z.string().nullable().optional(),
+  legacy_responsible_person_text: z.string().nullable().optional(),
+};
+
+// T4 (#25): a correction names the expected-before value of each reference field it changes.
+const expectedReferenceContextFields = {
+  expected_location_id: z.string().nullable().optional(),
+  expected_organization_unit_id: z.string().nullable().optional(),
+  expected_responsible_person_id: z.string().nullable().optional(),
+  expected_legacy_location_text: z.string().nullable().optional(),
+  expected_legacy_organization_unit_text: z.string().nullable().optional(),
+  expected_legacy_responsible_person_text: z.string().nullable().optional(),
+};
+
 const RegisterAssetSchema = z
   .object({
     name: z.string().nullable().optional(),
@@ -33,8 +55,8 @@ const RegisterAssetSchema = z
     explicit_continuation: z.boolean().optional(),
     retry_token: z.string().optional(),
     category: z.null().optional(),
-    organization_unit: z.null().optional(),
     acquisition_id: z.string().nullable().optional(),
+    ...referenceContextFields,
   })
   .strict();
 
@@ -48,7 +70,6 @@ const BulkRegisterItemSchema = z
     source_notes: z.string().nullable().optional(),
     is_legacy: z.boolean().optional(),
     category: z.null().optional(),
-    organization_unit: z.null().optional(),
   })
   .strict();
 
@@ -58,6 +79,7 @@ const BulkRegisterAssetSchema = z
     explicit_continuation: z.boolean().optional(),
     items: z.array(BulkRegisterItemSchema).min(1).max(100),
     retry_token: z.string().optional(),
+    ...referenceContextFields,
   })
   .strict();
 
@@ -72,6 +94,8 @@ const CorrectAssetSchema = z
     reason: z.string().nullable().optional(),
     explicit_continuation: z.boolean().optional(),
     retry_token: z.string().optional(),
+    ...referenceContextFields,
+    ...expectedReferenceContextFields,
   })
   .strict();
 
@@ -458,6 +482,8 @@ export const assetRoutes: FastifyPluginAsync<AssetRoutesOptions> = async (
    * Bounded identifier/description search (T3).
    * Supports field-based exact matching for stable_id, asset_number, serial_number,
    * case-insensitive literal substring for name, or empty browse when no criteria given.
+   * T4 (#25): each legacy reference text is a field searched like name, and
+   * location_id / organization_unit_id / responsible_person_id filter by exact entry, with AND.
    * Requires BOTH 'asset:search' and 'asset:view' capabilities.
    * Prevents query disclosure in operational logs via sanitized URLs and logLevel 'silent'.
    */
@@ -499,7 +525,7 @@ export const assetRoutes: FastifyPluginAsync<AssetRoutesOptions> = async (
       const query = (request.query || {}) as Record<string, unknown>;
 
       // Check for unknown parameters
-      const allowedParams = new Set(['field', 'value', 'limit', 'offset']);
+      const allowedParams = new Set<string>(['field', 'value', 'limit', 'offset', ...REFERENCE_ID_FIELDS]);
       for (const key of Object.keys(query)) {
         if (!allowedParams.has(key)) {
           return sendValidationError({ query: 'Unknown query parameter' });
@@ -524,7 +550,7 @@ export const assetRoutes: FastifyPluginAsync<AssetRoutesOptions> = async (
       }
 
       // Valid selector check
-      const validFields = new Set(['stable_id', 'asset_number', 'serial_number', 'name']);
+      const validFields = new Set<string>(['stable_id', 'asset_number', 'serial_number', 'name', ...LEGACY_TEXT_FIELDS]);
       if (field !== undefined && !validFields.has(field)) {
         return sendValidationError({ field: 'Invalid search field selector' });
       }
@@ -552,10 +578,16 @@ export const assetRoutes: FastifyPluginAsync<AssetRoutesOptions> = async (
           if (!isValidExactUuid(value)) {
             return sendValidationError({ value: 'Invalid UUID format for stable_id' });
           }
-        } else if (field === 'name' && value !== '') {
+        } else if ((field === 'name' || (LEGACY_TEXT_FIELDS as readonly string[]).includes(field)) && value !== '') {
           if (value.trim() === '') {
-            return sendValidationError({ value: 'Search value for name must not be whitespace-only' });
+            return sendValidationError({ value: `Search value for ${field} must not be whitespace-only` });
           }
+        }
+      }
+
+      for (const filter of REFERENCE_ID_FIELDS) {
+        if (query[filter] !== undefined && !isValidExactUuid(query[filter])) {
+          return sendValidationError({ [filter]: `${filter} must be a valid UUID` });
         }
       }
 
@@ -593,6 +625,9 @@ export const assetRoutes: FastifyPluginAsync<AssetRoutesOptions> = async (
         const result = await assetService.searchAssets({
           field: field as any,
           value: value as string | undefined,
+          location_id: query.location_id as string | undefined,
+          organization_unit_id: query.organization_unit_id as string | undefined,
+          responsible_person_id: query.responsible_person_id as string | undefined,
           limit: limit as any,
           offset: offset as any,
         });

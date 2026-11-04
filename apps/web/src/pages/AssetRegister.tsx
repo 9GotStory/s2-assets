@@ -1,5 +1,13 @@
 import React, { useEffect, useState, useRef } from 'react';
 import { useNavigate, Link, useSearchParams } from 'react-router';
+import {
+  EMPTY_REFERENCE_CONTEXT,
+  ReferenceContextFields,
+  referenceContextPayload,
+  useReferenceLists,
+  type AssetReferenceColumns,
+  type ReferenceContextValues,
+} from '../components/ReferenceContextFields';
 
 export interface DuplicateCandidate {
   id: string;
@@ -18,13 +26,12 @@ export interface DuplicateCandidatesResponse {
 }
 
 export interface RegisterAssetResponse {
-  asset: {
+  asset: AssetReferenceColumns & {
     id: string;
     name: string | null;
     asset_number: string | null;
     serial_number: string | null;
     category: string | null;
-    organization_unit: string | null;
     source_reference: string | null;
     source_notes: string | null;
     registered_by: string;
@@ -51,11 +58,13 @@ export const AssetRegister: React.FC = () => {
   const [isLegacy, setIsLegacy] = useState(false);
   const [explicitContinuation, setExplicitContinuation] = useState(false);
   const [acquisitionId, setAcquisitionId] = useState(initialAcquisitionId);
+  const [referenceContext, setReferenceContext] = useState<ReferenceContextValues>(EMPTY_REFERENCE_CONTEXT);
 
   // Maintain persistent retry token across retries for the same registration intent (Spec Finding 5)
   const [retryToken] = useState(() => crypto.randomUUID());
 
   const [csrfToken, setCsrfToken] = useState<string | null>(null);
+  const [actorId, setActorId] = useState<string | null>(null);
   const [isLoadingSession, setIsLoadingSession] = useState(true);
   const [isCheckingDuplicates, setIsCheckingDuplicates] = useState(false);
   const [isLoadingMoreCandidates, setIsLoadingMoreCandidates] = useState(false);
@@ -78,6 +87,7 @@ export const AssetRegister: React.FC = () => {
   const submittedSerialNumberRef = useRef<string | null>(null);
 
   const navigate = useNavigate();
+  const referenceLists = useReferenceLists(false, actorId);
 
   useEffect(() => {
     const controller = new AbortController();
@@ -97,6 +107,7 @@ export const AssetRegister: React.FC = () => {
 
         const data = await response.json();
         setCsrfToken(data.csrfToken || null);
+        setActorId(data.user?.id || null);
         setIsLoadingSession(false);
       } catch (err: unknown) {
         if (err instanceof DOMException && err.name === 'AbortError') {
@@ -283,6 +294,7 @@ export const AssetRegister: React.FC = () => {
         explicit_continuation: explicitContinuation,
         retry_token: retryToken,
         acquisition_id: acquisitionId.trim() ? acquisitionId.trim() : null,
+        ...referenceContextPayload(referenceContext),
       };
 
       const response = await fetch('/assets', {
@@ -880,6 +892,15 @@ export const AssetRegister: React.FC = () => {
                 }}
               />
             </div>
+
+            {/* Reference context (T4, D7-A) */}
+            <ReferenceContextFields
+              idPrefix="register"
+              values={referenceContext}
+              onChange={(field, value) => setReferenceContext((current) => ({ ...current, [field]: value }))}
+              lists={referenceLists.lists}
+              listError={referenceLists.error}
+            />
 
             {/* Acquisition Linkage */}
             <div style={{ marginBottom: '1.5rem' }}>

@@ -1,5 +1,13 @@
 import React, { useEffect, useState, useRef, useCallback } from 'react';
 import { useNavigate, Link, useSearchParams } from 'react-router';
+import {
+  EMPTY_REFERENCE_CONTEXT,
+  ReferenceContextFields,
+  referenceContextPayload,
+  useReferenceLists,
+  type ReferenceContextField,
+  type ReferenceContextValues,
+} from '../components/ReferenceContextFields';
 
 export interface BulkItemFormState {
   item_key: string;
@@ -51,6 +59,10 @@ export const AssetBulkRegister: React.FC = () => {
   const initialAcquisitionId = searchParams.get('acquisition_id') || '';
 
   const [sharedAcquisitionId, setSharedAcquisitionId] = useState(initialAcquisitionId);
+  // T4 (#25): one reference context shared by every item in the batch.
+  const [sharedReferenceContext, setSharedReferenceContext] = useState<ReferenceContextValues>(EMPTY_REFERENCE_CONTEXT);
+  const [listActorId, setListActorId] = useState<string | null>(null);
+  const referenceLists = useReferenceLists(false, listActorId);
   const [items, setItems] = useState<BulkItemFormState[]>([
     {
       item_key: crypto.randomUUID(),
@@ -201,6 +213,7 @@ export const AssetBulkRegister: React.FC = () => {
           },
         ]);
         setSharedAcquisitionId('');
+        setSharedReferenceContext(EMPTY_REFERENCE_CONTEXT);
         setSuccessResult(null);
         setWarnings([]);
         setErrorMessage(null);
@@ -320,6 +333,7 @@ export const AssetBulkRegister: React.FC = () => {
       }
 
       currentActorIdRef.current = actorId;
+      setListActorId(actorId);
       setCsrfToken(data.csrfToken || null);
       setForbiddenError(null);
       setIsVerifyingSession(false);
@@ -449,6 +463,12 @@ export const AssetBulkRegister: React.FC = () => {
     setErrorMessage(null);
   };
 
+  const handleSharedReferenceChange = (field: ReferenceContextField, value: string) => {
+    if (uncertainSnapshot) return;
+    setSharedReferenceContext((current) => ({ ...current, [field]: value }));
+    setErrorMessage(null);
+  };
+
   // Submit handler: validates input, builds verbatim payload, sends request
   const handleSubmit = async (e: React.FormEvent<HTMLFormElement>) => {
     e.preventDefault();
@@ -518,6 +538,7 @@ export const AssetBulkRegister: React.FC = () => {
         source_notes: itm.source_notes.trim() || null,
         is_legacy: itm.is_legacy,
       })),
+      ...referenceContextPayload(sharedReferenceContext),
     };
 
     const intentSnapshot: UncertainSnapshot = {
@@ -1330,6 +1351,17 @@ export const AssetBulkRegister: React.FC = () => {
                 }}
               />
             </div>
+
+            {/* Shared reference context (T4, D7-A) */}
+            <ReferenceContextFields
+              idPrefix="bulk"
+              legend="ข้อมูลอ้างอิงร่วมของทุกรายการในชุดนี้ (ไม่บังคับ)"
+              values={sharedReferenceContext}
+              onChange={handleSharedReferenceChange}
+              lists={referenceLists.lists}
+              listError={referenceLists.error}
+              disabled={Boolean(uncertainSnapshot) || isSubmitting || isVerifyingSession || Boolean(forbiddenError)}
+            />
 
             {/* Row-Correlated Candidate Warnings Alert (F1, F4) */}
             {!isVerifyingSession && !forbiddenError && warnings.length > 0 && (

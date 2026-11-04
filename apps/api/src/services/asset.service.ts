@@ -1,6 +1,8 @@
 import * as crypto from 'node:crypto';
 import pg from 'pg';
 import { isValidUuid } from './capability.service.ts';
+import { hasDisallowedControlChars } from './control-characters.ts';
+import { findUnassignableEntry, REFERENCE_LISTS } from './reference.service.ts';
 
 export interface AssetRecord {
   id: string;
@@ -8,7 +10,12 @@ export interface AssetRecord {
   serial_number: string | null;
   name: string | null;
   category: string | null;
-  organization_unit: string | null;
+  location_id?: string | null;
+  organization_unit_id?: string | null;
+  responsible_person_id?: string | null;
+  legacy_location_text?: string | null;
+  legacy_organization_unit_text?: string | null;
+  legacy_responsible_person_text?: string | null;
   source_reference: string | null;
   source_notes: string | null;
   registered_by: string;
@@ -29,12 +36,58 @@ export interface AssetHistoryRecord {
   created_at?: string | Date;
 }
 
-export interface RegisterAssetInput {
+/**
+ * T4 (#25, D7-A): optional reference context. Each id names an active entry of its list; each
+ * legacy text keeps what an old record said when it matches no entry (AR-06, AR-10).
+ */
+export interface ReferenceContextInput {
+  location_id?: string | null;
+  organization_unit_id?: string | null;
+  responsible_person_id?: string | null;
+  legacy_location_text?: string | null;
+  legacy_organization_unit_text?: string | null;
+  legacy_responsible_person_text?: string | null;
+}
+
+export type NormalizedReferenceContext = { [K in keyof ReferenceContextInput]-?: string | null };
+
+export interface ReferenceEntrySummary {
+  id: string;
+  name: string;
+  is_active: boolean;
+}
+
+export interface AssetReferenceContext {
+  location: ReferenceEntrySummary | null;
+  organization_unit: ReferenceEntrySummary | null;
+  responsible_person: ReferenceEntrySummary | null;
+  legacy_location_text: string | null;
+  legacy_organization_unit_text: string | null;
+  legacy_responsible_person_text: string | null;
+}
+
+// The Asset column of each reference list (location_id, organization_unit_id, responsible_person_id).
+export const REFERENCE_ID_FIELDS = Object.values(REFERENCE_LISTS).map(({ assetColumn }) => assetColumn);
+
+export const LEGACY_TEXT_FIELDS = [
+  'legacy_location_text',
+  'legacy_organization_unit_text',
+  'legacy_responsible_person_text',
+] as const;
+
+export const LEGACY_TEXT_MAX_LENGTH = 500;
+
+type ReferenceContextField = keyof ReferenceContextInput;
+
+const REFERENCE_CONTEXT_FIELDS: readonly ReferenceContextField[] = [...REFERENCE_ID_FIELDS, ...LEGACY_TEXT_FIELDS];
+
+const expectedKey = (field: ReferenceContextField) => `expected_${field}` as keyof ExpectedReferenceContextInput;
+
+export interface RegisterAssetInput extends ReferenceContextInput {
   name?: string | null;
   asset_number?: string | null;
   serial_number?: string | null;
   category?: string | null;
-  organization_unit?: string | null;
   source_reference?: string | null;
   source_notes?: string | null;
   is_legacy?: boolean;
@@ -51,10 +104,9 @@ export interface BulkRegisterItemInput {
   source_notes?: string | null;
   is_legacy?: boolean;
   category?: null;
-  organization_unit?: null;
 }
 
-export interface BulkRegisterAssetInput {
+export interface BulkRegisterAssetInput extends ReferenceContextInput {
   acquisition_id?: string | null;
   explicit_continuation?: boolean;
   items: BulkRegisterItemInput[];
@@ -72,7 +124,12 @@ export interface BulkRegisterAssetResult {
   shared_acquisition_id: string | null;
 }
 
-export interface CorrectAssetInput {
+// T4 (#25): the expected-before value of each reference field a correction names.
+export type ExpectedReferenceContextInput = {
+  [K in keyof ReferenceContextInput as `expected_${K}`]?: string | null;
+};
+
+export interface CorrectAssetInput extends ReferenceContextInput, ExpectedReferenceContextInput {
   name?: string | null;
   asset_number?: string | null;
   serial_number?: string | null;
@@ -238,9 +295,15 @@ export function canonicalJson(obj: unknown): string {
   return `{${keys.map((k) => `${JSON.stringify(k)}:${canonicalJson(record[k])}`).join(',')}}`;
 }
 
-export type SearchAssetField = 'stable_id' | 'asset_number' | 'serial_number' | 'name';
+// T4 (#25): each legacy reference text is searched on its own, keeping the dimensions distinct.
+export type SearchAssetField =
+  | 'stable_id'
+  | 'asset_number'
+  | 'serial_number'
+  | 'name'
+  | (typeof LEGACY_TEXT_FIELDS)[number];
 
-export interface SearchAssetItem {
+export interface SearchAssetItem extends AssetReferenceContext {
   id: string;
   name: string | null;
   asset_number: string | null;
@@ -250,6 +313,10 @@ export interface SearchAssetItem {
 export interface SearchAssetInput {
   field?: SearchAssetField | string;
   value?: string;
+  // T4 (#25): reference filters, each an exact entry id; several combine with AND.
+  location_id?: string;
+  organization_unit_id?: string;
+  responsible_person_id?: string;
   limit?: number | string;
   offset?: number | string;
 }
@@ -268,6 +335,111 @@ const EXACT_UUID_REGEX =
 function isValidExactUuid(val: unknown): val is string {
   return typeof val === 'string' && val.length === 36 && EXACT_UUID_REGEX.test(val);
 }
+
+/**
+ * T4 (#25): validates and normalizes optional reference context. Ids must be UUIDs; legacy text is
+ * trimmed, blank becomes null, and it is kept as recorded otherwise.
+ */
+export function normalizeReferenceContext(
+  input: ReferenceContextInput,
+  label: string = ''
+): NormalizedReferenceContext {
+  const context = {} as NormalizedReferenceContext;
+  for (const field of REFERENCE_ID_FIELDS) {
+    const value = input[field];
+    if (value === undefined || value === null) {
+      context[field] = null;
+    } else if (!isValidUuid(value)) {
+      throw new ValidationError(`${field} must be a valid UUID${label}`);
+    } else {
+      context[field] = value.trim().toLowerCase();
+    }
+  }
+  for (const field of LEGACY_TEXT_FIELDS) {
+    const value = input[field];
+    if (value === undefined || value === null) {
+      context[field] = null;
+      continue;
+    }
+    if (typeof value !== 'string') {
+      throw new ValidationError(`${field} must be a string or null${label}`);
+    }
+    const text = value.trim();
+    if (text.length > LEGACY_TEXT_MAX_LENGTH) {
+      throw new ValidationError(`${field} must be at most ${LEGACY_TEXT_MAX_LENGTH} characters${label}`);
+    }
+    // Line breaks and tabs are allowed in legacy text; other control characters are not.
+    if (hasDisallowedControlChars(text)) {
+      throw new ValidationError(`${field} must not contain control characters${label}`);
+    }
+    context[field] = text.length > 0 ? text : null;
+  }
+  return context;
+}
+
+const hasReferenceContext = (context: NormalizedReferenceContext): boolean =>
+  Object.values(context).some((value) => value !== null);
+
+// The reference-context columns of an `assets` row, as AssetRecord fields.
+const referenceColumns = (row: any): NormalizedReferenceContext => ({
+  location_id: row.location_id ?? null,
+  organization_unit_id: row.organization_unit_id ?? null,
+  responsible_person_id: row.responsible_person_id ?? null,
+  legacy_location_text: row.legacy_location_text ?? null,
+  legacy_organization_unit_text: row.legacy_organization_unit_text ?? null,
+  legacy_responsible_person_text: row.legacy_responsible_person_text ?? null,
+});
+
+/**
+ * T4 (#25): the reference fields a correction names, normalized like registration. Each corrected
+ * field needs its expected-before value; an expected value given alone is still checked.
+ */
+function normalizeReferenceCorrection(input: CorrectAssetInput): {
+  changes: Partial<NormalizedReferenceContext>;
+  expected: Partial<NormalizedReferenceContext>;
+} {
+  for (const field of REFERENCE_CONTEXT_FIELDS) {
+    if (input[field] !== undefined && input[expectedKey(field)] === undefined) {
+      throw new ValidationError(`${expectedKey(field)} is required when ${field} is corrected`);
+    }
+  }
+  const pickNamedFields = (source: ReferenceContextInput, context: NormalizedReferenceContext) =>
+    Object.fromEntries(
+      REFERENCE_CONTEXT_FIELDS.filter((field) => source[field] !== undefined).map((field) => [field, context[field]])
+    ) as Partial<NormalizedReferenceContext>;
+  const expectedInput = Object.fromEntries(
+    REFERENCE_CONTEXT_FIELDS.map((field) => [field, input[expectedKey(field)]])
+  ) as ReferenceContextInput;
+  return {
+    changes: pickNamedFields(input, normalizeReferenceContext(input)),
+    expected: pickNamedFields(expectedInput, normalizeReferenceContext(expectedInput, ' (expected before value)')),
+  };
+}
+
+const ASSET_REFERENCE_SELECT = `location_id, organization_unit_id, responsible_person_id,
+             legacy_location_text, legacy_organization_unit_text, legacy_responsible_person_text`;
+
+// The list entries an `assets` row aliased `a` names, for display in detail and search.
+const REFERENCE_ENTRY_SELECT = `l.name AS location_name, l.is_active AS location_active,
+                o.name AS organization_unit_name, o.is_active AS organization_unit_active,
+                p.name AS responsible_person_name, p.is_active AS responsible_person_active`;
+const REFERENCE_ENTRY_JOINS = `LEFT JOIN locations l ON l.id = a.location_id
+         LEFT JOIN organization_units o ON o.id = a.organization_unit_id
+         LEFT JOIN persons p ON p.id = a.responsible_person_id`;
+
+const referenceEntries = (row: any): Pick<AssetReferenceContext, 'location' | 'organization_unit' | 'responsible_person'> => {
+  const entry = (prefix: string): ReferenceEntrySummary | null =>
+    row[`${prefix}_id`] ? { id: row[`${prefix}_id`], name: row[`${prefix}_name`], is_active: row[`${prefix}_active`] } : null;
+  return {
+    location: entry('location'),
+    organization_unit: entry('organization_unit'),
+    responsible_person: entry('responsible_person'),
+  };
+};
+
+// A case-insensitive literal substring pattern for ILIKE ... ESCAPE '\'.
+const containsPattern = (value: string): string =>
+  `%${value.replace(/\\/g, '\\\\').replace(/%/g, '\\%').replace(/_/g, '\\_')}%`;
 
 export class AssetService {
   private db: any;
@@ -299,6 +471,12 @@ export class AssetService {
     if (input.acquisition_id !== undefined && input.acquisition_id !== null) {
       normalized.acquisition_id = input.acquisition_id;
     }
+    // T4 context joins the fingerprint only when supplied, so pre-T4 receipts still replay. It joins
+    // as a string: the key list given to JSON.stringify below also filters nested objects' keys.
+    const context = normalizeReferenceContext(input);
+    if (hasReferenceContext(context)) {
+      normalized.reference_context = canonicalJson(context);
+    }
     const jsonStr = JSON.stringify(normalized, Object.keys(normalized).sort());
     return crypto.createHash('sha256').update(jsonStr).digest('hex');
   }
@@ -324,7 +502,10 @@ export class AssetService {
         is_legacy: item.is_legacy === true,
       })),
     };
-    return crypto.createHash('sha256').update(canonicalJson(normalized)).digest('hex');
+    // T4 shared context joins the fingerprint only when supplied, so pre-T4 receipts still replay.
+    const context = normalizeReferenceContext(input);
+    const fingerprinted = hasReferenceContext(context) ? { ...normalized, reference_context: context } : normalized;
+    return crypto.createHash('sha256').update(canonicalJson(fingerprinted)).digest('hex');
   }
 
   /**
@@ -348,6 +529,15 @@ export class AssetService {
       },
       reason: (input.reason || '').trim(),
       explicit_continuation: input.explicit_continuation === true,
+      // T4 (#25): present only when the correction names reference context, so earlier receipts still match.
+      reference_context: REFERENCE_CONTEXT_FIELDS.some(
+        (field) => input[field] !== undefined || input[expectedKey(field)] !== undefined
+      )
+        ? {
+            changes: Object.fromEntries(REFERENCE_CONTEXT_FIELDS.map((field) => [field, input[field]])),
+            expected_before: Object.fromEntries(REFERENCE_CONTEXT_FIELDS.map((field) => [field, input[expectedKey(field)]])),
+          }
+        : undefined,
     };
     return crypto.createHash('sha256').update(canonicalJson(normalized)).digest('hex');
   }
@@ -392,7 +582,7 @@ export class AssetService {
     const excludeId = isValidUuid(excludeAssetId) ? excludeAssetId.trim() : null;
 
     const queryText = `
-      SELECT id, asset_number, serial_number, name, category, organization_unit,
+      SELECT id, asset_number, serial_number, name, category, ${ASSET_REFERENCE_SELECT},
              source_reference, source_notes, registered_by, recorded_at, created_at, updated_at,
              count(*) OVER()::int AS total_count
       FROM assets
@@ -447,7 +637,6 @@ export class AssetService {
       source_notes?: string | null;
       is_legacy?: boolean;
       category?: string | null;
-      organization_unit?: string | null;
     },
     itemKeyLabel?: string
   ): {
@@ -466,13 +655,6 @@ export class AssetService {
     if (item.category !== undefined && item.category !== null) {
       throw new ValidationError(
         itemKeyLabel ? `category must remain unset for ${itemKeyLabel}` : 'Category must remain unset in T1 (R2)'
-      );
-    }
-    if (item.organization_unit !== undefined && item.organization_unit !== null) {
-      throw new ValidationError(
-        itemKeyLabel
-          ? `organization_unit must remain unset for ${itemKeyLabel}`
-          : 'Organization unit is not accepted in T1 registration (D7)'
       );
     }
 
@@ -556,6 +738,18 @@ export class AssetService {
     };
   }
 
+  /** T4: every reference id must name an entry that is active now (see findUnassignableEntry). */
+  private async assertActiveReferences(
+    client: pg.PoolClient | pg.Pool,
+    context: Partial<NormalizedReferenceContext>,
+    label: string = ''
+  ): Promise<void> {
+    const field = await findUnassignableEntry(client, context);
+    if (field) {
+      throw new ValidationError(`${field} must name an active entry${label}`);
+    }
+  }
+
   /**
    * Internal helper: inserts a single asset row and corresponding starting 'REGISTERED' history row
    * within an existing caller-owned database transaction client.
@@ -573,8 +767,11 @@ export class AssetService {
       is_legacy: boolean;
     },
     acquisitionId: string | null,
-    assetId: string = crypto.randomUUID(),
-    historyId: string = crypto.randomUUID()
+    {
+      assetId = crypto.randomUUID(),
+      historyId = crypto.randomUUID(),
+      referenceContext = normalizeReferenceContext({}),
+    }: { assetId?: string; historyId?: string; referenceContext?: NormalizedReferenceContext } = {}
   ): Promise<{
     assetRow: AssetRecord;
     historyRow: AssetHistoryRecord;
@@ -584,14 +781,18 @@ export class AssetService {
     const insertAssetQuery = `
       INSERT INTO assets (
         id, asset_number, serial_number, name, category,
-        organization_unit, source_reference, source_notes,
+        source_reference, source_notes,
         registered_by, recorded_at, created_at, updated_at,
-        acquisition_id
+        acquisition_id,
+        location_id, organization_unit_id, responsible_person_id,
+        legacy_location_text, legacy_organization_unit_text, legacy_responsible_person_text
       ) VALUES (
         $1, $2, $3, $4, NULL,
-        NULL, $5, $6,
+        $5, $6,
         $7, now(), now(), now(),
-        $8
+        $8,
+        $9, $10, $11,
+        $12, $13, $14
       )
       RETURNING *;
     `;
@@ -604,6 +805,12 @@ export class AssetService {
       item.source_notes,
       actorId,
       acquisitionId,
+      referenceContext.location_id,
+      referenceContext.organization_unit_id,
+      referenceContext.responsible_person_id,
+      referenceContext.legacy_location_text,
+      referenceContext.legacy_organization_unit_text,
+      referenceContext.legacy_responsible_person_text,
     ]);
     const assetRow: AssetRecord = assetRes.rows[0];
 
@@ -614,6 +821,7 @@ export class AssetService {
       serial_number: item.serial_number,
       source_reference: item.source_reference,
       source_notes: item.source_notes,
+      ...(hasReferenceContext(referenceContext) ? referenceContext : {}),
     };
     if (acquisitionId) {
       historyPayload.acquisition_id = acquisitionId;
@@ -665,14 +873,8 @@ export class AssetService {
     }
 
     const normalized = this.normalizeAndValidateRegistrationItem(input);
-    const {
-      name,
-      asset_number: assetNumber,
-      serial_number: serialNumber,
-      is_legacy: isLegacy,
-      source_reference: sourceRef,
-      source_notes: sourceNotes,
-    } = normalized;
+    const { asset_number: assetNumber, serial_number: serialNumber } = normalized;
+    const referenceContext = normalizeReferenceContext(input);
 
     let acquisitionId: string | null = null;
     if (input.acquisition_id !== undefined && input.acquisition_id !== null) {
@@ -760,29 +962,16 @@ export class AssetService {
         }
       }
 
+      await this.assertActiveReferences(client, referenceContext);
+
       // 3 & 4. Insert asset record and starting history fact via shared helper
       const assetId = crypto.randomUUID();
       const historyId = crypto.randomUUID();
-      const { assetRow, historyRow } = await this.insertRegisteredAssetRecord(
-        client,
-        actorId,
-        normalized,
-        acquisitionId,
+      const { assetRow, historyRow } = await this.insertRegisteredAssetRecord(client, actorId, normalized, acquisitionId, {
         assetId,
-        historyId
-      );
-
-      const historyPayload: Record<string, any> = {
-        is_legacy: isLegacy,
-        name,
-        asset_number: assetNumber,
-        serial_number: serialNumber,
-        source_reference: sourceRef,
-        source_notes: sourceNotes,
-      };
-      if (acquisitionId) {
-        historyPayload.acquisition_id = acquisitionId;
-      }
+        historyId,
+        referenceContext,
+      });
 
       const result: AssetRegistrationResult = {
         asset: {
@@ -791,7 +980,7 @@ export class AssetService {
           serial_number: assetRow.serial_number,
           name: assetRow.name,
           category: assetRow.category,
-          organization_unit: assetRow.organization_unit,
+          ...referenceColumns(assetRow),
           source_reference: assetRow.source_reference,
           source_notes: assetRow.source_notes,
           registered_by: assetRow.registered_by,
@@ -806,7 +995,7 @@ export class AssetService {
           action: historyRow.action,
           actor_id: historyRow.actor_id,
           recorded_at: new Date(historyRow.recorded_at).toISOString(),
-          payload: historyPayload,
+          payload: historyRow.payload,
           created_at: new Date(historyRow.created_at!).toISOString(),
         },
       };
@@ -944,6 +1133,7 @@ export class AssetService {
     }
 
     const explicitContinuation = input.explicit_continuation === true;
+    const referenceContext = normalizeReferenceContext(input, ' (shared reference context)');
     const fingerprint = this.computeBulkPayloadFingerprint(input);
 
     const pool = this.db;
@@ -988,6 +1178,8 @@ export class AssetService {
           throw new ValidationError('Referenced acquisition not found');
         }
       }
+
+      await this.assertActiveReferences(client, referenceContext, ' (shared reference context)');
 
       // 3. Duplicate candidate check if explicit continuation is false
       if (!explicitContinuation) {
@@ -1122,12 +1314,9 @@ export class AssetService {
       const results: BulkRegisterResultItem[] = [];
 
       for (const item of normalizedItems) {
-        const { assetId, historyId } = await this.insertRegisteredAssetRecord(
-          client,
-          actorId,
-          item,
-          acquisitionId
-        );
+        const { assetId, historyId } = await this.insertRegisteredAssetRecord(client, actorId, item, acquisitionId, {
+          referenceContext,
+        });
 
         results.push({
           item_key: item.item_key,
@@ -1186,7 +1375,8 @@ export class AssetService {
   }
 
   /**
-   * Corrects registry identity metadata (asset_number, serial_number, name) on an existing Asset.
+   * Corrects registry identity metadata (asset_number, serial_number, name) and, since T4 (#25),
+   * reference context on an existing Asset.
    * Preserves Stable ID, original registration facts/time, provenance links, and audit history (P1–P3).
    * Enforces optimistic locking via expected-before comparison, mandatory non-blank reason,
    * AR-08 label loss rule, truthful ordinary name rule, self-excluding duplicate candidate check,
@@ -1258,6 +1448,7 @@ export class AssetService {
     }
 
     const explicitContinuation = input.explicit_continuation === true;
+    const referenceCorrection = normalizeReferenceCorrection(input);
 
     const rawRetryToken = options?.retryToken;
     if (
@@ -1309,7 +1500,7 @@ export class AssetService {
 
       // 2. Lock Asset row for fresh intent
       const assetLockRes = await client.query(
-        `SELECT id, asset_number, serial_number, name, category, organization_unit,
+        `SELECT id, asset_number, serial_number, name, category, ${ASSET_REFERENCE_SELECT},
                 source_reference, source_notes, registered_by, recorded_at, created_at, updated_at
          FROM assets
          WHERE id = $1
@@ -1345,11 +1536,14 @@ export class AssetService {
       const currentDbName = current.name ?? null;
       const currentDbAssetNumber = current.asset_number ?? null;
       const currentDbSerialNumber = current.serial_number ?? null;
+      const currentReference = referenceColumns(current);
+      const expectedReferenceFields = Object.keys(referenceCorrection.expected) as ReferenceContextField[];
 
       if (
         currentDbName !== expectedName ||
         currentDbAssetNumber !== expectedAssetNumber ||
-        currentDbSerialNumber !== expectedSerialNumber
+        currentDbSerialNumber !== expectedSerialNumber ||
+        expectedReferenceFields.some((field) => currentReference[field] !== referenceCorrection.expected[field])
       ) {
         await client.query('ROLLBACK');
         throw new StaleBeforeConflictError(
@@ -1358,11 +1552,13 @@ export class AssetService {
             name: currentDbName,
             asset_number: currentDbAssetNumber,
             serial_number: currentDbSerialNumber,
+            ...Object.fromEntries(expectedReferenceFields.map((field) => [field, currentReference[field]])),
           },
           {
             name: expectedName,
             asset_number: expectedAssetNumber,
             serial_number: expectedSerialNumber,
+            ...referenceCorrection.expected,
           }
         );
       }
@@ -1393,13 +1589,18 @@ export class AssetService {
       const assetNumberChanged = newAssetNumber !== currentDbAssetNumber;
       const serialNumberChanged = newSerialNumber !== currentDbSerialNumber;
 
+      const newReference: NormalizedReferenceContext = { ...currentReference, ...referenceCorrection.changes };
+      const changedReferenceFields = REFERENCE_CONTEXT_FIELDS.filter(
+        (field) => newReference[field] !== currentReference[field]
+      );
+
       const currentAssetFormatted: AssetRecord = {
         id: current.id,
         asset_number: current.asset_number,
         serial_number: current.serial_number,
         name: current.name,
         category: current.category,
-        organization_unit: current.organization_unit,
+        ...referenceColumns(current),
         source_reference: current.source_reference,
         source_notes: current.source_notes,
         registered_by: current.registered_by,
@@ -1408,7 +1609,7 @@ export class AssetService {
         updated_at: new Date(current.updated_at).toISOString(),
       };
 
-      if (!nameChanged && !assetNumberChanged && !serialNumberChanged) {
+      if (!nameChanged && !assetNumberChanged && !serialNumberChanged && changedReferenceFields.length === 0) {
         // No-op: no fields changed. Commit without writes to asset_history or tokens.
         await client.query('COMMIT');
         return {
@@ -1444,6 +1645,12 @@ export class AssetService {
         );
       }
 
+      // A newly named entry must be active; an entry the Asset already names may stay after deactivation.
+      await this.assertActiveReferences(
+        client,
+        Object.fromEntries(changedReferenceFields.map((field) => [field, newReference[field]]))
+      );
+
       // 6. Duplicate candidate review with self-exclusion
       if (!explicitContinuation && (assetNumberChanged || serialNumberChanged)) {
         const dupResult = await this.getDuplicateCandidates(
@@ -1474,6 +1681,12 @@ export class AssetService {
         SET asset_number = $1,
             serial_number = $2,
             name = $3,
+            location_id = $5,
+            organization_unit_id = $6,
+            responsible_person_id = $7,
+            legacy_location_text = $8,
+            legacy_organization_unit_text = $9,
+            legacy_responsible_person_text = $10,
             updated_at = now()
         WHERE id = $4
         RETURNING *;
@@ -1483,6 +1696,12 @@ export class AssetService {
         newSerialNumber,
         newName,
         assetId.trim(),
+        newReference.location_id,
+        newReference.organization_unit_id,
+        newReference.responsible_person_id,
+        newReference.legacy_location_text,
+        newReference.legacy_organization_unit_text,
+        newReference.legacy_responsible_person_text,
       ]);
       const updatedRow = updateRes.rows[0];
 
@@ -1496,6 +1715,9 @@ export class AssetService {
       }
       if (nameChanged) {
         changes.name = { before: currentDbName, after: newName };
+      }
+      for (const field of changedReferenceFields) {
+        changes[field] = { before: currentReference[field], after: newReference[field] };
       }
 
       const historyId = crypto.randomUUID();
@@ -1527,7 +1749,7 @@ export class AssetService {
           serial_number: updatedRow.serial_number,
           name: updatedRow.name,
           category: updatedRow.category,
-          organization_unit: updatedRow.organization_unit,
+          ...referenceColumns(updatedRow),
           source_reference: updatedRow.source_reference,
           source_notes: updatedRow.source_notes,
           registered_by: updatedRow.registered_by,
@@ -1598,7 +1820,7 @@ export class AssetService {
    */
   async getAssetById(
     id: string
-  ): Promise<{ asset: AssetRecord; history: AssetHistoryRecord[] } | null> {
+  ): Promise<{ asset: AssetRecord; history: AssetHistoryRecord[]; reference_context: AssetReferenceContext } | null> {
     if (!isValidUuid(id)) {
       return null;
     }
@@ -1611,11 +1833,15 @@ export class AssetService {
       await client.query('BEGIN TRANSACTION ISOLATION LEVEL REPEATABLE READ READ ONLY');
 
       const assetRes = await client.query(
-        `SELECT id, asset_number, serial_number, name, category, organization_unit,
-                source_reference, source_notes, registered_by, recorded_at, created_at, updated_at,
-                acquisition_id
-         FROM assets
-         WHERE id = $1`,
+        `SELECT a.id, a.asset_number, a.serial_number, a.name, a.category,
+                a.location_id, a.organization_unit_id, a.responsible_person_id,
+                a.legacy_location_text, a.legacy_organization_unit_text, a.legacy_responsible_person_text,
+                a.source_reference, a.source_notes, a.registered_by, a.recorded_at, a.created_at, a.updated_at,
+                a.acquisition_id,
+                ${REFERENCE_ENTRY_SELECT}
+         FROM assets a
+         ${REFERENCE_ENTRY_JOINS}
+         WHERE a.id = $1`,
         [id.trim()]
       );
 
@@ -1636,6 +1862,8 @@ export class AssetService {
 
       await client.query('COMMIT');
 
+      const assetRow = assetRes.rows[0];
+
       return {
         asset: {
           id: assetRes.rows[0].id,
@@ -1643,7 +1871,7 @@ export class AssetService {
           serial_number: assetRes.rows[0].serial_number,
           name: assetRes.rows[0].name,
           category: assetRes.rows[0].category,
-          organization_unit: assetRes.rows[0].organization_unit,
+          ...referenceColumns(assetRow),
           source_reference: assetRes.rows[0].source_reference,
           source_notes: assetRes.rows[0].source_notes,
           registered_by: assetRes.rows[0].registered_by,
@@ -1662,6 +1890,12 @@ export class AssetService {
           payload: row.payload,
           created_at: new Date(row.created_at).toISOString(),
         })),
+        reference_context: {
+          ...referenceEntries(assetRow),
+          legacy_location_text: assetRow.legacy_location_text ?? null,
+          legacy_organization_unit_text: assetRow.legacy_organization_unit_text ?? null,
+          legacy_responsible_person_text: assetRow.legacy_responsible_person_text ?? null,
+        },
       };
     } catch (err) {
       try {
@@ -1681,6 +1915,8 @@ export class AssetService {
    * Bounded identifier/description search (T3).
    * Supports field-based exact matching for stable_id, asset_number, serial_number,
    * case-insensitive literal substring for name, or empty browse when no criteria given.
+   * T4 (#25): legacy_text matches any of the three legacy texts the same way, and each
+   * reference filter narrows the result independently (AND).
    */
   async searchAssets(input: SearchAssetInput = {}): Promise<SearchAssetResult> {
     const { field, value, limit = 25, offset = 0 } = input;
@@ -1694,7 +1930,7 @@ export class AssetService {
     }
 
     if (field !== undefined) {
-      const allowedFields = ['stable_id', 'asset_number', 'serial_number', 'name'];
+      const allowedFields = ['stable_id', 'asset_number', 'serial_number', 'name', ...LEGACY_TEXT_FIELDS];
       if (!allowedFields.includes(field)) {
         throw new ValidationError(`Invalid search field: ${field}. Must be one of: ${allowedFields.join(', ')}`);
       }
@@ -1754,8 +1990,8 @@ export class AssetService {
       }
     }
 
-    // Determine filter condition and parameters
-    let whereClause = '';
+    // Determine filter conditions and parameters
+    const conditions: string[] = [];
     const params: any[] = [];
 
     const isBrowse = field === undefined || value === undefined || value === '';
@@ -1766,22 +2002,35 @@ export class AssetService {
           throw new ValidationError('Search value for stable_id must be a valid UUID');
         }
         params.push(value);
-        whereClause = `WHERE id = $${params.length}`;
+        conditions.push(`id = $${params.length}`);
       } else if (field === 'asset_number') {
         params.push(value);
-        whereClause = `WHERE asset_number = $${params.length}`;
+        conditions.push(`asset_number = $${params.length}`);
       } else if (field === 'serial_number') {
         params.push(value);
-        whereClause = `WHERE serial_number = $${params.length}`;
-      } else if (field === 'name') {
+        conditions.push(`serial_number = $${params.length}`);
+      } else if (field === 'name' || (LEGACY_TEXT_FIELDS as readonly string[]).includes(field)) {
         if (value.trim() === '') {
-          throw new ValidationError('Search value for name must not be whitespace-only');
+          throw new ValidationError(`Search value for ${field} must not be whitespace-only`);
         }
-        const escaped = value.replace(/\\/g, '\\\\').replace(/%/g, '\\%').replace(/_/g, '\\_');
-        params.push(`%${escaped}%`);
-        whereClause = `WHERE name ILIKE $${params.length} ESCAPE '\\'`;
+        params.push(containsPattern(value));
+        // field is one of the allowed column names checked above.
+        conditions.push(`${field} ILIKE $${params.length} ESCAPE '\\'`);
       }
     }
+
+    for (const filter of REFERENCE_ID_FIELDS) {
+      const id = input[filter];
+      if (id === undefined) {
+        continue;
+      }
+      if (!isValidExactUuid(id)) {
+        throw new ValidationError(`${filter} must be a valid UUID`);
+      }
+      params.push(id.toLowerCase());
+      conditions.push(`${filter} = $${params.length}`);
+    }
+    const whereClause = conditions.length > 0 ? `WHERE ${conditions.join(' AND ')}` : '';
 
     const limitParamIndex = params.length + 1;
     params.push(parsedLimit);
@@ -1790,7 +2039,7 @@ export class AssetService {
 
     const query = `
       WITH filtered AS (
-        SELECT id, name, asset_number, serial_number, recorded_at
+        SELECT id, name, asset_number, serial_number, recorded_at, ${ASSET_REFERENCE_SELECT}
         FROM assets
         ${whereClause}
       ),
@@ -1798,15 +2047,16 @@ export class AssetService {
         SELECT COUNT(*)::bigint AS total_count FROM filtered
       ),
       paged AS (
-        SELECT id, name, asset_number, serial_number, recorded_at
-        FROM filtered
-        ORDER BY recorded_at DESC, id ASC
+        SELECT a.*, ${REFERENCE_ENTRY_SELECT}
+        FROM filtered a
+        ${REFERENCE_ENTRY_JOINS}
+        ORDER BY a.recorded_at DESC, a.id ASC
         LIMIT $${limitParamIndex} OFFSET $${offsetParamIndex}
       )
-      SELECT p.id, p.name, p.asset_number, p.serial_number, c.total_count
+      SELECT r.*, c.total_count
       FROM counted c
-      LEFT JOIN paged p ON true
-      ORDER BY p.recorded_at DESC, p.id ASC
+      LEFT JOIN paged r ON true
+      ORDER BY r.recorded_at DESC, r.id ASC
     `;
 
     const res = await this.db.query(query, params);
@@ -1819,6 +2069,10 @@ export class AssetService {
         name: row.name ?? null,
         asset_number: row.asset_number ?? null,
         serial_number: row.serial_number ?? null,
+        ...referenceEntries(row),
+        legacy_location_text: row.legacy_location_text ?? null,
+        legacy_organization_unit_text: row.legacy_organization_unit_text ?? null,
+        legacy_responsible_person_text: row.legacy_responsible_person_text ?? null,
       }));
 
     const hasMore = parsedOffset + items.length < totalCount;
