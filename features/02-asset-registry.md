@@ -129,8 +129,8 @@ Canonical wording อยู่ที่ `../docs/06-business-rules.md`; Feature 
 ## Handoff Boundary
 
 Feature Brief นี้เป็น Blueprint context ไม่ใช่ approved implementation specification.
-สำหรับ Feature 002 ใช้ Matt Pocock Skills ตาม Constitution v5.0.0 และ `AGENTS.md`
+สำหรับ Feature 002 ใช้ Claude Code CLI และ Matt Pocock Skills ตาม Constitution v6.0.0 และ `AGENTS.md`
 เพื่อเตรียม user scenarios, acceptance criteria, implementation/testing decisions
 และ bounded GitHub Issues จาก brief นี้ร่วมกับ canonical Blueprint documents.
 การเรียก workflow ขั้นถัดไป การ publish และ implementation ต้องมี authorization
-ตามขอบเขต; Multica ยังคงเป็นช่องทาง coordination และ developer handoff.
+ตามขอบเขต; coordination และ handoff เป็นไปตาม `AGENTS.md` (Multica เป็น historical provenance).

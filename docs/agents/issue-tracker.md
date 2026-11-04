@@ -1,10 +1,9 @@
 # Issue tracker: GitHub
 
 Feature 002+ specifications and delivery tickets live in GitHub Issues for
-`9GotStory/s2-assets`. Use `gh` with `--repo 9GotStory/s2-assets` explicitly.
-Multica remains authoritative for Product Owner authorization, agent
-coordination, delegation, execution runs and Lead review. Keep reciprocal issue
-references; do not duplicate whole trackers or introduce a review ledger.
+`9GotStory/s2-assets`, which also record Product Owner decisions. Use `gh` with
+`--repo 9GotStory/s2-assets` explicitly. Keep reciprocal issue references; do
+not duplicate whole trackers or introduce a review ledger.
 
 ## Reading and publication
 
@@ -24,27 +23,37 @@ references; do not duplicate whole trackers or introduce a review ledger.
   ID, not its issue number. Do not invent tracker IDs.
 - **PRs as a request surface: no.**
 
+## Product Owner decisions
+
+- Product Owner decisions (approval, authorization, acceptance, merge,
+  deployment) are recorded on the relevant issue, in its body or a comment.
+  Cite that record in every handoff and result.
+- A decision given only in a Claude Code session is current authority for that
+  session; cite it as in-session and report its issue record as pending.
+- Post a result, review or decision comment only when the Product Owner
+  authorizes that comment.
+
 ## Execution and acceptance
 
 - Matt Pocock Skills define engineering workflow; they do not authorize actions
-  beyond the active Product Owner decision and bounded Multica handoff.
+  beyond the active Product Owner decision and bounded handoff (`AGENTS.md`).
 - A label, assignment or resolved blocker is not implementation authorization.
-- Do not auto-claim or dispatch work from tracker availability. Lead–Developer
-  handoffs, result return and corrective rounds remain Multica operations.
-- Once a bounded task is approved, normal handoffs and corrections within that
-  scope do not require repetitive Product Owner intervention.
-- Preserve separate implementation, Lead review, ChatGPT Independent Review and
-  Product Owner acceptance. Developer self-review replaces none of those gates.
+- Work starts from a Product Owner handoff, never from tracker availability.
+- Within an approved bounded task, corrective rounds need no new Product Owner
+  approval; scope expansion does.
+- Preserve separate implementation, Independent Review in a separate Claude Code
+  session and Product Owner acceptance. Author self-review replaces none of
+  those gates.
 - No automatic issue closure, merge, deployment or adjacent task execution.
   Avoid automatic issue-closing directives. Product Owner separately authorizes
   acceptance, closure, integration, scope expansion and destructive operations.
-- Follow Constitution v5.0.0, `AGENTS.md` and the active Multica issue for the
-  feature-scoped workflow, approved route and bounded authorization. Setup and
-  the amendment do not authorize `to-spec`, ticket publication or implementation.
+- Follow Constitution v6.0.0, `AGENTS.md` and the active GitHub Issue for the
+  workflow and bounded authorization. Setup and the amendment do not authorize
+  `to-spec`, ticket publication or implementation.
 
 ## Labels
 
-The triage skill is not installed. Do not create its label set, an Agent skills
-Triage labels block or `triage-labels.md` as part of this setup. Review any labels
-required for later authorized specification/ticket publication at that gate;
-labels never grant execution authority.
+Triage role labels are mapped in `docs/agents/triage-labels.md`. No label,
+including `ready-for-agent` or `ready-for-human`, grants execution authority.
+Review any further labels required for authorized specification/ticket
+publication at that gate.

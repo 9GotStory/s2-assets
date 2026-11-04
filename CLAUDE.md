@@ -1,38 +1,43 @@
-# CLAUDE.md — s2-assets DEV Executor
+# CLAUDE.md — s2-assets Claude Code Contract
 
 @AGENTS.md
 
 ## Role
 
-Act only as the implementation or corrective-revision executor for an explicitly
-authorized feature task under `AGENTS.md`. For Feature 002 onward, use the
-approved Matt Pocock Skills workflow; Spec Kit remains Feature 001 history.
+Claude Code is the only development tool for this repository. Each session
+takes the single role its bounded handoff names (`AGENTS.md`, Sessions and
+Gates): **author** or **Independent Reviewer**. For Feature 002 onward, use the
+Matt Pocock Skills workflow; Spec Kit remains Feature 001 history.
 
-Do not act as the independent reviewer or approve your own implementation.
-Internal checks do not constitute independent review.
+A session that authored a candidate never reviews or approves it. Internal
+checks do not constitute independent review. This file grants no standing work
+authorization.
 
 ## Agent skills
 
 ### Issue tracker
 
-Feature 002+ specifications and tickets use GitHub Issues in `9GotStory/s2-assets`;
-Multica records authorization, delegation, runs and review.
-See `docs/agents/issue-tracker.md`.
+Feature 002+ specifications, tickets and Product Owner decisions live in GitHub
+Issues in `9GotStory/s2-assets`. See `docs/agents/issue-tracker.md`.
+
+### Triage labels
+
+Default five-role vocabulary; labels never grant execution authority.
+See `docs/agents/triage-labels.md`.
 
 ### Domain docs
 
 Use one shared domain context and the existing canonical documentation.
 See `docs/agents/domain.md`.
 
-## Before implementation
+## Before work
 
 - read `AGENTS.md`;
 - read the current Constitution;
 - read only the approved artifacts needed by the exact task;
-- follow Constitution v5.0.0's feature-scoped workflow and the authorization gates
-  recorded in `AGENTS.md`;
-- verify the authorized baseline and scope;
-- verify the bounded handoff and active Lead–Developer route in Multica;
+- follow Constitution v6.0.0's workflow and the gates recorded in `AGENTS.md`;
+- verify every item of the bounded handoff against the GitHub Issue and the
+  repository: decision, role, baseline SHA, worktree/branch and candidate;
 - verify version-sensitive external behavior through Context7 when relevant.
 
 If authority, scope, baseline, or required external behavior is materially
@@ -44,40 +49,51 @@ unclear, STOP and report the blocker.
 - preserve `Simple — Structured — Sustainable`;
 - do not build future-feature abstractions;
 - use exact dependency versions authorized by the specification/task;
-- for Feature 002 onward, natively invoke `implement` for the authorized issue,
-  using `tdd` at appropriate agreed seams and `code-review` as an internal check;
-  do not substitute prompt text, downloaded instructions or bindings for native
+- for Feature 002 onward, work under the `implement` skill the Product Owner
+  invoked (`/implement <issue>`) for the authorized issue, using `tdd` at
+  appropriate agreed seams and `code-review` as an internal check; do not
+  substitute prompt text, downloaded instructions or bindings for native
   invocation evidence;
 - inspect relevant existing code before editing;
 - add or update tests when behavior changes;
 - run verification proportional to risk;
 - inspect the final diff and worktree;
 - run `git diff --check` when using Git;
-- when repository/task authority permits, create one atomic candidate commit and
-  push the runtime-managed candidate branch as review evidence;
+- commit locally (`implement` commits by default), run the internal
+  `code-review` from the baseline to that commit, and fold any fixes into one
+  atomic candidate commit; then, when repository/task authority permits, push
+  the task's candidate branch as review evidence;
 - never merge, deploy, perform destructive operations, or begin another task
   without explicit Product Owner authorization.
 
 ## Implementation Result
 
-Publish one implementation result for the exact candidate, including:
+Report one implementation result for the exact candidate, including:
 
-- task ID and scope;
+- task ID, scope and authorizing Product Owner decision;
 - baseline/parent SHA when relevant;
-- candidate branch/commit or run artifact;
+- candidate branch and commit;
 - changed files;
+- skills invoked;
 - verification executed and exact results;
 - material Context7/first-party evidence when relevant;
 - unresolved limitations or blockers.
 
-Return the result to the authorized Lead through Multica and STOP. The internal
-`code-review` does not replace Lead review, ChatGPT Independent Review or Product
-Owner acceptance. Normal bounded handoffs do not require repeated Product Owner
-approval; scope expansion and integration remain separately authorized.
+Return the result to the Product Owner and STOP. The internal `code-review`
+does not replace Independent Review or Product Owner acceptance.
 
-The current approved coordination route is recorded in `AGENTS.md`; verify live
-assignment, identity and routing in Multica. This file grants no standing work
-authorization and does not implement runtime routing.
+## Independent Review
+
+In a session started to review a candidate it did not author:
+
+- confirm the candidate and baseline SHAs in the handoff match the repository;
+- invoke `code-review` from the baseline to the exact candidate;
+- inspect tests, verification evidence and scope against the issue and approved
+  authority; rerun verification proportional to risk;
+- leave the candidate unchanged;
+- report the verdict, PASS or CHANGES REQUESTED, with concrete findings tied to
+  authority and the exact results of any verification rerun;
+- return the result to the Product Owner and STOP.
 
 ## Corrective Revision
 
@@ -86,6 +102,6 @@ When independent review requests changes:
 - address only the listed findings and directly related consequences;
 - do not reinterpret or broaden the scope;
 - rerun affected verification;
-- publish a corrective result with concrete evidence;
-- return it through the active coordination workflow;
+- report a corrective result with concrete evidence;
+- return it to the Product Owner for the next Independent Review;
 - STOP.
