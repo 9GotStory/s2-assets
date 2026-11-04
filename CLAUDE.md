@@ -143,13 +143,15 @@ the Web at `http://127.0.0.1:5180` and the API at `http://127.0.0.1:3010`; its c
 commands are in `docs/operations/development-runtime.md`.
 - **Source:** a commit reaches the runtime only through
   `~/dev/s2-assets-quadlet/scripts/dev-runtime-update.sh --sha <commit>`, which backs up the
-  database first. Promoting a merged commit is development work. Read results only against the
-  commit `dev-runtime-verify.sh` reports.
-- **Accounts:** the database holds no user accounts; a development login needs a Product Owner
-  decision.
-- **Data:** a task cleans only what it created. `podman volume prune`,
-  `podman system prune --volumes` and `dev-runtime-uninstall.sh --purge` delete the development
-  database, so they stay away from this runtime.
+  database first; `--no-backup` belongs to the doc's rollback and restore procedures alone.
+  Promoting a merged commit is development work. Read results only against the commit
+  `dev-runtime-verify.sh` reports.
+- **Accounts:** creating a development login needs a Product Owner decision.
+- **Data:** a task cleans only what it created. UID 1000's Podman also holds other projects'
+  units, images and volumes, among them Songhealth's accepted production image
+  `localhost/songhealth-app:0.0.1`, which no rebuild reproduces: keep every `podman … prune`
+  command off this host user. The rollback, the restore and `dev-runtime-uninstall.sh --purge`
+  replace or delete the development database and need a Product Owner decision.
 
 **Production.** Rootless Podman + systemd Quadlet as `TECHNOLOGY.md` defines; its units in
 `deploy/podman/quadlet/` are a separate target from the development runtime.

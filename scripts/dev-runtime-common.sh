@@ -25,6 +25,8 @@ DB_NAME=s2_assets_qdev                            # the database and its owner r
 DB_VOLUME=s2-assets-qdev-db-data
 NETWORK=s2-assets-qdev
 LABEL=io.s2-assets.runtime=qdev
+NETWORK_SVC=s2-assets-dev-network.service         # Quadlet's one-shot network and volume services:
+VOLUME_SVC=s2-assets-dev-db-data-volume.service   # they stay active until stopped
 # Built locally from deploy/podman/dev.Containerfile (the Feature 001 development tooling
 # image); the label records which Containerfile built it, so a changed one is rebuilt.
 TOOLING=localhost/s2-assets-qdev-tooling:latest
@@ -38,6 +40,9 @@ note() { printf '%s: %s\n' "${0##*/}" "$*"; }
 
 require_sha() { [[ ${1:-} =~ ^[0-9a-f]{40}$ ]] || die "--sha must name a full 40-hex commit"; }
 volume_path() { podman volume inspect --format '{{.Mountpoint}}' "$1"; }
+db_volume_is_ours() { # the data volume carries this runtime's label
+  [[ $(podman volume inspect --format "{{index .Labels \"${LABEL%%=*}\"}}" "$DB_VOLUME") == "${LABEL#*=}" ]]
+}
 db_has_cluster() { # the data volume holds an initialized PostgreSQL 18 cluster
   local p
   p=$(volume_path "$DB_VOLUME") && podman unshare test -e "$p/18/docker/PG_VERSION"

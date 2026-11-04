@@ -45,7 +45,7 @@ git -C "$SRC" cat-file -e "$SHA:scripts/dev-runtime-install.sh" 2>/dev/null \
 
 if [[ $BACKUP == yes ]]; then
   systemctl --user is-active --quiet "$DB" \
-    || die "the database is not running, so it cannot be backed up: start $DB, or pass --no-backup"
+    || die "the database is not running, so it cannot be backed up: start $DB; if it refuses to start, see docs/operations/development-runtime.md (Restore a lost database)"
   install -d -m 0700 -- "$STATE_DIR/backups"
   dest=$STATE_DIR/backups/$DB_NAME-$(date -u +%Y%m%dT%H%M%SZ)-$(git -C "$SRC" rev-parse --short HEAD).dump
   BACKUP_DB_USER=$DB_NAME "$SRC/scripts/backup.sh" "$DB_CTR" "$DB_NAME" "$dest" \

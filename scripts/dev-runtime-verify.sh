@@ -34,7 +34,7 @@ source_ok() {
     && [[ -z $(git -C "$SRC" status --porcelain --untracked-files=no) ]]
 }
 volume_ok() {
-  [[ $(podman volume inspect --format '{{index .Labels "io.s2-assets.runtime"}}' "$DB_VOLUME") == qdev ]]
+  db_volume_is_ours
 }
 
 check "$DB active" systemctl --user is-active --quiet "$DB"

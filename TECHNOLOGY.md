@@ -6,7 +6,7 @@ Status: **SELECTED BASELINE**
 
 > Technical direction สำหรับการพัฒนา `s2-assets`. เอกสารนี้ไม่ใช่ Business Authority และไม่เปลี่ยนความหมายของ Blueprint/Business Rules
 
-> **1.1.0 (2026-11-03):** Product Owner decision — ย้าย development runtime ออกจาก `multica-agent` (UID 1001) มาเป็น rootless Podman + user-level systemd Quadlet ของ workspace user (UID 1000) แบบเดียวกับ Songhealth แต่แยก resources กัน และเลิกใช้ Multica/AGY บน host (§9 Development environment / Development orchestration). Application stack และ production direction ไม่เปลี่ยน
+> **1.1.0 (2026-11-03):** Product Owner decision (#36 Decision 2; GitHub Spec Kit retired by #36 Decision 3, 2026-11-04) — ย้าย development runtime ออกจาก `multica-agent` (UID 1001) มาเป็น rootless Podman + user-level systemd Quadlet ของ workspace user (UID 1000) แบบเดียวกับ Songhealth แต่แยก resources กัน และเลิกใช้ Multica/AGY บน host (§9 Development environment / Development orchestration). Application stack และ production direction ไม่เปลี่ยน
 
 ---
 

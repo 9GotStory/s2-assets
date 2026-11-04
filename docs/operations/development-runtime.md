@@ -18,7 +18,7 @@ Authority: `TECHNOLOGY.md` v1.1.0 §9 (Development environment, Development orch
 | Resource | Value |
 | --- | --- |
 | Web | `http://127.0.0.1:5180/` — Vite dev server (`pnpm --filter web run dev`), loopback only; its dev proxy forwards `/auth`, `/system`, `/assets` and `/acquisitions` to `http://api:3000` |
-| API | `http://127.0.0.1:3010/` — Fastify dev server (`pnpm --filter api run dev`), loopback only (`/health`, `/ready`) |
+| API | `http://127.0.0.1:3010/` — Fastify dev server (`pnpm --filter api run dev`), loopback only (`/health`, `/ready`); `PUBLIC_APP_ORIGIN=http://127.0.0.1:5180`, so QR label links open the Web |
 | Units (`~/.config/containers/systemd/`) | `s2-assets-dev.network`, `s2-assets-dev-db-data.volume`, `s2-assets-dev-db.container`, `s2-assets-dev-api.container`, `s2-assets-dev-web.container` (sources in `deploy/dev-quadlet/`) |
 | Services | `s2-assets-dev-db.service`, `s2-assets-dev-api.service`, `s2-assets-dev-web.service` (user manager; started with the user session) |
 | Containers | `s2-assets-qdev-db`, `s2-assets-qdev-api` (alias `api`), `s2-assets-qdev-web` (alias `web`) |
@@ -97,15 +97,17 @@ The commit must be on a branch of the workspace repository; fetch a commit made 
 `git fetch origin <branch>:<branch>`. The update:
 
 1. backs up the database with `scripts/backup.sh` (custom format, mode 0600) to
-   `~/.local/state/s2-assets-qdev/backups/s2_assets_qdev-<UTC>-<previous short SHA>.dump`,
-   unless `--no-backup`;
+   `~/.local/state/s2-assets-qdev/backups/s2_assets_qdev-<UTC>-<previous short SHA>.dump`.
+   `--no-backup` skips this, and only the rollback and the restore below use it, right after
+   loading a backup;
 2. stops the Web and API, moves the checkout to the commit and records it;
 3. hands over to that commit's installer, which rebuilds and reinstalls only what changed,
    applies pending migrations, starts the API and Web and verifies.
 
 Migrations only move forward, and the migrator refuses a database that has applied a
 migration its commit does not have. To roll back after a new migration ran, recreate the
-database from the backup taken before it, then promote the backup's commit:
+database from the backup taken before it, then promote the backup's commit. This replaces
+the development database, so it needs a Product Owner decision:
 
 ```bash
 systemctl --user stop s2-assets-dev-web.service s2-assets-dev-api.service
@@ -116,6 +118,17 @@ podman exec -i s2-assets-qdev-db pg_restore -U s2_assets_qdev -d s2_assets_qdev 
 ~/dev/s2-assets-quadlet/scripts/dev-runtime-update.sh --sha <the backup's commit> --no-backup
 ```
 
+## Restore a lost database
+
+When the data volume is lost or recreated, the database unit refuses to start and the
+installer refuses to initialize the volume again, so the database never comes back empty
+without notice. Restoring needs a Product Owner decision:
+
+1. `~/dev/s2-assets-quadlet/scripts/dev-runtime-install.sh --sha <promoted commit> --init-empty-database`
+   initializes an empty cluster with the existing secrets and applies the migrations;
+2. load the backup as in the rollback above (stop the Web and API, recreate the database,
+   `pg_restore`), then promote the backup's commit with `--no-backup`.
+
 ## Uninstall
 
 ```bash
@@ -124,7 +137,8 @@ podman exec -i s2-assets-qdev-db pg_restore -U s2_assets_qdev -d s2_assets_qdev 
                                                                    # secrets, network and tooling image
 ```
 
-`--purge` asks for the typed confirmation `purge s2-assets-qdev`. Neither form deletes the
+`--purge` asks for the typed confirmation `purge s2-assets-qdev`, refuses a database volume
+without the runtime's label, and needs a Product Owner decision. Neither form deletes the
 source checkout or the backups.
 
 ## Separation from other runtimes
@@ -134,3 +148,8 @@ source checkout or the backups.
   other project's units and resources.
 - The production Quadlet units in `deploy/podman/quadlet/` are a different, unchanged
   deployment target with their own names (`s2-assets-*`, `s2-assets.network`).
+- UID 1000's Podman storage is shared with those projects: it holds their images and volumes,
+  among them Songhealth's accepted production image `localhost/songhealth-app:0.0.1`, which no
+  rebuild reproduces. Keep every `podman … prune` command off this host user;
+  `podman volume prune` and `podman system prune --volumes` would also delete this runtime's
+  database volume whenever its container is stopped.

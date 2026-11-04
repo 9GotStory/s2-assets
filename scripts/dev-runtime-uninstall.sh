@@ -22,13 +22,17 @@ case ${1:-} in
 esac
 [[ $(id -u) == 1000 ]] || die "the development runtime belongs to UID 1000"
 if [[ $PURGE == yes ]]; then
+  if podman volume exists "$DB_VOLUME"; then
+    db_volume_is_ours \
+      || die "volume $DB_VOLUME lacks the $LABEL label: refusing to delete a volume the installer did not create"
+  fi
   printf 'This permanently deletes the development database, its secrets and the tooling image.\n'
   printf 'Type "purge s2-assets-qdev" to continue: '
   IFS= read -r reply || reply=
   [[ $reply == 'purge s2-assets-qdev' ]] || die "not confirmed: nothing was changed"
 fi
 
-systemctl --user stop "$WEB" "$API" "$DB" 2>/dev/null || :
+systemctl --user stop "$WEB" "$API" "$DB" "$VOLUME_SVC" "$NETWORK_SVC" 2>/dev/null || :
 for u in "${UNITS[@]}"; do rm -f -- "$UNIT_DIR/$u"; done
 systemctl --user daemon-reload
 note "runtime stopped and its units removed"

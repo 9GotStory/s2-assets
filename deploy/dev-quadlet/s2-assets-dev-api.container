@@ -25,6 +25,7 @@ WorkingDir=/work
 PublishPort=127.0.0.1:3010:3000
 Environment=NODE_ENV=development
 Environment=PORT=3000
+Environment=PUBLIC_APP_ORIGIN=http://127.0.0.1:5180
 Secret=s2-assets-qdev-database-url,type=env,target=DATABASE_URL
 Secret=s2-assets-qdev-cookie-secret,type=env,target=COOKIE_SECRET
 Exec=pnpm --filter api run dev

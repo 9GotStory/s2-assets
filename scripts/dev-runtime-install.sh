@@ -5,7 +5,9 @@
 # state first and only adds what is missing. It never deletes data, never adopts a foreign or
 # half-made resource, and never touches another project's runtime or the retired UID-1001
 # runtime.
-#   scripts/dev-runtime-install.sh --sha <40-hex commit to run>
+#   scripts/dev-runtime-install.sh --sha <40-hex commit to run> [--init-empty-database]
+# --init-empty-database lets an installed runtime initialize an empty data volume again; only
+# the restore procedure in docs/operations/development-runtime.md uses it.
 # Run it from any checkout of this repository: it clones or verifies the runtime checkout at
 # that commit, then continues with the installer of that commit, so the runtime is always
 # defined by exactly one promoted commit.
@@ -17,11 +19,13 @@ umask 077
 # Report unexpected failures once, from the main shell (not from command substitutions).
 trap '[[ $BASH_SUBSHELL == 0 ]] && die "unexpected failure (line $LINENO): $BASH_COMMAND"' ERR
 
-SHA=''
+SHA='' INIT_EMPTY=no SECRETS_CREATED=no
+USAGE="usage: ${0##*/} --sha <40-hex commit> [--init-empty-database]"
 while (( $# )); do
   case $1 in
-    --sha) (( $# >= 2 )) || die "usage: ${0##*/} --sha <40-hex commit>"; SHA=$2; shift 2 ;;
-    *) die "usage: ${0##*/} --sha <40-hex commit>" ;;
+    --sha) (( $# >= 2 )) || die "$USAGE"; SHA=$2; shift 2 ;;
+    --init-empty-database) INIT_EMPTY=yes; shift ;;
+    *) die "$USAGE" ;;
   esac
 done
 require_sha "$SHA"
@@ -140,6 +144,7 @@ ensure_secrets() {
     | podman secret create --label "$LABEL" s2-assets-qdev-database-url - >/dev/null
   printf '%s' "$cookie" | podman secret create --label "$LABEL" s2-assets-qdev-cookie-secret - >/dev/null
   db_pw='' cookie=''
+  SECRETS_CREATED=yes
   note "secrets: created (${#SECRETS[@]} podman secrets)"
 }
 
@@ -149,7 +154,7 @@ ensure_volume() {
     note "volume $DB_VOLUME: created"
     return
   fi
-  [[ $(podman volume inspect --format '{{index .Labels "io.s2-assets.runtime"}}' "$DB_VOLUME") == qdev ]] \
+  db_volume_is_ours \
     || die "volume $DB_VOLUME exists without the $LABEL label: refusing to adopt a volume this installer did not create"
   note "volume $DB_VOLUME: present"
 }
@@ -193,6 +198,10 @@ install_units() {
 
 start_db() {
   if ! db_has_cluster; then
+    # Only a fresh install (it just created the secrets) or the restore procedure initializes
+    # an empty volume: a routine promotion never turns a lost database into an empty one.
+    [[ $SECRETS_CREATED == yes || $INIT_EMPTY == yes ]] \
+      || die "the data volume holds no database cluster although this runtime was installed before: the development database is lost; restore it (docs/operations/development-runtime.md, Restore a lost database)"
     : > "$STATE_DIR/db-first-init"      # authorizes exactly this first initialization
     note "starting $DB (first start: initializing the database cluster)"
   fi
@@ -226,7 +235,9 @@ preflight
 ensure_checkout
 if [[ $HERE != "$(cd "$SRC" && pwd -P)" ]]; then
   note "continuing with the installer of the promoted commit"
-  exec "$SRC/scripts/dev-runtime-install.sh" --sha "$SHA"
+  args=(--sha "$SHA")
+  if [[ $INIT_EMPTY == yes ]]; then args+=(--init-empty-database); fi
+  exec "$SRC/scripts/dev-runtime-install.sh" "${args[@]}"
 fi
 ensure_images
 ensure_dependencies
