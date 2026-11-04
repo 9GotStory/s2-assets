@@ -4,9 +4,11 @@ on:
   push:
     branches:
       - feature/001-application-foundation
+      - feature/002-asset-registry
   pull_request:
     branches:
       - feature/001-application-foundation
+      - feature/002-asset-registry
   workflow_dispatch:
 
 permissions:
