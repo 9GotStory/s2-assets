@@ -1,0 +1,17 @@
+# s2-assets persistent PostgreSQL data volume (Feature 001, T037).
+#
+# Authority:
+# - specs/001-application-foundation/tasks.md T037
+# - TECHNOLOGY.md §6 & §9 (PostgreSQL 18 persistent storage baseline)
+# - Feature 001 plan.md (named volume holding database state across container updates)
+#
+# Scoped Resource Ownership (R3):
+# - VolumeName=s2-assets-postgres-data scopes the physical Podman volume to this project,
+#   preventing generic collisions with other workloads on the host.
+# - Unit Exclusivity: Under systemd user mode (systemctl --user), unit file names are per-user.
+#   This unit must be uniquely named postgres-data-volume.service within the user's systemd session.
+[Unit]
+Description=s2-assets PostgreSQL persistent data volume
+
+[Volume]
+VolumeName=s2-assets-postgres-data

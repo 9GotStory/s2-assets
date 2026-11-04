@@ -1,12 +1,11 @@
 # Office Asset & Consumable Management System
 
-> Canonical Blueprint baseline สำหรับพัฒนาระบบครุภัณฑ์สำนักงานและวัสดุสิ้นเปลืองด้วย GitHub Spec Kit, AGY/Antigravity และ Multica 3-role coordination
+> Canonical Blueprint baseline สำหรับพัฒนาระบบครุภัณฑ์สำนักงานและวัสดุสิ้นเปลืองด้วย GitHub Spec Kit, AGY/Antigravity และ Multica
 
 | Baseline | Value |
 |---|---|
 | Blueprint | **v1.0.2 — FROZEN** |
-| Workflow | **v1.3.0 — AGY 3-role** |
-| Master Prompt | **v3.3** |
+| Workflow | **Spec Kit + Human-gated independent delivery** |
 | Technology Direction | **`TECHNOLOGY.md` v1.0.1 — SELECTED BASELINE** |
 | Business Rules | **252 canonical rules** |
 | Delivery decomposition | **14 Feature Briefs** |
@@ -52,6 +51,7 @@ Spec Kit artifacts refine delivery details แต่ห้าม silent-redefine
 - implementation + tests — delivered behavior
 
 Multica Issue/comments/run history เป็น coordination evidence ไม่ใช่ requirement source of truth ใหม่
+Agent assignment, delegation, mentions และ reviewer routing เป็น runtime coordination และไม่ใช่ repository governance
 
 ---
 
@@ -85,31 +85,21 @@ Constitution
 
 ### After Human Gate
 
-ใช้ Multica native 3-role chain:
+การ implementation หลัง Human Gate ต้องรักษาหลัก:
 
 ```text
-Human Product Owner
-        ↓
-agy-lead-reviewer
-Gemini 3.1 Pro High
-        ↓
-agy-developer
-Gemini 3.8 Flash High
-        ↓
-agy-independent-reviewer
-Gemini 3.1 Pro High
-        ↓
-Human Acceptance
+Authorized bounded implementation
+→ independent review
+→ Human Product Owner acceptance
 ```
 
-Role separation เป็น mandatory:
+กติกาหลัก:
 
-- `agy-lead-reviewer` — planning/handoff/orchestration only after Human Gate
-- `agy-developer` — exact authorized implementation/rework only
-- `agy-independent-reviewer` — fresh independent review only
-- Product Owner — final business authority, Human Gate และ final acceptance
-
-Developer และ Reviewer ต้องเป็นคนละ Multica agent identity และ reviewer ต้องตรวจ evidence/repository จริง ไม่อาศัย developer summary อย่างเดียว
+- implementation author ห้าม approve งานของตนเอง
+- independent review ต้องตรวจ repository evidence จริง
+- corrective revision ต้องอยู่ใน scope เดิม
+- Human Product Owner เป็น final acceptance
+- การเลือก agent, delegation, mentions, retries และ routing กำหนดใน Multica/runtime configuration ไม่ hardcode ใน repository
 
 ---
 
@@ -198,15 +188,13 @@ Feature sequencing canonical อยู่ที่ `docs/09-feature-map.md`
 6. relevant canonical docs/rules
 7. active Spec Kit artifacts
 
-### AGY implementation/review roles
+### Implementation / review
 
 1. `AGENTS.md`
-2. `MASTER-PROMPT.md`
-3. `MULTICA.md`
-4. `REVIEWER.md` when reviewing
-5. relevant Business Authority / Technology Direction
-6. exact active Spec Kit artifacts
-7. exact diff/tests/evidence for the authorized scope
+2. `CLAUDE.md` เพิ่มเติมสำหรับ implementation executor เมื่อ applicable
+3. relevant Business Authority / Technology Direction
+4. exact active Spec Kit artifacts
+5. exact diff/tests/evidence for the authorized scope
 
 ใช้ progressive disclosure; ห้าม copy Blueprint ทั้งชุดเข้า feature spec โดยอัตโนมัติ
 
@@ -221,13 +209,10 @@ Feature sequencing canonical อยู่ที่ `docs/09-feature-map.md`
 | `docs/` | canonical cross-feature domain documentation |
 | `features/` | bounded delivery context + rule routing |
 | `.specify/memory/constitution.md` | project engineering constitution |
-| `MASTER-PROMPT.md` | end-to-end project workflow contract |
-| `AGENTS.md` | AGY role adapter and shared invariants |
-| `REVIEWER.md` | independent review contract |
-| `MULTICA.md` | 3-role coordination/routing contract |
-| `SHORT-PROMPTS.md` | concise operational prompts |
+| `AGENTS.md` | shared repository authority and engineering contract |
+| `CLAUDE.md` | implementation executor contract |
 
-Repository text/source artifacts on `main` are canonical; generated packages are not a second source of truth
+Repository text/source artifacts on the active canonical branch are source of truth; generated packages are not a second source of truth.
 
 ---
 
@@ -242,13 +227,13 @@ Do not add without a current requirement:
 - extra planner/tester/architect agents
 - custom review ledger or second state database
 - automatic whole-phase implementation without bounded authorization
-- one agent acting as both implementation author and independent reviewer
+- one implementation author approving their own work
 
 ---
 
 ## 10. Current start point
 
-After Spec Kit bootstrap and Constitution are accepted, begin:
+After Spec Kit bootstrap and Constitution are accepted:
 
 ```text
 Feature 001 — application-foundation
@@ -258,5 +243,7 @@ Specify
 → Tasks
 → Analyze
 → Human Gate
-→ Multica AGY 3-role implementation
+→ bounded implementation
+→ independent review
+→ Human acceptance
 ```

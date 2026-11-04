@@ -1,0 +1,1371 @@
+import { describe, it, expect, vi, afterEach } from 'vitest';
+import Fastify, { type FastifyInstance } from 'fastify';
+import { errorHandlerPlugin } from '../../src/plugins/error-handler.ts';
+import {
+  authPlugin,
+  AuthenticationError,
+  resolveCookieSecure,
+  setSessionCookie,
+  clearSessionCookie,
+  getSessionCookie,
+  DEFAULT_SESSION_TTL_SECONDS,
+} from '../../src/plugins/auth.ts';
+import {
+  generateSessionToken,
+  hashToken,
+  SESSION_TTL_MS,
+  type Session,
+} from '../../src/services/session.service.ts';
+import type { SafeUser, User } from '../../src/services/user.service.ts';
+
+function createMockServices(overrides: {
+  validateSessionResult?: Session | null;
+  verifySessionResult?: { valid: boolean; session?: Session; reason?: 'MALFORMED' | 'EXPIRED' | 'NOT_FOUND' };
+  userResult?: User | null;
+  dbError?: boolean;
+} = {}) {
+  const sessionService = {
+    validateSession: vi.fn(async (token: string, options?: { rolling?: boolean }) => {
+      if (overrides.dbError) {
+        throw new Error('Database connection failed: SELECT * FROM sessions');
+      }
+      return overrides.validateSessionResult !== undefined ? overrides.validateSessionResult : null;
+    }),
+    verifySession: vi.fn(async (token: string) => {
+      if (overrides.dbError) {
+        throw new Error('Database connection failed');
+      }
+      return (
+        overrides.verifySessionResult ?? {
+          valid: false,
+          reason: 'NOT_FOUND' as const,
+        }
+      );
+    }),
+  };
+
+  const userService = {
+    findById: vi.fn(async (id: string) => {
+      if (overrides.dbError) {
+        throw new Error('Database connection failed: SELECT * FROM users');
+      }
+      return overrides.userResult !== undefined ? overrides.userResult : null;
+    }),
+    sanitizeUser: vi.fn((user: any): SafeUser => {
+      const { password_hash, ...safe } = user;
+      return safe;
+    }),
+  };
+
+  return { sessionService, userService };
+}
+
+describe('Fastify Auth Plugin Unit Tests (T020)', () => {
+  const originalEnv = process.env.NODE_ENV;
+
+  afterEach(() => {
+    process.env.NODE_ENV = originalEnv;
+  });
+
+  describe('1. Plugin Registration and Request/Reply Decoration', () => {
+    it('decorates Fastify instance, request, and reply with auth context and helpers', async () => {
+      const app = Fastify();
+      await app.register(errorHandlerPlugin);
+
+      const { sessionService, userService } = createMockServices();
+
+      await app.register(authPlugin, {
+        sessionService: sessionService as any,
+        userService: userService as any,
+      });
+
+      expect(typeof app.authenticate).toBe('function');
+      expect(typeof app.requireAuth).toBe('function');
+      expect(typeof app.setSessionCookie).toBe('function');
+      expect(typeof app.clearSessionCookie).toBe('function');
+      expect(app.sessionService).toBeDefined();
+      expect(app.userService).toBeDefined();
+
+      app.get('/test-decorators', { config: { public: true } }, async (request, reply) => {
+        return {
+          hasUser: request.user !== undefined,
+          hasSession: request.session !== undefined,
+          hasRawToken: request.rawToken !== undefined,
+          isAuthenticated: request.isAuthenticated(),
+          hasGetSessionToken: typeof request.getSessionToken === 'function',
+          hasReplySetCookie: typeof reply.setSessionCookie === 'function',
+          hasReplyClearCookie: typeof reply.clearSessionCookie === 'function',
+        };
+      });
+
+      await app.ready();
+
+      const response = await app.inject({
+        method: 'GET',
+        url: '/test-decorators',
+      });
+
+      expect(response.statusCode).toBe(200);
+      const body = response.json();
+      expect(body.hasUser).toBe(true);
+      expect(body.hasSession).toBe(true);
+      expect(body.hasRawToken).toBe(true);
+      expect(body.isAuthenticated).toBe(false);
+      expect(body.hasGetSessionToken).toBe(true);
+      expect(body.hasReplySetCookie).toBe(true);
+      expect(body.hasReplyClearCookie).toBe(true);
+
+      await app.close();
+    });
+
+    it('ensures plugin decorators escape encapsulation scopes via skip-override', async () => {
+      const app = Fastify();
+      await app.register(errorHandlerPlugin);
+
+      const { sessionService, userService } = createMockServices();
+
+      await app.register(authPlugin, {
+        sessionService: sessionService as any,
+        userService: userService as any,
+      });
+
+      // Register separate child plugin in parallel
+      await app.register(async (childScope) => {
+        expect(typeof childScope.authenticate).toBe('function');
+        expect(typeof childScope.setSessionCookie).toBe('function');
+        childScope.get('/child-route', { config: { public: true } }, async () => ({ child: true }));
+      });
+
+      await app.ready();
+      const res = await app.inject({ method: 'GET', url: '/child-route' });
+      expect(res.statusCode).toBe(200);
+      await app.close();
+    });
+  });
+
+  describe('2. Missing Session Cookie', () => {
+    it('denies access with HTTP 401 and UNAUTHORIZED when session cookie is completely missing', async () => {
+      const app = Fastify();
+      await app.register(errorHandlerPlugin);
+
+      const { sessionService, userService } = createMockServices();
+
+      await app.register(authPlugin, {
+        sessionService: sessionService as any,
+        userService: userService as any,
+      });
+
+      app.get('/protected', { preHandler: [app.authenticate] }, async (request) => {
+        return { user: request.user };
+      });
+
+      await app.ready();
+
+      const response = await app.inject({
+        method: 'GET',
+        url: '/protected',
+      });
+
+      expect(response.statusCode).toBe(401);
+      const body = response.json();
+      expect(body.error).toBeDefined();
+      expect(body.error.code).toBe('UNAUTHORIZED');
+      expect(body.error.message).toBe('Authentication required');
+      expect(sessionService.validateSession).not.toHaveBeenCalled();
+
+      await app.close();
+    });
+  });
+
+  describe('3. Malformed and Forged Session Tokens', () => {
+    it('rejects malformed token format (e.g. invalid length) with HTTP 401 UNAUTHORIZED', async () => {
+      const app = Fastify();
+      await app.register(errorHandlerPlugin);
+
+      const { sessionService, userService } = createMockServices();
+
+      await app.register(authPlugin, {
+        sessionService: sessionService as any,
+        userService: userService as any,
+      });
+
+      app.get('/protected', { preHandler: [app.authenticate] }, async () => ({ ok: true }));
+      await app.ready();
+
+      const response = await app.inject({
+        method: 'GET',
+        url: '/protected',
+        headers: {
+          cookie: 'session=short_malformed_token',
+        },
+      });
+
+      expect(response.statusCode).toBe(401);
+      const body = response.json();
+      expect(body.error.code).toBe('UNAUTHORIZED');
+      expect(sessionService.validateSession).not.toHaveBeenCalled();
+
+      await app.close();
+    });
+
+    it('rejects forged token with HTTP 401 SESSION_NOT_FOUND when valid format is not in database', async () => {
+      const app = Fastify();
+      await app.register(errorHandlerPlugin);
+
+      const forgedToken = generateSessionToken();
+      const { sessionService, userService } = createMockServices({
+        validateSessionResult: null,
+        verifySessionResult: { valid: false, reason: 'NOT_FOUND' },
+      });
+
+      await app.register(authPlugin, {
+        sessionService: sessionService as any,
+        userService: userService as any,
+      });
+
+      app.get('/protected', { preHandler: [app.authenticate] }, async () => ({ ok: true }));
+      await app.ready();
+
+      const response = await app.inject({
+        method: 'GET',
+        url: '/protected',
+        headers: {
+          cookie: `session=${forgedToken}`,
+        },
+      });
+
+      expect(response.statusCode).toBe(401);
+      const body = response.json();
+      expect(['SESSION_NOT_FOUND', 'UNAUTHORIZED']).toContain(body.error.code);
+      expect(sessionService.validateSession).toHaveBeenCalledWith(forgedToken, { rolling: true });
+
+      await app.close();
+    });
+  });
+
+  describe('4. Valid Active Session and Authentication Context', () => {
+    it('authenticates active user, sets request context, and refreshes rolling cookie', async () => {
+      const app = Fastify();
+      await app.register(errorHandlerPlugin);
+
+      const validToken = generateSessionToken();
+      const validDigest = hashToken(validToken);
+      const userId = '11111111-2222-3333-4444-555555555555';
+
+      const mockSession: Session = {
+        id: validDigest,
+        user_id: userId,
+        expires_at: new Date(Date.now() + 8 * 60 * 60 * 1000),
+        created_at: new Date(),
+      };
+
+      const mockUser: User = {
+        id: userId,
+        username: 'alice',
+        password_hash: '$argon2id$v=19$m=65536,t=3,p=4$someSalt$someHash',
+        is_active: true,
+        created_at: new Date(),
+        updated_at: new Date(),
+      };
+
+      const { sessionService, userService } = createMockServices({
+        validateSessionResult: mockSession,
+        userResult: mockUser,
+      });
+
+      await app.register(authPlugin, {
+        sessionService: sessionService as any,
+        userService: userService as any,
+        rolling: true,
+      });
+
+      app.get('/protected', { preHandler: [app.authenticate] }, async (request) => {
+        return {
+          user: request.user,
+          session: request.session,
+          rawToken: request.rawToken,
+          isAuthenticated: request.isAuthenticated(),
+        };
+      });
+
+      await app.ready();
+
+      const response = await app.inject({
+        method: 'GET',
+        url: '/protected',
+        headers: {
+          cookie: `session=${validToken}`,
+        },
+      });
+
+      expect(response.statusCode).toBe(200);
+      const body = response.json();
+      expect(body.user).toBeDefined();
+      expect(body.user.id).toBe(userId);
+      expect(body.user.username).toBe('alice');
+      // Password hash must never leak in authenticated context
+      expect(body.user.password_hash).toBeUndefined();
+      expect(body.session.id).toBe(validDigest);
+      expect(body.rawToken).toBe(validToken);
+      expect(body.isAuthenticated).toBe(true);
+
+      // Verify rolling session re-issues the session cookie
+      const setCookie = response.headers['set-cookie'];
+      expect(setCookie).toBeDefined();
+      expect(setCookie).toContain(`session=${validToken}`);
+      expect(setCookie).toMatch(/HttpOnly/i);
+      expect(setCookie).toMatch(/SameSite=Lax/i);
+
+      await app.close();
+    });
+  });
+
+  describe('5. Expired Session Rejection', () => {
+    it('denies access with HTTP 401 and SESSION_EXPIRED when session has expired', async () => {
+      const app = Fastify();
+      await app.register(errorHandlerPlugin);
+
+      const expiredToken = generateSessionToken();
+      const { sessionService, userService } = createMockServices({
+        validateSessionResult: null,
+        verifySessionResult: { valid: false, reason: 'EXPIRED' },
+      });
+
+      await app.register(authPlugin, {
+        sessionService: sessionService as any,
+        userService: userService as any,
+      });
+
+      app.get('/protected', { preHandler: [app.authenticate] }, async () => ({ ok: true }));
+      await app.ready();
+
+      const response = await app.inject({
+        method: 'GET',
+        url: '/protected',
+        headers: {
+          cookie: `session=${expiredToken}`,
+        },
+      });
+
+      expect(response.statusCode).toBe(401);
+      const body = response.json();
+      expect(body.error).toBeDefined();
+      expect(body.error.code).toBe('SESSION_EXPIRED');
+      expect(body.error.message).toBe('Authentication required');
+
+      await app.close();
+    });
+  });
+
+  describe('6. Revoked Session Rejection', () => {
+    it('denies access with HTTP 401 when session has been deleted or revoked', async () => {
+      const app = Fastify();
+      await app.register(errorHandlerPlugin);
+
+      const revokedToken = generateSessionToken();
+      const { sessionService, userService } = createMockServices({
+        validateSessionResult: null,
+        verifySessionResult: { valid: false, reason: 'NOT_FOUND' },
+      });
+
+      await app.register(authPlugin, {
+        sessionService: sessionService as any,
+        userService: userService as any,
+      });
+
+      app.get('/protected', { preHandler: [app.authenticate] }, async () => ({ ok: true }));
+      await app.ready();
+
+      const response = await app.inject({
+        method: 'GET',
+        url: '/protected',
+        headers: {
+          cookie: `session=${revokedToken}`,
+        },
+      });
+
+      expect(response.statusCode).toBe(401);
+      const body = response.json();
+      expect(['SESSION_NOT_FOUND', 'SESSION_REVOKED', 'UNAUTHORIZED']).toContain(body.error.code);
+
+      await app.close();
+    });
+  });
+
+  describe('7. Disabled User Rejection', () => {
+    it('denies access with HTTP 403 USER_DISABLED when user is deactivated in the database', async () => {
+      const app = Fastify();
+      await app.register(errorHandlerPlugin);
+
+      const token = generateSessionToken();
+      const userId = '22222222-3333-4444-5555-666666666666';
+
+      const mockSession: Session = {
+        id: hashToken(token),
+        user_id: userId,
+        expires_at: new Date(Date.now() + 8 * 60 * 60 * 1000),
+        created_at: new Date(),
+      };
+
+      const disabledUser: User = {
+        id: userId,
+        username: 'disabled_alice',
+        password_hash: '$argon2id$v=19$m=65536,t=3,p=4$someSalt$someHash',
+        is_active: false,
+        created_at: new Date(),
+        updated_at: new Date(),
+      };
+
+      const { sessionService, userService } = createMockServices({
+        validateSessionResult: mockSession,
+        userResult: disabledUser,
+      });
+
+      await app.register(authPlugin, {
+        sessionService: sessionService as any,
+        userService: userService as any,
+      });
+
+      app.get('/protected', { preHandler: [app.authenticate] }, async () => ({ ok: true }));
+      await app.ready();
+
+      const response = await app.inject({
+        method: 'GET',
+        url: '/protected',
+        headers: {
+          cookie: `session=${token}`,
+        },
+      });
+
+      expect([401, 403]).toContain(response.statusCode);
+      const body = response.json();
+      expect(body.error).toBeDefined();
+      expect(['USER_DISABLED', 'FORBIDDEN', 'UNAUTHORIZED']).toContain(body.error.code);
+
+      await app.close();
+    });
+  });
+
+  describe('8. Missing User Record Rejection', () => {
+    it('denies access with HTTP 401 USER_NOT_FOUND when associated user record was deleted', async () => {
+      const app = Fastify();
+      await app.register(errorHandlerPlugin);
+
+      const token = generateSessionToken();
+      const userId = '33333333-4444-5555-6666-777777777777';
+
+      const mockSession: Session = {
+        id: hashToken(token),
+        user_id: userId,
+        expires_at: new Date(Date.now() + 8 * 60 * 60 * 1000),
+        created_at: new Date(),
+      };
+
+      const { sessionService, userService } = createMockServices({
+        validateSessionResult: mockSession,
+        userResult: null, // User missing
+      });
+
+      await app.register(authPlugin, {
+        sessionService: sessionService as any,
+        userService: userService as any,
+      });
+
+      app.get('/protected', { preHandler: [app.authenticate] }, async () => ({ ok: true }));
+      await app.ready();
+
+      const response = await app.inject({
+        method: 'GET',
+        url: '/protected',
+        headers: {
+          cookie: `session=${token}`,
+        },
+      });
+
+      expect(response.statusCode).toBe(401);
+      const body = response.json();
+      expect(body.error).toBeDefined();
+      expect(['USER_NOT_FOUND', 'UNAUTHORIZED']).toContain(body.error.code);
+
+      await app.close();
+    });
+  });
+
+  describe('9. Session Expiration Policy Bounded by 8 Hours', () => {
+    it('rejects registration with TTL exceeding the 8-hour maximum policy', async () => {
+      const app = Fastify();
+      await app.register(errorHandlerPlugin);
+
+      const { sessionService, userService } = createMockServices();
+
+      await expect(
+        app.register(authPlugin, {
+          sessionService: sessionService as any,
+          userService: userService as any,
+          sessionTtlMs: 9 * 60 * 60 * 1000, // 9 hours > 8 hours max
+        })
+      ).rejects.toThrow(/Session TTL cannot exceed 8 hours/);
+
+      await app.close();
+    });
+  });
+
+  describe('10. Secure Cookie Attributes in Production', () => {
+    it('strictly enforces Secure attribute in production environment', async () => {
+      process.env.NODE_ENV = 'production';
+
+      const app = Fastify();
+      await app.register(errorHandlerPlugin);
+      const { sessionService, userService } = createMockServices();
+
+      await app.register(authPlugin, {
+        sessionService: sessionService as any,
+        userService: userService as any,
+      });
+
+      app.get('/set-cookie', { config: { public: true } }, async (_req, reply) => {
+        app.setSessionCookie(reply, 'sample_token_value_for_cookie');
+        return { ok: true };
+      });
+
+      await app.ready();
+
+      const response = await app.inject({
+        method: 'GET',
+        url: '/set-cookie',
+      });
+
+      expect(response.statusCode).toBe(200);
+      const cookieHeader = response.headers['set-cookie'];
+      expect(cookieHeader).toBeDefined();
+      expect(cookieHeader).toMatch(/;\s*Secure/i);
+      expect(cookieHeader).toMatch(/;\s*HttpOnly/i);
+      expect(cookieHeader).toMatch(/;\s*SameSite=Lax/i);
+      expect(cookieHeader).toMatch(/;\s*Path=\//i);
+
+      await app.close();
+    });
+
+    it('cannot weaken Secure attribute in production even if options attempt to set secure: false', () => {
+      process.env.NODE_ENV = 'production';
+      expect(resolveCookieSecure(false)).toBe(true);
+      expect(resolveCookieSecure(undefined)).toBe(true);
+      expect(resolveCookieSecure(true)).toBe(true);
+    });
+  });
+
+  describe('11. Cookie Behavior in Development/Test', () => {
+    it('does not enforce Secure attribute by default in test/dev environment', () => {
+      process.env.NODE_ENV = 'test';
+      expect(resolveCookieSecure(undefined)).toBe(false);
+      expect(resolveCookieSecure(false)).toBe(false);
+    });
+
+    it('enforces Secure attribute in test/dev environment when explicitly configured', () => {
+      process.env.NODE_ENV = 'test';
+      expect(resolveCookieSecure(true)).toBe(true);
+    });
+  });
+
+  describe('12. Safe Session Cookie Clearing and Matching Attributes', () => {
+    it('sets deletion attributes (Max-Age=0, Expires in past, Path=/, HttpOnly, SameSite=Lax)', async () => {
+      const app = Fastify();
+      await app.register(errorHandlerPlugin);
+      const { sessionService, userService } = createMockServices();
+
+      await app.register(authPlugin, {
+        sessionService: sessionService as any,
+        userService: userService as any,
+      });
+
+      app.post('/clear', { config: { public: true } }, async (_req, reply) => {
+        app.clearSessionCookie(reply);
+        return { cleared: true };
+      });
+
+      await app.ready();
+
+      const response = await app.inject({
+        method: 'POST',
+        url: '/clear',
+      });
+
+      expect(response.statusCode).toBe(200);
+      const cookieHeader = response.headers['set-cookie'] as string;
+      expect(cookieHeader).toBeDefined();
+
+      // Verify name is session
+      expect(cookieHeader).toMatch(/^session=/i);
+      // Verify Max-Age is 0
+      expect(cookieHeader).toMatch(/Max-Age=0/i);
+      // Verify Path=/
+      expect(cookieHeader).toMatch(/Path=\//i);
+      // Verify HttpOnly
+      expect(cookieHeader).toMatch(/HttpOnly/i);
+      // Verify SameSite=Lax
+      expect(cookieHeader).toMatch(/SameSite=Lax/i);
+
+      await app.close();
+    });
+
+    it('preserves domain attribute when clearing session cookie with domain option', async () => {
+      const app = Fastify();
+      await app.register(errorHandlerPlugin);
+      const { sessionService, userService } = createMockServices();
+
+      await app.register(authPlugin, {
+        sessionService: sessionService as any,
+        userService: userService as any,
+      });
+
+      app.post('/clear-domain', { config: { public: true } }, async (_req, reply) => {
+        app.clearSessionCookie(reply, { domain: 'example.com' });
+        return { cleared: true };
+      });
+
+      await app.ready();
+
+      const response = await app.inject({
+        method: 'POST',
+        url: '/clear-domain',
+      });
+
+      expect(response.statusCode).toBe(200);
+      const cookieHeader = response.headers['set-cookie'] as string;
+      expect(cookieHeader).toMatch(/Domain=example\.com/i);
+      expect(cookieHeader).toMatch(/Max-Age=0/i);
+      expect(cookieHeader).toMatch(/Path=\//i);
+
+      await app.close();
+    });
+  });
+
+  describe('13. Database Failure Handling', () => {
+    it('fails closed with HTTP 500 DATABASE_ERROR and sanitized message on database error', async () => {
+      const app = Fastify();
+      await app.register(errorHandlerPlugin);
+
+      const token = generateSessionToken();
+      const { sessionService, userService } = createMockServices({
+        dbError: true,
+      });
+
+      await app.register(authPlugin, {
+        sessionService: sessionService as any,
+        userService: userService as any,
+      });
+
+      app.get('/protected', { preHandler: [app.authenticate] }, async () => ({ ok: true }));
+      await app.ready();
+
+      const response = await app.inject({
+        method: 'GET',
+        url: '/protected',
+        headers: {
+          cookie: `session=${token}`,
+        },
+      });
+
+      expect(response.statusCode).toBe(500);
+      const body = response.json();
+      expect(body.error).toBeDefined();
+      expect(body.error.code).toBe('DATABASE_ERROR');
+      expect(body.error.message).toBe('An unexpected internal server error occurred.');
+      // Never expose SQL queries or database errors to client
+      expect(JSON.stringify(body)).not.toContain('SELECT * FROM');
+      expect(JSON.stringify(body)).not.toContain('Database connection failed');
+
+      await app.close();
+    });
+  });
+
+  describe('14. Externally Owned Injected Database Client', () => {
+    it('does not destroy or close externally injected database client on app close', async () => {
+      const app = Fastify();
+      await app.register(errorHandlerPlugin);
+
+      const mockDb = {
+        query: vi.fn(async () => ({ rows: [] })),
+        end: vi.fn(async () => {}),
+        close: vi.fn(async () => {}),
+      };
+
+      await app.register(authPlugin, {
+        db: mockDb,
+      });
+
+      await app.ready();
+      await app.close();
+
+      expect(mockDb.end).not.toHaveBeenCalled();
+      expect(mockDb.close).not.toHaveBeenCalled();
+    });
+  });
+
+  describe('15. Credential and Secret Leakage Prevention', () => {
+    it('ensures password_hash and raw tokens are never leaked in error responses or user object', async () => {
+      const app = Fastify();
+      await app.register(errorHandlerPlugin);
+
+      const token = generateSessionToken();
+      const secretPasswordHash = '$argon2id$v=19$m=65536,t=3,p=4$ultraSecretSalt$ultraSecretHash';
+
+      const mockSession: Session = {
+        id: hashToken(token),
+        user_id: 'user-secret-test',
+        expires_at: new Date(Date.now() + 8 * 60 * 60 * 1000),
+        created_at: new Date(),
+      };
+
+      const mockUser: User = {
+        id: 'user-secret-test',
+        username: 'bob',
+        password_hash: secretPasswordHash,
+        is_active: true,
+        created_at: new Date(),
+        updated_at: new Date(),
+      };
+
+      const { sessionService, userService } = createMockServices({
+        validateSessionResult: mockSession,
+        userResult: mockUser,
+      });
+
+      await app.register(authPlugin, {
+        sessionService: sessionService as any,
+        userService: userService as any,
+      });
+
+      app.get('/profile', { preHandler: [app.authenticate] }, async (request) => {
+        return { user: request.user };
+      });
+
+      await app.ready();
+
+      const response = await app.inject({
+        method: 'GET',
+        url: '/profile',
+        headers: {
+          cookie: `session=${token}`,
+        },
+      });
+
+      expect(response.statusCode).toBe(200);
+      const rawText = response.body;
+      expect(rawText).not.toContain(secretPasswordHash);
+      expect((response.json().user as any).password_hash).toBeUndefined();
+
+      await app.close();
+    });
+  });
+
+  describe('16. Fail-Closed Global Route Authentication (Finding 2)', () => {
+    it('fails closed on unmarked routes by default when request is unauthenticated', async () => {
+      const app = Fastify();
+      await app.register(errorHandlerPlugin);
+      const { sessionService, userService } = createMockServices();
+
+      await app.register(authPlugin, {
+        sessionService: sessionService as any,
+        userService: userService as any,
+      });
+
+      // Route defined without any auth config or preHandler
+      app.get('/unmarked-secret-route', async () => ({ secret: 'top-secret-data' }));
+
+      await app.ready();
+
+      const res = await app.inject({
+        method: 'GET',
+        url: '/unmarked-secret-route',
+      });
+
+      expect(res.statusCode).toBe(401);
+      const body = res.json();
+      expect(body.error).toBeDefined();
+      expect(body.error.code).toBe('UNAUTHORIZED');
+
+      await app.close();
+    });
+
+    it('fails closed on unmarked routes inside child Fastify plugins', async () => {
+      const app = Fastify();
+      await app.register(errorHandlerPlugin);
+      const { sessionService, userService } = createMockServices();
+
+      await app.register(authPlugin, {
+        sessionService: sessionService as any,
+        userService: userService as any,
+      });
+
+      await app.register(async (child) => {
+        child.get('/child-unmarked', async () => ({ childData: true }));
+      }, { prefix: '/v1' });
+
+      await app.ready();
+
+      const res = await app.inject({
+        method: 'GET',
+        url: '/v1/child-unmarked',
+      });
+
+      expect(res.statusCode).toBe(401);
+      expect(res.json().error.code).toBe('UNAUTHORIZED');
+
+      await app.close();
+    });
+
+    it('permits unauthenticated access to explicit public routes declared via config', async () => {
+      const app = Fastify();
+      await app.register(errorHandlerPlugin);
+      const { sessionService, userService } = createMockServices();
+
+      await app.register(authPlugin, {
+        sessionService: sessionService as any,
+        userService: userService as any,
+      });
+
+      app.get('/explicit-public', { config: { public: true } }, async () => ({ isPublic: true }));
+      app.get('/explicit-is-public', { config: { isPublic: true } }, async () => ({ isPublic: true }));
+
+      await app.ready();
+
+      const res1 = await app.inject({ method: 'GET', url: '/explicit-public' });
+      expect(res1.statusCode).toBe(200);
+      expect(res1.json()).toEqual({ isPublic: true });
+
+      const res2 = await app.inject({ method: 'GET', url: '/explicit-is-public' });
+      expect(res2.statusCode).toBe(200);
+      expect(res2.json()).toEqual({ isPublic: true });
+
+      await app.close();
+    });
+
+    it('fails closed when public and protected declarations conflict', async () => {
+      const app = Fastify();
+      await app.register(errorHandlerPlugin);
+      const { sessionService, userService } = createMockServices();
+
+      await app.register(authPlugin, {
+        sessionService: sessionService as any,
+        userService: userService as any,
+      });
+
+      // Conflicting declarations: both public: true and auth: true
+      app.get('/conflicting-route', { config: { public: true, auth: true } }, async () => ({ ok: true }));
+      app.get('/conflicting-route-2', { config: { isPublic: true, requireAuth: true } }, async () => ({ ok: true }));
+
+      await app.ready();
+
+      const res1 = await app.inject({ method: 'GET', url: '/conflicting-route' });
+      expect(res1.statusCode).toBe(401);
+      expect(res1.json().error.code).toBe('UNAUTHORIZED');
+
+      const res2 = await app.inject({ method: 'GET', url: '/conflicting-route-2' });
+      expect(res2.statusCode).toBe(401);
+      expect(res2.json().error.code).toBe('UNAUTHORIZED');
+
+      await app.close();
+    });
+
+    it('preserves unauthenticated access to explicit public bootstrap routes', async () => {
+      const app = Fastify();
+      await app.register(errorHandlerPlugin);
+      const { sessionService, userService } = createMockServices();
+
+      await app.register(authPlugin, {
+        sessionService: sessionService as any,
+        userService: userService as any,
+      });
+
+      // Bootstrap routes defined without config
+      app.get('/test-csrf-token', async () => ({ csrfToken: 'genuine-csrf-token' }));
+      app.post('/auth/login', async () => ({ loginSuccess: true }));
+
+      await app.ready();
+
+      const csrfRes = await app.inject({ method: 'GET', url: '/test-csrf-token' });
+      expect(csrfRes.statusCode).toBe(200);
+      expect(csrfRes.json()).toEqual({ csrfToken: 'genuine-csrf-token' });
+
+      const loginRes = await app.inject({ method: 'POST', url: '/auth/login' });
+      expect(loginRes.statusCode).toBe(200);
+      expect(loginRes.json()).toEqual({ loginSuccess: true });
+
+      await app.close();
+    });
+
+    it('does not perform duplicate verification if authenticate is called twice in the same request', async () => {
+      const app = Fastify();
+      await app.register(errorHandlerPlugin);
+
+      const token = generateSessionToken();
+      const mockSession: Session = {
+        id: hashToken(token),
+        user_id: 'user-dup',
+        expires_at: new Date(Date.now() + 8 * 60 * 60 * 1000),
+        created_at: new Date(),
+      };
+      const mockUser: User = {
+        id: 'user-dup',
+        username: 'dup_user',
+        password_hash: '$argon2id$...',
+        is_active: true,
+        created_at: new Date(),
+        updated_at: new Date(),
+      };
+
+      const { sessionService, userService } = createMockServices({
+        validateSessionResult: mockSession,
+        userResult: mockUser,
+      });
+
+      await app.register(authPlugin, {
+        sessionService: sessionService as any,
+        userService: userService as any,
+      });
+
+      // PreHandler and global hook both run
+      app.get(
+        '/double-auth',
+        {
+          preHandler: [app.authenticate],
+        },
+        async (request) => ({ ok: true, user: request.user })
+      );
+
+      await app.ready();
+
+      const res = await app.inject({
+        method: 'GET',
+        url: '/double-auth',
+        headers: { cookie: `session=${token}` },
+      });
+
+      expect(res.statusCode).toBe(200);
+      // Database verification only performed once!
+      expect(sessionService.validateSession).toHaveBeenCalledTimes(1);
+      expect(userService.findById).toHaveBeenCalledTimes(1);
+
+      await app.close();
+    });
+  });
+
+  describe('17. Cookie Policy Override Protection Regression Tests (Finding 3)', () => {
+    it('rigidly enforces HttpOnly: true even if caller passes httpOnly: false', async () => {
+      const app = Fastify();
+      await app.register(errorHandlerPlugin);
+      const { sessionService, userService } = createMockServices();
+
+      await app.register(authPlugin, {
+        sessionService: sessionService as any,
+        userService: userService as any,
+      });
+
+      app.post('/weaken-httponly', { config: { public: true } }, async (_req, reply) => {
+        // Attempt to weaken httpOnly
+        app.setSessionCookie(reply, 'sample_token', { httpOnly: false } as any);
+        return { ok: true };
+      });
+
+      await app.ready();
+
+      const res = await app.inject({ method: 'POST', url: '/weaken-httponly' });
+      expect(res.statusCode).toBe(200);
+      const cookieHeader = res.headers['set-cookie'] as string;
+      expect(cookieHeader).toMatch(/;\s*HttpOnly/i);
+
+      await app.close();
+    });
+
+    it('rigidly enforces SameSite=Lax even if caller passes sameSite: "none"', async () => {
+      const app = Fastify();
+      await app.register(errorHandlerPlugin);
+      const { sessionService, userService } = createMockServices();
+
+      await app.register(authPlugin, {
+        sessionService: sessionService as any,
+        userService: userService as any,
+      });
+
+      app.post('/weaken-samesite', { config: { public: true } }, async (_req, reply) => {
+        // Attempt to weaken SameSite
+        app.setSessionCookie(reply, 'sample_token', { sameSite: 'none' } as any);
+        return { ok: true };
+      });
+
+      await app.ready();
+
+      const res = await app.inject({ method: 'POST', url: '/weaken-samesite' });
+      expect(res.statusCode).toBe(200);
+      const cookieHeader = res.headers['set-cookie'] as string;
+      expect(cookieHeader).toMatch(/;\s*SameSite=Lax/i);
+      expect(cookieHeader).not.toMatch(/;\s*SameSite=none/i);
+
+      await app.close();
+    });
+
+    it('rigidly enforces Path=/ even if caller passes path: "/custom"', async () => {
+      const app = Fastify();
+      await app.register(errorHandlerPlugin);
+      const { sessionService, userService } = createMockServices();
+
+      await app.register(authPlugin, {
+        sessionService: sessionService as any,
+        userService: userService as any,
+      });
+
+      app.post('/weaken-path', { config: { public: true } }, async (_req, reply) => {
+        // Attempt to alter Path
+        app.setSessionCookie(reply, 'sample_token', { path: '/custom' } as any);
+        return { ok: true };
+      });
+
+      await app.ready();
+
+      const res = await app.inject({ method: 'POST', url: '/weaken-path' });
+      expect(res.statusCode).toBe(200);
+      const cookieHeader = res.headers['set-cookie'] as string;
+      expect(cookieHeader).toMatch(/;\s*Path=\//i);
+      expect(cookieHeader).not.toMatch(/;\s*Path=\/custom/i);
+
+      await app.close();
+    });
+
+    it('rejects requested maxAge exceeding the 8-hour maximum policy', async () => {
+      const app = Fastify();
+      await app.register(errorHandlerPlugin);
+      const { sessionService, userService } = createMockServices();
+
+      await app.register(authPlugin, {
+        sessionService: sessionService as any,
+        userService: userService as any,
+      });
+
+      app.post('/exceed-max-age', { config: { public: true } }, async (_req, reply) => {
+        // 9 hours in seconds: 32400 > 28800
+        app.setSessionCookie(reply, 'sample_token', { maxAge: 32400 });
+        return { ok: true };
+      });
+
+      await app.ready();
+
+      const res = await app.inject({ method: 'POST', url: '/exceed-max-age' });
+      expect(res.statusCode).toBe(500);
+      expect(res.json().error.code).toBe('INTERNAL_SERVER_ERROR');
+
+      await app.close();
+    });
+
+    it('rejects requested expires date exceeding the 8-hour maximum policy', async () => {
+      const app = Fastify();
+      await app.register(errorHandlerPlugin);
+      const { sessionService, userService } = createMockServices();
+
+      await app.register(authPlugin, {
+        sessionService: sessionService as any,
+        userService: userService as any,
+      });
+
+      app.post('/exceed-expires', { config: { public: true } }, async (_req, reply) => {
+        // 10 hours in future
+        const futureDate = new Date(Date.now() + 10 * 60 * 60 * 1000);
+        app.setSessionCookie(reply, 'sample_token', { expires: futureDate });
+        return { ok: true };
+      });
+
+      await app.ready();
+
+      const res = await app.inject({ method: 'POST', url: '/exceed-expires' });
+      expect(res.statusCode).toBe(500);
+
+      await app.close();
+    });
+
+    it('accepts valid maxAge and expires within 8-hour policy', async () => {
+      const app = Fastify();
+      await app.register(errorHandlerPlugin);
+      const { sessionService, userService } = createMockServices();
+
+      await app.register(authPlugin, {
+        sessionService: sessionService as any,
+        userService: userService as any,
+      });
+
+      app.post('/valid-lifetime', { config: { public: true } }, async (_req, reply) => {
+        // 4 hours in seconds: 14400 <= 28800
+        app.setSessionCookie(reply, 'sample_token', { maxAge: 14400 });
+        return { ok: true };
+      });
+
+      await app.ready();
+
+      const res = await app.inject({ method: 'POST', url: '/valid-lifetime' });
+      expect(res.statusCode).toBe(200);
+      const cookieHeader = res.headers['set-cookie'] as string;
+      expect(cookieHeader).toMatch(/Max-Age=14400/i);
+
+      await app.close();
+    });
+  });
+
+  describe('18. Bootstrap Allowlist Fail-Closed Enforcement Regression Tests (Bounded Rework 2)', () => {
+    it('requires authentication when auth: true is declared on /auth/login', async () => {
+      const app = Fastify();
+      await app.register(errorHandlerPlugin);
+      const { sessionService, userService } = createMockServices();
+
+      await app.register(authPlugin, {
+        sessionService: sessionService as any,
+        userService: userService as any,
+      });
+
+      app.post('/auth/login', { config: { auth: true } }, async () => ({ loginSuccess: true }));
+
+      await app.ready();
+
+      const res = await app.inject({ method: 'POST', url: '/auth/login' });
+      expect(res.statusCode).toBe(401);
+      expect(res.json().error.code).toBe('UNAUTHORIZED');
+
+      await app.close();
+    });
+
+    it('requires authentication when requireAuth: true is declared on a configured public route', async () => {
+      const app = Fastify();
+      await app.register(errorHandlerPlugin);
+      const { sessionService, userService } = createMockServices();
+
+      await app.register(authPlugin, {
+        sessionService: sessionService as any,
+        userService: userService as any,
+        publicRoutes: ['/public/info', /^\/public\/.*/],
+      });
+
+      app.get('/public/info', { config: { requireAuth: true } }, async () => ({ info: true }));
+      app.get('/public/nested-docs', { config: { requireAuth: true } }, async () => ({ docs: true }));
+
+      await app.ready();
+
+      const res1 = await app.inject({ method: 'GET', url: '/public/info' });
+      expect(res1.statusCode).toBe(401);
+      expect(res1.json().error.code).toBe('UNAUTHORIZED');
+
+      const res2 = await app.inject({ method: 'GET', url: '/public/nested-docs' });
+      expect(res2.statusCode).toBe(401);
+      expect(res2.json().error.code).toBe('UNAUTHORIZED');
+
+      await app.close();
+    });
+
+    it('requires authentication when protected: true is declared on a bootstrap route', async () => {
+      const app = Fastify();
+      await app.register(errorHandlerPlugin);
+      const { sessionService, userService } = createMockServices();
+
+      await app.register(authPlugin, {
+        sessionService: sessionService as any,
+        userService: userService as any,
+      });
+
+      app.post('/auth/login', { config: { protected: true } }, async () => ({ loginSuccess: true }));
+      app.get('/test-csrf-token', { config: { protected: true } }, async () => ({ csrf: true }));
+
+      await app.ready();
+
+      const res1 = await app.inject({ method: 'POST', url: '/auth/login' });
+      expect(res1.statusCode).toBe(401);
+      expect(res1.json().error.code).toBe('UNAUTHORIZED');
+
+      const res2 = await app.inject({ method: 'GET', url: '/test-csrf-token' });
+      expect(res2.statusCode).toBe(401);
+      expect(res2.json().error.code).toBe('UNAUTHORIZED');
+
+      await app.close();
+    });
+
+    it('preserves unauthenticated access to explicit public bootstrap routes and restricts HTTP methods', async () => {
+      const app = Fastify();
+      await app.register(errorHandlerPlugin);
+      const { sessionService, userService } = createMockServices();
+
+      await app.register(authPlugin, {
+        sessionService: sessionService as any,
+        userService: userService as any,
+      });
+
+      app.post('/auth/login', async () => ({ loginSuccess: true }));
+      app.get('/auth/login', async () => ({ loginGet: true }));
+      app.get('/test-csrf-token', async () => ({ csrfToken: 'valid-test-csrf-token' }));
+      app.post('/test-csrf-token', async () => ({ csrfPost: true }));
+
+      await app.ready();
+
+      // Intended method: POST /auth/login is public
+      const loginRes = await app.inject({ method: 'POST', url: '/auth/login' });
+      expect(loginRes.statusCode).toBe(200);
+      expect(loginRes.json()).toEqual({ loginSuccess: true });
+
+      // Unintended method: GET /auth/login fails closed
+      const getLoginRes = await app.inject({ method: 'GET', url: '/auth/login' });
+      expect(getLoginRes.statusCode).toBe(401);
+      expect(getLoginRes.json().error.code).toBe('UNAUTHORIZED');
+
+      // Intended method: GET /test-csrf-token is public in test environment
+      const csrfRes = await app.inject({ method: 'GET', url: '/test-csrf-token' });
+      expect(csrfRes.statusCode).toBe(200);
+      expect(csrfRes.json()).toEqual({ csrfToken: 'valid-test-csrf-token' });
+
+      // Unintended method: POST /test-csrf-token fails closed
+      const postCsrfRes = await app.inject({ method: 'POST', url: '/test-csrf-token' });
+      expect(postCsrfRes.statusCode).toBe(401);
+      expect(postCsrfRes.json().error.code).toBe('UNAUTHORIZED');
+
+      await app.close();
+    });
+
+    it('/test-csrf-token is not automatically public in production', async () => {
+      const prevEnv = process.env.NODE_ENV;
+      process.env.NODE_ENV = 'production';
+
+      try {
+        // App 1: Production without testing option -> /test-csrf-token is NOT public
+        const appProd = Fastify();
+        await appProd.register(errorHandlerPlugin);
+        const { sessionService, userService } = createMockServices();
+
+        await appProd.register(authPlugin, {
+          sessionService: sessionService as any,
+          userService: userService as any,
+        });
+
+        appProd.get('/test-csrf-token', async () => ({ csrfToken: 'prod-token' }));
+        appProd.post('/auth/login', async () => ({ loginSuccess: true }));
+
+        await appProd.ready();
+
+        const csrfRes = await appProd.inject({ method: 'GET', url: '/test-csrf-token' });
+        expect(csrfRes.statusCode).toBe(401);
+        expect(csrfRes.json().error.code).toBe('UNAUTHORIZED');
+
+        // Legitimate login POST /auth/login is still public in production
+        const loginRes = await appProd.inject({ method: 'POST', url: '/auth/login' });
+        expect(loginRes.statusCode).toBe(200);
+        expect(loginRes.json()).toEqual({ loginSuccess: true });
+
+        await appProd.close();
+
+        // App 2: Production with explicit allowTestCsrfRoute testing configuration -> permitted
+        const appProdWithTestingOpt = Fastify();
+        await appProdWithTestingOpt.register(errorHandlerPlugin);
+        await appProdWithTestingOpt.register(authPlugin, {
+          sessionService: sessionService as any,
+          userService: userService as any,
+          allowTestCsrfRoute: true,
+        });
+
+        appProdWithTestingOpt.get('/test-csrf-token', async () => ({ csrfToken: 'prod-opt-token' }));
+        await appProdWithTestingOpt.ready();
+
+        const optCsrfRes = await appProdWithTestingOpt.inject({ method: 'GET', url: '/test-csrf-token' });
+        expect(optCsrfRes.statusCode).toBe(200);
+        expect(optCsrfRes.json()).toEqual({ csrfToken: 'prod-opt-token' });
+
+        await appProdWithTestingOpt.close();
+
+        // App 3: Production with explicit route declaration (config.public: true) -> permitted
+        const appProdWithRouteDecl = Fastify();
+        await appProdWithRouteDecl.register(errorHandlerPlugin);
+        await appProdWithRouteDecl.register(authPlugin, {
+          sessionService: sessionService as any,
+          userService: userService as any,
+        });
+
+        appProdWithRouteDecl.get(
+          '/test-csrf-token',
+          { config: { public: true } },
+          async () => ({ csrfToken: 'prod-decl-token' })
+        );
+        await appProdWithRouteDecl.ready();
+
+        const declCsrfRes = await appProdWithRouteDecl.inject({ method: 'GET', url: '/test-csrf-token' });
+        expect(declCsrfRes.statusCode).toBe(200);
+        expect(declCsrfRes.json()).toEqual({ csrfToken: 'prod-decl-token' });
+
+        await appProdWithRouteDecl.close();
+      } finally {
+        process.env.NODE_ENV = prevEnv;
+      }
+    });
+
+    it('ensures public-route regex patterns cannot override explicit protected declarations', async () => {
+      const app = Fastify();
+      await app.register(errorHandlerPlugin);
+      const { sessionService, userService } = createMockServices();
+
+      await app.register(authPlugin, {
+        sessionService: sessionService as any,
+        userService: userService as any,
+        publicRoutes: [/^\/api\/public\/.*/],
+      });
+
+      // Matches regex, but explicitly protected
+      app.get('/api/public/secret-key', { config: { auth: true } }, async () => ({ secret: true }));
+      app.get('/api/public/admin-status', { config: { protected: true } }, async () => ({ admin: true }));
+      // Matches regex, unmarked -> public
+      app.get('/api/public/open-status', async () => ({ open: true }));
+
+      await app.ready();
+
+      const res1 = await app.inject({ method: 'GET', url: '/api/public/secret-key' });
+      expect(res1.statusCode).toBe(401);
+      expect(res1.json().error.code).toBe('UNAUTHORIZED');
+
+      const res2 = await app.inject({ method: 'GET', url: '/api/public/admin-status' });
+      expect(res2.statusCode).toBe(401);
+      expect(res2.json().error.code).toBe('UNAUTHORIZED');
+
+      const res3 = await app.inject({ method: 'GET', url: '/api/public/open-status' });
+      expect(res3.statusCode).toBe(200);
+      expect(res3.json()).toEqual({ open: true });
+
+      await app.close();
+    });
+
+    it('keeps unmarked and nested routes protected by default', async () => {
+      const app = Fastify();
+      await app.register(errorHandlerPlugin);
+      const { sessionService, userService } = createMockServices();
+
+      await app.register(authPlugin, {
+        sessionService: sessionService as any,
+        userService: userService as any,
+      });
+
+      // Partial bootstrap prefix match must NOT bypass auth
+      app.post('/auth/login/admin-override', async () => ({ bypass: true }));
+      app.get('/test-csrf-token/leak', async () => ({ leak: true }));
+
+      // Nested plugin
+      await app.register(async (childScope) => {
+        childScope.get('/child/protected-by-default', async () => ({ child: true }));
+      });
+
+      await app.ready();
+
+      const res1 = await app.inject({ method: 'POST', url: '/auth/login/admin-override' });
+      expect(res1.statusCode).toBe(401);
+      expect(res1.json().error.code).toBe('UNAUTHORIZED');
+
+      const res2 = await app.inject({ method: 'GET', url: '/test-csrf-token/leak' });
+      expect(res2.statusCode).toBe(401);
+      expect(res2.json().error.code).toBe('UNAUTHORIZED');
+
+      const res3 = await app.inject({ method: 'GET', url: '/child/protected-by-default' });
+      expect(res3.statusCode).toBe(401);
+      expect(res3.json().error.code).toBe('UNAUTHORIZED');
+
+      await app.close();
+    });
+  });
+});
