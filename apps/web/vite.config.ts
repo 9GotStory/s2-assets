@@ -27,6 +27,15 @@ export const repositoryProxyConfig: Record<string, ProxyOptions> = {
       }
     },
   },
+  '/evidence': {
+    target: 'http://api:3000',
+    changeOrigin: true,
+    bypass: (req) => {
+      if (req.headers.accept?.includes('text/html')) {
+        return '/index.html';
+      }
+    },
+  },
 };
 
 export default defineConfig({

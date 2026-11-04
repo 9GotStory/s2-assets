@@ -43,6 +43,7 @@ describe('Asset Registry Migration Integration (Seam C)', () => {
     const files = fs.readdirSync(migrationFolder);
     expect(files).toContain('0002_asset_registry.ts');
     expect(files).toContain('0003_acquisitions.ts');
+    expect(files).toContain('0004_evidence.ts');
   });
 
   it('preserves foundation and 0002 data during upgrade, creates acquisitions table and links', async () => {
