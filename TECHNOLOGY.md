@@ -1,10 +1,12 @@
 # TECHNOLOGY.md — Project Technology Direction
 ## Office Asset & Consumable Management System
 
-Version: **1.1.0**\
+Version: **1.2.0**\
 Status: **SELECTED BASELINE**
 
 > Technical direction สำหรับการพัฒนา `s2-assets`. เอกสารนี้ไม่ใช่ Business Authority และไม่เปลี่ยนความหมายของ Blueprint/Business Rules
+
+> **1.2.0 (2026-11-04):** Product Owner decision (PR #47) — ปรับ baseline ให้ตรงกับที่ Feature 001–002 ใช้จริง: frontend ดึง server state ด้วย `fetch` เป็นหลัก, styling เป็น inline style + plain CSS โดยไม่มี CSS framework, component library หรือ icon library (§4) และ API เข้าถึงข้อมูลด้วย parameterized SQL ผ่าน `pg` ส่วน Kysely ใช้กับ migrations และ integration tests (§6). Business semantics และ production direction ไม่เปลี่ยน
 
 > **1.1.0 (2026-11-03):** Product Owner decision (#36 Decision 2; GitHub Spec Kit retired by #36 Decision 3, 2026-11-04) — ย้าย development runtime ออกจาก `multica-agent` (UID 1001) มาเป็น rootless Podman + user-level systemd Quadlet ของ workspace user (UID 1000) แบบเดียวกับ Songhealth แต่แยก resources กัน และเลิกใช้ Multica/AGY บน host (§9 Development environment / Development orchestration). Application stack และ production direction ไม่เปลี่ยน
 
@@ -85,13 +87,13 @@ Authority แยกเป็น:
 | UI framework | **React 19** |
 | Build/dev tooling | **Vite 8** |
 | Routing | **React Router 7 — Data mode** |
-| Server-state | **TanStack Query 5** |
-| Data tables | **TanStack Table** |
-| Forms | **React Hook Form** |
+| Server-state | **`fetch`** ใน page/component เป็น default; **TanStack Query 5** เมื่อ page ต้องการ cache/invalidation |
+| Data tables | **HTML table** |
+| Forms | **React state** เป็น default; **React Hook Form** เมื่อ form มี validation ซับซ้อน |
 | Schema/validation | **Zod 4** |
-| Styling | **Tailwind CSS 4** |
-| UI components | **shadcn/ui** |
-| Icons | **Lucide** |
+| Styling | **inline style**; **plain CSS file** สำหรับสิ่งที่ inline style ทำไม่ได้ เช่น print |
+| UI components | **component ของโปรเจกต์เอง** ไม่มี component library |
+| Icons | ไม่มี icon library |
 
 ### Frontend principles
 
@@ -99,7 +101,7 @@ Authority แยกเป็น:
 - ไม่เลือก SSR/RSC/meta-framework เพียงเพราะเป็น trend
 - search/filter/pagination เป็น first-class UX
 - mobile-friendly โดยเฉพาะ verification/stocktake/QR workflows
-- server state อยู่ใน TanStack Query; อย่าเพิ่ม global state library จนมี client-state use case จริง
+- server state ดึงด้วย `fetch` หรือ TanStack Query ตามตารางข้างบน; อย่าเพิ่ม global state library จนมี client-state use case จริง
 - frontend validation มีเพื่อ UX แต่ server-side validation/authorization เป็น authoritative
 - UI component abstraction สร้างเมื่อมี reuse จริง ไม่สร้าง design-system framework ล่วงหน้า
 
@@ -109,6 +111,7 @@ Authority แยกเป็น:
 - frontend micro-frontends
 - Redux/Zustand เป็น default global store
 - GraphQL client stack
+- Tailwind CSS, shadcn/ui, Lucide และ TanStack Table (อยู่ใน baseline 1.1.0 แต่ Feature 001–002 ไม่ได้ใช้)
 
 รายการเหล่านี้ไม่ถูกห้ามถาวร แต่ต้องมี current requirement ที่ justify การเพิ่ม
 
@@ -154,8 +157,9 @@ Authority แยกเป็น:
 |---|---|
 | Database | **PostgreSQL 18** |
 | Driver | **pg** |
-| Typed SQL/data access | **Kysely** |
-| Migration | **explicit reviewable migrations** |
+| Data access (API) | **parameterized SQL ผ่าน `pg`**; transaction ด้วย `BEGIN`/`COMMIT` บน client เดียว |
+| Migration | **explicit reviewable migrations** ผ่าน **Kysely `Migrator`** |
+| Kysely | ใช้กับ migrations และ integration tests |
 
 ### Database principles
 
