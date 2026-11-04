@@ -4,14 +4,19 @@ import { QueryClient, QueryClientProvider, useQuery, useQueryClient } from '@tan
 import { AssetCorrectionForm } from '../components/AssetCorrectionForm';
 import { AssetQrLabel } from '../components/AssetQrLabel';
 import { EvidencePanel } from '../components/EvidencePanel';
+import {
+  REFERENCE_DIMENSIONS,
+  entryLabel,
+  type AssetReferenceColumns,
+  type AssetReferenceContext,
+} from '../components/ReferenceContextFields';
 
-export interface AssetRecord {
+export interface AssetRecord extends Partial<AssetReferenceColumns> {
   id: string;
   asset_number: string | null;
   serial_number: string | null;
   name: string | null;
   category: string | null;
-  organization_unit: string | null;
   source_reference: string | null;
   source_notes: string | null;
   registered_by: string;
@@ -35,6 +40,7 @@ export interface HistoryRecord {
 export interface AssetDetailResponse {
   asset: AssetRecord;
   history: HistoryRecord[];
+  reference_context?: AssetReferenceContext;
   can_correct?: boolean;
 }
 
@@ -479,7 +485,7 @@ const AssetDetailContent: React.FC = () => {
     );
   }
 
-  const { asset, history = [] } = assetData;
+  const { asset, history = [], reference_context: referenceContext } = assetData;
   const can_correct = Boolean(assetData.can_correct && !isCorrectionRevoked);
   const registrationFact = history.find((h) => h.action === 'REGISTERED');
   const isLegacy = Boolean(
@@ -699,6 +705,25 @@ const AssetDetailContent: React.FC = () => {
             <dd style={{ margin: 0, color: '#6b7280' }}>
               🏷️ ยังไม่ระบุหมวดหมู่ (Uncategorized)
             </dd>
+
+            {/* Reference context (T4, D7-A): each dimension and its legacy text, kept apart */}
+            {REFERENCE_DIMENSIONS.map(({ entryField, legacyField, label }) => {
+              const entry = referenceContext?.[entryField] ?? null;
+              const legacyText = referenceContext?.[legacyField] ?? null;
+              return (
+                <React.Fragment key={entryField}>
+                  <dt style={{ fontWeight: 500, color: '#4b5563' }}>{label}:</dt>
+                  <dd id={`detail-${entryField}`} style={{ margin: 0, color: '#111827' }}>
+                    {entry
+                      ? entryLabel(entry)
+                      : !legacyText && <span style={{ color: '#9ca3af' }}>ไม่ระบุ</span>}
+                    {legacyText && (
+                      <div style={{ fontSize: '0.8125rem', color: '#6b7280' }}>ข้อความเดิม: {legacyText}</div>
+                    )}
+                  </dd>
+                </React.Fragment>
+              );
+            })}
 
             <dt style={{ fontWeight: 500, color: '#4b5563' }}>
               เอกสาร / บันทึกที่มา:
@@ -965,6 +990,7 @@ const AssetDetailContent: React.FC = () => {
           <section aria-labelledby="correction-heading">
             <AssetCorrectionForm
               asset={asset}
+              actorId={currentUser?.id ?? null}
               isLegacy={isLegacy}
               csrfToken={csrfToken}
               dataUpdatedAt={dataUpdatedAt}

@@ -2575,7 +2575,7 @@ test.describe.serial('Asset Registry Real SPA -> Composed API -> PostgreSQL Jour
     // 2. Seed a test asset in the database with long Thai name and missing serial_number (NULL)
     const insertRes = await pool.query(
       `INSERT INTO assets (
-        name, asset_number, serial_number, registered_by, category, organization_unit
+        name, asset_number, serial_number, registered_by, category, legacy_organization_unit_text
       ) VALUES (
         'จอมอนิเตอร์ Dell 27 นิ้ว UltraSharp (พัสดุและงานเทคนิคกลาง)', 'MON-DELL-QR-888', NULL, $1, NULL, NULL
       ) RETURNING id;`,
@@ -5614,5 +5614,163 @@ test.describe.serial('Asset Registry Real SPA -> Composed API -> PostgreSQL Jour
     expect(await countEvidence(ref)).toBe(1);
 
     await page.unrouteAll({ behavior: 'wait' });
+  });
+
+  // T4 (#25, D7-A / D3): reference lists and Asset reference context through the real SPA.
+  test('Journey T4.1: an Administrator maintains the flat reference lists; other viewers read them without controls', async ({ page, context }) => {
+    await loginAs(page, context, adminUserId);
+    await page.goto(`${targetBaseUrl}/dashboard`);
+    await page.locator('#nav-reference-lists').click();
+    await page.waitForURL(`${targetBaseUrl}/admin/references`);
+
+    // Every list starts empty: nothing is invented (D7).
+    await expect(page.locator('#reference-empty')).toBeVisible();
+
+    await page.locator('#reference-new-name').fill('Store Room E2E');
+    await page.locator('#reference-add-btn').click();
+    await expect(page.locator('#reference-message')).toHaveText('เพิ่มรายการแล้ว');
+    await expect(page.locator('#reference-table')).toContainText('Store Room E2E');
+
+    // Names are unique ignoring case and surrounding spaces.
+    await page.locator('#reference-new-name').fill('  store room e2e ');
+    await page.locator('#reference-add-btn').click();
+    await expect(page.locator('#reference-message')).toContainText('มีชื่อนี้อยู่แล้ว');
+
+    const storeRoom = await pool.query(`SELECT id FROM locations WHERE name = 'Store Room E2E'`);
+    const storeRoomId = storeRoom.rows[0].id;
+    await page.locator(`#reference-edit-${storeRoomId}`).click();
+    await page.locator(`#reference-rename-${storeRoomId}`).fill('Store Room E2E North');
+    await page.locator(`#reference-save-${storeRoomId}`).click();
+    await expect(page.locator('#reference-message')).toHaveText('แก้ชื่อแล้ว');
+    await expect(page.getByTestId(`reference-row-${storeRoomId}`)).toContainText('Store Room E2E North');
+
+    await page.locator('#reference-new-name').fill('Old Annex E2E');
+    await page.locator('#reference-add-btn').click();
+    await expect(page.locator('#reference-table')).toContainText('Old Annex E2E');
+    const annexId = (await pool.query(`SELECT id FROM locations WHERE name = 'Old Annex E2E'`)).rows[0].id;
+    await page.locator(`#reference-toggle-${annexId}`).click();
+    await expect(page.locator('#reference-message')).toHaveText('ปิดใช้งานแล้ว');
+    await expect(page.getByTestId(`reference-row-${annexId}`)).toContainText('ปิดใช้งาน');
+
+    await page.locator('#reference-tab-organization-units').click();
+    await expect(page.locator('#reference-empty')).toBeVisible();
+    await page.locator('#reference-new-name').fill('Finance Unit E2E');
+    await page.locator('#reference-add-btn').click();
+    await expect(page.locator('#reference-table')).toContainText('Finance Unit E2E');
+
+    await page.locator('#reference-tab-persons').click();
+    await page.locator('#reference-new-name').fill('Somchai E2E');
+    await page.locator('#reference-add-btn').click();
+    await expect(page.locator('#reference-table')).toContainText('Somchai E2E');
+
+    // There is no delete: every entry is still stored.
+    const counts = await pool.query(
+      `SELECT (SELECT count(*) FROM locations)::int AS l, (SELECT count(*) FROM organization_units)::int AS o, (SELECT count(*) FROM persons)::int AS p`
+    );
+    expect(counts.rows[0]).toEqual({ l: 2, o: 1, p: 1 });
+
+    // A Read-only User sees the lists, without maintenance controls.
+    await loginAs(page, context, readonlyUserId);
+    await page.goto(`${targetBaseUrl}/admin/references`);
+    await expect(page.getByTestId('reference-read-only-notice')).toBeVisible();
+    await expect(page.locator('#reference-table')).toContainText('Store Room E2E North');
+    await expect(page.locator('#reference-add-form')).toHaveCount(0);
+    await expect(page.locator(`#reference-edit-${storeRoomId}`)).toHaveCount(0);
+  });
+
+  test('Journey T4.2: a Custodian registers with optional context, sees it on detail, and finds it by each dimension and by legacy text', async ({ page, context }) => {
+    await loginAs(page, context, custodianUserId);
+    await page.goto(`${targetBaseUrl}/assets/register`);
+    await page.locator('input#name').fill('Projector T4');
+
+    // Only active entries can be chosen at registration.
+    const locationSelect = page.locator('#register-location_id');
+    await expect(locationSelect.locator('option')).toHaveText(['— ไม่ระบุ —', 'Store Room E2E North']);
+    await locationSelect.selectOption({ label: 'Store Room E2E North' });
+    await page.locator('#register-organization_unit_id').selectOption({ label: 'Finance Unit E2E' });
+    // A shared Asset needs no Responsible Person; the old record's text is kept as recorded.
+    await page.locator('#register-legacy_responsible_person_text').fill('คุณสมชาย (ทะเบียนเดิม)');
+    await page.locator('button#submit-register-btn').click();
+
+    await page.waitForURL(new RegExp(`${targetBaseUrl}/assets/[0-9a-f-]{36}`));
+    const assetId = page.url().split('/assets/')[1];
+    await expect(page.locator('#detail-location')).toHaveText('Store Room E2E North');
+    await expect(page.locator('#detail-organization_unit')).toHaveText('Finance Unit E2E');
+    await expect(page.locator('#detail-responsible_person')).toHaveText('ข้อความเดิม: คุณสมชาย (ทะเบียนเดิม)');
+
+    const stored = await pool.query(
+      `SELECT a.location_id, a.organization_unit_id, a.responsible_person_id, a.legacy_responsible_person_text,
+              (SELECT count(*)::int FROM persons) AS persons
+       FROM assets a WHERE a.id = $1`,
+      [assetId]
+    );
+    expect(stored.rows[0].responsible_person_id).toBeNull();
+    expect(stored.rows[0].legacy_responsible_person_text).toBe('คุณสมชาย (ทะเบียนเดิม)');
+    expect(stored.rows[0].persons).toBe(1); // no person invented from the legacy text
+
+    // Search: each dimension filters on its own; together they combine with AND.
+    await page.goto(`${targetBaseUrl}/assets/search`);
+    await page.locator('#search-filter-location_id').selectOption({ label: 'Store Room E2E North' });
+    await page.locator('#search-submit-btn').click();
+    await expect(page.getByTestId(`search-result-row-${assetId}`)).toBeVisible();
+    await expect(page.getByTestId(`search-result-reference-${assetId}`)).toContainText('Store Room E2E North');
+    await expect(page.getByTestId(`search-result-reference-${assetId}`)).toContainText('Finance Unit E2E');
+
+    await page.locator('#search-filter-responsible_person_id').selectOption({ label: 'Somchai E2E' });
+    await page.locator('#search-submit-btn').click();
+    await expect(page.locator('#no-results-message')).toBeVisible();
+
+    await page.locator('#search-reset-btn').click();
+    await page.locator('#search-field').selectOption('legacy_text');
+    await page.locator('#search-value').fill('สมชาย');
+    await page.locator('#search-submit-btn').click();
+    await expect(page.getByTestId(`search-result-row-${assetId}`)).toBeVisible();
+    await expect(page.locator('#results-count-summary')).toContainText('พบ 1 รายการ');
+  });
+
+  test('Journey T4.3: bulk registration shares one context; a reasoned correction changes it with history; a deactivated entry stays shown', async ({ page, context }) => {
+    await loginAs(page, context, custodianUserId);
+    await page.goto(`${targetBaseUrl}/assets/bulk-register`);
+    await page.locator('#item-name-0').fill('Chair T4 A');
+    await page.locator('#add-row-btn').click();
+    await page.locator('#item-name-1').fill('Chair T4 B');
+    await page.locator('#bulk-location_id').selectOption({ label: 'Store Room E2E North' });
+    await page.locator('#submit-bulk-register-btn').click();
+    await expect(page.locator('#total-registered-count')).toHaveText('2');
+
+    const chairs = await pool.query(
+      `SELECT a.id, a.name, l.name AS location FROM assets a JOIN locations l ON l.id = a.location_id
+       WHERE a.name IN ('Chair T4 A', 'Chair T4 B') ORDER BY a.name`
+    );
+    expect(chairs.rows.map((row) => row.location)).toEqual(['Store Room E2E North', 'Store Room E2E North']);
+    const chairId = chairs.rows[0].id;
+
+    // Correct the context on the detail page, with a reason.
+    await page.goto(`${targetBaseUrl}/assets/${chairId}`);
+    await expect(page.locator('#detail-location')).toHaveText('Store Room E2E North');
+    await page.locator('#correction-responsible_person_id').selectOption({ label: 'Somchai E2E' });
+    await page.locator('#correction-organization_unit_id').selectOption({ label: 'Finance Unit E2E' });
+    await page.locator('#reason').fill('ระบุผู้รับผิดชอบและหน่วยงานตามจริง');
+    await page.locator('#submit-correct-btn').click();
+    await expect(page.getByTestId('correction-success-message')).toBeVisible();
+    await expect(page.locator('#detail-responsible_person')).toHaveText('Somchai E2E');
+    await expect(page.locator('table')).toContainText('CORRECTED');
+    await expect(page.locator('table')).toContainText('responsible_person_id');
+
+    const history = await pool.query(
+      `SELECT payload FROM asset_history WHERE asset_id = $1 AND action = 'CORRECTED'`,
+      [chairId]
+    );
+    expect(history.rows).toHaveLength(1);
+    expect(history.rows[0].payload.reason).toBe('ระบุผู้รับผิดชอบและหน่วยงานตามจริง');
+    expect(Object.keys(history.rows[0].payload.changes).sort()).toEqual(['organization_unit_id', 'responsible_person_id']);
+
+    // An entry deactivated after assignment stays on the Asset, shown as inactive.
+    await pool.query(`UPDATE organization_units SET is_active = false, version = version + 1 WHERE name = 'Finance Unit E2E'`);
+    await page.reload();
+    await expect(page.locator('#detail-organization_unit')).toHaveText('Finance Unit E2E (ปิดใช้งาน)');
+    await expect(page.locator('#correction-organization_unit_id')).toHaveValue(
+      (await pool.query(`SELECT id FROM organization_units WHERE name = 'Finance Unit E2E'`)).rows[0].id
+    );
   });
 });

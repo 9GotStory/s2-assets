@@ -97,7 +97,8 @@ describe('AssetService Integration Tests (Seam A - Core Service & Transactions)'
       expect(result.asset.name).toBe('Dell Latitude 5420 Laptop');
       expect(result.asset.asset_number).toBe('AST-2026-001');
       expect(result.asset.serial_number).toBe('SN-ABC123XYZ');
-      expect(result.asset.organization_unit).toBeNull();
+      expect(result.asset.legacy_organization_unit_text).toBeNull();
+      expect(result.asset.organization_unit_id).toBeNull();
       expect(result.asset.category).toBeNull();
       expect(result.asset.source_reference).toBe('PO-2026-88');
       expect(result.asset.source_notes).toBe('Delivered in good condition');
@@ -200,7 +201,7 @@ describe('AssetService Integration Tests (Seam A - Core Service & Transactions)'
       ).rejects.toThrow(ValidationError);
     });
 
-    it('rejects unapproved category and organization_unit population in T1 (Findings Spec 6 & 7)', async () => {
+    it('rejects unapproved category, and an OrganizationUnit that names no active entry (Findings Spec 6 & 7, D7)', async () => {
       await expect(
         assetService.registerAsset(testActorId, {
           name: 'Item with category',
@@ -211,7 +212,7 @@ describe('AssetService Integration Tests (Seam A - Core Service & Transactions)'
       await expect(
         assetService.registerAsset(testActorId, {
           name: 'Item with org unit',
-          organization_unit: 'IT Dept' as any,
+          organization_unit_id: '00000000-0000-4000-8000-000000000000',
         })
       ).rejects.toThrow(ValidationError);
     });
@@ -1761,9 +1762,10 @@ describe('AssetService Integration Tests (Seam A - Core Service & Transactions)'
       expect(full.total_count).toBe(4);
       expect(full.items.map((i) => i.id)).toEqual([idC, idA, idB, idD]);
 
-      // Public items must have strictly id, name, asset_number, serial_number and NO internal sort keys
+      // Public items must have strictly id, name, asset_number, serial_number, the T4 reference entries,
+      // and NO internal sort keys
       expect(Object.keys(full.items[0]).sort()).toEqual(
-        ['asset_number', 'id', 'name', 'serial_number'].sort()
+        ['asset_number', 'id', 'location', 'name', 'organization_unit', 'responsible_person', 'serial_number'].sort()
       );
       expect((full.items[0] as any).recorded_at).toBeUndefined();
 

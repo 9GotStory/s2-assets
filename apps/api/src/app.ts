@@ -17,6 +17,7 @@ import { healthRoutes } from './routes/health.routes.ts';
 import { assetRoutes } from './routes/asset.routes.ts';
 import { acquisitionRoutes } from './routes/acquisition.routes.ts';
 import { evidenceRoutes } from './routes/evidence.routes.ts';
+import { referenceRoutes } from './routes/reference.routes.ts';
 import { UserService, type DatabaseClient } from './services/user.service.ts';
 import { SessionService } from './services/session.service.ts';
 import { CapabilityService } from './services/capability.service.ts';
@@ -255,6 +256,12 @@ export async function buildApp(options: AppOptions = {}): Promise<FastifyInstanc
       prefix: '/evidence',
       evidenceService,
       capabilityService,
+      db: dbClient,
+    });
+
+    // Reference list routes mounted under /references (T4)
+    await app.register(referenceRoutes, {
+      prefix: '/references',
       db: dbClient,
     });
 

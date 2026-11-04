@@ -45,13 +45,16 @@ describe('Evidence Migration Integration (Seam C - T7)', () => {
   });
 
   it('applies migrations 0001 -> 0004 on a clean database and creates evidence tables and indexes', async () => {
-    const migResult = await runMigrator({
-      command: 'latest',
-      databaseUrl,
-      migrationFolder,
-    });
-    expect(migResult.error).toBeUndefined();
-    expect(migResult.results?.some((r) => r.migrationName === '0004_evidence' && r.status === 'Success')).toBe(true);
+    // Step up to exactly 0004, so the rollback cases below target 0004 whatever migrations follow it.
+    for (const expected of ['0001_foundation', '0002_asset_registry', '0003_acquisitions', '0004_evidence']) {
+      const migResult = await runMigrator({
+        command: 'up',
+        databaseUrl,
+        migrationFolder,
+      });
+      expect(migResult.error).toBeUndefined();
+      expect(migResult.results?.[0]).toMatchObject({ migrationName: expected, status: 'Success' });
+    }
 
     const client = new Client({ connectionString: databaseUrl });
     await client.connect();
