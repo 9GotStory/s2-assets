@@ -1,0 +1,8 @@
+# Dependencies that pnpm installs, at the root and in each workspace package
+node_modules/
+
+# Build output: Vite (apps/web) and tsc (apps/api/tsconfig.build.json)
+dist/
+
+# Playwright output (outputDir in apps/web/playwright.config.ts)
+test-results/
