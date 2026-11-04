@@ -1,0 +1,7 @@
+# s2-assets development network (UID-1000 rootless Quadlet runtime). Private bridge for the
+# development database, API and Web only; the database publishes no host port. Its name is
+# disjoint from production (s2-assets.network), from other projects' runtimes on this host
+# and from the retired UID-1001 Compose runtime. Contract: docs/operations/development-runtime.md.
+[Network]
+NetworkName=s2-assets-qdev
+Label=io.s2-assets.runtime=qdev

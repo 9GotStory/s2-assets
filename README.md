@@ -6,7 +6,7 @@
 |---|---|
 | Blueprint | **v1.0.2 — FROZEN** |
 | Workflow | **Claude Code CLI + Matt Pocock Skills from Feature 002; rules in `CLAUDE.md`** |
-| Technology Direction | **`TECHNOLOGY.md` v1.0.1 — SELECTED BASELINE** |
+| Technology Direction | **`TECHNOLOGY.md` v1.1.0 — SELECTED BASELINE** |
 | Business Rules | **252 canonical rules** |
 | Delivery decomposition | **14 Feature Briefs** |
 | Feature 001 tooling (historical) | **Spec Kit 1.1.1 / AGY integration, retired 2026-11-04** |
@@ -37,7 +37,7 @@ remain unchanged.
 
 ### Technical Direction
 
-`TECHNOLOGY.md` v1.0.1 เป็น project-wide selected technical baseline
+`TECHNOLOGY.md` v1.1.0 เป็น project-wide selected technical baseline
 
 - feature specification ต้องเริ่มจาก baseline นี้
 - exact minor/patch versions และ Deferred decisions ให้ specification resolve ตาม environment จริง
@@ -143,7 +143,7 @@ Fedora Host
     └── PostgreSQL
 ```
 
-Quadlet เป็น production service-management baseline ไม่ใช่ requirement สำหรับ day-to-day development
+Development runtime รันเป็น rootless Podman + user-level systemd Quadlet ของ workspace user (UID 1000): Web `http://127.0.0.1:5180`, API `http://127.0.0.1:3010` ติดตั้ง อัปเดต และตรวจสอบด้วย `scripts/dev-runtime-*.sh` ตาม [`docs/operations/development-runtime.md`](docs/operations/development-runtime.md)
 
 ### Configuration: Public Application Origin (`PUBLIC_APP_ORIGIN`)
 

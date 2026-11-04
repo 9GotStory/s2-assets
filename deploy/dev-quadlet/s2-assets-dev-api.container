@@ -1,0 +1,45 @@
+# s2-assets development API (UID-1000 rootless Quadlet runtime): the Fastify dev server
+# (`pnpm --filter api run dev`, node --watch) on the Feature 001 development tooling image,
+# which scripts/dev-runtime-install.sh builds locally from deploy/podman/dev.Containerfile.
+# It serves the runtime source checkout ~/dev/s2-assets-quadlet bind-mounted at /work, as
+# the host user (keep-id) so dependencies and caches stay owned by UID 1000. The Web dev
+# server's proxy reaches it as http://api:3000 (network alias); the host reaches it on
+# loopback port 3010. The two credentials are podman secrets exposed as environment
+# variables. Contract: docs/operations/development-runtime.md.
+[Unit]
+Description=s2-assets dev Fastify API (http://127.0.0.1:3010)
+Requires=s2-assets-dev-db.service
+After=s2-assets-dev-db.service
+StartLimitIntervalSec=600
+StartLimitBurst=5
+
+[Container]
+Image=localhost/s2-assets-qdev-tooling:latest
+Pull=never
+ContainerName=s2-assets-qdev-api
+Network=s2-assets-dev.network
+NetworkAlias=api
+UserNS=keep-id
+Volume=%h/dev/s2-assets-quadlet:/work:z
+WorkingDir=/work
+PublishPort=127.0.0.1:3010:3000
+Environment=NODE_ENV=development
+Environment=PORT=3000
+Environment=PUBLIC_APP_ORIGIN=http://127.0.0.1:5180
+Secret=s2-assets-qdev-database-url,type=env,target=DATABASE_URL
+Secret=s2-assets-qdev-cookie-secret,type=env,target=COOKIE_SECRET
+Exec=pnpm --filter api run dev
+HealthCmd=node -e "fetch('http://127.0.0.1:3000/health').then(r=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))"
+HealthInterval=15s
+HealthTimeout=10s
+HealthRetries=5
+HealthStartPeriod=120s
+Notify=healthy
+
+[Service]
+Restart=on-failure
+RestartSec=10s
+TimeoutStartSec=300
+
+[Install]
+WantedBy=default.target
