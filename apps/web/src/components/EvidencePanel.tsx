@@ -61,8 +61,54 @@ export interface CoordinatorOperation {
   auth_epoch: number;
   created_at: number;
   last_attempt_at: number;
-  receipt?: any;
+  receipt?: EvidenceReceipt;
   error?: string | null;
+  // Number of POSTs sent for this operation. Only the very first one can be answered by a
+  // proof that nothing was written (SF1).
+  dispatch_count: number;
+  // A later replay was denied by current grants: the original intent stays quarantined (SF1).
+  auth_suspended: boolean;
+  // Set synchronously while an attempt (preflight or POST) runs, so no entry point can start a
+  // second one (SF2).
+  in_flight: boolean;
+}
+
+// The compact receipt the T7 API returns: create 201 and correction 200 (SF3).
+export interface EvidenceReceipt {
+  id: string;
+  version: number;
+  history_id: string | null;
+}
+
+const UUID_PATTERN = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+
+// SF3: a 2xx settles an operation only when its body is the receipt this exact operation can
+// produce; anything else leaves the original token in recovery.
+export function validateOperationReceipt(
+  op: CoordinatorOperation,
+  status: number,
+  body: unknown
+): EvidenceReceipt | null {
+  if (!body || typeof body !== 'object' || Array.isArray(body)) return null;
+  const { id, version, history_id } = body as Record<string, unknown>;
+  if (typeof id !== 'string' || !UUID_PATTERN.test(id)) return null;
+  if (typeof version !== 'number' || !Number.isSafeInteger(version) || version < 1) return null;
+  if (history_id !== null && (typeof history_id !== 'string' || !UUID_PATTERN.test(history_id))) return null;
+  const receipt: EvidenceReceipt = { id, version, history_id };
+
+  if (op.kind === 'create') {
+    if (status !== 201 || version !== 1 || history_id === null) return null;
+  } else {
+    if (status !== 200 || id !== op.target_evidence_id || typeof op.target_version !== 'number') return null;
+    const expected = history_id === null ? op.target_version : op.target_version + 1;
+    if (version !== expected) return null;
+  }
+
+  // A replay must return the receipt already known for this operation, whatever the record's
+  // current version is.
+  const known = op.receipt;
+  if (known && (known.id !== id || known.version !== version || known.history_id !== history_id)) return null;
+  return receipt;
 }
 
 const DOCUMENT_CONTEXT_ID =
@@ -148,11 +194,35 @@ class EvidenceOperationCoordinator {
       auth_epoch: params.authEpoch,
       created_at: Date.now(),
       last_attempt_at: Date.now(),
+      dispatch_count: 0,
+      auth_suspended: false,
+      in_flight: false,
     };
 
     this.operations.set(params.actorId, op);
     this.notify();
     return { success: true, operation: op };
+  }
+
+  // True when `operationId` is still the actor's one unresolved operation.
+  owns(actorId: string, operationId: string): boolean {
+    return this.getUnresolvedOperation(actorId)?.operation_id === operationId;
+  }
+
+  // Synchronously claims the operation for one attempt; a second entry point gets false (SF2).
+  beginAttempt(actorId: string, operationId: string): boolean {
+    const op = this.getUnresolvedOperation(actorId);
+    if (!op || op.operation_id !== operationId || op.in_flight) return false;
+    op.in_flight = true;
+    return true;
+  }
+
+  endAttempt(actorId: string, operationId: string) {
+    const op = this.operations.get(actorId);
+    if (op && op.operation_id === operationId && op.in_flight) {
+      op.in_flight = false;
+      this.notify();
+    }
   }
 
   retireUnsent(actorId: string, operationId: string) {
@@ -163,53 +233,80 @@ class EvidenceOperationCoordinator {
     }
   }
 
-  markDispatched(actorId: string, operationId: string, attemptId: string, authEpoch: number) {
+  markDispatched(actorId: string, operationId: string, attemptId: string, authEpoch: number): boolean {
     const op = this.operations.get(actorId);
-    if (op && op.operation_id === operationId) {
-      op.phase = 'SENT_UNKNOWN';
-      op.attempt_id = attemptId;
-      op.auth_epoch = authEpoch;
-      op.last_attempt_at = Date.now();
-      this.notify();
-    }
+    if (!op || op.operation_id !== operationId) return false;
+    if (op.phase !== 'CONFIRMED') op.phase = 'SENT_UNKNOWN';
+    op.attempt_id = attemptId;
+    op.auth_epoch = authEpoch;
+    op.dispatch_count += 1;
+    op.auth_suspended = false;
+    op.last_attempt_at = Date.now();
+    this.notify();
+    return true;
   }
 
-  markRecoveryRequired(actorId: string, operationId: string, attemptId: string, error?: string) {
+  markRecoveryRequired(
+    actorId: string,
+    operationId: string,
+    attemptId: string,
+    error?: string,
+    authSuspended = false
+  ) {
     const op = this.operations.get(actorId);
     if (op && op.operation_id === operationId && op.attempt_id === attemptId) {
-      if (op.phase !== 'CONFIRMED' && op.phase !== 'SETTLED') {
-        op.phase = 'RECOVERY_REQUIRED';
+      if (op.phase !== 'SETTLED') {
+        // A known receipt stays known: only its phase label can change.
+        if (op.phase !== 'CONFIRMED') op.phase = 'RECOVERY_REQUIRED';
         op.error = error || null;
+        op.auth_suspended = authSuspended;
         this.notify();
       }
     }
   }
 
-  markConfirmed(actorId: string, operationId: string, attemptId: string, receipt: any) {
+  // Current grants deny the replay before anything is sent: the original intent stays (SF1).
+  suspendForAuthorization(actorId: string, operationId: string, error: string) {
     const op = this.operations.get(actorId);
-    if (op && op.operation_id === operationId) {
-      op.phase = 'CONFIRMED';
-      op.receipt = receipt;
-      op.error = null;
+    if (op && op.operation_id === operationId && op.phase !== 'SETTLED') {
+      op.auth_suspended = true;
+      op.error = error;
       this.notify();
     }
   }
 
+  markConfirmed(actorId: string, operationId: string, attemptId: string, receipt: EvidenceReceipt) {
+    const op = this.operations.get(actorId);
+    if (op && op.operation_id === operationId && op.attempt_id === attemptId && op.phase !== 'SETTLED') {
+      op.phase = 'CONFIRMED';
+      if (!op.receipt) op.receipt = receipt;
+      op.error = null;
+      op.auth_suspended = false;
+      this.notify();
+    }
+  }
+
+  // Releases the reservation only for a rejection of the one and only dispatch: an earlier
+  // attempt that may have committed keeps the operation in recovery instead (SF1).
   markDefinitivelyRejected(actorId: string, operationId: string, attemptId: string, error: string) {
     const op = this.operations.get(actorId);
     if (op && op.operation_id === operationId && op.attempt_id === attemptId) {
-      if (op.phase !== 'CONFIRMED' && op.phase !== 'SETTLED') {
-        op.phase = 'DEFINITIVELY_REJECTED';
-        op.error = error;
-        this.operations.delete(actorId);
-        this.notify();
+      if (op.phase === 'CONFIRMED' || op.phase === 'SETTLED') return;
+      if (op.dispatch_count !== 1 || op.receipt) {
+        this.markRecoveryRequired(actorId, operationId, attemptId, error);
+        return;
       }
+      op.phase = 'DEFINITIVELY_REJECTED';
+      op.error = error;
+      this.operations.delete(actorId);
+      this.notify();
     }
   }
 
+  // Settles only an operation with a validated receipt (SF3).
   settle(actorId: string, operationId: string) {
     const op = this.operations.get(actorId);
-    if (op && op.operation_id === operationId) {
+    if (op && op.operation_id === operationId && op.phase === 'CONFIRMED' && op.receipt) {
       op.phase = 'SETTLED';
       this.operations.delete(actorId);
       this.notify();
@@ -223,7 +320,7 @@ export const EvidencePanel: React.FC<EvidencePanelProps> = ({
   entityType,
   entityId,
   acquisitionId,
-  csrfToken,
+  // csrfToken stays in the props contract; mutations use the token from a fresh session check (SF2).
   currentUser,
   isReauthorizing = false,
 }) => {
@@ -247,6 +344,7 @@ export const EvidencePanel: React.FC<EvidencePanelProps> = ({
   }, []);
 
   const [isSubmittingRetry, setIsSubmittingRetry] = useState(false);
+  const [retryNotice, setRetryNotice] = useState<string | null>(null);
   const [loadingAssetsForId, setLoadingAssetsForId] = useState<string | null>(null);
 
   const currentActorId = currentUser?.id || null;
@@ -311,6 +409,9 @@ export const EvidencePanel: React.FC<EvidencePanelProps> = ({
   const authEpochRef = useRef(0);
   const dialogGenRef = useRef(0);
   const prevReauthorizingRef = useRef(isReauthorizing);
+  // Live value for continuations that resume after an await (ARCH-A2 H3).
+  const isReauthorizingRef = useRef(isReauthorizing);
+  isReauthorizingRef.current = isReauthorizing;
 
   // Track window focus, visibility and navigation to advance epoch and cancel stale operations (F3)
   useEffect(() => {
@@ -365,6 +466,7 @@ export const EvidencePanel: React.FC<EvidencePanelProps> = ({
         setIsSubmittingCorrect(false);
         setIsSubmittingLinkExisting(false);
         setIsSubmittingRetry(false);
+        setRetryNotice(null);
 
         // Wipe all creation form drafts (F3 ARCH-A1)
         setCreateRefType('');
@@ -602,175 +704,266 @@ export const EvidencePanel: React.FC<EvidencePanelProps> = ({
     }
   };
 
-  // Coordinator executor for create/correct/link/unlink with retry token and uncertain locking (F1, F3 ARCH-A1 D1-D4)
+  // Clears every protected fact on screen when current grants are denied (F3).
+  const redactProtectedDisplay = () => {
+    setEvidenceList([]);
+    setEvidenceTotal(0);
+    setCanCreate(false);
+    setCanCorrect(false);
+    setCorrectingEvidence(null);
+    setShowLinkExistingForm(false);
+    setViewingHistoryId(null);
+    setHistoryItems([]);
+    setCorrectReason('');
+    setCorrectRefType('');
+    setCorrectRefText('');
+    setCorrectDesc('');
+    setCorrectAddAssetIds('');
+    setCorrectRemoveAssetIds([]);
+  };
+
+  // SF2: the server's proof of who the cookie actor is right now, and its current CSRF token.
+  const verifySessionActor = async (
+    ownerActorId: string,
+    signal: AbortSignal
+  ): Promise<{ ok: true; csrfToken: string } | { ok: false; reason: 'other-actor' | 'no-session' | 'unreachable' }> => {
+    try {
+      const res = await fetch('/auth/session-check', { method: 'GET', credentials: 'include', signal });
+      if (res.status === 401) return { ok: false, reason: 'no-session' };
+      if (!res.ok) return { ok: false, reason: 'unreachable' };
+      const data: any = await res.json().catch(() => null);
+      const userId = data && typeof data === 'object' && data.user ? data.user.id : null;
+      if (typeof userId !== 'string') return { ok: false, reason: 'no-session' };
+      if (userId !== ownerActorId) return { ok: false, reason: 'other-actor' };
+      if (typeof data.csrfToken !== 'string' || data.csrfToken.length === 0) return { ok: false, reason: 'unreachable' };
+      return { ok: true, csrfToken: data.csrfToken };
+    } catch {
+      return { ok: false, reason: 'unreachable' };
+    }
+  };
+
+  // SF2: before a replay, the actor must still hold the Evidence action and view every parent the
+  // original operation touches, checked through the existing read endpoints.
+  const verifyReplayGrants = async (
+    op: CoordinatorOperation,
+    signal: AbortSignal
+  ): Promise<'ok' | 'denied' | 'unreachable'> => {
+    const payload = op.business_payload || {};
+    const assetIds = new Set<string>([
+      ...(payload.asset_ids || []),
+      ...(payload.add_asset_ids || []),
+      ...(payload.remove_asset_ids || []),
+    ]);
+    const acquisitionIds = new Set<string>();
+    if (typeof payload.acquisition_id === 'string') acquisitionIds.add(payload.acquisition_id);
+    if (entityType === 'acquisition') acquisitionIds.add(entityId);
+    else assetIds.add(entityId);
+
+    const actionFlag = op.kind === 'create' ? 'can_create' : 'can_correct';
+    const listUrls = [
+      ...[...assetIds].map((id) => `/evidence?asset_id=${encodeURIComponent(id)}&limit=1&offset=0`),
+      ...[...acquisitionIds].map((id) => `/evidence?acquisition_id=${encodeURIComponent(id)}&limit=1&offset=0`),
+    ];
+    const recordUrl = op.kind !== 'create' && op.target_evidence_id ? `/evidence/${op.target_evidence_id}` : null;
+
+    try {
+      const responses = await Promise.all(
+        [...listUrls, ...(recordUrl ? [recordUrl] : [])].map((url) =>
+          fetch(url, { method: 'GET', credentials: 'include', signal })
+        )
+      );
+      if (responses.some((res) => res.status === 401 || res.status === 403)) return 'denied';
+      if (responses.some((res) => !res.ok)) return 'unreachable';
+      const lists = await Promise.all(responses.slice(0, listUrls.length).map((res) => res.json().catch(() => null)));
+      if (lists.some((data) => !data || data[actionFlag] !== true)) return 'denied';
+      return 'ok';
+    } catch {
+      return 'unreachable';
+    }
+  };
+
+  // Coordinator executor for create/correct/link/unlink with retry token and uncertain locking
+  // (F1, F3 ARCH-A1 D1-D4, ARCH-A2 SF1-SF3).
+  // - Coordinator transitions are keyed by owner/operation/attempt and apply whatever the screen
+  //   shows; screen writes happen only while `isUiOwner()` holds at the moment of the write (H3).
+  // - The first POST of an operation can be rejected definitively; once an earlier attempt was
+  //   dispatched, no later 4xx proves it did not commit (H1).
+  // - A replay first re-checks current grants; every POST is preceded, with no other await in
+  //   between, by a server check that the cookie actor is the owner (H2).
+  // - A 2xx settles only with a receipt this exact operation can produce (H4).
   const executeCoordinatorOperation = async (
     op: CoordinatorOperation,
     checkOwner?: () => boolean
-  ): Promise<{ success: boolean; uncertain?: boolean; definitivelyRejected?: boolean; error?: string; receipt?: any }> => {
-    if (checkOwner && !checkOwner()) {
-      return { success: false, error: 'Operation cancelled' };
-    }
-    if (!isMountedRef.current || !currentUser || isReauthorizing || currentActorIdRef.current !== op.owner_actor_id) {
-      return { success: false, error: 'Component unmounted or context changed' };
-    }
-    if (!csrfToken) {
-      return { success: false, error: 'CSRF token is missing. Please refresh.' };
-    }
+  ): Promise<{
+    success: boolean;
+    uncertain?: boolean;
+    definitivelyRejected?: boolean;
+    suspended?: boolean;
+    otherActor?: boolean;
+    error?: string;
+    receipt?: EvidenceReceipt;
+  }> => {
+    const owner = op.owner_actor_id;
+    const isReplay = op.dispatch_count > 0;
+    const capturedEpoch = authEpochRef.current;
+    const isUiOwner = () =>
+      isMountedRef.current &&
+      !isReauthorizingRef.current &&
+      currentActorIdRef.current === owner &&
+      authEpochRef.current === capturedEpoch &&
+      (checkOwner ? checkOwner() : true);
+    const cancel = (error: string) => {
+      if (!isReplay) evidenceOperationCoordinator.retireUnsent(owner, op.operation_id);
+      return { success: false, error };
+    };
 
-    const attemptId = crypto.randomUUID();
-    const currentEpoch = authEpochRef.current;
-    evidenceOperationCoordinator.markDispatched(op.owner_actor_id, op.operation_id, attemptId, currentEpoch);
+    if (!isUiOwner()) return cancel('Operation cancelled');
+    if (!evidenceOperationCoordinator.beginAttempt(owner, op.operation_id)) {
+      return { success: false, error: 'Operation already in progress' };
+    }
 
     if (mutationAbortRef.current) {
       mutationAbortRef.current.abort();
     }
     const controller = new AbortController();
     mutationAbortRef.current = controller;
-    const currentGen = ++reqGenRef.current;
 
     try {
-      const res = await fetch(op.endpoint, {
-        method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-          'x-csrf-token': csrfToken,
-          'x-retry-token': op.retry_token,
-        },
-        credentials: 'include',
-        signal: controller.signal,
-        body: JSON.stringify({
-          ...op.business_payload,
-          retry_token: op.retry_token,
-        }),
-      });
+      if (isReplay) {
+        const grants = await verifyReplayGrants(op, controller.signal);
+        if (!evidenceOperationCoordinator.owns(owner, op.operation_id)) return { success: false, error: 'Operation cancelled' };
+        if (grants === 'denied') {
+          const error = 'ไม่มีสิทธิ์ส่งรายการเดิมซ้ำในขณะนี้ รายการเดิมยังถูกกักไว้จนกว่าสิทธิ์จะกลับมา';
+          evidenceOperationCoordinator.suspendForAuthorization(owner, op.operation_id, error);
+          if (isUiOwner()) redactProtectedDisplay();
+          return { success: false, uncertain: true, suspended: true, error };
+        }
+        if (grants === 'unreachable') {
+          return { success: false, uncertain: true, error: 'ไม่สามารถตรวจสอบสิทธิ์ปัจจุบันได้ กรุณาลองใหม่' };
+        }
+      }
 
-      const isAttemptOwner = op.attempt_id === attemptId;
-      const isContextOwner =
-        isMountedRef.current &&
-        !controller.signal.aborted &&
-        currentGen === reqGenRef.current &&
-        currentActorIdRef.current === op.owner_actor_id &&
-        !isReauthorizing &&
-        (checkOwner ? checkOwner() : true);
+      const proof = await verifySessionActor(owner, controller.signal);
+      if (!evidenceOperationCoordinator.owns(owner, op.operation_id)) return { success: false, error: 'Operation cancelled' };
+      if (!proof.ok) {
+        const error =
+          proof.reason === 'other-actor'
+            ? 'เซสชันปัจจุบันเป็นของผู้ใช้อื่น จึงไม่ส่งรายการของผู้ใช้เดิม'
+            : proof.reason === 'no-session'
+              ? 'เซสชันหมดอายุ กรุณาเข้าสู่ระบบใหม่'
+              : 'ไม่สามารถยืนยันผู้ใช้ปัจจุบันได้ กรุณาลองใหม่';
+        if (!isReplay) evidenceOperationCoordinator.retireUnsent(owner, op.operation_id);
+        return { success: false, otherActor: proof.reason === 'other-actor', error };
+      }
+      // Synchronous from here to the POST: no await may separate the actor proof from dispatch.
+      if (!isUiOwner()) return cancel('Operation cancelled');
+
+      const attemptId = crypto.randomUUID();
+      if (!evidenceOperationCoordinator.markDispatched(owner, op.operation_id, attemptId, capturedEpoch)) {
+        return { success: false, error: 'Operation cancelled' };
+      }
+      const firstDispatch = op.dispatch_count === 1 && !op.receipt;
+      const currentGen = ++reqGenRef.current;
+
+      let res: Response;
+      try {
+        res = await fetch(op.endpoint, {
+          method: 'POST',
+          headers: {
+            'Content-Type': 'application/json',
+            'x-csrf-token': proof.csrfToken,
+            'x-retry-token': op.retry_token,
+          },
+          credentials: 'include',
+          signal: controller.signal,
+          body: JSON.stringify({
+            ...op.business_payload,
+            retry_token: op.retry_token,
+          }),
+        });
+      } catch (err: unknown) {
+        const aborted = err instanceof DOMException && err.name === 'AbortError';
+        const error = aborted
+          ? 'Request aborted after dispatch; mutation status is uncertain'
+          : 'การเชื่อมต่อขัดข้องระหว่างบันทึกข้อมูล กรุณากดปุ่ม "ส่งข้อมูลซ้ำ (Retry)" เพื่อส่งซ้ำด้วยโทเค็นเดิมอย่างปลอดภัย';
+        evidenceOperationCoordinator.markRecoveryRequired(owner, op.operation_id, attemptId, error);
+        return { success: false, uncertain: true, error };
+      }
+
+      // Decode before classifying; `undefined` means the body could not be decoded.
+      const body: unknown = await res.json().catch(() => undefined);
 
       if (res.status === 401 || res.status === 403) {
-        const errJson = await res.json().catch(() => null);
-        const errMsg =
-          errJson?.message ||
+        const error =
+          (body as any)?.message ||
           (res.status === 401 ? 'เซสชันหมดอายุ กรุณาเข้าสู่ระบบใหม่' : 'ไม่มีสิทธิ์ดำเนินการนี้ (Forbidden)');
-
-        if (isAttemptOwner) {
-          evidenceOperationCoordinator.markDefinitivelyRejected(
-            op.owner_actor_id,
-            op.operation_id,
-            attemptId,
-            errMsg
-          );
+        if (firstDispatch) {
+          evidenceOperationCoordinator.markDefinitivelyRejected(owner, op.operation_id, attemptId, error);
+        } else {
+          evidenceOperationCoordinator.markRecoveryRequired(owner, op.operation_id, attemptId, error, true);
         }
-        if (isContextOwner) {
-          setEvidenceList([]);
-          setEvidenceTotal(0);
-          setCanCreate(false);
-          setCanCorrect(false);
-          setCorrectingEvidence(null);
-          setShowLinkExistingForm(false);
-          setViewingHistoryId(null);
-          setHistoryItems([]);
-          setCorrectReason('');
-          setCorrectRefType('');
-          setCorrectRefText('');
-          setCorrectDesc('');
-          setCorrectAddAssetIds('');
-          setCorrectRemoveAssetIds([]);
-        }
-        return {
-          success: false,
-          definitivelyRejected: true,
-          error: errMsg,
-        };
+        if (isUiOwner()) redactProtectedDisplay();
+        return firstDispatch
+          ? { success: false, definitivelyRejected: true, error }
+          : { success: false, uncertain: true, suspended: true, error };
       }
 
       if (res.ok) {
-        const receipt = await res.json().catch(() => null);
-        if (isAttemptOwner) {
-          evidenceOperationCoordinator.markConfirmed(op.owner_actor_id, op.operation_id, attemptId, receipt);
+        const receipt = validateOperationReceipt(op, res.status, body);
+        if (!receipt) {
+          const error = 'ได้รับคำตอบที่ยืนยันผลการบันทึกไม่ได้ กรุณากดปุ่ม "ส่งข้อมูลซ้ำ (Retry)" เพื่อตรวจสอบด้วยโทเค็นเดิม';
+          evidenceOperationCoordinator.markRecoveryRequired(owner, op.operation_id, attemptId, error);
+          return { success: false, uncertain: true, error };
         }
-        if (!isContextOwner) {
+        evidenceOperationCoordinator.markConfirmed(owner, op.operation_id, attemptId, receipt);
+        if (!isUiOwner() || currentGen !== reqGenRef.current || controller.signal.aborted) {
+          // Committed, but this screen no longer belongs to the attempt: the owner acknowledges later.
           return { success: false, uncertain: true, error: 'Request delivery retired; mutation committed' };
         }
-        evidenceOperationCoordinator.settle(op.owner_actor_id, op.operation_id);
+        evidenceOperationCoordinator.settle(owner, op.operation_id);
         return { success: true, receipt };
       }
 
+      const error = (body as any)?.message || `เกิดข้อผิดพลาดในการบันทึก (${res.status})`;
       if (res.status >= 400 && res.status < 500) {
-        const errJson = await res.json().catch(() => null);
-        const errMsg = errJson?.message || `เกิดข้อผิดพลาดในการบันทึก (${res.status})`;
-        if (isAttemptOwner) {
-          evidenceOperationCoordinator.markDefinitivelyRejected(op.owner_actor_id, op.operation_id, attemptId, errMsg);
+        if (firstDispatch) {
+          evidenceOperationCoordinator.markDefinitivelyRejected(owner, op.operation_id, attemptId, error);
+          return { success: false, definitivelyRejected: true, error };
         }
-        return {
-          success: false,
-          definitivelyRejected: true,
-          error: errMsg,
-        };
+        evidenceOperationCoordinator.markRecoveryRequired(owner, op.operation_id, attemptId, error);
+        return { success: false, uncertain: true, error };
       }
 
       // 5xx: uncertain
-      if (isAttemptOwner) {
-        evidenceOperationCoordinator.markRecoveryRequired(
-          op.owner_actor_id,
-          op.operation_id,
-          attemptId,
-          'เซิร์ฟเวอร์ยังไม่ยืนยันผลการบันทึก กรุณากดปุ่ม "ส่งข้อมูลซ้ำ (Retry)"'
-        );
-      }
-      return {
-        success: false,
-        uncertain: true,
-        error: 'เซิร์ฟเวอร์ยังไม่ยืนยันผลการบันทึก กรุณากดปุ่ม "ส่งข้อมูลซ้ำ (Retry)" เพื่อดำเนินการต่อด้วยโทเค็นเดิม',
-      };
-    } catch (err: unknown) {
-      const isAttemptOwner = op.attempt_id === attemptId;
-      if (err instanceof DOMException && err.name === 'AbortError') {
-        if (isAttemptOwner) {
-          evidenceOperationCoordinator.markRecoveryRequired(
-            op.owner_actor_id,
-            op.operation_id,
-            attemptId,
-            'Request aborted after dispatch; mutation status is uncertain'
-          );
-        }
-        return { success: false, uncertain: true, error: 'Request aborted after dispatch; mutation status is uncertain' };
-      }
-      if (isAttemptOwner) {
-        evidenceOperationCoordinator.markRecoveryRequired(
-          op.owner_actor_id,
-          op.operation_id,
-          attemptId,
-          'การเชื่อมต่อขัดข้องระหว่างบันทึกข้อมูล'
-        );
-      }
-      return {
-        success: false,
-        uncertain: true,
-        error: 'การเชื่อมต่อขัดข้องระหว่างบันทึกข้อมูล กรุณากดปุ่ม "ส่งข้อมูลซ้ำ (Retry)" เพื่อส่งซ้ำด้วยโทเค็นเดิมอย่างปลอดภัย',
-      };
+      const uncertainError = 'เซิร์ฟเวอร์ยังไม่ยืนยันผลการบันทึก กรุณากดปุ่ม "ส่งข้อมูลซ้ำ (Retry)" เพื่อดำเนินการต่อด้วยโทเค็นเดิม';
+      evidenceOperationCoordinator.markRecoveryRequired(owner, op.operation_id, attemptId, uncertainError);
+      return { success: false, uncertain: true, error: uncertainError };
+    } finally {
+      evidenceOperationCoordinator.endAttempt(owner, op.operation_id);
     }
   };
 
-  // Replay the immutable stored operation independently of form mode (F1, F3 ARCH-A1 D1-D4)
+  // Replay the immutable stored operation independently of form mode (F1, F3 ARCH-A1 D1-D4, ARCH-A2 SF2)
   const handleRetryMutation = async () => {
-    const currentActor = currentUser?.id || null;
+    const currentActor = currentActorIdRef.current;
     if (!currentActor) return;
     const op = evidenceOperationCoordinator.getUnresolvedOperation(currentActor);
     if (!op || op.owner_actor_id !== currentActor) return;
-    if (!isMountedRef.current || isReauthorizing) return;
+    if (!isMountedRef.current || isReauthorizingRef.current) return;
+    const capturedEpoch = authEpochRef.current;
+    const ownsScreen = () =>
+      isMountedRef.current &&
+      !isReauthorizingRef.current &&
+      currentActorIdRef.current === currentActor &&
+      authEpochRef.current === capturedEpoch;
 
+    setRetryNotice(null);
     setIsSubmittingRetry(true);
     const result = await executeCoordinatorOperation(op);
-    setIsSubmittingRetry(false);
-
-    if (!isMountedRef.current || currentActorIdRef.current !== currentActor || isReauthorizing) {
+    if (isMountedRef.current && currentActorIdRef.current === currentActor) {
+      setIsSubmittingRetry(false);
+    }
+    if (!ownsScreen()) {
       return;
     }
 
@@ -790,6 +983,8 @@ export const EvidencePanel: React.FC<EvidencePanelProps> = ({
       } else {
         setCorrectError(result.error || 'แก้ไขหลักฐานไม่สำเร็จ');
       }
+    } else if (result.error) {
+      setRetryNotice(result.error);
     }
   };
 
@@ -927,7 +1122,7 @@ export const EvidencePanel: React.FC<EvidencePanelProps> = ({
 
     const isOwned = () =>
       isMountedRef.current &&
-      !isReauthorizing &&
+      !isReauthorizingRef.current &&
       Boolean(currentUser) &&
       currentUser?.id === capturedActor &&
       currentActorIdRef.current === capturedActor &&
@@ -1010,7 +1205,7 @@ export const EvidencePanel: React.FC<EvidencePanelProps> = ({
 
     const isOwned = () =>
       isMountedRef.current &&
-      !isReauthorizing &&
+      !isReauthorizingRef.current &&
       Boolean(currentUser) &&
       currentUser?.id === capturedActor &&
       currentActorIdRef.current === capturedActor &&
@@ -1126,7 +1321,7 @@ export const EvidencePanel: React.FC<EvidencePanelProps> = ({
 
     const isOwned = () =>
       isMountedRef.current &&
-      !isReauthorizing &&
+      !isReauthorizingRef.current &&
       Boolean(currentUser) &&
       currentUser?.id === capturedActor &&
       currentActorIdRef.current === capturedActor &&
@@ -1225,7 +1420,7 @@ export const EvidencePanel: React.FC<EvidencePanelProps> = ({
 
     const isOwned = () =>
       isMountedRef.current &&
-      !isReauthorizing &&
+      !isReauthorizingRef.current &&
       Boolean(currentUser) &&
       currentUser?.id === capturedActor &&
       currentActorIdRef.current === capturedActor &&
@@ -1399,6 +1594,16 @@ export const EvidencePanel: React.FC<EvidencePanelProps> = ({
           <p style={{ margin: '0 0 0.75rem 0', fontSize: '0.875rem' }}>
             เซิร์ฟเวอร์ยังไม่ตอบกลับการดำเนินการ กรุณากดส่งข้อมูลซ้ำ (Retry) เพื่อใช้โทเค็นเดิมอย่างปลอดภัย โดยไม่มีการสร้างข้อมูลซ้ำซ้อน
           </p>
+          {currentOp.auth_suspended && (
+            <p data-testid="uncertain-mutation-auth-suspended" style={{ margin: '0 0 0.75rem 0', fontSize: '0.875rem' }}>
+              สิทธิ์ปัจจุบันไม่อนุญาตให้ส่งรายการเดิมซ้ำ รายการเดิมยังถูกกักไว้ เมื่อสิทธิ์กลับมาให้กด Retry เพื่อส่งรายการเดิมด้วยโทเค็นเดิม
+            </p>
+          )}
+          {retryNotice && (
+            <p data-testid="uncertain-mutation-notice" style={{ margin: '0 0 0.75rem 0', fontSize: '0.875rem' }}>
+              {retryNotice}
+            </p>
+          )}
           <button
             data-testid="retry-mutation-btn"
             onClick={handleRetryMutation}

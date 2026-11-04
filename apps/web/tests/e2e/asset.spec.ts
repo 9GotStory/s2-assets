@@ -4960,4 +4960,534 @@ test.describe.serial('Asset Registry Real SPA -> Composed API -> PostgreSQL Jour
 
     await page.unrouteAll({ behavior: 'wait' });
   });
+
+  // ---------------------------------------------------------------------------------------------
+  // ARCH-A2 (SF1-SF4, #28 comment 6436826247) regressions for F3 H1-H4.
+  // Faults are labeled: TRANSPORT faults let the server really commit and then drop or rewrite
+  // the delivered response; the DECODER barrier is test instrumentation of window.fetch that
+  // holds a response body. Authorization, sessions and actor changes are always real.
+  // ---------------------------------------------------------------------------------------------
+
+  const deferred = <T = unknown>() => {
+    let resolve!: (value: T) => void;
+    const promise = new Promise<T>((r) => (resolve = r));
+    return { promise, resolve };
+  };
+
+  const seedCustodianActor = async (label: string): Promise<string> => {
+    const passwordHash = await UserService.hashPassword('Password123!');
+    const res = await pool.query(
+      `INSERT INTO users (username, password_hash, is_active) VALUES ($1, $2, true) RETURNING id`,
+      [`${label}_${Date.now()}_${Math.floor(Math.random() * 1e6)}`, passwordHash]
+    );
+    const id = res.rows[0].id as string;
+    await pool.query(`INSERT INTO user_roles (user_id, role_id) VALUES ($1, 'ASSET_CUSTODIAN')`, [id]);
+    return id;
+  };
+
+  const seedAcquisitionFor = async (actorId: string, sourceReference: string): Promise<string> => {
+    const res = await pool.query(
+      `INSERT INTO acquisitions (acquisition_type, acquisition_date, source_reference, notes, created_by)
+       VALUES ('Purchase Order', '2026-03-20', $1, 'T7 ARCH-A2 regression', $2) RETURNING id`,
+      [sourceReference, actorId]
+    );
+    return res.rows[0].id as string;
+  };
+
+  const revokeRoles = (actorId: string) => pool.query('DELETE FROM user_roles WHERE user_id = $1', [actorId]);
+  const restoreCustodian = (actorId: string) =>
+    pool.query(
+      `INSERT INTO user_roles (user_id, role_id) VALUES ($1, 'ASSET_CUSTODIAN') ON CONFLICT DO NOTHING`,
+      [actorId]
+    );
+
+  const setSessionCookie = async (context: any, actorId: string) => {
+    const session = await sessionService.createSession(actorId);
+    await context.addCookies([{ name: 'session', value: session.token, url: targetBaseUrl }]);
+  };
+
+  // Lets the page learn the current cookie actor through its own focus revalidation.
+  const refocus = async (page: any, expectedActorId: string) => {
+    const check = page.waitForResponse((r: any) => new URL(r.url()).pathname === '/auth/session-check');
+    await page.evaluate(() => window.dispatchEvent(new Event('focus')));
+    const data = await (await check).json();
+    expect(data.user.id).toBe(expectedActorId);
+  };
+
+  const countEvidence = async (referenceText: string, createdBy?: string): Promise<number> => {
+    const res = createdBy
+      ? await pool.query(
+          'SELECT count(*)::int AS n FROM evidence_records WHERE reference_text = $1 AND created_by = $2',
+          [referenceText, createdBy]
+        )
+      : await pool.query('SELECT count(*)::int AS n FROM evidence_records WHERE reference_text = $1', [referenceText]);
+    return res.rows[0].n as number;
+  };
+
+  const isEvidenceMutation = (req: any) =>
+    req.method() === 'POST' && /^\/evidence(\/[^/]+\/correct)?$/.test(new URL(req.url()).pathname);
+
+  // TRANSPORT fault (one shot): the server commits the next create, the browser never receives
+  // the response. Later requests pass through untouched.
+  const loseNextCreateDelivery = async (page: any) => {
+    const committed = deferred<{ status: number; token: string }>();
+    const matcher = (url: URL) => url.pathname === '/evidence';
+    let used = false;
+    await page.route(matcher, async (route: any) => {
+      if (route.request().method() !== 'POST' || used) return route.fallback();
+      used = true;
+      const token = route.request().headers()['x-retry-token'];
+      const response = await route.fetch();
+      committed.resolve({ status: response.status(), token });
+      await route.abort('failed');
+    });
+    return { committed: committed.promise, unroute: () => page.unroute(matcher) };
+  };
+
+  // TRANSPORT fault (one shot): the server processes the next mutation on `pathname`; the
+  // browser receives a rewritten status/body instead of the real one.
+  const rewriteNextMutationDelivery = async (
+    page: any,
+    pathname: string,
+    rewrite: (status: number, body: any) => { status: number; body: string }
+  ) => {
+    const served = deferred<{ status: number; body: any; token: string }>();
+    const matcher = (url: URL) => url.pathname === pathname;
+    let used = false;
+    await page.route(matcher, async (route: any) => {
+      if (route.request().method() !== 'POST' || used) return route.fallback();
+      used = true;
+      const token = route.request().headers()['x-retry-token'];
+      const response = await route.fetch();
+      const status = response.status();
+      const body = await response.json();
+      served.resolve({ status, body, token });
+      const out = rewrite(status, body);
+      await route.fulfill({ status: out.status, contentType: 'application/json', body: out.body });
+    });
+    return { served: served.promise, unroute: () => page.unroute(matcher) };
+  };
+
+  // DECODER barrier: holds the body decode of the next matching fetch response until released.
+  const installDecoderBarrier = async (page: any) => {
+    await page.addInitScript(() => {
+      const w = window as any;
+      const original = w.fetch.bind(w);
+      w.fetch = async (input: any, init?: any) => {
+        const res = await original(input, init);
+        const rule = w.__e2eBodyBarrier;
+        const method = (init && init.method) || 'GET';
+        const url = new URL(typeof input === 'string' ? input : input.url, w.location.href);
+        if (!rule || rule.method !== method || rule.path !== url.pathname) return res;
+        w.__e2eBodyBarrier = null;
+        let release!: () => void;
+        const gate = new Promise<void>((r) => (release = r));
+        w.__e2eReleaseBody = release;
+        w.__e2eBodyHeldStatus = res.status;
+        const text = await res.text();
+        return new Proxy(res, {
+          get(target: any, prop: any) {
+            if (prop === 'json') return async () => { await gate; return JSON.parse(text); };
+            if (prop === 'text') return async () => { await gate; return text; };
+            const value = Reflect.get(target, prop);
+            return typeof value === 'function' ? value.bind(target) : value;
+          },
+        });
+      };
+    });
+  };
+
+  test('Journey T7.11 (ARCH-A2 H1): a replay denied after revocation keeps the committed-unknown create quarantined; restored rights and the same-token replay settle exactly one Evidence', async ({
+    page,
+    context,
+  }) => {
+    const actorA = await seedCustodianActor('a2_h1');
+    const acqId = await seedAcquisitionFor(actorA, 'PO-T7-A2-H1');
+    const ref = `A2 H1 committed then lost ${Date.now()}`;
+    const mutationTokens: string[] = [];
+    page.on('request', (req: any) => {
+      if (isEvidenceMutation(req)) mutationTokens.push(req.headers()['x-retry-token']);
+    });
+
+    await loginAs(page, context, actorA);
+    await page.goto(`${targetBaseUrl}/acquisitions/${acqId}`);
+    await page.locator('[data-testid="add-evidence-btn"]').click();
+    await page.locator('[data-testid="create-ref-text-input"]').fill(ref);
+
+    const lost = await loseNextCreateDelivery(page);
+    await page.locator('[data-testid="create-evidence-submit-btn"]').click();
+    const { status, token: originalToken } = await lost.committed;
+    expect(status).toBe(201);
+    await lost.unroute();
+    await expect(page.locator('[data-testid="uncertain-mutation-alert"]')).toBeVisible();
+    expect(await countEvidence(ref)).toBe(1);
+
+    // Real revocation in PostgreSQL; the session itself stays valid.
+    await revokeRoles(actorA);
+    await page.locator('[data-testid="retry-mutation-btn"]').click();
+    await expect(page.locator('[data-testid="retry-mutation-btn"]')).toBeEnabled();
+
+    // The denied replay proves nothing about the earlier attempt: the intent stays quarantined.
+    await expect(page.locator('[data-testid="uncertain-mutation-alert"]')).toBeVisible();
+    expect(await countEvidence(ref)).toBe(1);
+
+    // Rights return. The original intent is still the only mutation this actor can send.
+    await restoreCustodian(actorA);
+    await refocus(page, actorA);
+    await expect(page.locator('[data-testid="uncertain-mutation-alert"]')).toBeVisible();
+    await expect(page.locator('[data-testid="add-evidence-btn"]')).toBeDisabled();
+
+    await page.locator('[data-testid="retry-mutation-btn"]').click();
+    await expect(page.locator('[data-testid="uncertain-mutation-alert"]')).toHaveCount(0);
+    await expect(page.locator('[data-testid="evidence-table"]')).toContainText(ref);
+
+    // Independent PostgreSQL observer: one Evidence, one history row, one create receipt.
+    const ev = await pool.query('SELECT id, created_by FROM evidence_records WHERE reference_text = $1', [ref]);
+    expect(ev.rowCount).toBe(1);
+    expect(ev.rows[0].created_by).toBe(actorA);
+    const history = await pool.query('SELECT count(*)::int AS n FROM evidence_history WHERE evidence_id = $1', [
+      ev.rows[0].id,
+    ]);
+    expect(history.rows[0].n).toBe(1);
+    const receipts = await pool.query(
+      `SELECT count(*)::int AS n FROM registration_retry_tokens WHERE actor_id = $1 AND operation = 'evidence:create'`,
+      [actorA]
+    );
+    expect(receipts.rows[0].n).toBe(1);
+    // No fresh-token mutation was ever sent.
+    expect(new Set(mutationTokens)).toEqual(new Set([originalToken]));
+
+    await page.unrouteAll({ behavior: 'wait' });
+  });
+
+  test('Journey T7.12 (ARCH-A2 H2): with actor B logged in but no focus, actor A Retry verifies the session and sends zero A-intent POST; B stays usable and verified A recovers with the original token', async ({
+    page,
+    context,
+  }) => {
+    const actorA = await seedCustodianActor('a2_h2_a');
+    const actorB = await seedCustodianActor('a2_h2_b');
+    const acqId = await seedAcquisitionFor(actorA, 'PO-T7-A2-H2');
+    const refA = `A2 H2 actor A intent ${Date.now()}`;
+    const refB = `A2 H2 actor B own ${Date.now()}`;
+
+    await loginAs(page, context, actorA);
+    await page.goto(`${targetBaseUrl}/acquisitions/${acqId}`);
+    await page.locator('[data-testid="add-evidence-btn"]').click();
+    await page.locator('[data-testid="create-ref-text-input"]').fill(refA);
+    const lost = await loseNextCreateDelivery(page);
+    await page.locator('[data-testid="create-evidence-submit-btn"]').click();
+    const { token: tokenA } = await lost.committed;
+    await lost.unroute();
+    await expect(page.locator('[data-testid="uncertain-mutation-alert"]')).toBeVisible();
+
+    // Real actor B login in the same browser context, without focus or revalidation: the page
+    // still renders actor A and A's Retry button.
+    await setSessionCookie(context, actorB);
+    const tokensAfterSwitch: string[] = [];
+    const sessionActorsAfterSwitch: string[] = [];
+    page.on('request', (req: any) => {
+      if (isEvidenceMutation(req)) tokensAfterSwitch.push(req.headers()['x-retry-token']);
+    });
+    page.on('response', async (res: any) => {
+      if (new URL(res.url()).pathname === '/auth/session-check') {
+        sessionActorsAfterSwitch.push((await res.json().catch(() => null))?.user?.id ?? 'none');
+      }
+    });
+
+    await page.locator('[data-testid="retry-mutation-btn"]').click();
+    await page.waitForTimeout(1_000);
+
+    // Zero A-intent mutation under B's cookie, and no B-owned record of A's intent.
+    expect(tokensAfterSwitch).toEqual([]);
+    expect(await countEvidence(refA, actorB)).toBe(0);
+    expect(await countEvidence(refA, actorA)).toBe(1);
+    // The Retry asked the server who the current actor is, and saw B.
+    expect(sessionActorsAfterSwitch).toContain(actorB);
+
+    // B's own, independently authorized workflow works once the page learns about B.
+    await refocus(page, actorB);
+    await expect(page.locator('[data-testid="uncertain-mutation-alert"]')).toHaveCount(0);
+    await page.locator('[data-testid="add-evidence-btn"]').click();
+    await page.locator('[data-testid="create-ref-text-input"]').fill(refB);
+    await page.locator('[data-testid="create-evidence-submit-btn"]').click();
+    await expect(page.locator('[data-testid="evidence-table"]')).toContainText(refB);
+    expect(await countEvidence(refB, actorB)).toBe(1);
+
+    // Positive control: verified actor A retries with the original token and current CSRF.
+    await setSessionCookie(context, actorA);
+    await refocus(page, actorA);
+    await expect(page.locator('[data-testid="uncertain-mutation-alert"]')).toBeVisible();
+    const replay = page.waitForRequest((req: any) => isEvidenceMutation(req));
+    await page.locator('[data-testid="retry-mutation-btn"]').click();
+    expect((await replay).headers()['x-retry-token']).toBe(tokenA);
+    await expect(page.locator('[data-testid="uncertain-mutation-alert"]')).toHaveCount(0);
+    expect(await countEvidence(refA)).toBe(1);
+    expect(await countEvidence(refA, actorA)).toBe(1);
+
+    await page.unrouteAll({ behavior: 'wait' });
+  });
+
+  test('Journey T7.13 (ARCH-A2 H3): actor A late 403 body released after actor B login leaves B projection, controls and mutations intact', async ({
+    page,
+    context,
+  }) => {
+    const actorA = await seedCustodianActor('a2_h3_a');
+    const actorB = await seedCustodianActor('a2_h3_b');
+    const acqId = await seedAcquisitionFor(actorA, 'PO-T7-A2-H3');
+    const refA = `A2 H3 actor A denied ${Date.now()}`;
+    const refB1 = `A2 H3 actor B before release ${Date.now()}`;
+    const refB2 = `A2 H3 actor B after release ${Date.now()}`;
+
+    await installDecoderBarrier(page);
+    await loginAs(page, context, actorA);
+    await page.goto(`${targetBaseUrl}/acquisitions/${acqId}`);
+    await page.locator('[data-testid="add-evidence-btn"]').click();
+    await page.locator('[data-testid="create-ref-text-input"]').fill(refA);
+
+    // A loses rights for real; A's POST receives a real 403 whose body decode is held.
+    await revokeRoles(actorA);
+    await page.evaluate(() => {
+      (window as any).__e2eBodyBarrier = { method: 'POST', path: '/evidence' };
+    });
+    const denied = page.waitForResponse(
+      (r: any) => r.request().method() === 'POST' && new URL(r.url()).pathname === '/evidence'
+    );
+    await page.locator('[data-testid="create-evidence-submit-btn"]').click();
+    expect((await denied).status()).toBe(403);
+    await expect.poll(() => page.evaluate(() => (window as any).__e2eBodyHeldStatus)).toBe(403);
+
+    // Real actor B login, verified B UI and a successful B mutation while A's body is held.
+    await setSessionCookie(context, actorB);
+    await refocus(page, actorB);
+    await expect(page.locator('[data-testid="add-evidence-btn"]')).toBeEnabled();
+    await page.locator('[data-testid="add-evidence-btn"]').click();
+    await page.locator('[data-testid="create-ref-text-input"]').fill(refB1);
+    await page.locator('[data-testid="create-evidence-submit-btn"]').click();
+    await expect(page.locator('[data-testid="evidence-table"]')).toContainText(refB1);
+
+    // Release A's stale 403 body into the live document.
+    await page.evaluate(() => (window as any).__e2eReleaseBody());
+    await page.waitForTimeout(500);
+
+    // B's projection, controls and banners are untouched.
+    await expect(page.locator('[data-testid="evidence-table"]')).toContainText(refB1);
+    await expect(page.locator('[data-testid="add-evidence-btn"]')).toBeEnabled();
+    await expect(page.locator('[data-testid="evidence-fetch-error"]')).toHaveCount(0);
+    await expect(page.locator('[data-testid="uncertain-mutation-alert"]')).toHaveCount(0);
+
+    // B can still mutate.
+    await page.locator('[data-testid="add-evidence-btn"]').click();
+    await page.locator('[data-testid="create-ref-text-input"]').fill(refB2);
+    await page.locator('[data-testid="create-evidence-submit-btn"]').click();
+    await expect(page.locator('[data-testid="evidence-table"]')).toContainText(refB2);
+
+    expect(await countEvidence(refA)).toBe(0);
+    expect(await countEvidence(refB1, actorB)).toBe(1);
+    expect(await countEvidence(refB2, actorB)).toBe(1);
+
+    await restoreCustodian(actorA);
+    await page.unrouteAll({ behavior: 'wait' });
+  });
+
+  test('Journey T7.14 (ARCH-A2 H4): only a receipt matching the operation settles it; rewritten 2xx bodies keep the original token in recovery until a valid replay', async ({
+    page,
+    context,
+  }) => {
+    const actorA = await seedCustodianActor('a2_h4');
+    const acqId = await seedAcquisitionFor(actorA, 'PO-T7-A2-H4');
+    const stamp = Date.now();
+    await loginAs(page, context, actorA);
+    await page.goto(`${targetBaseUrl}/acquisitions/${acqId}`);
+    await expect(page.locator('[data-testid="add-evidence-btn"]')).toBeEnabled();
+
+    const alert = page.locator('[data-testid="uncertain-mutation-alert"]');
+
+    const replayAndSettle = async (expectedToken: string) => {
+      const replay = page.waitForRequest((req: any) => isEvidenceMutation(req));
+      await page.locator('[data-testid="retry-mutation-btn"]').click();
+      expect((await replay).headers()['x-retry-token']).toBe(expectedToken);
+      await expect(alert).toHaveCount(0);
+    };
+
+    // Create receipts: genuine 201, version 1, non-null history UUID.
+    const createCases: Array<[string, (status: number, body: any) => { status: number; body: string }]> = [
+      ['null body', () => ({ status: 201, body: 'null' })],
+      ['malformed JSON', () => ({ status: 201, body: '{"id":' })],
+      ['wrong status', (_s, b) => ({ status: 200, body: JSON.stringify(b) })],
+      ['non-UUID id', (_s, b) => ({ status: 201, body: JSON.stringify({ ...b, id: 'not-a-uuid' }) })],
+      ['version 2', (_s, b) => ({ status: 201, body: JSON.stringify({ ...b, version: 2 }) })],
+      ['null history', (_s, b) => ({ status: 201, body: JSON.stringify({ ...b, history_id: null }) })],
+    ];
+    for (const [label, rewrite] of createCases) {
+      const ref = `A2 H4 create ${label} ${stamp}`;
+      await page.locator('[data-testid="add-evidence-btn"]').click();
+      await page.locator('[data-testid="create-ref-text-input"]').fill(ref);
+      const rewritten = await rewriteNextMutationDelivery(page, '/evidence', rewrite);
+      await page.locator('[data-testid="create-evidence-submit-btn"]').click();
+      const { status, token } = await rewritten.served;
+      expect(status, label).toBe(201);
+      await rewritten.unroute();
+      await expect(alert, label).toBeVisible();
+      await expect(page.locator('[data-testid="add-evidence-btn"]'), label).toBeDisabled();
+      await replayAndSettle(token);
+      expect(await countEvidence(ref), label).toBe(1);
+    }
+
+    // Positive control: a genuine create receipt settles on the first delivery.
+    const baseRef = `A2 H4 correction target ${stamp}`;
+    await page.locator('[data-testid="add-evidence-btn"]').click();
+    await page.locator('[data-testid="create-ref-text-input"]').fill(baseRef);
+    await page.locator('[data-testid="create-evidence-submit-btn"]').click();
+    await expect(page.locator('[data-testid="evidence-table"]')).toContainText(baseRef);
+    await expect(alert).toHaveCount(0);
+    const target = await pool.query('SELECT id FROM evidence_records WHERE reference_text = $1', [baseRef]);
+    const evidenceId = target.rows[0].id as string;
+    const correctPath = `/evidence/${evidenceId}/correct`;
+    const dbVersion = async () =>
+      (await pool.query('SELECT version FROM evidence_records WHERE id = $1', [evidenceId])).rows[0].version as number;
+
+    const openCorrection = async (reason: string, description: string | null) => {
+      await page.locator(`[data-testid="correct-evidence-btn-${evidenceId}"]`).click();
+      await expect(page.locator('[data-testid="evidence-correct-form"]')).toBeVisible();
+      await page.locator('[data-testid="correct-reason-input"]').fill(reason);
+      if (description !== null) await page.locator('[data-testid="correct-desc-input"]').fill(description);
+    };
+
+    // Changed-correction receipts: 200, the same id, version expected+1, history UUID.
+    const correctionCases: Array<[string, (status: number, body: any) => { status: number; body: string }]> = [
+      ['foreign id', (_s, b) => ({ status: 200, body: JSON.stringify({ ...b, id: crypto.randomUUID() }) })],
+      ['unchanged version', (_s, b) => ({ status: 200, body: JSON.stringify({ ...b, version: b.version - 1 }) })],
+      ['null history', (_s, b) => ({ status: 200, body: JSON.stringify({ ...b, history_id: null }) })],
+      ['wrong status', (_s, b) => ({ status: 201, body: JSON.stringify(b) })],
+    ];
+    for (const [label, rewrite] of correctionCases) {
+      const before = await dbVersion();
+      await openCorrection(`A2 H4 reason ${label}`, `A2 H4 description ${label} ${stamp}`);
+      const rewritten = await rewriteNextMutationDelivery(page, correctPath, rewrite);
+      await page.locator('[data-testid="correct-evidence-submit-btn"]').click();
+      const { status, body, token } = await rewritten.served;
+      expect(status, label).toBe(200);
+      expect(body.version, label).toBe(before + 1);
+      await rewritten.unroute();
+      await expect(alert, label).toBeVisible();
+      await replayAndSettle(token);
+      expect(await dbVersion(), label).toBe(before + 1);
+    }
+
+    // Positive control: a genuine no-op correction (200, same version, null history) settles.
+    const beforeNoOp = await dbVersion();
+    const historyBefore = await pool.query('SELECT count(*)::int AS n FROM evidence_history WHERE evidence_id = $1', [
+      evidenceId,
+    ]);
+    await openCorrection('A2 H4 no-op reason', null);
+    const noOp = page.waitForResponse(
+      (r: any) => r.request().method() === 'POST' && new URL(r.url()).pathname === correctPath
+    );
+    await page.locator('[data-testid="correct-evidence-submit-btn"]').click();
+    const noOpBody = await (await noOp).json();
+    expect(noOpBody.history_id).toBeNull();
+    expect(noOpBody.version).toBe(beforeNoOp);
+    await expect(page.locator('[data-testid="evidence-correct-form"]')).toHaveCount(0);
+    await expect(alert).toHaveCount(0);
+    const historyAfter = await pool.query('SELECT count(*)::int AS n FROM evidence_history WHERE evidence_id = $1', [
+      evidenceId,
+    ]);
+    expect(historyAfter.rows[0].n).toBe(historyBefore.rows[0].n);
+    expect(await dbVersion()).toBe(beforeNoOp);
+
+    await page.unrouteAll({ behavior: 'wait' });
+  });
+
+  test('Journey T7.15 (ARCH-A2 H4): once a valid receipt is known, a replay settles only on that exact receipt even after the record moved on', async ({
+    page,
+    context,
+    browser,
+  }) => {
+    const actorA = await seedCustodianActor('a2_h4h_a');
+    const actorB = await seedCustodianActor('a2_h4h_b');
+    const acqId = await seedAcquisitionFor(actorA, 'PO-T7-A2-H4H');
+    const ref = `A2 H4 history target ${Date.now()}`;
+
+    await loginAs(page, context, actorA);
+    await page.goto(`${targetBaseUrl}/acquisitions/${acqId}`);
+    await page.locator('[data-testid="add-evidence-btn"]').click();
+    await page.locator('[data-testid="create-ref-text-input"]').fill(ref);
+    await page.locator('[data-testid="create-evidence-submit-btn"]').click();
+    await expect(page.locator('[data-testid="evidence-table"]')).toContainText(ref);
+    const evidenceId = (await pool.query('SELECT id FROM evidence_records WHERE reference_text = $1', [ref])).rows[0]
+      .id as string;
+    const correctPath = `/evidence/${evidenceId}/correct`;
+    const alert = page.locator('[data-testid="uncertain-mutation-alert"]');
+
+    // A's correction commits (v2). Its genuine receipt is delivered after a focus revalidation of
+    // the same actor, so the receipt is known (confirmed) but the operation stays unsettled.
+    await page.locator(`[data-testid="correct-evidence-btn-${evidenceId}"]`).click();
+    await page.locator('[data-testid="correct-reason-input"]').fill('A2 H4 A correction');
+    await page.locator('[data-testid="correct-desc-input"]').fill('A2 H4 A description');
+    const committed = deferred<{ body: any; token: string }>();
+    const release = deferred<void>();
+    const heldMatcher = (url: URL) => url.pathname === correctPath;
+    let held = false;
+    await page.route(heldMatcher, async (route: any) => {
+      if (route.request().method() !== 'POST' || held) return route.fallback();
+      held = true;
+      const response = await route.fetch();
+      committed.resolve({ body: await response.json(), token: route.request().headers()['x-retry-token'] });
+      await release.promise;
+      try {
+        await route.fulfill({ response });
+      } catch {}
+    });
+    await page.locator('[data-testid="correct-evidence-submit-btn"]').click();
+    const { body: originalReceipt, token } = await committed.promise;
+    expect(originalReceipt.version).toBe(2);
+    expect(originalReceipt.history_id).toEqual(expect.any(String));
+
+    const focusRefetch = page.waitForResponse(
+      (r: any) => new URL(r.url()).pathname === '/evidence' && new URL(r.url()).searchParams.get('acquisition_id') === acqId
+    );
+    await page.evaluate(() => window.dispatchEvent(new Event('focus')));
+    await focusRefetch;
+    release.resolve();
+    await page.unroute(heldMatcher);
+    await expect(alert).toBeVisible();
+
+    // Actor B, in a separate browser context, moves the record on to v3.
+    const contextB = await browser.newContext();
+    const pageB = await contextB.newPage();
+    await loginAs(pageB, contextB, actorB);
+    await pageB.goto(`${targetBaseUrl}/acquisitions/${acqId}`);
+    await pageB.locator(`[data-testid="correct-evidence-btn-${evidenceId}"]`).click();
+    await pageB.locator('[data-testid="correct-reason-input"]').fill('A2 H4 B correction');
+    await pageB.locator('[data-testid="correct-desc-input"]').fill('A2 H4 B description');
+    await pageB.locator('[data-testid="correct-evidence-submit-btn"]').click();
+    await expect(pageB.locator(`[data-testid="evidence-version-${evidenceId}"]`)).toHaveText('v3');
+    await contextB.close();
+
+    // A replay delivered with a receipt matching the CURRENT record, not the known one, must not settle.
+    const rewritten = await rewriteNextMutationDelivery(page, correctPath, (_s, b) => ({
+      status: 200,
+      body: JSON.stringify({ ...b, version: 3 }),
+    }));
+    await page.locator('[data-testid="retry-mutation-btn"]').click();
+    const { body: replayed } = await rewritten.served;
+    expect(replayed).toEqual(originalReceipt);
+    await rewritten.unroute();
+    await expect(page.locator('[data-testid="retry-mutation-btn"]')).toBeEnabled();
+    await expect(alert).toBeVisible();
+
+    // The genuine replay returns the exact known receipt and settles.
+    const replay = page.waitForRequest((req: any) => isEvidenceMutation(req));
+    await page.locator('[data-testid="retry-mutation-btn"]').click();
+    expect((await replay).headers()['x-retry-token']).toBe(token);
+    await expect(alert).toHaveCount(0);
+    const row = await pool.query('SELECT version FROM evidence_records WHERE id = $1', [evidenceId]);
+    expect(row.rows[0].version).toBe(3);
+    const history = await pool.query('SELECT count(*)::int AS n FROM evidence_history WHERE evidence_id = $1', [
+      evidenceId,
+    ]);
+    expect(history.rows[0].n).toBe(3);
+
+    await page.unrouteAll({ behavior: 'wait' });
+  });
 });
