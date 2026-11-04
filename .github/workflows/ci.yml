@@ -653,6 +653,11 @@ jobs:
               echo "$PW_VER" | grep -Eq "1\.63\.0"
             '
 
+          # Run both specs, then fail once with both results.
+          E2E_STATUS=0
+          echo "Web -> api DNS before the browser runs (diagnostic):"
+          podman exec "${COMPOSE_PROJECT_NAME}_web_1" node -e "require('dns').lookup('api', (e, a) => console.log(e ? e.code : a))" || true
+
           echo "Executing auth.spec.ts against the Compose stack..."
           podman run --name s2_browser_runner --rm \
             --network "${COMPOSE_PROJECT_NAME}_default" \
@@ -664,7 +669,8 @@ jobs:
             -e E2E_PASSWORD="$E2E_PASSWORD" \
             -e CI=true \
             s2-assets-browser:ci \
-            pnpm --filter web exec playwright test tests/e2e/auth.spec.ts
+            pnpm --filter web exec playwright test tests/e2e/auth.spec.ts --output test-results/auth \
+            || E2E_STATUS=1
 
           # asset.spec.ts starts its own Testcontainers PostgreSQL, API and Vite server, so it runs
           # like the integration job: host network and the rootless Podman socket.
@@ -680,7 +686,10 @@ jobs:
             -e TESTCONTAINERS_HOST_OVERRIDE="127.0.0.1" \
             -e CI=true \
             s2-assets-browser:ci \
-            pnpm --filter web exec playwright test tests/e2e/asset.spec.ts
+            pnpm --filter web exec playwright test tests/e2e/asset.spec.ts --output test-results/asset \
+            || E2E_STATUS=1
+
+          exit "$E2E_STATUS"
 
       - name: Copy test diagnostics on failure
         if: failure()
