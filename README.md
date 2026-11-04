@@ -5,11 +5,11 @@
 | Baseline | Value |
 |---|---|
 | Blueprint | **v1.0.2 — FROZEN** |
-| Workflow | **Claude Code CLI + Matt Pocock Skills from Feature 002 + Human-gated independent delivery** |
+| Workflow | **Claude Code CLI + Matt Pocock Skills from Feature 002; rules in `CLAUDE.md`** |
 | Technology Direction | **`TECHNOLOGY.md` v1.0.1 — SELECTED BASELINE** |
 | Business Rules | **252 canonical rules** |
 | Delivery decomposition | **14 Feature Briefs** |
-| Feature 001 tooling (historical) | **Spec Kit 1.1.1 / AGY integration** |
+| Feature 001 tooling (historical) | **Spec Kit 1.1.1 / AGY integration, retired 2026-11-04** |
 
 หลักการของโครงการ:
 
@@ -30,10 +30,10 @@ Repository นี้เป็น ready-to-develop business/system baseline ไ�
 
 Approved feature specifications and tickets refine delivery details แต่ห้าม silent-redefine business meaning ที่อยู่ใน authority สูงกว่า
 
-Constitution v6.0.0 / `AGENTS.md` select Claude Code CLI and Matt Pocock Skills
-for Feature 002 onward. Spec Kit, Multica and AGY references in frozen/context
-documents are historical delivery context; business scope, rules and technical
-authority remain unchanged.
+`CLAUDE.md` selects Claude Code CLI and Matt Pocock Skills for Feature 002
+onward. Spec Kit, Multica and AGY references in frozen/context documents are
+historical delivery context; business scope, rules and technical authority
+remain unchanged.
 
 ### Technical Direction
 
@@ -49,21 +49,21 @@ authority remain unchanged.
 
 For Feature 002 onward:
 
-- Constitution v6.0.0 — project-wide engineering principles and feature-scoped workflow
+- `CLAUDE.md` — the repository's only rules file: authority, workflow and engineering principles
 - approved feature specification/decisions — behavior, acceptance and implementation/testing decisions
 - approved GitHub Issues — bounded delivery tickets and recorded Product Owner decisions
 - implementation + tests — delivered behavior
 
 Feature 001 historical artifact roles remain:
 
-- Constitution — project-wide engineering principles
+- Constitution (retired 2026-11-04; in Git history) — project-wide engineering principles
 - `spec.md` / clarifications — feature behavior และ acceptance
 - `plan.md` — implementation strategy
 - `tasks.md` — executable delivery decomposition
 - implementation + tests — delivered behavior
 
 Product Owner decisions บันทึกใน GitHub Issues และ remain authoritative; agent-generated content cannot redefine business requirements.
-Multica Issue/comments/run history ก่อน 2026-11-03 เป็น historical provenance เท่านั้น ไม่ใช่ช่องทาง coordination สำหรับงานใหม่ (ดู `AGENTS.md`)
+Multica Issue/comments/run history ก่อน 2026-11-03 เป็น historical provenance เท่านั้น ไม่ใช่ช่องทาง coordination สำหรับงานใหม่ (ดู `CLAUDE.md`)
 
 ---
 
@@ -83,30 +83,25 @@ Multica Issue/comments/run history ก่อน 2026-11-03 เป็น historic
 ### Feature 002 onward
 
 ```text
-New feature:
-to-spec
+grill-with-docs
+→ prototype (when a question needs running code)
+→ to-spec
 → to-tickets
-→ Product Owner Gate
-→ implement + tdd
-→ code-review
-→ Independent Review (separate Claude Code session)
-→ Product Owner Merge Gate
-
-Issue with approved specification, ticket and authorization:
-Existing Authority
-→ implement + tdd
-→ code-review
-→ Independent Review (separate Claude Code session)
-→ Product Owner Gate
+→ implement per ticket (drives tdd, closes with code-review)
+→ pr
+→ merge into the feature's integration branch
+→ retro
+→ Product Owner acceptance of the feature → main
 ```
 
-Use native skill invocation, only for the skills the work needs; reuse approved
-specifications and tickets. Specification/ticket publication and bounded
-implementation require applicable Product Owner approval. The Product Owner
-starts each Claude Code session with a bounded handoff; GitHub Issues track
-specifications and tickets and record Product Owner decisions. Nothing is
-dispatched, claimed, merged or deployed automatically. The amendment itself
-authorizes no next skill, publication or implementation.
+Use the skills the work needs; reuse approved specifications and tickets. Work
+starts from a Product Owner decision, and new scope needs one. Claude Code
+reports `code-review` as self-review and merges a ticket's pull request into the
+feature's integration branch once it stays in scope and its checks pass; a
+feature reaches `main` only on Product Owner acceptance. GitHub Issues track
+specifications and tickets and record Product Owner decisions. Labels never
+authorize work, and nothing is dispatched, claimed or deployed to production
+automatically. `CLAUDE.md` holds the rules.
 
 ### Feature 001 before Human Gate — historical
 
@@ -123,53 +118,16 @@ Constitution
 → Human Gate
 ```
 
-### After Human Gate
-
-การ implementation หลัง Human Gate ต้องรักษาหลัก:
-
-```text
-Authorized bounded implementation
-→ independent review
-→ Human Product Owner acceptance
-```
-
-กติกาหลัก:
-
-- implementation author ห้าม approve งานของตนเอง
-- independent review ทำใน Claude Code session แยกต่างหาก และต้องตรวจ candidate/repository evidence จริง
-- corrective revision ต้องอยู่ใน scope เดิม
-- Human Product Owner เป็น final acceptance
-- ไม่มี automatic dispatch, claim, merge หรือ deployment; labels รวมถึง `ready-for-agent` ไม่ใช่ implementation authorization
-
 ---
 
 ## 4. Feature 001 Spec Kit integration — historical
 
-The following integration record is preserved for Feature 001. Do not run these
-bootstrap commands for Feature 002 or later features.
+Feature 001 ใช้ Spec Kit **1.1.1** กับ integration **`agy`**. Spec Kit ถูก retire
+เมื่อ 2026-11-04 (#36): ลบ `.specify/` (templates, scripts, integrations และ
+Constitution) และ `.agents/` (AGY skills และ MCP config) แล้ว ประวัติอยู่ใน Git
 
-Repository นี้ใช้ Spec Kit **1.1.1** และ integration **`agy`**
-
-Expected project infrastructure:
-
-```text
-.specify/
-.agents/skills/
-specs/
-```
-
-Initialize existing repository:
-
-```bash
-specify init \
-  --here \
-  --force \
-  --non-interactive \
-  --integration agy \
-  --script sh
-```
-
-Feature 001 ไม่ติดตั้ง Spec Kit `--integration` แบบ Claude/Codex เป็น default workflow
+`specs/001-application-foundation/` คงไว้เป็น accepted record ของ Feature 001
+(46 tasks เสร็จครบ)
 
 ---
 
@@ -181,7 +139,6 @@ Application runtime และ infrastructure dependencies สำหรับ nor
 Fedora Host
 ├── Git / worktrees
 ├── Claude Code CLI + Matt Pocock Skills
-├── Spec Kit (Feature 001 history)
 │
 └── Rootless Podman
     ├── web
@@ -246,11 +203,10 @@ Feature sequencing canonical อยู่ที่ `docs/09-feature-map.md`
 
 ### Implementation / review
 
-1. `AGENTS.md`
-2. `CLAUDE.md` — Claude Code procedures สำหรับ author และ Independent Reviewer sessions
-3. relevant Business Authority / Technology Direction
-4. exact authorized feature specification, decisions and ticket context
-5. exact diff/tests/evidence for the authorized scope
+1. `CLAUDE.md` — the repository's only rules file
+2. relevant Business Authority / Technology Direction
+3. exact authorized feature specification, decisions and ticket context
+4. exact diff/tests/evidence for the authorized scope
 
 ใช้ progressive disclosure; ห้าม copy Blueprint ทั้งชุดเข้า feature spec โดยอัตโนมัติ
 
@@ -264,10 +220,9 @@ Feature sequencing canonical อยู่ที่ `docs/09-feature-map.md`
 | `TECHNOLOGY.md` | selected technical baseline |
 | `docs/` | canonical cross-feature domain documentation |
 | `features/` | bounded delivery context + rule routing |
-| `.specify/memory/constitution.md` | project engineering constitution |
-| `AGENTS.md` | shared repository authority and engineering contract |
-| `CLAUDE.md` | Claude Code session contract (author / Independent Reviewer) |
+| `CLAUDE.md` | the only rules file: authority, workflow, checks, engineering principles |
 | `docs/agents/` | Matt Skills configuration: issue tracker, triage labels, domain docs |
+| `specs/001-application-foundation/` | accepted Feature 001 record (retired Spec Kit format) |
 
 Repository text/source artifacts on the active canonical branch are source of truth; generated packages are not a second source of truth.
 
@@ -284,18 +239,15 @@ Do not add without a current requirement:
 - extra planner/tester/architect agents
 - custom review ledger or second state database
 - automatic whole-phase implementation without bounded authorization
-- one implementation author approving their own work
 
 ---
 
 ## 10. Current start point
 
 Feature 002 — `asset-registry` continues with Claude Code CLI and the accepted
-Matt Skills setup. The Constitution v6.0.0 amendment (Claude Code-only delivery)
-takes effect on Product Owner acceptance, recorded on #36;
-`to-spec`, publication, implementation and integration require their applicable
-authorization. See `AGENTS.md`, `docs/agents/issue-tracker.md` and
-`docs/agents/domain.md`.
+Matt Skills setup under `CLAUDE.md`. Spec Kit, the Constitution and `AGENTS.md`
+are retired on Product Owner acceptance, recorded on #36. See `CLAUDE.md`,
+`docs/agents/issue-tracker.md` and `docs/agents/domain.md`.
 
 ### Feature 001 start-point record — historical
 

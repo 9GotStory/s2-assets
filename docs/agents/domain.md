@@ -2,7 +2,7 @@
 
 Use one shared domain context across this pnpm workspace. Web, API and database
 packages are technical boundaries, not separate business vocabularies. Follow
-`AGENTS.md` authority order and current explicit Product Owner decisions.
+the authority order in `CLAUDE.md`.
 
 ## Existing sources
 
@@ -32,6 +32,5 @@ creating them upfront. No new glossary or ADR structure is required for setup.
 Record approved feature decisions by reference. Surface contradictions before
 implementation; do not change frozen business authority, technical direction,
 architectural/security invariants or historical Feature 001 artifacts to
-accommodate a skill or runtime. Constitution v6.0.0 and `AGENTS.md` define the
-feature-scoped engineering workflow; further execution still requires the
-applicable bounded Product Owner authorization.
+accommodate a skill or runtime. `CLAUDE.md` defines the engineering workflow;
+further execution still requires the applicable Product Owner authorization.

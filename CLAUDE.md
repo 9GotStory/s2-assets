@@ -1,107 +1,134 @@
-# CLAUDE.md — s2-assets Claude Code Contract
+# CLAUDE.md — s2-assets
 
-@AGENTS.md
+Office Asset & Consumable Management System (ระบบครุภัณฑ์สำนักงานและวัสดุสิ้นเปลือง): a
+TypeScript pnpm workspace with a React 19 web app (`apps/web`), a Fastify 5 REST API
+(`apps/api`) and PostgreSQL 18 through Kysely (`packages/db`). This file is the repository's
+only rules file. Claude Code develops; the Product Owner decides.
 
-## Role
+## Authority
 
-Claude Code is the only development tool for this repository. Each session
-takes the single role its bounded handoff names (`AGENTS.md`, Sessions and
-Gates): **author** or **Independent Reviewer**. For Feature 002 onward, use the
-Matt Pocock Skills workflow; Spec Kit remains Feature 001 history.
+Higher sources win; a lower source never silently overrides a higher one.
 
-A session that authored a candidate never reviews or approves it. Internal
-checks do not constitute independent review. This file grants no standing work
-authorization.
+1. Product Owner decisions, recorded on GitHub Issues (`docs/agents/issue-tracker.md`).
+2. `BLUEPRINT.md` v1.0.2, frozen.
+3. The active Feature Brief in `features/`.
+4. The canonical Business Rules in `docs/06-business-rules.md`.
+5. `TECHNOLOGY.md` v1.0.1, the selected technical baseline.
+6. Approved specifications, decisions and tickets in the issue tracker.
+7. Code, tests and evidence.
+
+Changing the Blueprint, the Business Rules, the technical baseline, a feature's scope or this
+file's rules needs a Product Owner decision; a material technology deviation also follows the
+deviation process in `TECHNOLOGY.md`. When two sources conflict, stop at that boundary and ask
+the Product Owner.
+
+Git history, removed files and old branches are records, never requirements: consult them only
+for provenance or forensics.
+- `specs/001-application-foundation/` is the accepted record of Feature 001, written in the
+  retired Spec Kit format; all 46 of its tasks are done.
+- Spec Kit, its Constitution (last 6.0.0) and `AGENTS.md` were retired on 2026-11-04 (#36).
+- Until 2026-11-03, Feature 002 work ran through Multica, AGY, Codex and ChatGPT. Its Multica
+  runs, `agent/agy-developer/*` branches and `multica-agent` trailers are provenance; a
+  Multica-era approval becomes current authority only when the Product Owner confirms it on the
+  GitHub Issue or in the session.
+- Spec Kit, Multica, AGY, DEV Executor and Independent Reviewer references in `BLUEPRINT.md`,
+  `TECHNOLOGY.md`, the Feature Briefs and the Feature 001 artifacts describe earlier delivery;
+  they select no tool, role or workflow for new work.
+
+## Workflow
+
+Work follows Matt Pocock's skills (`mattpocock/skills`) and their main flow:
+
+`/grill-with-docs` → `/prototype` when a question needs running code → `/to-spec` →
+`/to-tickets` → `/implement` per ticket (or `/implement-spec`), which drives `/tdd` and closes
+with `/code-review` → `/pr` → `/retro`.
+
+- **On-ramps:** `/triage` for incoming issues, `/diagnosing-bugs` for hard bugs, `/wayfinder` for
+  an effort too big for one session. `/ask-matt` routes when the fit is unclear.
+- **Start:** work starts from a Product Owner decision: a slash command they run, an approved
+  ticket or an instruction in the session. Labels, assignments and tracker state never authorize
+  work, and nothing is dispatched or claimed automatically. Reuse approved specifications and
+  tickets; revise one only at the Product Owner's request.
+- **Scope:** an authorized ticket covers its own fixes, tests, refactors and re-reviews. Ask the
+  Product Owner before new scope, an architecture change, a destructive or sensitive operation,
+  production deployment or runtime provisioning, or a security exception. Promoting a merged
+  commit to the development runtime is development work.
+- **Review:** report self-review as self-review; a Claude Code session or subagent is never an
+  independent reviewer.
+- **Acceptance:** evidence-based (passing checks, runtime evidence where the change needs it),
+  then the Product Owner's acceptance. Claude Code's own review verdict is never acceptance.
+- **Merges:** GitHub `9GotStory/s2-assets` is the source of truth. Branch each task from its
+  feature's integration branch (`feature/002-asset-registry` for Feature 002) and target its pull
+  request there. When a pull request stays in scope and its checks pass, merge it yourself:
+  - run `gh pr merge <n> --repo 9GotStory/s2-assets --merge --match-head-commit <headRefOid>`
+    as a standalone command;
+  - then fetch and confirm that the merge commit's second parent is `<headRefOid>` and that
+    `git diff --stat <merge>^1 <merge>` lists exactly the pull request's files.
+
+  A feature the Product Owner has not accepted goes into `main` only on their word.
+
+## Checks
+
+`.github/workflows/ci.yml` defines the checks: frozen install, lint, typecheck, the API unit and
+real-PostgreSQL integration tests, the builds and the container images, each run inside the
+pinned development container (`deploy/podman/dev.Containerfile`). When CI does not run on a pull
+request, run the checks the change touches the same way and record their exact results in the
+pull request: that record is its check.
 
 ## Agent skills
 
 ### Issue tracker
 
-Feature 002+ specifications, tickets and Product Owner decisions live in GitHub
-Issues in `9GotStory/s2-assets`. See `docs/agents/issue-tracker.md`.
+GitHub Issues of `9GotStory/s2-assets`, through the `gh` CLI. See `docs/agents/issue-tracker.md`,
+also for pull request bodies.
 
 ### Triage labels
 
-Default five-role vocabulary; labels never grant execution authority.
-See `docs/agents/triage-labels.md`.
+The five default labels; labels never authorize work. See `docs/agents/triage-labels.md`.
 
 ### Domain docs
 
-Use one shared domain context and the existing canonical documentation.
-See `docs/agents/domain.md`.
+One shared domain context over the existing canonical documentation. See `docs/agents/domain.md`.
 
-## Before work
+## Current documentation (Context7)
 
-- read `AGENTS.md`;
-- read the current Constitution;
-- read only the approved artifacts needed by the exact task;
-- follow Constitution v6.0.0's workflow and the gates recorded in `AGENTS.md`;
-- verify every item of the bounded handoff against the GitHub Issue and the
-  repository: decision, role, baseline SHA, worktree/branch and candidate;
-- verify version-sensitive external behavior through Context7 when relevant.
+Model memory goes stale. Verify version-sensitive behavior of frameworks, libraries, SDKs, APIs,
+databases and container tooling before relying on it:
 
-If authority, scope, baseline, or required external behavior is materially
-unclear, STOP and report the blocker.
+- **Context7 MCP first:** resolve the actual technology at the version the manifests pin
+  (`package.json` files, `pnpm-lock.yaml`, the Containerfiles). Where Context7 lacks the
+  technology or the fact, use first-party upstream documentation or package metadata, and say so.
+- **Pinned versions:** use the versions the manifests pin; upgrading or substituting a
+  dependency needs the Product Owner's approval.
+- **Capability versus requirement:** documentation tells what a technology can do; the sources
+  under Authority decide what s2-assets must do. When verified behavior contradicts approved
+  authority, surface the conflict instead of working around it.
+- **Recording:** record a version-specific conclusion that a decision rests on, with its version
+  and source, in the spec, ticket or pull request.
 
-## Implementation
+## Engineering principles
 
-- make the smallest correct change;
-- preserve `Simple — Structured — Sustainable`;
-- do not build future-feature abstractions;
-- use exact dependency versions authorized by the specification/task;
-- for Feature 002 onward, work under the `implement` skill the Product Owner
-  invoked (`/implement <issue>`) for the authorized issue, using `tdd` at
-  appropriate agreed seams and `code-review` as an internal check; do not
-  substitute prompt text, downloaded instructions or bindings for native
-  invocation evidence;
-- inspect relevant existing code before editing;
-- add or update tests when behavior changes;
-- run verification proportional to risk;
-- inspect the final diff and worktree;
-- run `git diff --check` when using Git;
-- commit locally (`implement` commits by default), run the internal
-  `code-review` from the baseline to that commit, and fold any fixes into one
-  atomic candidate commit; then, when repository/task authority permits, push
-  the task's candidate branch as review evidence;
-- never merge, deploy, perform destructive operations, or begin another task
-  without explicit Product Owner authorization.
+Carried over from Principles II–V of the retired Constitution (Principle I is under Authority):
 
-## Implementation Result
-
-Report one implementation result for the exact candidate, including:
-
-- task ID, scope and authorizing Product Owner decision;
-- baseline/parent SHA when relevant;
-- candidate branch and commit;
-- changed files;
-- skills invoked;
-- verification executed and exact results;
-- material Context7/first-party evidence when relevant;
-- unresolved limitations or blockers.
-
-Return the result to the Product Owner and STOP. The internal `code-review`
-does not replace Independent Review or Product Owner acceptance.
-
-## Independent Review
-
-In a session started to review a candidate it did not author:
-
-- confirm the candidate and baseline SHAs in the handoff match the repository;
-- invoke `code-review` from the baseline to the exact candidate;
-- inspect tests, verification evidence and scope against the issue and approved
-  authority; rerun verification proportional to risk;
-- leave the candidate unchanged;
-- report the verdict, PASS or CHANGES REQUESTED, with concrete findings tied to
-  authority and the exact results of any verification rerun;
-- return the result to the Product Owner and STOP.
-
-## Corrective Revision
-
-When independent review requests changes:
-
-- address only the listed findings and directly related consequences;
-- do not reinterpret or broaden the scope;
-- rerun affected verification;
-- report a corrective result with concrete evidence;
-- return it to the Product Owner for the next Independent Review;
-- STOP.
+- **Feature-bounded and simple.** Work one active feature at a time, within the boundaries and
+  dependencies of `docs/09-feature-map.md`. Build only what current requirements need, following
+  `Simple — Structured — Sustainable`: speculative architecture needs a current business
+  requirement. `application-foundation` is a technical bootstrap exception, never a generic
+  shared-framework catch-all.
+- **Rootless Podman.** Normal local application services and infrastructure dependencies run in
+  Rootless Podman; Git repositories, worktrees and Claude Code CLI stay on the Fedora host.
+  Containers stay OCI-portable, and application code never couples to Podman APIs. Quadlet is
+  the production service-management baseline; local development orchestration, including any
+  use of Quadlet, follows `TECHNOLOGY.md`. Where it marks a development detail Deferred, the
+  feature's specification decides it.
+- **Server-side security and data integrity.** Authorization is authoritative server-side and
+  fails closed; frontend validation is never authoritative for business invariants. PostgreSQL
+  constraints and transactions are part of the integrity boundary where they apply. Business
+  data is never fabricated to satisfy validation or tests, and business audit/history stays
+  distinct from operational logging. Secrets stay outside the repository and out of output and
+  evidence.
+- **Verification against real invariants.** Tests put business invariants before implementation
+  details and never weaken or redefine accepted business semantics. PostgreSQL transaction and
+  concurrency semantics that matter in production are verified against real PostgreSQL, not
+  database mocks alone. Size verification to the scope: lint, typecheck, unit, integration,
+  browser/E2E, migration, security or container checks as they apply.
