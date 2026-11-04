@@ -3,10 +3,12 @@ name: CI
 on:
   push:
     branches:
+      - main
       - feature/001-application-foundation
       - feature/002-asset-registry
   pull_request:
     branches:
+      - main
       - feature/001-application-foundation
       - feature/002-asset-registry
   workflow_dispatch:
