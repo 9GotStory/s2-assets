@@ -5001,11 +5001,6 @@ test.describe.serial('Asset Registry Real SPA -> Composed API -> PostgreSQL Jour
       [actorId]
     );
 
-  const setSessionCookie = async (context: any, actorId: string) => {
-    const session = await sessionService.createSession(actorId);
-    await context.addCookies([{ name: 'session', value: session.token, url: targetBaseUrl }]);
-  };
-
   // Lets the page learn the current cookie actor through its own focus revalidation.
   const refocus = async (page: any, expectedActorId: string) => {
     const check = page.waitForResponse((r: any) => new URL(r.url()).pathname === '/auth/session-check');
@@ -5068,7 +5063,9 @@ test.describe.serial('Asset Registry Real SPA -> Composed API -> PostgreSQL Jour
     return { served: served.promise, unroute: () => page.unroute(matcher) };
   };
 
-  // DECODER barrier: holds the body decode of the next matching fetch response until released.
+  // DECODER barrier: holds the body decode of the next matching fetch response until released;
+  // mode 'malformed' then fails the decode. `__e2eBodyConsumed` turns true one task after the
+  // held body reaches the app, so the app's continuation has run.
   const installDecoderBarrier = async (page: any) => {
     await page.addInitScript(() => {
       const w = window as any;
@@ -5080,15 +5077,21 @@ test.describe.serial('Asset Registry Real SPA -> Composed API -> PostgreSQL Jour
         const url = new URL(typeof input === 'string' ? input : input.url, w.location.href);
         if (!rule || rule.method !== method || rule.path !== url.pathname) return res;
         w.__e2eBodyBarrier = null;
+        w.__e2eBodyConsumed = false;
         let release!: () => void;
         const gate = new Promise<void>((r) => (release = r));
         w.__e2eReleaseBody = release;
         w.__e2eBodyHeldStatus = res.status;
-        const text = await res.text();
+        const text = rule.mode === 'malformed' ? '{"id":' : await res.text();
+        const deliver = async () => {
+          await gate;
+          setTimeout(() => (w.__e2eBodyConsumed = true), 0);
+          return text;
+        };
         return new Proxy(res, {
           get(target: any, prop: any) {
-            if (prop === 'json') return async () => { await gate; return JSON.parse(text); };
-            if (prop === 'text') return async () => { await gate; return text; };
+            if (prop === 'json') return async () => JSON.parse(await deliver());
+            if (prop === 'text') return deliver;
             const value = Reflect.get(target, prop);
             return typeof value === 'function' ? value.bind(target) : value;
           },
@@ -5097,7 +5100,14 @@ test.describe.serial('Asset Registry Real SPA -> Composed API -> PostgreSQL Jour
     });
   };
 
-  test('Journey T7.11 (ARCH-A2 H1): a replay denied after revocation keeps the committed-unknown create quarantined; restored rights and the same-token replay settle exactly one Evidence', async ({
+  // Waits until a held body reached the app and the next frame rendered its continuation.
+  const releaseHeldBody = async (page: any) => {
+    await page.evaluate(() => (window as any).__e2eReleaseBody());
+    await expect.poll(() => page.evaluate(() => (window as any).__e2eBodyConsumed)).toBe(true);
+    await page.evaluate(() => new Promise((r) => requestAnimationFrame(() => requestAnimationFrame(r))));
+  };
+
+  test('Journey T7.11 (ARCH-A2 H1): replays denied after revocation, before and at the POST, keep the committed-unknown create quarantined; restored rights and the same-token replay settle exactly one Evidence', async ({
     page,
     context,
   }) => {
@@ -5108,6 +5118,9 @@ test.describe.serial('Asset Registry Real SPA -> Composed API -> PostgreSQL Jour
     page.on('request', (req: any) => {
       if (isEvidenceMutation(req)) mutationTokens.push(req.headers()['x-retry-token']);
     });
+    const alert = page.locator('[data-testid="uncertain-mutation-alert"]');
+    const suspended = page.locator('[data-testid="uncertain-mutation-auth-suspended"]');
+    const retry = page.locator('[data-testid="retry-mutation-btn"]');
 
     await loginAs(page, context, actorA);
     await page.goto(`${targetBaseUrl}/acquisitions/${acqId}`);
@@ -5119,27 +5132,55 @@ test.describe.serial('Asset Registry Real SPA -> Composed API -> PostgreSQL Jour
     const { status, token: originalToken } = await lost.committed;
     expect(status).toBe(201);
     await lost.unroute();
-    await expect(page.locator('[data-testid="uncertain-mutation-alert"]')).toBeVisible();
+    await expect(alert).toBeVisible();
+    await expect(page.locator('[data-testid="add-evidence-btn"]')).toBeDisabled();
+    await expect(page.locator('[data-testid="link-existing-evidence-btn"]')).toBeDisabled();
     expect(await countEvidence(ref)).toBe(1);
 
-    // Real revocation in PostgreSQL; the session itself stays valid.
+    // 1. Real revocation; the replay's grant pre-check is denied, so nothing is sent.
     await revokeRoles(actorA);
-    await page.locator('[data-testid="retry-mutation-btn"]').click();
-    await expect(page.locator('[data-testid="retry-mutation-btn"]')).toBeEnabled();
+    await retry.click();
+    await expect(suspended).toBeVisible();
+    await expect(alert).toBeVisible();
+    await expect(page.locator('[data-testid="add-evidence-btn"]')).toHaveCount(0);
+    expect(mutationTokens).toEqual([originalToken]);
 
-    // The denied replay proves nothing about the earlier attempt: the intent stays quarantined.
-    await expect(page.locator('[data-testid="uncertain-mutation-alert"]')).toBeVisible();
-    expect(await countEvidence(ref)).toBe(1);
-
-    // Rights return. The original intent is still the only mutation this actor can send.
+    // 2. Rights return, then disappear again between the pre-check and the POST: the replay POST
+    //    itself gets a real 403, and the earlier attempt still counts as possibly committed.
     await restoreCustodian(actorA);
     await refocus(page, actorA);
-    await expect(page.locator('[data-testid="uncertain-mutation-alert"]')).toBeVisible();
-    await expect(page.locator('[data-testid="add-evidence-btn"]')).toBeDisabled();
+    await expect(alert).toBeVisible();
+    const checkMatcher = (url: URL) => url.pathname === '/auth/session-check';
+    let revokedAtCheck = false;
+    await page.route(checkMatcher, async (route: any) => {
+      if (!revokedAtCheck) {
+        revokedAtCheck = true;
+        await revokeRoles(actorA);
+      }
+      await route.fallback();
+    });
+    const deniedReplay = page.waitForResponse((r: any) => isEvidenceMutation(r.request()));
+    await retry.click();
+    expect((await deniedReplay).status()).toBe(403);
+    await page.unroute(checkMatcher);
+    await expect(suspended).toBeVisible();
+    await expect(alert).toBeVisible();
+    expect(mutationTokens).toEqual([originalToken, originalToken]);
+    expect(await countEvidence(ref)).toBe(1);
 
-    await page.locator('[data-testid="retry-mutation-btn"]').click();
-    await expect(page.locator('[data-testid="uncertain-mutation-alert"]')).toHaveCount(0);
+    // 3. Rights return for good. A double Retry claims one attempt only; the replay settles.
+    await restoreCustodian(actorA);
+    await refocus(page, actorA);
+    await expect(alert).toBeVisible();
+    await expect(page.locator('[data-testid="add-evidence-btn"]')).toBeDisabled();
+    await page.evaluate(() => {
+      const button = document.querySelector('[data-testid="retry-mutation-btn"]') as HTMLButtonElement;
+      button.click();
+      button.click();
+    });
+    await expect(alert).toHaveCount(0);
     await expect(page.locator('[data-testid="evidence-table"]')).toContainText(ref);
+    expect(mutationTokens).toEqual([originalToken, originalToken, originalToken]);
 
     // Independent PostgreSQL observer: one Evidence, one history row, one create receipt.
     const ev = await pool.query('SELECT id, created_by FROM evidence_records WHERE reference_text = $1', [ref]);
@@ -5154,24 +5195,28 @@ test.describe.serial('Asset Registry Real SPA -> Composed API -> PostgreSQL Jour
       [actorA]
     );
     expect(receipts.rows[0].n).toBe(1);
-    // No fresh-token mutation was ever sent.
-    expect(new Set(mutationTokens)).toEqual(new Set([originalToken]));
 
     await page.unrouteAll({ behavior: 'wait' });
   });
 
-  test('Journey T7.12 (ARCH-A2 H2): with actor B logged in but no focus, actor A Retry verifies the session and sends zero A-intent POST; B stays usable and verified A recovers with the original token', async ({
+  test('Journey T7.12 (ARCH-A2 H2): with actor B logged in but no focus, actor A Retry verifies the session, sends zero A-intent POST and shields A facts; B stays usable and verified A recovers with the original token', async ({
     page,
     context,
   }) => {
     const actorA = await seedCustodianActor('a2_h2_a');
     const actorB = await seedCustodianActor('a2_h2_b');
     const acqId = await seedAcquisitionFor(actorA, 'PO-T7-A2-H2');
+    const refVisible = `A2 H2 actor A visible fact ${Date.now()}`;
     const refA = `A2 H2 actor A intent ${Date.now()}`;
     const refB = `A2 H2 actor B own ${Date.now()}`;
 
     await loginAs(page, context, actorA);
     await page.goto(`${targetBaseUrl}/acquisitions/${acqId}`);
+    await page.locator('[data-testid="add-evidence-btn"]').click();
+    await page.locator('[data-testid="create-ref-text-input"]').fill(refVisible);
+    await page.locator('[data-testid="create-evidence-submit-btn"]').click();
+    await expect(page.locator('[data-testid="evidence-table"]')).toContainText(refVisible);
+
     await page.locator('[data-testid="add-evidence-btn"]').click();
     await page.locator('[data-testid="create-ref-text-input"]').fill(refA);
     const lost = await loseNextCreateDelivery(page);
@@ -5182,7 +5227,7 @@ test.describe.serial('Asset Registry Real SPA -> Composed API -> PostgreSQL Jour
 
     // Real actor B login in the same browser context, without focus or revalidation: the page
     // still renders actor A and A's Retry button.
-    await setSessionCookie(context, actorB);
+    await loginAs(page, context, actorB);
     const tokensAfterSwitch: string[] = [];
     const sessionActorsAfterSwitch: string[] = [];
     page.on('request', (req: any) => {
@@ -5195,14 +5240,14 @@ test.describe.serial('Asset Registry Real SPA -> Composed API -> PostgreSQL Jour
     });
 
     await page.locator('[data-testid="retry-mutation-btn"]').click();
-    await page.waitForTimeout(1_000);
+    await expect(page.locator('[data-testid="uncertain-mutation-notice"]')).toContainText('ผู้ใช้อื่น');
 
-    // Zero A-intent mutation under B's cookie, and no B-owned record of A's intent.
+    // Zero A-intent mutation under B's cookie, no B-owned record of A's intent, A's facts shielded.
     expect(tokensAfterSwitch).toEqual([]);
+    expect(sessionActorsAfterSwitch).toContain(actorB);
     expect(await countEvidence(refA, actorB)).toBe(0);
     expect(await countEvidence(refA, actorA)).toBe(1);
-    // The Retry asked the server who the current actor is, and saw B.
-    expect(sessionActorsAfterSwitch).toContain(actorB);
+    await expect(page.locator('[data-testid="evidence-panel-section"]')).not.toContainText(refVisible);
 
     // B's own, independently authorized workflow works once the page learns about B.
     await refocus(page, actorB);
@@ -5214,7 +5259,7 @@ test.describe.serial('Asset Registry Real SPA -> Composed API -> PostgreSQL Jour
     expect(await countEvidence(refB, actorB)).toBe(1);
 
     // Positive control: verified actor A retries with the original token and current CSRF.
-    await setSessionCookie(context, actorA);
+    await loginAs(page, context, actorA);
     await refocus(page, actorA);
     await expect(page.locator('[data-testid="uncertain-mutation-alert"]')).toBeVisible();
     const replay = page.waitForRequest((req: any) => isEvidenceMutation(req));
@@ -5227,65 +5272,80 @@ test.describe.serial('Asset Registry Real SPA -> Composed API -> PostgreSQL Jour
     await page.unrouteAll({ behavior: 'wait' });
   });
 
-  test('Journey T7.13 (ARCH-A2 H3): actor A late 403 body released after actor B login leaves B projection, controls and mutations intact', async ({
+  test('Journey T7.13 (ARCH-A2 H3): actor A late 403, 201 and undecodable bodies released after actor B login leave B projection, controls and mutations intact; A recovers its own committed intent', async ({
     page,
     context,
   }) => {
-    const actorA = await seedCustodianActor('a2_h3_a');
-    const actorB = await seedCustodianActor('a2_h3_b');
-    const acqId = await seedAcquisitionFor(actorA, 'PO-T7-A2-H3');
-    const refA = `A2 H3 actor A denied ${Date.now()}`;
-    const refB1 = `A2 H3 actor B before release ${Date.now()}`;
-    const refB2 = `A2 H3 actor B after release ${Date.now()}`;
-
     await installDecoderBarrier(page);
-    await loginAs(page, context, actorA);
-    await page.goto(`${targetBaseUrl}/acquisitions/${acqId}`);
-    await page.locator('[data-testid="add-evidence-btn"]').click();
-    await page.locator('[data-testid="create-ref-text-input"]').fill(refA);
+    for (const mode of ['403', '201', 'malformed'] as const) {
+      const actorA = await seedCustodianActor(`a2_h3_${mode}_a`);
+      const actorB = await seedCustodianActor(`a2_h3_${mode}_b`);
+      const acqId = await seedAcquisitionFor(actorA, `PO-T7-A2-H3-${mode}`);
+      const refA = `A2 H3 ${mode} actor A ${Date.now()}`;
+      const refB1 = `A2 H3 ${mode} actor B before release ${Date.now()}`;
+      const refB2 = `A2 H3 ${mode} actor B after release ${Date.now()}`;
 
-    // A loses rights for real; A's POST receives a real 403 whose body decode is held.
-    await revokeRoles(actorA);
-    await page.evaluate(() => {
-      (window as any).__e2eBodyBarrier = { method: 'POST', path: '/evidence' };
-    });
-    const denied = page.waitForResponse(
-      (r: any) => r.request().method() === 'POST' && new URL(r.url()).pathname === '/evidence'
-    );
-    await page.locator('[data-testid="create-evidence-submit-btn"]').click();
-    expect((await denied).status()).toBe(403);
-    await expect.poll(() => page.evaluate(() => (window as any).__e2eBodyHeldStatus)).toBe(403);
+      await loginAs(page, context, actorA);
+      await page.goto(`${targetBaseUrl}/acquisitions/${acqId}`);
+      await page.locator('[data-testid="add-evidence-btn"]').click();
+      await page.locator('[data-testid="create-ref-text-input"]').fill(refA);
 
-    // Real actor B login, verified B UI and a successful B mutation while A's body is held.
-    await setSessionCookie(context, actorB);
-    await refocus(page, actorB);
-    await expect(page.locator('[data-testid="add-evidence-btn"]')).toBeEnabled();
-    await page.locator('[data-testid="add-evidence-btn"]').click();
-    await page.locator('[data-testid="create-ref-text-input"]').fill(refB1);
-    await page.locator('[data-testid="create-evidence-submit-btn"]').click();
-    await expect(page.locator('[data-testid="evidence-table"]')).toContainText(refB1);
+      // A's POST gets a real response whose body decode is held: a real 403 after revocation, or
+      // a real committed 201 delivered intact or undecodable.
+      if (mode === '403') await revokeRoles(actorA);
+      await page.evaluate((m: string) => {
+        (window as any).__e2eBodyBarrier = { method: 'POST', path: '/evidence', mode: m === 'malformed' ? 'malformed' : 'hold' };
+      }, mode);
+      const served = page.waitForResponse(
+        (r: any) => r.request().method() === 'POST' && new URL(r.url()).pathname === '/evidence'
+      );
+      await page.locator('[data-testid="create-evidence-submit-btn"]').click();
+      expect((await served).status(), mode).toBe(mode === '403' ? 403 : 201);
+      await expect.poll(() => page.evaluate(() => (window as any).__e2eBodyHeldStatus)).toBe(mode === '403' ? 403 : 201);
 
-    // Release A's stale 403 body into the live document.
-    await page.evaluate(() => (window as any).__e2eReleaseBody());
-    await page.waitForTimeout(500);
+      // Real actor B login, verified B UI and a successful B mutation while A's body is held.
+      await loginAs(page, context, actorB);
+      await refocus(page, actorB);
+      await expect(page.locator('[data-testid="add-evidence-btn"]'), mode).toBeEnabled();
+      await page.locator('[data-testid="add-evidence-btn"]').click();
+      await page.locator('[data-testid="create-ref-text-input"]').fill(refB1);
+      await page.locator('[data-testid="create-evidence-submit-btn"]').click();
+      await expect(page.locator('[data-testid="evidence-table"]'), mode).toContainText(refB1);
 
-    // B's projection, controls and banners are untouched.
-    await expect(page.locator('[data-testid="evidence-table"]')).toContainText(refB1);
-    await expect(page.locator('[data-testid="add-evidence-btn"]')).toBeEnabled();
-    await expect(page.locator('[data-testid="evidence-fetch-error"]')).toHaveCount(0);
-    await expect(page.locator('[data-testid="uncertain-mutation-alert"]')).toHaveCount(0);
+      // Release A's stale body into the live document and let its continuation finish.
+      await releaseHeldBody(page);
 
-    // B can still mutate.
-    await page.locator('[data-testid="add-evidence-btn"]').click();
-    await page.locator('[data-testid="create-ref-text-input"]').fill(refB2);
-    await page.locator('[data-testid="create-evidence-submit-btn"]').click();
-    await expect(page.locator('[data-testid="evidence-table"]')).toContainText(refB2);
+      // B's projection, controls and banners are untouched.
+      await expect(page.locator('[data-testid="evidence-table"]'), mode).toContainText(refB1);
+      await expect(page.locator('[data-testid="add-evidence-btn"]'), mode).toBeEnabled();
+      await expect(page.locator('[data-testid="evidence-fetch-error"]'), mode).toHaveCount(0);
+      await expect(page.locator('[data-testid="uncertain-mutation-alert"]'), mode).toHaveCount(0);
 
-    expect(await countEvidence(refA)).toBe(0);
-    expect(await countEvidence(refB1, actorB)).toBe(1);
-    expect(await countEvidence(refB2, actorB)).toBe(1);
+      // B can still mutate.
+      await page.locator('[data-testid="add-evidence-btn"]').click();
+      await page.locator('[data-testid="create-ref-text-input"]').fill(refB2);
+      await page.locator('[data-testid="create-evidence-submit-btn"]').click();
+      await expect(page.locator('[data-testid="evidence-table"]'), mode).toContainText(refB2);
+      expect(await countEvidence(refB1, actorB), mode).toBe(1);
+      expect(await countEvidence(refB2, actorB), mode).toBe(1);
 
-    await restoreCustodian(actorA);
+      if (mode === '403') {
+        expect(await countEvidence(refA), mode).toBe(0);
+        await restoreCustodian(actorA);
+        continue;
+      }
+
+      // A committed: back as A, the held operation is A's to recover, exactly once.
+      expect(await countEvidence(refA, actorA), mode).toBe(1);
+      await loginAs(page, context, actorA);
+      await refocus(page, actorA);
+      await expect(page.locator('[data-testid="uncertain-mutation-alert"]'), mode).toBeVisible();
+      await page.locator('[data-testid="retry-mutation-btn"]').click();
+      await expect(page.locator('[data-testid="uncertain-mutation-alert"]'), mode).toHaveCount(0);
+      await expect(page.locator('[data-testid="evidence-table"]'), mode).toContainText(refA);
+      expect(await countEvidence(refA), mode).toBe(1);
+    }
+
     await page.unrouteAll({ behavior: 'wait' });
   });
 
@@ -5315,6 +5375,8 @@ test.describe.serial('Asset Registry Real SPA -> Composed API -> PostgreSQL Jour
       ['malformed JSON', () => ({ status: 201, body: '{"id":' })],
       ['wrong status', (_s, b) => ({ status: 200, body: JSON.stringify(b) })],
       ['non-UUID id', (_s, b) => ({ status: 201, body: JSON.stringify({ ...b, id: 'not-a-uuid' }) })],
+      ['missing id', (_s, b) => ({ status: 201, body: JSON.stringify({ version: b.version, history_id: b.history_id }) })],
+      ['missing version', (_s, b) => ({ status: 201, body: JSON.stringify({ id: b.id, history_id: b.history_id }) })],
       ['version 2', (_s, b) => ({ status: 201, body: JSON.stringify({ ...b, version: 2 }) })],
       ['null history', (_s, b) => ({ status: 201, body: JSON.stringify({ ...b, history_id: null }) })],
     ];
@@ -5419,8 +5481,9 @@ test.describe.serial('Asset Registry Real SPA -> Composed API -> PostgreSQL Jour
     const correctPath = `/evidence/${evidenceId}/correct`;
     const alert = page.locator('[data-testid="uncertain-mutation-alert"]');
 
-    // A's correction commits (v2). Its genuine receipt is delivered after a focus revalidation of
-    // the same actor, so the receipt is known (confirmed) but the operation stays unsettled.
+    // A's correction commits (v2). Its genuine receipt arrives after the panel's auth epoch moved
+    // (a visibilitychange dispatched on window reaches only the panel, so no reauthorization
+    // aborts the POST): the receipt becomes known, the operation stays unsettled.
     await page.locator(`[data-testid="correct-evidence-btn-${evidenceId}"]`).click();
     await page.locator('[data-testid="correct-reason-input"]').fill('A2 H4 A correction');
     await page.locator('[data-testid="correct-desc-input"]').fill('A2 H4 A description');
@@ -5434,21 +5497,17 @@ test.describe.serial('Asset Registry Real SPA -> Composed API -> PostgreSQL Jour
       const response = await route.fetch();
       committed.resolve({ body: await response.json(), token: route.request().headers()['x-retry-token'] });
       await release.promise;
-      try {
-        await route.fulfill({ response });
-      } catch {}
+      await route.fulfill({ response });
     });
     await page.locator('[data-testid="correct-evidence-submit-btn"]').click();
     const { body: originalReceipt, token } = await committed.promise;
     expect(originalReceipt.version).toBe(2);
     expect(originalReceipt.history_id).toEqual(expect.any(String));
 
-    const focusRefetch = page.waitForResponse(
-      (r: any) => new URL(r.url()).pathname === '/evidence' && new URL(r.url()).searchParams.get('acquisition_id') === acqId
-    );
-    await page.evaluate(() => window.dispatchEvent(new Event('focus')));
-    await focusRefetch;
+    await page.evaluate(() => window.dispatchEvent(new Event('visibilitychange')));
+    const delivered = page.waitForResponse((r: any) => isEvidenceMutation(r.request()));
     release.resolve();
+    expect((await delivered).status()).toBe(200);
     await page.unroute(heldMatcher);
     await expect(alert).toBeVisible();
 
@@ -5464,16 +5523,17 @@ test.describe.serial('Asset Registry Real SPA -> Composed API -> PostgreSQL Jour
     await expect(pageB.locator(`[data-testid="evidence-version-${evidenceId}"]`)).toHaveText('v3');
     await contextB.close();
 
-    // A replay delivered with a receipt matching the CURRENT record, not the known one, must not settle.
+    // A replay whose receipt differs from the known one only in its history id passes every
+    // version rule; the known receipt alone must refuse it.
     const rewritten = await rewriteNextMutationDelivery(page, correctPath, (_s, b) => ({
       status: 200,
-      body: JSON.stringify({ ...b, version: 3 }),
+      body: JSON.stringify({ ...b, history_id: crypto.randomUUID() }),
     }));
     await page.locator('[data-testid="retry-mutation-btn"]').click();
     const { body: replayed } = await rewritten.served;
     expect(replayed).toEqual(originalReceipt);
     await rewritten.unroute();
-    await expect(page.locator('[data-testid="retry-mutation-btn"]')).toBeEnabled();
+    await expect(page.locator('[data-testid="uncertain-mutation-notice"]')).toBeVisible();
     await expect(alert).toBeVisible();
 
     // The genuine replay returns the exact known receipt and settles.
@@ -5487,6 +5547,71 @@ test.describe.serial('Asset Registry Real SPA -> Composed API -> PostgreSQL Jour
       evidenceId,
     ]);
     expect(history.rows[0].n).toBe(3);
+
+    await page.unrouteAll({ behavior: 'wait' });
+  });
+
+  test('Journey T7.16 (ARCH-A2 SF2): a first submit whose session check is overtaken by a focus revalidation sends nothing; the resubmitted intent commits once', async ({
+    page,
+    context,
+  }) => {
+    const actorA = await seedCustodianActor('a2_unsent');
+    const acqId = await seedAcquisitionFor(actorA, 'PO-T7-A2-UNSENT');
+    const ref = `A2 unsent preflight ${Date.now()}`;
+    const mutationTokens: string[] = [];
+    page.on('request', (req: any) => {
+      if (isEvidenceMutation(req)) mutationTokens.push(req.headers()['x-retry-token']);
+    });
+
+    await loginAs(page, context, actorA);
+    await page.goto(`${targetBaseUrl}/acquisitions/${acqId}`);
+    await page.locator('[data-testid="add-evidence-btn"]').click();
+    await page.locator('[data-testid="create-ref-text-input"]').fill(ref);
+
+    // Hold the panel's own session check (the first one after submit).
+    const checkMatcher = (url: URL) => url.pathname === '/auth/session-check';
+    const checkHeld = deferred<any>();
+    const releaseCheck = deferred<void>();
+    let heldOnce = false;
+    await page.route(checkMatcher, async (route: any) => {
+      if (heldOnce) return route.fallback();
+      heldOnce = true;
+      checkHeld.resolve(route.request());
+      await releaseCheck.promise;
+      await route.fallback().catch(() => {});
+    });
+    await page.locator('[data-testid="create-evidence-submit-btn"]').click();
+    const heldRequest = await checkHeld.promise;
+    // The held check ends either way: answered, or aborted by the page's reauthorization.
+    const heldDone = new Promise<void>((resolve) => {
+      const done = (req: any) => {
+        if (req === heldRequest) resolve();
+      };
+      page.on('requestfinished', done);
+      page.on('requestfailed', done);
+    });
+
+    // A focus revalidation (the page's own session check passes through) moves the auth epoch.
+    await refocus(page, actorA);
+    releaseCheck.resolve();
+    await heldDone;
+    await page.unroute(checkMatcher);
+    await page.evaluate(() => new Promise((r) => requestAnimationFrame(() => requestAnimationFrame(r))));
+
+    expect(mutationTokens).toEqual([]);
+    expect(await countEvidence(ref)).toBe(0);
+    await expect(page.locator('[data-testid="uncertain-mutation-alert"]')).toHaveCount(0);
+
+    // The actor submits again in the new epoch: one fresh-token POST, one Evidence.
+    await expect(page.locator('[data-testid="add-evidence-btn"]')).toBeEnabled();
+    if ((await page.locator('[data-testid="evidence-create-form"]').count()) === 0) {
+      await page.locator('[data-testid="add-evidence-btn"]').click();
+    }
+    await page.locator('[data-testid="create-ref-text-input"]').fill(ref);
+    await page.locator('[data-testid="create-evidence-submit-btn"]').click();
+    await expect(page.locator('[data-testid="evidence-table"]')).toContainText(ref);
+    expect(mutationTokens.length).toBe(1);
+    expect(await countEvidence(ref)).toBe(1);
 
     await page.unrouteAll({ behavior: 'wait' });
   });
