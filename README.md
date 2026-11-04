@@ -1,15 +1,15 @@
 # Office Asset & Consumable Management System
 
-> Canonical Blueprint baseline สำหรับพัฒนาระบบครุภัณฑ์สำนักงานและวัสดุสิ้นเปลืองด้วย GitHub Spec Kit, AGY/Antigravity และ Multica
+> Canonical Blueprint baseline สำหรับระบบครุภัณฑ์สำนักงานและวัสดุสิ้นเปลือง; Feature 002 onward uses Claude Code CLI with Matt Pocock Skills and GitHub Issues tracking.
 
 | Baseline | Value |
 |---|---|
 | Blueprint | **v1.0.2 — FROZEN** |
-| Workflow | **Spec Kit + Human-gated independent delivery** |
-| Technology Direction | **`TECHNOLOGY.md` v1.0.1 — SELECTED BASELINE** |
+| Workflow | **Claude Code CLI + Matt Pocock Skills from Feature 002; rules in `CLAUDE.md`** |
+| Technology Direction | **`TECHNOLOGY.md` v1.1.0 — SELECTED BASELINE** |
 | Business Rules | **252 canonical rules** |
 | Delivery decomposition | **14 Feature Briefs** |
-| Spec Kit | **1.1.1 / AGY integration** |
+| Feature 001 tooling (historical) | **Spec Kit 1.1.1 / AGY integration, retired 2026-11-04** |
 
 หลักการของโครงการ:
 
@@ -28,30 +28,42 @@ Repository นี้เป็น ready-to-develop business/system baseline ไ�
 3. active Feature Brief ใน `features/`
 4. canonical rules ใน `docs/06-business-rules.md`
 
-Spec Kit artifacts refine delivery details แต่ห้าม silent-redefine business meaning ที่อยู่ใน authority สูงกว่า
+Approved feature specifications and tickets refine delivery details แต่ห้าม silent-redefine business meaning ที่อยู่ใน authority สูงกว่า
+
+`CLAUDE.md` selects Claude Code CLI and Matt Pocock Skills for Feature 002
+onward. Spec Kit, Multica and AGY references in frozen/context documents are
+historical delivery context; business scope, rules and technical authority
+remain unchanged.
 
 ### Technical Direction
 
-`TECHNOLOGY.md` v1.0.1 เป็น project-wide selected technical baseline
+`TECHNOLOGY.md` v1.1.0 เป็น project-wide selected technical baseline
 
-- Plan ต้องเริ่มจาก baseline นี้
-- exact minor/patch versions และ Deferred decisions ให้ Plan resolve ตาม environment จริง
+- feature specification ต้องเริ่มจาก baseline นี้
+- exact minor/patch versions และ Deferred decisions ให้ specification resolve ตาม environment จริง
 - material technology deviation ต้อง explicit พร้อมเหตุผล/ผลกระทบและ Product Owner decision ก่อน implementation
 - local application development runtime ใช้ **Rootless Podman**
-- Git, Git worktrees, Spec Kit, Multica และ AGY agents อยู่บน host
+- Git, Git worktrees และ engineering workflow tooling (Claude Code CLI) อยู่บน host
 
 ### Project / Delivery Authority
 
-หลัง initialize Spec Kit:
+For Feature 002 onward:
 
-- Constitution — project-wide engineering principles
+- `CLAUDE.md` — the repository's only rules file: authority, workflow and engineering principles
+- approved feature specification/decisions — behavior, acceptance and implementation/testing decisions
+- approved GitHub Issues — bounded delivery tickets and recorded Product Owner decisions
+- implementation + tests — delivered behavior
+
+Feature 001 historical artifact roles remain:
+
+- Constitution (retired 2026-11-04; in Git history) — project-wide engineering principles
 - `spec.md` / clarifications — feature behavior และ acceptance
 - `plan.md` — implementation strategy
 - `tasks.md` — executable delivery decomposition
 - implementation + tests — delivered behavior
 
-Multica Issue/comments/run history เป็น coordination evidence ไม่ใช่ requirement source of truth ใหม่
-Agent assignment, delegation, mentions และ reviewer routing เป็น runtime coordination และไม่ใช่ repository governance
+Product Owner decisions บันทึกใน GitHub Issues และ remain authoritative; agent-generated content cannot redefine business requirements.
+Multica Issue/comments/run history ก่อน 2026-11-03 เป็น historical provenance เท่านั้น ไม่ใช่ช่องทาง coordination สำหรับงานใหม่ (ดู `CLAUDE.md`)
 
 ---
 
@@ -68,7 +80,27 @@ Agent assignment, delegation, mentions และ reviewer routing เป็น r
 
 ## 3. Runtime and delivery model
 
-### Before Human Gate
+### Feature 002 onward
+
+```text
+grill-with-docs
+→ prototype (when a question needs running code)
+→ to-spec
+→ to-tickets
+→ implement per ticket (drives tdd, closes with code-review)
+→ pr
+→ merge into the feature's integration branch
+→ retro
+→ Product Owner acceptance of the feature → main
+```
+
+Use the skills the work needs; reuse approved specifications and tickets. GitHub
+Issues track specifications and tickets and record Product Owner decisions.
+Claude Code develops; the Product Owner decides: `CLAUDE.md` holds the rules for
+starting work, scope, self-review, merges into the feature's integration branch
+and Product Owner acceptance before `main`.
+
+### Feature 001 before Human Gate — historical
 
 ใช้ GitHub Spec Kit ผ่าน AGY integration:
 
@@ -83,50 +115,16 @@ Constitution
 → Human Gate
 ```
 
-### After Human Gate
-
-การ implementation หลัง Human Gate ต้องรักษาหลัก:
-
-```text
-Authorized bounded implementation
-→ independent review
-→ Human Product Owner acceptance
-```
-
-กติกาหลัก:
-
-- implementation author ห้าม approve งานของตนเอง
-- independent review ต้องตรวจ repository evidence จริง
-- corrective revision ต้องอยู่ใน scope เดิม
-- Human Product Owner เป็น final acceptance
-- การเลือก agent, delegation, mentions, retries และ routing กำหนดใน Multica/runtime configuration ไม่ hardcode ใน repository
-
 ---
 
-## 4. Spec Kit integration
+## 4. Feature 001 Spec Kit integration — historical
 
-Repository นี้ใช้ Spec Kit **1.1.1** และ integration **`agy`**
+Feature 001 ใช้ Spec Kit **1.1.1** กับ integration **`agy`**. Spec Kit ถูก retire
+เมื่อ 2026-11-04 (#36): ลบ `.specify/` (templates, scripts, integrations และ
+Constitution) และ `.agents/` (AGY skills และ MCP config) แล้ว ประวัติอยู่ใน Git
 
-Expected project infrastructure:
-
-```text
-.specify/
-.agents/skills/
-specs/
-```
-
-Initialize existing repository:
-
-```bash
-specify init \
-  --here \
-  --force \
-  --non-interactive \
-  --integration agy \
-  --script sh
-```
-
-ไม่ติดตั้ง Claude/Codex integration เป็น default workflow
+`specs/001-application-foundation/` คงไว้เป็น record ของ Feature 001
+(46 tasks เสร็จครบ)
 
 ---
 
@@ -137,9 +135,7 @@ Application runtime และ infrastructure dependencies สำหรับ nor
 ```text
 Fedora Host
 ├── Git / worktrees
-├── GitHub Spec Kit
-├── Multica
-├── AGY agents
+├── Claude Code CLI + Matt Pocock Skills
 │
 └── Rootless Podman
     ├── web
@@ -147,7 +143,21 @@ Fedora Host
     └── PostgreSQL
 ```
 
-Quadlet เป็น production service-management baseline ไม่ใช่ requirement สำหรับ day-to-day development
+Development runtime รันเป็น rootless Podman + user-level systemd Quadlet ของ workspace user (UID 1000): Web `http://127.0.0.1:5180`, API `http://127.0.0.1:3010` ติดตั้ง อัปเดต และตรวจสอบด้วย `scripts/dev-runtime-*.sh` ตาม [`docs/operations/development-runtime.md`](docs/operations/development-runtime.md)
+
+### Configuration: Public Application Origin (`PUBLIC_APP_ORIGIN`)
+
+For QR code generation and minimal single-label printing (Ticket #29, T8):
+
+- `PUBLIC_APP_ORIGIN`: Base URL (protocol + host[:port]) of the public web application used to construct canonical QR locator URLs (`${PUBLIC_APP_ORIGIN}/assets/:id`).
+- **Validation rules**:
+  - Maximum 512 UTF-8 bytes.
+  - Must not contain whitespace, control characters, userinfo, query parameters, fragments, or paths (trailing slashes are stripped automatically).
+  - Must use `https:` in production environments (`NODE_ENV=production`).
+  - In non-production (`development`, `test`), `http:` is permitted only for loopback addresses (`localhost`, `127.0.0.1`, `[::1]`). Wildcard hosts (`0.0.0.0`, `[::]`, `*`) are rejected.
+  - If invalid, application startup/composition fails closed without echoing raw input in error logs.
+- **Runtime failure behavior**:
+  - If `PUBLIC_APP_ORIGIN` is unset or omitted, the application starts normally, but requests to `GET /assets/:id/qr-label` will fail closed with HTTP 503 `SERVICE_UNAVAILABLE` and `Cache-Control: no-store`.
 
 ---
 
@@ -172,13 +182,13 @@ Feature sequencing canonical อยู่ที่ `docs/09-feature-map.md`
 13. `material-return-adjustment`
 14. `material-stocktake`
 
-หนึ่ง feature ทำทีละช่วงตาม Spec Kit; ห้ามใช้ feature แรกสร้าง framework เผื่อทุก feature หลัง
+หนึ่ง feature ทำทีละช่วงตาม approved feature-scoped workflow; ห้ามใช้ feature แรกสร้าง framework เผื่อทุก feature หลัง
 
 ---
 
 ## 7. Reading order
 
-### Product Owner / Spec Kit authoring
+### Product Owner / feature authoring
 
 1. `README.md`
 2. `BLUEPRINT.md`
@@ -186,15 +196,14 @@ Feature sequencing canonical อยู่ที่ `docs/09-feature-map.md`
 4. `docs/09-feature-map.md`
 5. active Feature Brief
 6. relevant canonical docs/rules
-7. active Spec Kit artifacts
+7. approved active feature specification, decisions and tickets (historical Spec Kit artifacts for Feature 001)
 
 ### Implementation / review
 
-1. `AGENTS.md`
-2. `CLAUDE.md` เพิ่มเติมสำหรับ implementation executor เมื่อ applicable
-3. relevant Business Authority / Technology Direction
-4. exact active Spec Kit artifacts
-5. exact diff/tests/evidence for the authorized scope
+1. `CLAUDE.md` — the repository's only rules file
+2. relevant Business Authority / Technology Direction
+3. exact authorized feature specification, decisions and ticket context
+4. exact diff/tests/evidence for the authorized scope
 
 ใช้ progressive disclosure; ห้าม copy Blueprint ทั้งชุดเข้า feature spec โดยอัตโนมัติ
 
@@ -208,9 +217,9 @@ Feature sequencing canonical อยู่ที่ `docs/09-feature-map.md`
 | `TECHNOLOGY.md` | selected technical baseline |
 | `docs/` | canonical cross-feature domain documentation |
 | `features/` | bounded delivery context + rule routing |
-| `.specify/memory/constitution.md` | project engineering constitution |
-| `AGENTS.md` | shared repository authority and engineering contract |
-| `CLAUDE.md` | implementation executor contract |
+| `CLAUDE.md` | the only rules file: authority, workflow, checks, engineering principles |
+| `docs/agents/` | Matt Skills configuration: issue tracker, triage labels, domain docs |
+| `specs/001-application-foundation/` | Feature 001 record (retired Spec Kit format) |
 
 Repository text/source artifacts on the active canonical branch are source of truth; generated packages are not a second source of truth.
 
@@ -227,13 +236,19 @@ Do not add without a current requirement:
 - extra planner/tester/architect agents
 - custom review ledger or second state database
 - automatic whole-phase implementation without bounded authorization
-- one implementation author approving their own work
 
 ---
 
 ## 10. Current start point
 
-After Spec Kit bootstrap and Constitution are accepted:
+Feature 002 — `asset-registry` continues with Claude Code CLI and the accepted
+Matt Skills setup under `CLAUDE.md`. Spec Kit, the Constitution and `AGENTS.md`
+were retired on 2026-11-04 (#36). See `CLAUDE.md`,
+`docs/agents/issue-tracker.md` and `docs/agents/domain.md`.
+
+### Feature 001 start-point record — historical
+
+After Spec Kit bootstrap and Constitution are accepted (historical sequence):
 
 ```text
 Feature 001 — application-foundation

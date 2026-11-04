@@ -1,5 +1,5 @@
 import React, { useEffect, useState } from 'react';
-import { useNavigate } from 'react-router';
+import { useNavigate, Link } from 'react-router';
 
 export interface SafeUser {
   id: string;
@@ -276,6 +276,143 @@ export const Dashboard: React.FC = () => {
               </>
             )}
           </dl>
+        </section>
+
+        <section
+          aria-labelledby="registry-heading"
+          style={{
+            backgroundColor: '#f9fafb',
+            borderRadius: '6px',
+            padding: '1.25rem',
+            marginBottom: '1.5rem',
+          }}
+        >
+          <h2
+            id="registry-heading"
+            style={{
+              fontSize: '1.125rem',
+              fontWeight: 600,
+              marginTop: 0,
+              marginBottom: '0.5rem',
+              color: '#374151',
+            }}
+          >
+            งานทะเบียนครุภัณฑ์ (Asset Registry)
+          </h2>
+          <p style={{ margin: '0 0 1rem 0', fontSize: '0.875rem', color: '#4b5563' }}>
+            ระบบบันทึกและจัดการข้อมูลครุภัณฑ์รายชิ้น
+          </p>
+          <div style={{ display: 'flex', gap: '0.75rem', flexWrap: 'wrap' }}>
+            <Link
+              to="/assets/register"
+              id="nav-asset-register"
+              style={{
+                display: 'inline-block',
+                padding: '0.5rem 1rem',
+                backgroundColor: '#2563eb',
+                color: '#ffffff',
+                textDecoration: 'none',
+                borderRadius: '4px',
+                fontSize: '0.875rem',
+                fontWeight: 500,
+              }}
+            >
+              + ลงทะเบียนครุภัณฑ์ใหม่
+            </Link>
+            <Link
+              to="/assets/bulk-register"
+              id="nav-asset-bulk-register"
+              style={{
+                display: 'inline-block',
+                padding: '0.5rem 1rem',
+                backgroundColor: '#1d4ed8',
+                color: '#ffffff',
+                textDecoration: 'none',
+                borderRadius: '4px',
+                fontSize: '0.875rem',
+                fontWeight: 500,
+              }}
+            >
+              + ลงทะเบียนแบบกลุ่ม (Bulk)
+            </Link>
+            <Link
+              to="/assets/search"
+              id="nav-asset-search"
+              style={{
+                display: 'inline-block',
+                padding: '0.5rem 1rem',
+                backgroundColor: '#4b5563',
+                color: '#ffffff',
+                textDecoration: 'none',
+                borderRadius: '4px',
+                fontSize: '0.875rem',
+                fontWeight: 500,
+              }}
+            >
+              🔍 ค้นหาครุภัณฑ์
+            </Link>
+            <Link
+              to="/admin/references"
+              id="nav-reference-lists"
+              style={{
+                display: 'inline-block',
+                padding: '0.5rem 1rem',
+                backgroundColor: '#ffffff',
+                color: '#374151',
+                border: '1px solid #d1d5db',
+                textDecoration: 'none',
+                borderRadius: '4px',
+                fontSize: '0.875rem',
+                fontWeight: 500,
+              }}
+            >
+              🗂️ รายการข้อมูลอ้างอิง
+            </Link>
+          </div>
+        </section>
+
+        <section
+          aria-labelledby="acquisition-heading"
+          style={{
+            backgroundColor: '#f9fafb',
+            borderRadius: '6px',
+            padding: '1.25rem',
+            marginBottom: '1.5rem',
+          }}
+        >
+          <h2
+            id="acquisition-heading"
+            style={{
+              fontSize: '1.125rem',
+              fontWeight: 600,
+              marginTop: 0,
+              marginBottom: '0.5rem',
+              color: '#374151',
+            }}
+          >
+            การได้มาของครุภัณฑ์ (Acquisitions)
+          </h2>
+          <p style={{ margin: '0 0 1rem 0', fontSize: '0.875rem', color: '#4b5563' }}>
+            บันทึกและจัดการรายการอ้างอิงการได้มาแบบกลุ่ม/จัดซื้อรวม (Lightweight Acquisition)
+          </p>
+          <div style={{ display: 'flex', gap: '0.75rem', flexWrap: 'wrap' }}>
+            <Link
+              to="/acquisitions/new"
+              id="nav-acquisition-create"
+              style={{
+                display: 'inline-block',
+                padding: '0.5rem 1rem',
+                backgroundColor: '#059669',
+                color: '#ffffff',
+                textDecoration: 'none',
+                borderRadius: '4px',
+                fontSize: '0.875rem',
+                fontWeight: 500,
+              }}
+            >
+              + บันทึกข้อมูลการได้มาใหม่
+            </Link>
+          </div>
         </section>
       </div>
     </main>

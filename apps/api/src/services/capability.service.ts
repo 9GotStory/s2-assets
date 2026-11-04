@@ -13,28 +13,69 @@ export const KNOWN_ROLES = [
   'SYSTEM_MAINTAINER',
   'ADMINISTRATOR',
   'READ_ONLY',
+  'ASSET_CUSTODIAN',
 ] as const;
 
 export type Role = (typeof KNOWN_ROLES)[number];
 
 export const KNOWN_CAPABILITIES = [
   'system:maintain',
+  'asset:view',
+  'asset:duplicate-check',
+  'asset:register',
+  'asset:bulk-register',
+  'asset:correct',
+  'asset:search',
+  'acquisition:create',
+  'acquisition:view',
+  'evidence:view',
+  'evidence:create',
+  'evidence:correct',
+  'reference:maintain',
 ] as const;
 
 export type Capability = (typeof KNOWN_CAPABILITIES)[number];
 
 /**
- * Immutable role-to-capability mapping.
+ * Immutable role-to-capability mapping (T1, T2, T3, T4, T5, T6 & T7 approved matrix).
  *
- * - SYSTEM_MAINTAINER: grants 'system:maintain'
- * - ADMINISTRATOR: grants 'system:maintain' (consistent with foundation requirements; no wildcards)
- * - READ_ONLY: empty (grants nothing)
+ * - SYSTEM_MAINTAINER: grants 'system:maintain' (preserves foundation maintenance grant)
+ * - ADMINISTRATOR: grants 'system:maintain', 'asset:view', 'asset:correct', 'asset:search', 'acquisition:view', 'evidence:view', 'evidence:correct', 'reference:maintain'
+ * - READ_ONLY: grants 'asset:view', 'asset:search', 'acquisition:view', 'evidence:view' (view and search for registry, acquisitions & evidence)
+ * - ASSET_CUSTODIAN: grants 'asset:view', 'asset:duplicate-check', 'asset:register', 'asset:bulk-register', 'asset:correct', 'asset:search', 'acquisition:create', 'acquisition:view', 'evidence:view', 'evidence:create', 'evidence:correct'
  * - Unknown roles: empty / unmapped
  */
 export const ROLE_CAPABILITY_MAP: Readonly<Record<string, readonly string[]>> = Object.freeze({
   SYSTEM_MAINTAINER: Object.freeze(['system:maintain'] as const),
-  ADMINISTRATOR: Object.freeze(['system:maintain'] as const),
-  READ_ONLY: Object.freeze([] as const),
+  ADMINISTRATOR: Object.freeze([
+    'system:maintain',
+    'asset:view',
+    'asset:correct',
+    'asset:search',
+    'acquisition:view',
+    'evidence:view',
+    'evidence:correct',
+    'reference:maintain',
+  ] as const),
+  READ_ONLY: Object.freeze([
+    'asset:view',
+    'asset:search',
+    'acquisition:view',
+    'evidence:view',
+  ] as const),
+  ASSET_CUSTODIAN: Object.freeze([
+    'asset:view',
+    'asset:duplicate-check',
+    'asset:register',
+    'asset:bulk-register',
+    'asset:correct',
+    'asset:search',
+    'acquisition:create',
+    'acquisition:view',
+    'evidence:view',
+    'evidence:create',
+    'evidence:correct',
+  ] as const),
 });
 
 /**

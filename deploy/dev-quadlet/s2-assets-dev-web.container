@@ -1,0 +1,38 @@
+# s2-assets development Web (UID-1000 rootless Quadlet runtime): the Vite dev server
+# (`pnpm --filter web run dev`) on the same tooling image and source checkout as the API. It
+# listens on 5173 inside the container (vite.config.ts, strictPort) and is published on
+# loopback port 5180 only; its development proxy forwards /auth, /system, /assets and
+# /acquisitions to http://api:3000. Contract: docs/operations/development-runtime.md.
+[Unit]
+Description=s2-assets dev Vite Web (http://127.0.0.1:5180)
+Requires=s2-assets-dev-api.service
+After=s2-assets-dev-api.service
+StartLimitIntervalSec=600
+StartLimitBurst=5
+
+[Container]
+Image=localhost/s2-assets-qdev-tooling:latest
+Pull=never
+ContainerName=s2-assets-qdev-web
+Network=s2-assets-dev.network
+NetworkAlias=web
+UserNS=keep-id
+Volume=%h/dev/s2-assets-quadlet:/work:z
+WorkingDir=/work
+PublishPort=127.0.0.1:5180:5173
+Environment=NODE_ENV=development
+Exec=pnpm --filter web run dev
+HealthCmd=node -e "fetch('http://127.0.0.1:5173/').then(r=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))"
+HealthInterval=15s
+HealthTimeout=10s
+HealthRetries=5
+HealthStartPeriod=120s
+Notify=healthy
+
+[Service]
+Restart=on-failure
+RestartSec=10s
+TimeoutStartSec=300
+
+[Install]
+WantedBy=default.target

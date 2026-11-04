@@ -1,0 +1,8 @@
+# s2-assets development PostgreSQL data volume. Created and labeled by
+# scripts/dev-runtime-install.sh before the first database start. The database unit refuses
+# to start on this volume when it holds no cluster unless the installer has authorized a
+# first initialization, so a silently recreated empty volume never comes up as a fresh
+# database. Contract: docs/operations/development-runtime.md.
+[Volume]
+VolumeName=s2-assets-qdev-db-data
+Label=io.s2-assets.runtime=qdev

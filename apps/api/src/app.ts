@@ -3,21 +3,27 @@ import Fastify, {
   type FastifyServerOptions,
 } from 'fastify';
 import pg from 'pg';
-import { loadConfig, type Config } from './config/env.ts';
-import { createLogger, getLoggerOptions, type AppLoggerOptions } from './plugins/logger.ts';
+import { validatePublicAppOrigin, type Config } from './config/env.ts';
+import { getLoggerOptions, type AppLoggerOptions } from './plugins/logger.ts';
 import { errorHandler, errorHandlerPlugin } from './plugins/error-handler.ts';
 import {
   csrfPlugin,
-  isValidSigningSecret,
   type CsrfPluginOptions,
 } from './plugins/csrf.ts';
 import { authPlugin, type AuthPluginOptions } from './plugins/auth.ts';
 import { authRoutes } from './routes/auth.routes.ts';
 import { systemRoutes } from './routes/system.routes.ts';
 import { healthRoutes } from './routes/health.routes.ts';
+import { assetRoutes } from './routes/asset.routes.ts';
+import { acquisitionRoutes } from './routes/acquisition.routes.ts';
+import { evidenceRoutes } from './routes/evidence.routes.ts';
+import { referenceRoutes } from './routes/reference.routes.ts';
 import { UserService, type DatabaseClient } from './services/user.service.ts';
 import { SessionService } from './services/session.service.ts';
 import { CapabilityService } from './services/capability.service.ts';
+import { AssetService } from './services/asset.service.ts';
+import { AcquisitionService } from './services/acquisition.service.ts';
+import { EvidenceService } from './services/evidence.service.ts';
 
 export interface AppOptions {
   config?: Partial<Config>;
@@ -28,6 +34,7 @@ export interface AppOptions {
   logger?: boolean | AppLoggerOptions | any;
   sessionTtlMs?: number;
   plugin?: (app: FastifyInstance) => Promise<void> | void;
+  publicAppOrigin?: string;
 }
 
 export function redactSecrets(message: string): string {
@@ -53,6 +60,12 @@ export async function buildApp(options: AppOptions = {}): Promise<FastifyInstanc
   const nodeEnv = options.config?.NODE_ENV ?? process.env.NODE_ENV ?? 'development';
   const isProduction = nodeEnv === 'production';
   const secure = options.secure ?? (isProduction ? true : false);
+
+  const rawPublicAppOrigin =
+    options.publicAppOrigin ??
+    options.config?.PUBLIC_APP_ORIGIN ??
+    process.env.PUBLIC_APP_ORIGIN;
+  const publicAppOrigin = validatePublicAppOrigin(rawPublicAppOrigin, nodeEnv);
 
   let app: FastifyInstance | null = null;
   let ownedPool: pg.Pool | null = null;
@@ -166,8 +179,28 @@ export async function buildApp(options: AppOptions = {}): Promise<FastifyInstanc
     });
     const capabilityService = new CapabilityService({ db: dbClient });
 
+    const assetService = new AssetService({ db: dbClient });
+    const acquisitionService = new AcquisitionService({ db: dbClient });
+    const evidenceService = new EvidenceService({ db: dbClient, capabilityService });
+
     if (!app.hasDecorator('capabilityService')) {
       app.decorate('capabilityService', capabilityService);
+    }
+
+    if (!app.hasDecorator('assetService')) {
+      app.decorate('assetService', assetService);
+    }
+
+    if (!app.hasDecorator('acquisitionService')) {
+      app.decorate('acquisitionService', acquisitionService);
+    }
+
+    if (!app.hasDecorator('evidenceService')) {
+      app.decorate('evidenceService', evidenceService);
+    }
+
+    if (!app.hasDecorator('publicAppOrigin')) {
+      app.decorate('publicAppOrigin', publicAppOrigin);
     }
 
     // 7. Register Auth plugin in effective application scope
@@ -198,6 +231,37 @@ export async function buildApp(options: AppOptions = {}): Promise<FastifyInstanc
     await app.register(systemRoutes, {
       prefix: '/system',
       capabilityService,
+      db: dbClient,
+    });
+
+    // Asset registry routes mounted under /assets
+    await app.register(assetRoutes, {
+      prefix: '/assets',
+      assetService,
+      capabilityService,
+      db: dbClient,
+      publicAppOrigin,
+    });
+
+    // Acquisition routes mounted under /acquisitions
+    await app.register(acquisitionRoutes, {
+      prefix: '/acquisitions',
+      acquisitionService,
+      capabilityService,
+      db: dbClient,
+    });
+
+    // Evidence routes mounted under /evidence
+    await app.register(evidenceRoutes, {
+      prefix: '/evidence',
+      evidenceService,
+      capabilityService,
+      db: dbClient,
+    });
+
+    // Reference list routes mounted under /references (T4)
+    await app.register(referenceRoutes, {
+      prefix: '/references',
       db: dbClient,
     });
 

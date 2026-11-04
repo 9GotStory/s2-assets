@@ -18,6 +18,7 @@ describe('CapabilityService Unit Tests (T024 - US2)', () => {
       expect(Object.isFrozen(ROLE_CAPABILITY_MAP.SYSTEM_MAINTAINER)).toBe(true);
       expect(Object.isFrozen(ROLE_CAPABILITY_MAP.ADMINISTRATOR)).toBe(true);
       expect(Object.isFrozen(ROLE_CAPABILITY_MAP.READ_ONLY)).toBe(true);
+      expect(Object.isFrozen(ROLE_CAPABILITY_MAP.ASSET_CUSTODIAN)).toBe(true);
 
       // Attempting mutation must fail in strict mode or have no effect
       expect(() => {
@@ -28,16 +29,63 @@ describe('CapabilityService Unit Tests (T024 - US2)', () => {
 
     it('maps SYSTEM_MAINTAINER to system:maintain', () => {
       expect(ROLE_CAPABILITY_MAP.SYSTEM_MAINTAINER).toEqual(['system:maintain']);
+      expect(ROLE_CAPABILITY_MAP.SYSTEM_MAINTAINER).not.toContain('acquisition:create');
+      expect(ROLE_CAPABILITY_MAP.SYSTEM_MAINTAINER).not.toContain('acquisition:view');
+      expect(ROLE_CAPABILITY_MAP.SYSTEM_MAINTAINER).not.toContain('evidence:view');
+      expect(ROLE_CAPABILITY_MAP.SYSTEM_MAINTAINER).not.toContain('evidence:create');
+      expect(ROLE_CAPABILITY_MAP.SYSTEM_MAINTAINER).not.toContain('evidence:correct');
     });
 
-    it('maps ADMINISTRATOR to system:maintain without wildcards or speculative capabilities', () => {
-      expect(ROLE_CAPABILITY_MAP.ADMINISTRATOR).toEqual(['system:maintain']);
+    it('maps ADMINISTRATOR to system:maintain, asset:view, asset:correct, asset:search, acquisition:view, evidence:view, evidence:correct, and reference:maintain without wildcards or registration capabilities', () => {
+      expect(ROLE_CAPABILITY_MAP.ADMINISTRATOR).toEqual([
+        'system:maintain',
+        'asset:view',
+        'asset:correct',
+        'asset:search',
+        'acquisition:view',
+        'evidence:view',
+        'evidence:correct',
+        'reference:maintain',
+      ]);
+      // T4 (#25, D3): reference:maintain is granted to ADMINISTRATOR only.
+      for (const role of ['SYSTEM_MAINTAINER', 'READ_ONLY', 'ASSET_CUSTODIAN']) {
+        expect(ROLE_CAPABILITY_MAP[role]).not.toContain('reference:maintain');
+      }
       expect(ROLE_CAPABILITY_MAP.ADMINISTRATOR).not.toContain('*');
-      expect(ROLE_CAPABILITY_MAP.ADMINISTRATOR).not.toContain('admin:*');
+      expect(ROLE_CAPABILITY_MAP.ADMINISTRATOR).not.toContain('asset:register');
+      expect(ROLE_CAPABILITY_MAP.ADMINISTRATOR).not.toContain('asset:duplicate-check');
+      expect(ROLE_CAPABILITY_MAP.ADMINISTRATOR).not.toContain('acquisition:create');
+      expect(ROLE_CAPABILITY_MAP.ADMINISTRATOR).not.toContain('evidence:create');
     });
 
-    it('maps READ_ONLY to empty array', () => {
-      expect(ROLE_CAPABILITY_MAP.READ_ONLY).toEqual([]);
+    it('maps READ_ONLY to asset:view, asset:search, acquisition:view, and evidence:view (no mutation or duplicate-check grants)', () => {
+      expect(ROLE_CAPABILITY_MAP.READ_ONLY).toEqual([
+        'asset:view',
+        'asset:search',
+        'acquisition:view',
+        'evidence:view',
+      ]);
+      expect(ROLE_CAPABILITY_MAP.READ_ONLY).not.toContain('asset:correct');
+      expect(ROLE_CAPABILITY_MAP.READ_ONLY).not.toContain('asset:register');
+      expect(ROLE_CAPABILITY_MAP.READ_ONLY).not.toContain('acquisition:create');
+      expect(ROLE_CAPABILITY_MAP.READ_ONLY).not.toContain('evidence:create');
+      expect(ROLE_CAPABILITY_MAP.READ_ONLY).not.toContain('evidence:correct');
+    });
+
+    it('maps ASSET_CUSTODIAN to asset:view, asset:duplicate-check, asset:register, asset:bulk-register, asset:correct, asset:search, acquisition:create, acquisition:view, evidence:view, evidence:create, and evidence:correct', () => {
+      expect(ROLE_CAPABILITY_MAP.ASSET_CUSTODIAN).toEqual([
+        'asset:view',
+        'asset:duplicate-check',
+        'asset:register',
+        'asset:bulk-register',
+        'asset:correct',
+        'asset:search',
+        'acquisition:create',
+        'acquisition:view',
+        'evidence:view',
+        'evidence:create',
+        'evidence:correct',
+      ]);
     });
 
     it('validates UUIDs correctly with isValidUuid', () => {
@@ -52,6 +100,17 @@ describe('CapabilityService Unit Tests (T024 - US2)', () => {
 
     it('validates known capabilities with isKnownCapability', () => {
       expect(isKnownCapability('system:maintain')).toBe(true);
+      expect(isKnownCapability('asset:view')).toBe(true);
+      expect(isKnownCapability('asset:duplicate-check')).toBe(true);
+      expect(isKnownCapability('asset:register')).toBe(true);
+      expect(isKnownCapability('asset:bulk-register')).toBe(true);
+      expect(isKnownCapability('asset:correct')).toBe(true);
+      expect(isKnownCapability('asset:search')).toBe(true);
+      expect(isKnownCapability('acquisition:create')).toBe(true);
+      expect(isKnownCapability('acquisition:view')).toBe(true);
+      expect(isKnownCapability('evidence:view')).toBe(true);
+      expect(isKnownCapability('evidence:create')).toBe(true);
+      expect(isKnownCapability('evidence:correct')).toBe(true);
       expect(isKnownCapability('unknown:capability')).toBe(false);
       expect(isKnownCapability('*')).toBe(false);
       expect(isKnownCapability('')).toBe(false);
@@ -236,7 +295,9 @@ describe('CapabilityService Unit Tests (T024 - US2)', () => {
       expect(roles).toEqual(['READ_ONLY', 'SYSTEM_MAINTAINER']);
 
       const caps = await service.getCapabilities(validUserId);
-      expect(caps).toEqual(['system:maintain']);
+      expect(caps.sort()).toEqual(
+        ['asset:search', 'asset:view', 'system:maintain', 'acquisition:view', 'evidence:view'].sort()
+      );
     });
 
     it('Case 13: externally injected database clients remain externally owned', async () => {

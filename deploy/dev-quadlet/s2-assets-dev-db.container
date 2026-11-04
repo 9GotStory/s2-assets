@@ -1,0 +1,38 @@
+# s2-assets development PostgreSQL 18.6 (UID-1000 rootless Quadlet runtime). The Feature 001
+# Compose baseline image (postgres:18.6-alpine), pinned by digest; no host port. The Web also
+# joins the private s2-assets-qdev network, but only the API and the installer's migration
+# run connect to the database. The
+# volume mounts at the PostgreSQL 18 parent path /var/lib/postgresql (PGDATA=/var/lib/
+# postgresql/18/docker). Contract: docs/operations/development-runtime.md.
+[Unit]
+Description=s2-assets dev PostgreSQL 18.6 (private network, no host port)
+StartLimitIntervalSec=600
+StartLimitBurst=5
+
+[Container]
+Image=docker.io/library/postgres:18.6-alpine@sha256:10a5c69a83035ab5239f5620d708520e8b28f5aa1f2b20143e6024532edadfb5
+ContainerName=s2-assets-qdev-db
+Network=s2-assets-dev.network
+Volume=s2-assets-dev-db-data.volume:/var/lib/postgresql
+Environment=POSTGRES_USER=s2_assets_qdev
+Environment=POSTGRES_DB=s2_assets_qdev
+Environment=POSTGRES_PASSWORD_FILE=/run/secrets/s2-assets-qdev-db-password
+Secret=s2-assets-qdev-db-password
+HealthCmd=pg_isready -U s2_assets_qdev -d s2_assets_qdev -h 127.0.0.1
+HealthInterval=5s
+HealthTimeout=3s
+HealthRetries=3
+HealthStartPeriod=60s
+Notify=healthy
+
+[Service]
+# Refuse an empty data volume unless the installer authorized the first initialization
+# (it creates the flag file before the first start and removes it once the database
+# answers): a lost or recreated volume must be restored, never silently re-initialized.
+ExecStartPre=/bin/sh -c 'p=$$(podman volume inspect --format "{{.Mountpoint}}" s2-assets-qdev-db-data) || exit 1; podman unshare test -e "$$p/18/docker/PG_VERSION" && exit 0; test -e %h/.local/state/s2-assets-qdev/db-first-init && exit 0; echo "s2-assets-qdev-db: data volume has no database cluster and no first-initialization authorization - refusing to start (restore a backup or reinstall; see docs/operations/development-runtime.md)" >&2; exit 1'
+Restart=on-failure
+RestartSec=10s
+TimeoutStartSec=180
+
+[Install]
+WantedBy=default.target
