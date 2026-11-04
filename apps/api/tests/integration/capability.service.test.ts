@@ -153,7 +153,7 @@ describe('CapabilityService Real PostgreSQL Integration Tests (T024 - US2)', () 
       expect(roles).toEqual(['READ_ONLY']);
 
       const caps = await service.getCapabilities(user.id);
-      expect(caps.sort()).toEqual(['acquisition:view', 'asset:search', 'asset:view'].sort());
+      expect(caps.sort()).toEqual(['acquisition:view', 'asset:search', 'asset:view', 'evidence:view'].sort());
     });
 
     it('grants asset:search for user with READ_ONLY, ADMINISTRATOR, and ASSET_CUSTODIAN roles', async () => {
@@ -462,6 +462,54 @@ describe('CapabilityService Real PostgreSQL Integration Tests (T024 - US2)', () 
       );
       await pool.query('UPDATE users SET is_active = false WHERE id = $1', [custodian.id]);
       expect(await service.hasCapability(custodian.id, 'asset:bulk-register')).toBe(false);
+    });
+  });
+
+  describe('T7 D3: evidence:view, evidence:create, evidence:correct Capability Matrix', () => {
+    it('enforces exact D3 evidence capability grants per role', async () => {
+      const custodian = await createTestUser({ roles: ['ASSET_CUSTODIAN'] });
+      const admin = await createTestUser({ roles: ['ADMINISTRATOR'] });
+      const readOnly = await createTestUser({ roles: ['READ_ONLY'] });
+      const maintainer = await createTestUser({ roles: ['SYSTEM_MAINTAINER'] });
+
+      const service = new CapabilityService({ db: pool });
+
+      // ASSET_CUSTODIAN: evidence:view = true, evidence:create = true, evidence:correct = true
+      expect(await service.hasCapability(custodian.id, 'evidence:view')).toBe(true);
+      expect(await service.hasCapability(custodian.id, 'evidence:create')).toBe(true);
+      expect(await service.hasCapability(custodian.id, 'evidence:correct')).toBe(true);
+
+      // ADMINISTRATOR: evidence:view = true, evidence:create = false, evidence:correct = true
+      expect(await service.hasCapability(admin.id, 'evidence:view')).toBe(true);
+      expect(await service.hasCapability(admin.id, 'evidence:create')).toBe(false);
+      expect(await service.hasCapability(admin.id, 'evidence:correct')).toBe(true);
+
+      // READ_ONLY: evidence:view = true, evidence:create = false, evidence:correct = false
+      expect(await service.hasCapability(readOnly.id, 'evidence:view')).toBe(true);
+      expect(await service.hasCapability(readOnly.id, 'evidence:create')).toBe(false);
+      expect(await service.hasCapability(readOnly.id, 'evidence:correct')).toBe(false);
+
+      // SYSTEM_MAINTAINER: evidence:view = false, evidence:create = false, evidence:correct = false
+      expect(await service.hasCapability(maintainer.id, 'evidence:view')).toBe(false);
+      expect(await service.hasCapability(maintainer.id, 'evidence:create')).toBe(false);
+      expect(await service.hasCapability(maintainer.id, 'evidence:correct')).toBe(false);
+    });
+
+    it('dynamically enforces role revocation on evidence capabilities', async () => {
+      const custodian = await createTestUser({ roles: ['ASSET_CUSTODIAN'] });
+      const service = new CapabilityService({ db: pool });
+
+      expect(await service.hasCapability(custodian.id, 'evidence:create')).toBe(true);
+
+      // Revoke ASSET_CUSTODIAN in DB
+      await pool.query('DELETE FROM user_roles WHERE user_id = $1', [custodian.id]);
+      expect(await service.hasCapability(custodian.id, 'evidence:create')).toBe(false);
+      expect(await service.hasCapability(custodian.id, 'evidence:view')).toBe(false);
+
+      // Grant READ_ONLY in DB
+      await pool.query("INSERT INTO user_roles (user_id, role_id) VALUES ($1, 'READ_ONLY')", [custodian.id]);
+      expect(await service.hasCapability(custodian.id, 'evidence:view')).toBe(true);
+      expect(await service.hasCapability(custodian.id, 'evidence:create')).toBe(false);
     });
   });
 });

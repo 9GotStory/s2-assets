@@ -1,5 +1,6 @@
 import React, { useEffect, useState, useCallback, useRef } from 'react';
 import { useParams, useNavigate, Link } from 'react-router';
+import { EvidencePanel } from '../components/EvidencePanel';
 
 export interface LinkedAsset {
   id: string;
@@ -35,12 +36,16 @@ export const AcquisitionDetail: React.FC = () => {
   const [errorStatus, setErrorStatus] = useState<number | null>(null);
   const [errorMessage, setErrorMessage] = useState<string | null>(null);
   const [offset, setOffset] = useState(0);
+  const [csrfToken, setCsrfToken] = useState<string | null>(null);
+  const [currentUser, setCurrentUser] = useState<{ id: string; role?: string } | null>(null);
   const limit = 25;
 
   const isMountedRef = useRef(true);
   const abortControllerRef = useRef<AbortController | null>(null);
   const reqGenRef = useRef(0);
   const offsetRef = useRef(0);
+  const acquisitionRef = useRef<AcquisitionDetailData | null>(null);
+  acquisitionRef.current = acquisition;
 
   const fetchAcquisition = useCallback(
     async (currentOffset: number = 0) => {
@@ -121,12 +126,70 @@ export const AcquisitionDetail: React.FC = () => {
     [id, navigate]
   );
 
+  const sessionAbortRef = useRef<AbortController | null>(null);
+  const sessionGenRef = useRef(0);
+
+  const checkSession = useCallback(async () => {
+    if (sessionAbortRef.current) {
+      sessionAbortRef.current.abort();
+    }
+    const controller = new AbortController();
+    sessionAbortRef.current = controller;
+    const currentGen = ++sessionGenRef.current;
+
+    try {
+      const res = await fetch('/auth/session-check', {
+        method: 'GET',
+        credentials: 'include',
+        signal: controller.signal,
+      });
+
+      if (!isMountedRef.current || currentGen !== sessionGenRef.current || controller.signal.aborted) {
+        return;
+      }
+
+      if (!res.ok) {
+        setCurrentUser(null);
+        setCsrfToken(null);
+        navigate('/login', { replace: true });
+        return;
+      }
+
+      const data = await res.json();
+      if (!isMountedRef.current || currentGen !== sessionGenRef.current || controller.signal.aborted) {
+        return;
+      }
+
+      const user = data.user || null;
+      if (!user) {
+        setCurrentUser(null);
+        setCsrfToken(null);
+        navigate('/login', { replace: true });
+        return;
+      }
+
+      setCurrentUser(user);
+      setCsrfToken(data.csrfToken || null);
+    } catch (err: unknown) {
+      if (!isMountedRef.current || currentGen !== sessionGenRef.current || controller.signal.aborted) {
+        return;
+      }
+      if (err instanceof DOMException && err.name === 'AbortError') {
+        return;
+      }
+      setCurrentUser(null);
+      setCsrfToken(null);
+    }
+  }, [navigate]);
+
   useEffect(() => {
     isMountedRef.current = true;
     fetchAcquisition(0);
+    checkSession();
 
     const handleFocusRevalidate = () => {
       if (document.visibilityState === 'visible' && isMountedRef.current) {
+        checkSession();
         fetchAcquisition(offsetRef.current);
       }
     };
@@ -139,12 +202,15 @@ export const AcquisitionDetail: React.FC = () => {
       if (abortControllerRef.current) {
         abortControllerRef.current.abort();
       }
+      if (sessionAbortRef.current) {
+        sessionAbortRef.current.abort();
+      }
       window.removeEventListener('focus', handleFocusRevalidate);
       document.removeEventListener('visibilitychange', handleFocusRevalidate);
     };
-  }, [fetchAcquisition]);
+  }, [fetchAcquisition, checkSession]);
 
-  if (isLoading) {
+  if (isLoading && !acquisition) {
     return (
       <main
         style={{
@@ -306,7 +372,7 @@ export const AcquisitionDetail: React.FC = () => {
         </header>
 
         {/* Whole-Acquisition Total Warning Banner */}
-        {acquisition.total_amount && (
+        {!isLoading && acquisition.total_amount && (
           <div
             role="note"
             id="whole-total-warning"
@@ -333,94 +399,115 @@ export const AcquisitionDetail: React.FC = () => {
           </div>
         )}
 
+        {isLoading && (
+          <div
+            role="status"
+            aria-live="polite"
+            style={{
+              padding: '1.5rem',
+              backgroundColor: '#f9fafb',
+              borderRadius: '6px',
+              textAlign: 'center',
+              color: '#4b5563',
+              marginBottom: '2rem',
+              fontSize: '0.875rem',
+            }}
+          >
+            กำลังตรวจสอบสิทธิ์และอัปเดตข้อมูล...
+          </div>
+        )}
+
         {/* Facts Summary */}
-        <section
-          aria-labelledby="acquisition-facts-heading"
-          style={{
-            backgroundColor: '#f9fafb',
-            borderRadius: '6px',
-            padding: '1.25rem',
-            marginBottom: '2rem',
-          }}
-        >
-          <h2
-            id="acquisition-facts-heading"
+        {!isLoading && (
+          <section
+            aria-labelledby="acquisition-facts-heading"
             style={{
-              fontSize: '1.125rem',
-              fontWeight: 600,
-              marginTop: 0,
-              marginBottom: '1rem',
-              color: '#374151',
+              backgroundColor: '#f9fafb',
+              borderRadius: '6px',
+              padding: '1.25rem',
+              marginBottom: '2rem',
             }}
           >
-            รายละเอียดการได้มา
-          </h2>
+            <h2
+              id="acquisition-facts-heading"
+              style={{
+                fontSize: '1.125rem',
+                fontWeight: 600,
+                marginTop: 0,
+                marginBottom: '1rem',
+                color: '#374151',
+              }}
+            >
+              รายละเอียดการได้มา
+            </h2>
 
-          <dl
-            style={{
-              display: 'grid',
-              gridTemplateColumns: 'max-content 1fr',
-              gap: '0.75rem 1.5rem',
-              margin: 0,
-              fontSize: '0.9375rem',
-            }}
-          >
-            <dt style={{ fontWeight: 500, color: '#4b5563' }}>Acquisition ID (UUID):</dt>
-            <dd style={{ margin: 0, color: '#111827', fontFamily: 'monospace' }} id="fact-id">
-              {acquisition.id}
-            </dd>
+            <dl
+              style={{
+                display: 'grid',
+                gridTemplateColumns: 'max-content 1fr',
+                gap: '0.75rem 1.5rem',
+                margin: 0,
+                fontSize: '0.9375rem',
+              }}
+            >
+              <dt style={{ fontWeight: 500, color: '#4b5563' }}>Acquisition ID (UUID):</dt>
+              <dd style={{ margin: 0, color: '#111827', fontFamily: 'monospace' }} id="fact-id">
+                {acquisition.id}
+              </dd>
 
-            <dt style={{ fontWeight: 500, color: '#4b5563' }}>ประเภทการได้มา:</dt>
-            <dd style={{ margin: 0, color: '#111827' }} id="fact-type">
-              {acquisition.acquisition_type || (
-                <span style={{ color: '#9ca3af' }}>ไม่มีข้อมูล</span>
-              )}
-            </dd>
+              <dt style={{ fontWeight: 500, color: '#4b5563' }}>ประเภทการได้มา:</dt>
+              <dd style={{ margin: 0, color: '#111827' }} id="fact-type">
+                {acquisition.acquisition_type || (
+                  <span style={{ color: '#9ca3af' }}>ไม่มีข้อมูล</span>
+                )}
+              </dd>
 
-            <dt style={{ fontWeight: 500, color: '#4b5563' }}>วันที่ได้มา:</dt>
-            <dd style={{ margin: 0, color: '#111827' }} id="fact-date">
-              {acquisition.acquisition_date || (
-                <span style={{ color: '#9ca3af' }}>ไม่มีข้อมูล</span>
-              )}
-            </dd>
+              <dt style={{ fontWeight: 500, color: '#4b5563' }}>วันที่ได้มา:</dt>
+              <dd style={{ margin: 0, color: '#111827' }} id="fact-date">
+                {acquisition.acquisition_date || (
+                  <span style={{ color: '#9ca3af' }}>ไม่มีข้อมูล</span>
+                )}
+              </dd>
 
-            <dt style={{ fontWeight: 500, color: '#4b5563' }}>มูลค่ารวมทั้งชุด:</dt>
-            <dd style={{ margin: 0, color: '#111827' }} id="fact-amount">
-              {acquisition.total_amount ? (
-                `${acquisition.total_amount} ${acquisition.currency || 'THB'}`
-              ) : (
-                <span style={{ color: '#9ca3af' }}>ไม่มีข้อมูล</span>
-              )}
-            </dd>
+              <dt style={{ fontWeight: 500, color: '#4b5563' }}>มูลค่ารวมทั้งชุด:</dt>
+              <dd style={{ margin: 0, color: '#111827' }} id="fact-amount">
+                {acquisition.total_amount ? (
+                  `${acquisition.total_amount} ${acquisition.currency || 'THB'}`
+                ) : (
+                  <span style={{ color: '#9ca3af' }}>ไม่มีข้อมูล</span>
+                )}
+              </dd>
 
-            <dt style={{ fontWeight: 500, color: '#4b5563' }}>เอกสาร / สัญญาอ้างอิง:</dt>
-            <dd style={{ margin: 0, color: '#111827' }} id="fact-reference">
-              {acquisition.source_reference || (
-                <span style={{ color: '#9ca3af' }}>ไม่มีข้อมูล</span>
-              )}
-            </dd>
+              <dt style={{ fontWeight: 500, color: '#4b5563' }}>เอกสาร / สัญญาอ้างอิง:</dt>
+              <dd style={{ margin: 0, color: '#111827' }} id="fact-reference">
+                {acquisition.source_reference || (
+                  <span style={{ color: '#9ca3af' }}>ไม่มีข้อมูล</span>
+                )}
+              </dd>
 
-            <dt style={{ fontWeight: 500, color: '#4b5563' }}>หมายเหตุ:</dt>
-            <dd style={{ margin: 0, color: '#111827' }} id="fact-notes">
-              {acquisition.notes || (
-                <span style={{ color: '#9ca3af' }}>ไม่มีข้อมูล</span>
-              )}
-            </dd>
+              <dt style={{ fontWeight: 500, color: '#4b5563' }}>หมายเหตุ:</dt>
+              <dd style={{ margin: 0, color: '#111827' }} id="fact-notes">
+                {acquisition.notes || (
+                  <span style={{ color: '#9ca3af' }}>ไม่มีข้อมูล</span>
+                )}
+              </dd>
 
-            <dt style={{ fontWeight: 500, color: '#4b5563' }}>วันที่บันทึก:</dt>
-            <dd style={{ margin: 0, color: '#111827' }} id="fact-recorded-at">
-              {acquisition.recorded_at}
-            </dd>
+              <dt style={{ fontWeight: 500, color: '#4b5563' }}>วันที่บันทึก:</dt>
+              <dd style={{ margin: 0, color: '#111827' }} id="fact-recorded-at">
+                {acquisition.recorded_at}
+              </dd>
 
-            <dt style={{ fontWeight: 500, color: '#4b5563' }}>ผู้บันทึก (Actor ID):</dt>
-            <dd style={{ margin: 0, color: '#111827', fontFamily: 'monospace' }} id="fact-created-by">
-              {acquisition.created_by}
-            </dd>
-          </dl>
-        </section>
+              <dt style={{ fontWeight: 500, color: '#4b5563' }}>ผู้บันทึก (Actor ID):</dt>
+              <dd style={{ margin: 0, color: '#111827', fontFamily: 'monospace' }} id="fact-created-by">
+                {acquisition.created_by}
+              </dd>
+            </dl>
+          </section>
+        )}
 
         {/* Linked Assets List */}
-        <section aria-labelledby="linked-assets-heading">
+        {!isLoading && (
+          <section aria-labelledby="linked-assets-heading">
           <div
             style={{
               display: 'flex',
@@ -576,7 +663,17 @@ export const AcquisitionDetail: React.FC = () => {
               )}
             </>
           )}
-        </section>
+          </section>
+        )}
+
+        {/* Evidence & References (T7) */}
+        <EvidencePanel
+          entityType="acquisition"
+          entityId={acquisition.id}
+          csrfToken={csrfToken}
+          currentUser={currentUser}
+          isReauthorizing={isLoading}
+        />
       </div>
     </main>
   );

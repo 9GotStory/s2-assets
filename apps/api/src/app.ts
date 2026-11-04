@@ -16,11 +16,13 @@ import { systemRoutes } from './routes/system.routes.ts';
 import { healthRoutes } from './routes/health.routes.ts';
 import { assetRoutes } from './routes/asset.routes.ts';
 import { acquisitionRoutes } from './routes/acquisition.routes.ts';
+import { evidenceRoutes } from './routes/evidence.routes.ts';
 import { UserService, type DatabaseClient } from './services/user.service.ts';
 import { SessionService } from './services/session.service.ts';
 import { CapabilityService } from './services/capability.service.ts';
 import { AssetService } from './services/asset.service.ts';
 import { AcquisitionService } from './services/acquisition.service.ts';
+import { EvidenceService } from './services/evidence.service.ts';
 
 export interface AppOptions {
   config?: Partial<Config>;
@@ -178,6 +180,7 @@ export async function buildApp(options: AppOptions = {}): Promise<FastifyInstanc
 
     const assetService = new AssetService({ db: dbClient });
     const acquisitionService = new AcquisitionService({ db: dbClient });
+    const evidenceService = new EvidenceService({ db: dbClient, capabilityService });
 
     if (!app.hasDecorator('capabilityService')) {
       app.decorate('capabilityService', capabilityService);
@@ -189,6 +192,10 @@ export async function buildApp(options: AppOptions = {}): Promise<FastifyInstanc
 
     if (!app.hasDecorator('acquisitionService')) {
       app.decorate('acquisitionService', acquisitionService);
+    }
+
+    if (!app.hasDecorator('evidenceService')) {
+      app.decorate('evidenceService', evidenceService);
     }
 
     if (!app.hasDecorator('publicAppOrigin')) {
@@ -239,6 +246,14 @@ export async function buildApp(options: AppOptions = {}): Promise<FastifyInstanc
     await app.register(acquisitionRoutes, {
       prefix: '/acquisitions',
       acquisitionService,
+      capabilityService,
+      db: dbClient,
+    });
+
+    // Evidence routes mounted under /evidence
+    await app.register(evidenceRoutes, {
+      prefix: '/evidence',
+      evidenceService,
       capabilityService,
       db: dbClient,
     });

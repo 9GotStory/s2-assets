@@ -3,6 +3,7 @@ import { useParams, useNavigate, Link } from 'react-router';
 import { QueryClient, QueryClientProvider, useQuery, useQueryClient } from '@tanstack/react-query';
 import { AssetCorrectionForm } from '../components/AssetCorrectionForm';
 import { AssetQrLabel } from '../components/AssetQrLabel';
+import { EvidencePanel } from '../components/EvidencePanel';
 
 export interface AssetRecord {
   id: string;
@@ -901,6 +902,16 @@ const AssetDetailContent: React.FC = () => {
             </table>
           </div>
         </section>
+
+        {/* Evidence & References (T7) */}
+        <EvidencePanel
+          entityType="asset"
+          entityId={asset.id}
+          acquisitionId={asset.acquisition_id}
+          csrfToken={csrfToken}
+          currentUser={currentUser}
+          isReauthorizing={isReauthorizing}
+        />
 
         {refreshError && (
           <div
