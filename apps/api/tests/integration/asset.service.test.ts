@@ -1762,10 +1762,21 @@ describe('AssetService Integration Tests (Seam A - Core Service & Transactions)'
       expect(full.total_count).toBe(4);
       expect(full.items.map((i) => i.id)).toEqual([idC, idA, idB, idD]);
 
-      // Public items must have strictly id, name, asset_number, serial_number, the T4 reference entries,
+      // Public items must have strictly id, name, asset_number, serial_number, the T4 reference context,
       // and NO internal sort keys
       expect(Object.keys(full.items[0]).sort()).toEqual(
-        ['asset_number', 'id', 'location', 'name', 'organization_unit', 'responsible_person', 'serial_number'].sort()
+        [
+          'asset_number',
+          'id',
+          'legacy_location_text',
+          'legacy_organization_unit_text',
+          'legacy_responsible_person_text',
+          'location',
+          'name',
+          'organization_unit',
+          'responsible_person',
+          'serial_number',
+        ].sort()
       );
       expect((full.items[0] as any).recorded_at).toBeUndefined();
 

@@ -1050,6 +1050,7 @@ export const AssetCorrectionForm: React.FC<AssetCorrectionFormProps> = ({
       {/* Reference context (T4, D3 asset:correct) */}
       <ReferenceContextFields
         idPrefix="correction"
+        legend="ข้อมูลอ้างอิง: แก้การบันทึกที่ผิด (ไม่ใช่การย้ายหรือโอนครุภัณฑ์)"
         values={
           Object.fromEntries(REFERENCE_CONTEXT_FIELDS.map((field) => [field, watch(field)])) as ReferenceContextValues
         }

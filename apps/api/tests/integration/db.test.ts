@@ -46,9 +46,10 @@ describe('Database Migrations Integration', () => {
     expect(files).toContain('0002_asset_registry.ts');
     expect(files).toContain('0003_acquisitions.ts');
     expect(files).toContain('0004_evidence.ts');
+    expect(files).toContain('0005_reference_context.ts');
   });
 
-  it('successfully applies all migrations to a clean database in 0001 -> 0002 -> 0003 -> 0004 order', async () => {
+  it('successfully applies all migrations to a clean database in 0001 -> 0002 -> 0003 -> 0004 -> 0005 order', async () => {
     const result = await runMigrator({
       command: 'latest',
       databaseUrl,
@@ -57,7 +58,7 @@ describe('Database Migrations Integration', () => {
 
     expect(result.error).toBeUndefined();
     expect(result.results).toBeDefined();
-    expect(result.results!.length).toBe(4);
+    expect(result.results!.length).toBe(5);
 
     expect(result.results![0].migrationName).toBe('0001_foundation');
     expect(result.results![0].direction).toBe('Up');
@@ -74,6 +75,10 @@ describe('Database Migrations Integration', () => {
     expect(result.results![3].migrationName).toBe('0004_evidence');
     expect(result.results![3].direction).toBe('Up');
     expect(result.results![3].status).toBe('Success');
+
+    expect(result.results![4].migrationName).toBe('0005_reference_context');
+    expect(result.results![4].direction).toBe('Up');
+    expect(result.results![4].status).toBe('Success');
   });
 
   it('creates the schema and tables in the database across foundation, asset registry, and acquisitions', async () => {
@@ -209,7 +214,36 @@ describe('Database Migrations Integration', () => {
     expect(rerunResult.results?.length ?? 0).toBe(0);
   });
 
-  it('supports complete ordered rollback (0004 -> 0003 -> 0002 -> 0001) on an empty database with complete schema teardown', async () => {
+  it('supports complete ordered rollback (0005 -> 0004 -> 0003 -> 0002 -> 0001) on an empty database with complete schema teardown', async () => {
+    // 0. Roll back 0005_reference_context: the lists go and the T1 placeholder column returns
+    const rollback0005 = await runMigrator({
+      command: 'down',
+      databaseUrl,
+      migrationFolder,
+    });
+    expect(rollback0005.error).toBeUndefined();
+    expect(rollback0005.results).toHaveLength(1);
+    expect(rollback0005.results![0].migrationName).toBe('0005_reference_context');
+    expect(rollback0005.results![0].direction).toBe('Down');
+    expect(rollback0005.results![0].status).toBe('Success');
+
+    const referenceClient = new Client({ connectionString: databaseUrl });
+    await referenceClient.connect();
+    try {
+      const listTables = await referenceClient.query(`
+        SELECT table_name FROM information_schema.tables
+        WHERE table_schema = 'public' AND table_name IN ('locations', 'organization_units', 'persons');
+      `);
+      expect(listTables.rows).toHaveLength(0);
+      const placeholder = await referenceClient.query(`
+        SELECT column_name FROM information_schema.columns
+        WHERE table_name = 'assets' AND column_name IN ('organization_unit', 'legacy_organization_unit_text', 'location_id');
+      `);
+      expect(placeholder.rows.map((r: { column_name: string }) => r.column_name)).toEqual(['organization_unit']);
+    } finally {
+      await referenceClient.end();
+    }
+
     // 1. Roll back 0004_evidence
     const rollback0004 = await runMigrator({
       command: 'down',
@@ -332,7 +366,7 @@ describe('Database Migrations Integration', () => {
     }
   });
 
-  it('can re-apply all migrations after rollback in ordered 0001 -> 0002 -> 0003 -> 0004 sequence and restores full schema', async () => {
+  it('can re-apply all migrations after rollback in ordered 0001 -> 0002 -> 0003 -> 0004 -> 0005 sequence and restores full schema', async () => {
     const reapplyResult = await runMigrator({
       command: 'latest',
       databaseUrl,
@@ -341,7 +375,7 @@ describe('Database Migrations Integration', () => {
 
     expect(reapplyResult.error).toBeUndefined();
     expect(reapplyResult.results).toBeDefined();
-    expect(reapplyResult.results!).toHaveLength(4);
+    expect(reapplyResult.results!).toHaveLength(5);
 
     expect(reapplyResult.results![0].migrationName).toBe('0001_foundation');
     expect(reapplyResult.results![0].direction).toBe('Up');
@@ -359,15 +393,19 @@ describe('Database Migrations Integration', () => {
     expect(reapplyResult.results![3].direction).toBe('Up');
     expect(reapplyResult.results![3].status).toBe('Success');
 
+    expect(reapplyResult.results![4].migrationName).toBe('0005_reference_context');
+    expect(reapplyResult.results![4].direction).toBe('Up');
+    expect(reapplyResult.results![4].status).toBe('Success');
+
     // Verify all application tables exist again
     const client = new Client({ connectionString: databaseUrl });
     await client.connect();
     try {
       const tablesResult = await client.query(`
         SELECT table_name FROM information_schema.tables
-        WHERE table_schema = 'public' AND table_name IN ('users', 'sessions', 'roles', 'user_roles', 'assets', 'asset_history', 'registration_retry_tokens', 'acquisitions', 'evidence_records', 'evidence_asset_links', 'evidence_history');
+        WHERE table_schema = 'public' AND table_name IN ('users', 'sessions', 'roles', 'user_roles', 'assets', 'asset_history', 'registration_retry_tokens', 'acquisitions', 'evidence_records', 'evidence_asset_links', 'evidence_history', 'locations', 'organization_units', 'persons');
       `);
-      expect(tablesResult.rows).toHaveLength(11);
+      expect(tablesResult.rows).toHaveLength(14);
 
       const colCheck = await client.query(`
         SELECT column_name FROM information_schema.columns
@@ -389,7 +427,15 @@ describe('Database Migrations Integration', () => {
   });
 
   it('refuses destructive rollback of 0003_acquisitions when meaningful acquisition or link data exists and leaves data intact', async () => {
-    // Roll back empty 0004_evidence first so current state is at 0003_acquisitions
+    // Roll back empty 0005_reference_context and 0004_evidence first so current state is at 0003_acquisitions
+    const down0005 = await runMigrator({
+      command: 'down',
+      databaseUrl,
+      migrationFolder,
+    });
+    expect(down0005.error).toBeUndefined();
+    expect(down0005.results![0].migrationName).toBe('0005_reference_context');
+
     const down0004 = await runMigrator({
       command: 'down',
       databaseUrl,
@@ -539,13 +585,16 @@ describe('Database Migrations Integration', () => {
       migrationFolder,
     });
     expect(upgradeResult.error).toBeUndefined();
-    expect(upgradeResult.results).toHaveLength(2);
+    expect(upgradeResult.results).toHaveLength(3);
     expect(upgradeResult.results![0].migrationName).toBe('0003_acquisitions');
     expect(upgradeResult.results![0].direction).toBe('Up');
     expect(upgradeResult.results![0].status).toBe('Success');
     expect(upgradeResult.results![1].migrationName).toBe('0004_evidence');
     expect(upgradeResult.results![1].direction).toBe('Up');
     expect(upgradeResult.results![1].status).toBe('Success');
+    expect(upgradeResult.results![2].migrationName).toBe('0005_reference_context');
+    expect(upgradeResult.results![2].direction).toBe('Up');
+    expect(upgradeResult.results![2].status).toBe('Success');
 
     // 4. Assert comprehensive preservation of all 0002 and foundation facts
     const verifyClient = new Client({ connectionString: databaseUrl });

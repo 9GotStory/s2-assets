@@ -1,13 +1,18 @@
 import React, { useCallback, useEffect, useState } from 'react';
 import { Link, useNavigate } from 'react-router';
-import { REFERENCE_DIMENSIONS, type ReferenceEntry, type ReferenceKind } from '../components/ReferenceContextFields';
+import {
+  REFERENCE_DIMENSIONS,
+  fetchReferenceList,
+  type ReferenceEntry,
+  type ReferenceKind,
+} from '../components/ReferenceContextFields';
 
+// Codes the reference routes send; a 403 comes from the shared authorization layer instead.
 const WRITE_ERRORS: Record<string, string> = {
   DUPLICATE_NAME: 'มีชื่อนี้อยู่แล้วในรายการ (ไม่นับตัวพิมพ์เล็ก-ใหญ่และช่องว่างหน้า-หลัง)',
   VERSION_CONFLICT: 'รายการถูกแก้ไขโดยผู้อื่นแล้ว ระบบโหลดรายการล่าสุดให้ กรุณาตรวจสอบอีกครั้ง',
   NOT_FOUND: 'ไม่พบรายการนี้ ระบบโหลดรายการล่าสุดให้แล้ว',
   VALIDATION_FAILED: 'ชื่อต้องไม่ว่าง ยาวไม่เกิน 200 ตัวอักษร และไม่มีอักขระควบคุม',
-  FORBIDDEN: 'คุณไม่มีสิทธิ์ดูแลรายการข้อมูลอ้างอิง (403 Forbidden)',
 };
 
 const buttonStyle = (background: string, color = '#ffffff'): React.CSSProperties => ({
@@ -68,31 +73,26 @@ export const ReferenceAdmin: React.FC = () => {
 
   const load = useCallback(
     async (signal?: AbortSignal) => {
-      const res = await fetch(`/references/${kind}?include_inactive=true&limit=500`, {
-        credentials: 'include',
-        signal,
-      });
+      const list = await fetchReferenceList(kind, true, signal);
       if (signal?.aborted) return;
-      if (res.status === 401) {
-        navigate('/login', { replace: true });
-        return;
-      }
-      if (!res.ok) {
+      if (!list.ok) {
+        if (list.status === 401) {
+          navigate('/login', { replace: true });
+          return;
+        }
         setEntries([]);
         setCanMaintain(false);
         setMessage({
           tone: 'error',
           text:
-            res.status === 403
+            list.status === 403
               ? 'คุณไม่มีสิทธิ์ดูรายการข้อมูลอ้างอิง (403 Forbidden)'
               : 'ไม่สามารถโหลดรายการข้อมูลอ้างอิงได้',
         });
         return;
       }
-      const data = await res.json();
-      if (signal?.aborted) return;
-      setEntries(data.items);
-      setCanMaintain(data.can_maintain === true);
+      setEntries(list.items);
+      setCanMaintain(list.canMaintain);
     },
     [kind, navigate]
   );
@@ -123,6 +123,10 @@ export const ReferenceAdmin: React.FC = () => {
       const res = await fetch(url, { method: 'POST', credentials: 'include', headers, body: JSON.stringify(body) });
       if (res.status === 401) {
         navigate('/login', { replace: true });
+        return false;
+      }
+      if (res.status === 403) {
+        setMessage({ tone: 'error', text: 'คุณไม่มีสิทธิ์ดูแลรายการข้อมูลอ้างอิง (403 Forbidden)' });
         return false;
       }
       if (!res.ok) {

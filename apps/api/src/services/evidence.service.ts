@@ -2,6 +2,7 @@ import * as crypto from 'node:crypto';
 import pg from 'pg';
 import { isPlaceholderText } from './acquisition.service.ts';
 import { canonicalJson } from './asset.service.ts';
+import { hasDisallowedControlChars, hasStrictControlChars } from './control-characters.ts';
 
 const STRICT_UUID_REGEX = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 
@@ -134,16 +135,6 @@ export class UnauthorizedError extends Error {
   }
 }
 
-export function hasStrictControlChars(str: string): boolean {
-  for (let i = 0; i < str.length; i++) {
-    const code = str.charCodeAt(i);
-    if (code < 0x20 || code === 0x7f) {
-      return true;
-    }
-  }
-  return false;
-}
-
 const PLACEHOLDER_REASONS = new Set([
   'n/a',
   'na',
@@ -171,16 +162,6 @@ export function isPlaceholderReason(reason: string): boolean {
   if (PLACEHOLDER_REASONS.has(trimmed)) return true;
   if (isPlaceholderText(trimmed)) return true;
   if (/^[\s\-_.~!?/\\*#@^&()+=]+$/.test(trimmed)) return true;
-  return false;
-}
-
-export function hasDisallowedControlChars(str: string): boolean {
-  for (let i = 0; i < str.length; i++) {
-    const code = str.charCodeAt(i);
-    if ((code < 0x20 && code !== 0x09 && code !== 0x0a && code !== 0x0d) || code === 0x7f) {
-      return true;
-    }
-  }
   return false;
 }
 

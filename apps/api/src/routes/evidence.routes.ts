@@ -9,10 +9,10 @@ import {
   ForbiddenError,
   UnauthorizedError,
   isStrictUuid,
-  hasStrictControlChars,
   type CreateEvidenceInput,
   type CorrectEvidenceInput,
 } from '../services/evidence.service.ts';
+import { hasStrictControlChars } from '../services/control-characters.ts';
 import { CapabilityService } from '../services/capability.service.ts';
 
 export interface EvidenceRoutesOptions {

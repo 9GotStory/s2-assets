@@ -10,6 +10,7 @@ import {
   StaleBeforeConflictError,
   ValidationError,
   REFERENCE_ID_FIELDS,
+  LEGACY_TEXT_FIELDS,
   type CorrectAssetInput,
   type RegisterAssetInput,
   type BulkRegisterAssetInput,
@@ -481,7 +482,7 @@ export const assetRoutes: FastifyPluginAsync<AssetRoutesOptions> = async (
    * Bounded identifier/description search (T3).
    * Supports field-based exact matching for stable_id, asset_number, serial_number,
    * case-insensitive literal substring for name, or empty browse when no criteria given.
-   * T4 (#25): legacy_text searches the legacy reference texts like name, and
+   * T4 (#25): each legacy reference text is a field searched like name, and
    * location_id / organization_unit_id / responsible_person_id filter by exact entry, with AND.
    * Requires BOTH 'asset:search' and 'asset:view' capabilities.
    * Prevents query disclosure in operational logs via sanitized URLs and logLevel 'silent'.
@@ -524,7 +525,7 @@ export const assetRoutes: FastifyPluginAsync<AssetRoutesOptions> = async (
       const query = (request.query || {}) as Record<string, unknown>;
 
       // Check for unknown parameters
-      const allowedParams = new Set(['field', 'value', 'limit', 'offset', ...REFERENCE_ID_FIELDS.map(([filter]) => filter)]);
+      const allowedParams = new Set<string>(['field', 'value', 'limit', 'offset', ...REFERENCE_ID_FIELDS]);
       for (const key of Object.keys(query)) {
         if (!allowedParams.has(key)) {
           return sendValidationError({ query: 'Unknown query parameter' });
@@ -549,7 +550,7 @@ export const assetRoutes: FastifyPluginAsync<AssetRoutesOptions> = async (
       }
 
       // Valid selector check
-      const validFields = new Set(['stable_id', 'asset_number', 'serial_number', 'name', 'legacy_text']);
+      const validFields = new Set<string>(['stable_id', 'asset_number', 'serial_number', 'name', ...LEGACY_TEXT_FIELDS]);
       if (field !== undefined && !validFields.has(field)) {
         return sendValidationError({ field: 'Invalid search field selector' });
       }
@@ -577,14 +578,14 @@ export const assetRoutes: FastifyPluginAsync<AssetRoutesOptions> = async (
           if (!isValidExactUuid(value)) {
             return sendValidationError({ value: 'Invalid UUID format for stable_id' });
           }
-        } else if ((field === 'name' || field === 'legacy_text') && value !== '') {
+        } else if ((field === 'name' || (LEGACY_TEXT_FIELDS as readonly string[]).includes(field)) && value !== '') {
           if (value.trim() === '') {
             return sendValidationError({ value: `Search value for ${field} must not be whitespace-only` });
           }
         }
       }
 
-      for (const [filter] of REFERENCE_ID_FIELDS) {
+      for (const filter of REFERENCE_ID_FIELDS) {
         if (query[filter] !== undefined && !isValidExactUuid(query[filter])) {
           return sendValidationError({ [filter]: `${filter} must be a valid UUID` });
         }

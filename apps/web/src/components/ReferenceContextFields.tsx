@@ -76,6 +76,32 @@ export type ReferenceLists = Record<ReferenceKind, ReferenceEntry[]>;
 const NO_LISTS: ReferenceLists = { locations: [], 'organization-units': [], persons: [] };
 
 /**
+ * Reads a whole reference list page by page, so no entry is cut off, or stops at the first page
+ * that fails, with its HTTP status.
+ */
+export async function fetchReferenceList(
+  kind: ReferenceKind,
+  includeInactive: boolean,
+  signal?: AbortSignal
+): Promise<{ ok: true; items: ReferenceEntry[]; canMaintain: boolean } | { ok: false; status: number }> {
+  const items: ReferenceEntry[] = [];
+  for (;;) {
+    const res = await fetch(
+      `/references/${kind}?include_inactive=${includeInactive}&limit=500&offset=${items.length}`,
+      { credentials: 'include', signal }
+    );
+    if (!res.ok) {
+      return { ok: false, status: res.status };
+    }
+    const page = await res.json();
+    items.push(...page.items);
+    if (!page.has_more || page.items.length === 0) {
+      return { ok: true, items, canMaintain: page.can_maintain === true };
+    }
+  }
+}
+
+/**
  * Loads the three reference lists for a verified actor. A new actor key drops the previous
  * actor's lists at once and loads them again; a null key loads nothing.
  */
@@ -92,14 +118,11 @@ export function useReferenceLists(
     const controller = new AbortController();
     Promise.all(
       REFERENCE_DIMENSIONS.map(async ({ kind }) => {
-        const res = await fetch(`/references/${kind}?include_inactive=${includeInactive}&limit=500`, {
-          credentials: 'include',
-          signal: controller.signal,
-        });
-        if (!res.ok) {
-          throw new Error(`HTTP ${res.status}`);
+        const list = await fetchReferenceList(kind, includeInactive, controller.signal);
+        if (!list.ok) {
+          throw new Error(`HTTP ${list.status}`);
         }
-        return [kind, (await res.json()).items as ReferenceEntry[]] as const;
+        return [kind, list.items] as const;
       })
     )
       .then((entries) => {

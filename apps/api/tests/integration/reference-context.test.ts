@@ -54,6 +54,8 @@ describe('Reference Context Integration Tests (Seam A - T4)', () => {
 
   const get = (actor: Actor, url: string) => app.inject({ method: 'GET', url, headers: { cookie: actor.cookie } });
 
+  const entry = async (kind: string, name: string) => (await post(admin, `/references/${kind}`, { name })).json();
+
   beforeAll(async () => {
     if (!process.env.TESTCONTAINERS_RYUK_DISABLED) {
       process.env.TESTCONTAINERS_RYUK_DISABLED = 'true';
@@ -97,6 +99,25 @@ describe('Reference Context Integration Tests (Seam A - T4)', () => {
   });
 
   describe('Reference list maintenance (D7-A, D3 reference:maintain)', () => {
+    it('reads lists only in canonical integer pages', async () => {
+      for (const query of ['limit=1e2', 'limit=0x10', 'limit=0', 'limit=501', 'offset=', 'offset=-1', 'offset=01']) {
+        expect((await get(readonly, `/references/locations?${query}`)).statusCode, query).toBe(400);
+      }
+      expect((await get(readonly, '/references/locations?limit=1&offset=0')).statusCode).toBe(200);
+    });
+
+    it('lets only one of two concurrent changes made from the same version succeed', async () => {
+      const room = await entry('locations', 'ห้องแข่งกันแก้');
+      const results = await Promise.all([
+        post(admin, `/references/locations/${room.id}`, { expected_version: 1, name: 'ห้องแข่ง ก' }),
+        post(admin, `/references/locations/${room.id}`, { expected_version: 1, name: 'ห้องแข่ง ข' }),
+      ]);
+      expect(results.map((res) => res.statusCode).sort()).toEqual([200, 409]);
+      const stored = (await pool.query('SELECT name, version FROM locations WHERE id = $1', [room.id])).rows[0];
+      expect(stored.version).toBe(2);
+      expect(results.find((res) => res.statusCode === 200)!.json().name).toBe(stored.name);
+    });
+
     it('lets an Administrator add a location that every registry viewer then sees', async () => {
       const created = await post(admin, '/references/locations', { name: 'ห้องพัสดุ ชั้น 1' });
       expect(created.statusCode).toBe(201);
@@ -217,7 +238,6 @@ describe('Reference Context Integration Tests (Seam A - T4)', () => {
   });
 
   describe('Asset reference context (AC-13, AC-14, AC-15, AR-06, AR-10)', () => {
-    const entry = async (kind: string, name: string) => (await post(admin, `/references/${kind}`, { name })).json();
 
     it('registers an Asset with chosen references and legacy text, and shows both on its detail', async () => {
       const location = await entry('locations', 'อาคาร 1 ห้อง 101');
@@ -263,6 +283,33 @@ describe('Reference Context Integration Tests (Seam A - T4)', () => {
         [registered.json().asset.id]
       );
       expect(assignments.rows[0].n).toBe(0);
+    });
+
+    it('makes a registration wait for a concurrent deactivation of its entry, then refuses the entry', async () => {
+      const room = await entry('locations', 'ห้องกำลังปิด');
+      const before = (await pool.query('SELECT count(*)::int AS n FROM assets')).rows[0].n;
+      const deactivation = await pool.connect();
+      try {
+        await deactivation.query('BEGIN');
+        await deactivation.query('UPDATE locations SET is_active = false, version = version + 1 WHERE id = $1', [room.id]);
+        const registration = post(custodian, '/assets', { name: 'ลงทะเบียนระหว่างปิด', location_id: room.id });
+
+        // The registration's FOR SHARE lock must wait behind the uncommitted deactivation.
+        let waiting = 0;
+        for (let attempt = 0; attempt < 100 && waiting === 0; attempt++) {
+          await new Promise((resolve) => setTimeout(resolve, 50));
+          waiting = (
+            await pool.query(`SELECT count(*)::int AS n FROM pg_stat_activity WHERE wait_event_type = 'Lock'`)
+          ).rows[0].n;
+        }
+        expect(waiting).toBe(1);
+
+        await deactivation.query('COMMIT');
+        expect((await registration).statusCode).toBe(400);
+      } finally {
+        deactivation.release();
+      }
+      expect((await pool.query('SELECT count(*)::int AS n FROM assets')).rows[0].n).toBe(before);
     });
 
     it('refuses an unknown, malformed or inactive reference and invalid legacy text without writing', async () => {
@@ -347,7 +394,6 @@ describe('Reference Context Integration Tests (Seam A - T4)', () => {
   });
 
   describe('Search by reference context (AC-14, AC-23, AC-24)', () => {
-    const entry = async (kind: string, name: string) => (await post(admin, `/references/${kind}`, { name })).json();
     const register = async (name: string, context: Record<string, unknown>) =>
       (await post(custodian, '/assets', { name, ...context })).json().asset.id as string;
     const search = async (actor: Actor, query: string) => get(actor, `/assets/search?${query}`);
@@ -383,17 +429,25 @@ describe('Reference Context Integration Tests (Seam A - T4)', () => {
       expect(item.organization_unit).toBeNull();
     });
 
-    it('finds legacy text case-insensitively and rejects malformed filters', async () => {
+    it('finds each legacy text on its own, case-insensitively, and rejects malformed filters', async () => {
       const legacy = await register('ค้นหาข้อความเดิม', { legacy_location_text: 'Old Store Room 7' });
-      const found = await search(readonly, `field=legacy_text&value=${encodeURIComponent('store room')}`);
+      const found = await search(readonly, `field=legacy_location_text&value=${encodeURIComponent('store room')}`);
       expect(found.statusCode).toBe(200);
       expect(found.json().items.map((i: any) => i.id)).toEqual([legacy]);
+      expect(found.json().items[0].legacy_location_text).toBe('Old Store Room 7');
+
+      // The dimensions stay distinct: an old location text is no old unit or person text.
+      for (const field of ['legacy_organization_unit_text', 'legacy_responsible_person_text']) {
+        const other = await search(readonly, `field=${field}&value=${encodeURIComponent('store room')}`);
+        expect(other.json().items, field).toEqual([]);
+      }
 
       for (const query of [
         'location_id=not-a-uuid',
         `organization_unit_id=${'0'.repeat(36)}`,
         'responsible_person_id=',
-        'field=legacy_text&value=%20%20',
+        'field=legacy_location_text&value=%20%20',
+        'field=legacy_text&value=store',
         'location_id=00000000-0000-4000-8000-000000000000&location_id=00000000-0000-4000-8000-000000000001',
       ]) {
         expect((await search(readonly, query)).statusCode, query).toBe(400);
@@ -403,7 +457,6 @@ describe('Reference Context Integration Tests (Seam A - T4)', () => {
   });
 
   describe('Correcting reference context (D3 asset:correct, with reason and history)', () => {
-    const entry = async (kind: string, name: string) => (await post(admin, `/references/${kind}`, { name })).json();
     const identity = (asset: any) => ({
       expected_name: asset.name,
       expected_asset_number: asset.asset_number,

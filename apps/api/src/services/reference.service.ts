@@ -1,21 +1,43 @@
 import pg from 'pg';
 import { isValidUuid } from './capability.service.ts';
-import { hasStrictControlChars } from './evidence.service.ts';
+import { hasStrictControlChars } from './control-characters.ts';
 
 /**
- * T4 (#25, D7-A): flat managed reference lists for Asset reference context.
- * An Administrator adds, renames, deactivates and reactivates entries; nothing is deleted.
+ * T4 (#25, D7-A): flat managed reference lists for Asset reference context, each with the Asset
+ * column that names one of its entries. An Administrator adds, renames, deactivates and
+ * reactivates entries; nothing is deleted.
  */
-export const REFERENCE_KIND_TABLES = Object.freeze({
-  locations: 'locations',
-  'organization-units': 'organization_units',
-  persons: 'persons',
+export const REFERENCE_LISTS = Object.freeze({
+  locations: { table: 'locations', assetColumn: 'location_id' },
+  'organization-units': { table: 'organization_units', assetColumn: 'organization_unit_id' },
+  persons: { table: 'persons', assetColumn: 'responsible_person_id' },
 } as const);
 
-export type ReferenceKind = keyof typeof REFERENCE_KIND_TABLES;
+export type ReferenceKind = keyof typeof REFERENCE_LISTS;
+export type AssetReferenceColumn = (typeof REFERENCE_LISTS)[ReferenceKind]['assetColumn'];
 
 export function isReferenceKind(kind: unknown): kind is ReferenceKind {
-  return typeof kind === 'string' && Object.prototype.hasOwnProperty.call(REFERENCE_KIND_TABLES, kind);
+  return typeof kind === 'string' && Object.prototype.hasOwnProperty.call(REFERENCE_LISTS, kind);
+}
+
+/**
+ * Locks each entry an Asset is to name FOR SHARE, so a concurrent deactivation waits for the
+ * caller's write, and returns the first Asset column whose entry is missing or inactive: only
+ * active entries are assigned (D7).
+ */
+export async function findUnassignableEntry(
+  client: pg.PoolClient | pg.Pool,
+  ids: Partial<Record<AssetReferenceColumn, string | null>>
+): Promise<AssetReferenceColumn | null> {
+  for (const { table, assetColumn } of Object.values(REFERENCE_LISTS)) {
+    const id = ids[assetColumn];
+    if (!id) continue;
+    const res = await client.query(`SELECT 1 FROM ${table} WHERE id = $1 AND is_active FOR SHARE`, [id]);
+    if (res.rows.length === 0) {
+      return assetColumn;
+    }
+  }
+  return null;
 }
 
 export interface ReferenceEntry {
@@ -33,13 +55,14 @@ export interface ReferenceListResult {
   offset: number;
 }
 
-export class ReferenceError extends Error {
+// Named apart from the built-in ReferenceError.
+export class ReferenceListError extends Error {
   readonly statusCode: 400 | 404 | 409;
   readonly code: string;
 
   constructor(statusCode: 400 | 404 | 409, code: string, message: string) {
     super(message);
-    this.name = 'ReferenceError';
+    this.name = 'ReferenceListError';
     this.statusCode = statusCode;
     this.code = code;
   }
@@ -50,17 +73,17 @@ export const REFERENCE_NAME_MAX_LENGTH = 200;
 /** Trims a supplied entry name and rejects blank, overlong or control-character input. */
 export function normalizeReferenceName(raw: unknown): string {
   if (typeof raw !== 'string') {
-    throw new ReferenceError(400, 'VALIDATION_FAILED', 'name must be a string');
+    throw new ReferenceListError(400, 'VALIDATION_FAILED', 'name must be a string');
   }
   const name = raw.trim();
   if (name.length === 0) {
-    throw new ReferenceError(400, 'VALIDATION_FAILED', 'name must not be blank');
+    throw new ReferenceListError(400, 'VALIDATION_FAILED', 'name must not be blank');
   }
   if (name.length > REFERENCE_NAME_MAX_LENGTH) {
-    throw new ReferenceError(400, 'VALIDATION_FAILED', `name must be at most ${REFERENCE_NAME_MAX_LENGTH} characters`);
+    throw new ReferenceListError(400, 'VALIDATION_FAILED', `name must be at most ${REFERENCE_NAME_MAX_LENGTH} characters`);
   }
   if (hasStrictControlChars(name)) {
-    throw new ReferenceError(400, 'VALIDATION_FAILED', 'name must not contain control characters');
+    throw new ReferenceListError(400, 'VALIDATION_FAILED', 'name must not contain control characters');
   }
   return name;
 }
@@ -85,7 +108,7 @@ export class ReferenceService {
     kind: ReferenceKind,
     options: { includeInactive: boolean; limit: number; offset: number }
   ): Promise<ReferenceListResult> {
-    const table = REFERENCE_KIND_TABLES[kind];
+    const table = REFERENCE_LISTS[kind].table;
     const res = await this.db.query(
       `SELECT id, name, is_active, version, count(*) OVER()::int AS total
        FROM ${table}
@@ -113,7 +136,7 @@ export class ReferenceService {
 
   async create(kind: ReferenceKind, actorId: string, rawName: unknown): Promise<ReferenceEntry> {
     const name = normalizeReferenceName(rawName);
-    const table = REFERENCE_KIND_TABLES[kind];
+    const table = REFERENCE_LISTS[kind].table;
     try {
       const res = await this.db.query(
         `INSERT INTO ${table} (name, created_by, updated_by) VALUES ($1, $2, $2)
@@ -123,7 +146,7 @@ export class ReferenceService {
       return toEntry(res.rows[0]);
     } catch (err) {
       if (isUniqueViolation(err)) {
-        throw new ReferenceError(409, 'DUPLICATE_NAME', 'An entry with this name already exists');
+        throw new ReferenceListError(409, 'DUPLICATE_NAME', 'An entry with this name already exists');
       }
       throw err;
     }
@@ -140,9 +163,9 @@ export class ReferenceService {
     changes: { expected_version: number; name?: unknown; is_active?: boolean }
   ): Promise<ReferenceEntry> {
     if (!isValidUuid(id)) {
-      throw new ReferenceError(400, 'VALIDATION_FAILED', 'id must be a UUID');
+      throw new ReferenceListError(400, 'VALIDATION_FAILED', 'id must be a UUID');
     }
-    const table = REFERENCE_KIND_TABLES[kind];
+    const table = REFERENCE_LISTS[kind].table;
     const newName = changes.name === undefined ? undefined : normalizeReferenceName(changes.name);
 
     const client = typeof this.db.connect === 'function' ? await this.db.connect() : this.db;
@@ -154,11 +177,11 @@ export class ReferenceService {
         [id]
       );
       if (currentRes.rows.length === 0) {
-        throw new ReferenceError(404, 'NOT_FOUND', 'Reference entry not found');
+        throw new ReferenceListError(404, 'NOT_FOUND', 'Reference entry not found');
       }
       const current = toEntry(currentRes.rows[0]);
       if (current.version !== changes.expected_version) {
-        throw new ReferenceError(409, 'VERSION_CONFLICT', 'The entry changed since it was read');
+        throw new ReferenceListError(409, 'VERSION_CONFLICT', 'The entry changed since it was read');
       }
 
       const name = newName ?? current.name;
@@ -184,7 +207,7 @@ export class ReferenceService {
         // ignore rollback error on closed connection
       }
       if (isUniqueViolation(err)) {
-        throw new ReferenceError(409, 'DUPLICATE_NAME', 'An entry with this name already exists');
+        throw new ReferenceListError(409, 'DUPLICATE_NAME', 'An entry with this name already exists');
       }
       throw err;
     } finally {

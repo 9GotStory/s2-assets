@@ -16,6 +16,9 @@ export interface SearchAssetItem {
   location?: ReferenceEntry | null;
   organization_unit?: ReferenceEntry | null;
   responsible_person?: ReferenceEntry | null;
+  legacy_location_text?: string | null;
+  legacy_organization_unit_text?: string | null;
+  legacy_responsible_person_text?: string | null;
 }
 
 export interface SearchAssetResult {
@@ -26,7 +29,14 @@ export interface SearchAssetResult {
   has_more: boolean;
 }
 
-export type SearchFieldType = 'all' | 'name' | 'asset_number' | 'serial_number' | 'stable_id' | 'legacy_text';
+// T4 (#25): each legacy reference text is its own field, keeping the dimensions distinct.
+export type SearchFieldType =
+  | 'all'
+  | 'name'
+  | 'asset_number'
+  | 'serial_number'
+  | 'stable_id'
+  | (typeof REFERENCE_DIMENSIONS)[number]['legacyField'];
 
 // T4 (#25): one exact entry per dimension, '' for any; the server combines them with AND.
 export type ReferenceFilters = Record<ReferenceIdField, string>;
@@ -565,7 +575,11 @@ export const AssetSearch: React.FC = () => {
                   <option value="asset_number">หมายเลขครุภัณฑ์ (Asset Number)</option>
                   <option value="serial_number">หมายเลขเครื่อง (Serial Number)</option>
                   <option value="stable_id">รหัสอ้างอิงถาวร (Stable ID UUID)</option>
-                  <option value="legacy_text">ข้อความอ้างอิงเดิม (Legacy reference text)</option>
+                  {REFERENCE_DIMENSIONS.map(({ legacyField, label }) => (
+                    <option key={legacyField} value={legacyField}>
+                      ข้อความเดิม: {label}
+                    </option>
+                  ))}
                 </select>
               </div>
 
@@ -809,13 +823,19 @@ export const AssetSearch: React.FC = () => {
                           {item.serial_number || '-'}
                         </td>
                         <td data-testid={`search-result-reference-${item.id}`} style={{ padding: '0.75rem 1rem', color: '#374151' }}>
-                          {REFERENCE_DIMENSIONS.every(({ entryField }) => !item[entryField])
+                          {REFERENCE_DIMENSIONS.every(({ entryField, legacyField }) => !item[entryField] && !item[legacyField])
                             ? '-'
-                            : REFERENCE_DIMENSIONS.map(({ entryField, label }) => {
+                            : REFERENCE_DIMENSIONS.map(({ entryField, legacyField, label }) => {
                                 const entry = item[entryField];
-                                return entry ? (
+                                const legacyText = item[legacyField];
+                                return entry || legacyText ? (
                                   <div key={entryField}>
-                                    {label}: {entryLabel(entry)}
+                                    {label}: {entry && entryLabel(entry)}
+                                    {legacyText && (
+                                      <span style={{ color: '#6b7280' }}>
+                                        {entry ? ' ' : ''}(ข้อความเดิม: {legacyText})
+                                      </span>
+                                    )}
                                   </div>
                                 ) : null;
                               })}

@@ -5720,12 +5720,17 @@ test.describe.serial('Asset Registry Real SPA -> Composed API -> PostgreSQL Jour
     await page.locator('#search-submit-btn').click();
     await expect(page.locator('#no-results-message')).toBeVisible();
 
+    // Each legacy text is searched on its own: an old person text is no old location text.
     await page.locator('#search-reset-btn').click();
-    await page.locator('#search-field').selectOption('legacy_text');
+    await page.locator('#search-field').selectOption('legacy_responsible_person_text');
     await page.locator('#search-value').fill('สมชาย');
     await page.locator('#search-submit-btn').click();
     await expect(page.getByTestId(`search-result-row-${assetId}`)).toBeVisible();
     await expect(page.locator('#results-count-summary')).toContainText('พบ 1 รายการ');
+    await expect(page.getByTestId(`search-result-reference-${assetId}`)).toContainText('ข้อความเดิม: คุณสมชาย (ทะเบียนเดิม)');
+    await page.locator('#search-field').selectOption('legacy_location_text');
+    await page.locator('#search-submit-btn').click();
+    await expect(page.locator('#no-results-message')).toBeVisible();
   });
 
   test('Journey T4.3: bulk registration shares one context; a reasoned correction changes it with history; a deactivated entry stays shown', async ({ page, context }) => {
