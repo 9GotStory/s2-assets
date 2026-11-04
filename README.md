@@ -39,8 +39,8 @@ remain unchanged.
 
 `TECHNOLOGY.md` v1.0.1 เป็น project-wide selected technical baseline
 
-- Plan ต้องเริ่มจาก baseline นี้
-- exact minor/patch versions และ Deferred decisions ให้ Plan resolve ตาม environment จริง
+- feature specification ต้องเริ่มจาก baseline นี้
+- exact minor/patch versions และ Deferred decisions ให้ specification resolve ตาม environment จริง
 - material technology deviation ต้อง explicit พร้อมเหตุผล/ผลกระทบและ Product Owner decision ก่อน implementation
 - local application development runtime ใช้ **Rootless Podman**
 - Git, Git worktrees และ engineering workflow tooling (Claude Code CLI) อยู่บน host
@@ -94,14 +94,11 @@ grill-with-docs
 → Product Owner acceptance of the feature → main
 ```
 
-Use the skills the work needs; reuse approved specifications and tickets. Work
-starts from a Product Owner decision, and new scope needs one. Claude Code
-reports `code-review` as self-review and merges a ticket's pull request into the
-feature's integration branch once it stays in scope and its checks pass; a
-feature reaches `main` only on Product Owner acceptance. GitHub Issues track
-specifications and tickets and record Product Owner decisions. Labels never
-authorize work, and nothing is dispatched, claimed or deployed to production
-automatically. `CLAUDE.md` holds the rules.
+Use the skills the work needs; reuse approved specifications and tickets. GitHub
+Issues track specifications and tickets and record Product Owner decisions.
+Claude Code develops; the Product Owner decides: `CLAUDE.md` holds the rules for
+starting work, scope, self-review, merges into the feature's integration branch
+and Product Owner acceptance before `main`.
 
 ### Feature 001 before Human Gate — historical
 
@@ -126,7 +123,7 @@ Feature 001 ใช้ Spec Kit **1.1.1** กับ integration **`agy`**. Spec K
 เมื่อ 2026-11-04 (#36): ลบ `.specify/` (templates, scripts, integrations และ
 Constitution) และ `.agents/` (AGY skills และ MCP config) แล้ว ประวัติอยู่ใน Git
 
-`specs/001-application-foundation/` คงไว้เป็น accepted record ของ Feature 001
+`specs/001-application-foundation/` คงไว้เป็น record ของ Feature 001
 (46 tasks เสร็จครบ)
 
 ---
@@ -222,7 +219,7 @@ Feature sequencing canonical อยู่ที่ `docs/09-feature-map.md`
 | `features/` | bounded delivery context + rule routing |
 | `CLAUDE.md` | the only rules file: authority, workflow, checks, engineering principles |
 | `docs/agents/` | Matt Skills configuration: issue tracker, triage labels, domain docs |
-| `specs/001-application-foundation/` | accepted Feature 001 record (retired Spec Kit format) |
+| `specs/001-application-foundation/` | Feature 001 record (retired Spec Kit format) |
 
 Repository text/source artifacts on the active canonical branch are source of truth; generated packages are not a second source of truth.
 
@@ -246,7 +243,7 @@ Do not add without a current requirement:
 
 Feature 002 — `asset-registry` continues with Claude Code CLI and the accepted
 Matt Skills setup under `CLAUDE.md`. Spec Kit, the Constitution and `AGENTS.md`
-are retired on Product Owner acceptance, recorded on #36. See `CLAUDE.md`,
+were retired on 2026-11-04 (#36). See `CLAUDE.md`,
 `docs/agents/issue-tracker.md` and `docs/agents/domain.md`.
 
 ### Feature 001 start-point record — historical

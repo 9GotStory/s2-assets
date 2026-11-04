@@ -10,8 +10,6 @@ not duplicate whole trackers or introduce a review ledger.
 - Read an issue and its comments with
   `gh issue view <number> --repo 9GotStory/s2-assets --json number,title,body,labels,comments`.
 - List relevant issues with `gh issue list` and narrow state/label filters.
-- Publish a specification or ticket only after Product Owner approval. A skill's
-  default publication step does not grant that approval.
 - For a create/edit/comment action, write the exact UTF-8 body to a task-local
   file and use `--body-file`. Preserve actual newlines.
 - Use an approved parent specification and bounded child tickets. Each child
@@ -37,12 +35,8 @@ not duplicate whole trackers or introduce a review ledger.
   Its Evidence holds the exact results of the checks run at the head
   (`CLAUDE.md`, Checks) and the `code-review` findings, reported as
   self-review.
-- Avoid issue-closing keywords in commits and pull requests; close an issue on
-  the Product Owner's word.
+- Avoid issue-closing keywords in commits and pull requests.
 
 ## Labels
 
-Triage role labels are mapped in `docs/agents/triage-labels.md`. No label,
-including `ready-for-agent` or `ready-for-human`, and no assignment or resolved
-blocker grants execution authority. Review any further labels required for
-authorized specification/ticket publication at that gate.
+Triage role labels are mapped in `docs/agents/triage-labels.md`.

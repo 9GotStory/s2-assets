@@ -24,16 +24,17 @@ the Product Owner.
 
 Git history, removed files and old branches are records, never requirements: consult them only
 for provenance or forensics.
-- `specs/001-application-foundation/` is the accepted record of Feature 001, written in the
-  retired Spec Kit format; all 46 of its tasks are done.
+- `specs/001-application-foundation/` is the record of Feature 001, written in the retired Spec
+  Kit format; all 46 of its tasks are done.
 - Spec Kit, its Constitution (last 6.0.0) and `AGENTS.md` were retired on 2026-11-04 (#36).
+  Mentions of them, and of Multica, AGY, the DEV Executor and the Independent Reviewer, in
+  `BLUEPRINT.md`, `TECHNOLOGY.md`, `docs/`, `features/` and the Feature 001 artifacts describe
+  earlier delivery: they select no tool, role or workflow for new work, and the business and
+  technical content around them still binds.
 - Until 2026-11-03, Feature 002 work ran through Multica, AGY, Codex and ChatGPT. Its Multica
   runs, `agent/agy-developer/*` branches and `multica-agent` trailers are provenance; a
   Multica-era approval becomes current authority only when the Product Owner confirms it on the
   GitHub Issue or in the session.
-- Spec Kit, Multica, AGY, DEV Executor and Independent Reviewer references in `BLUEPRINT.md`,
-  `TECHNOLOGY.md`, the Feature Briefs and the Feature 001 artifacts describe earlier delivery;
-  they select no tool, role or workflow for new work.
 
 ## Workflow
 
@@ -45,14 +46,17 @@ with `/code-review` → `/pr` → `/retro`.
 
 - **On-ramps:** `/triage` for incoming issues, `/diagnosing-bugs` for hard bugs, `/wayfinder` for
   an effort too big for one session. `/ask-matt` routes when the fit is unclear.
-- **Start:** work starts from a Product Owner decision: a slash command they run, an approved
-  ticket or an instruction in the session. Labels, assignments and tracker state never authorize
-  work, and nothing is dispatched or claimed automatically. Reuse approved specifications and
-  tickets; revise one only at the Product Owner's request.
+- **Start:** work starts from a Product Owner decision: a slash command they run (such as
+  `/implement <issue>`) or an instruction in the session. Finishing one task does not start the
+  next. Labels, assignments and tracker state never authorize work, and nothing is dispatched or
+  claimed automatically. Reuse approved specifications and tickets; revise one only at the
+  Product Owner's request.
 - **Scope:** an authorized ticket covers its own fixes, tests, refactors and re-reviews. Ask the
-  Product Owner before new scope, an architecture change, a destructive or sensitive operation,
-  production deployment or runtime provisioning, or a security exception. Promoting a merged
-  commit to the development runtime is development work.
+  Product Owner before new scope (publishing a specification or ticket included), an
+  architecture change, a destructive or sensitive operation, production deployment or runtime
+  provisioning, or a security exception. Close an issue only on their word. When authority,
+  scope or the baseline is materially unclear, ask them; report a failed checkout, runtime or
+  skill invocation exactly as it happened.
 - **Review:** report self-review as self-review; a Claude Code session or subagent is never an
   independent reviewer.
 - **Acceptance:** evidence-based (passing checks, runtime evidence where the change needs it),
@@ -69,11 +73,12 @@ with `/code-review` → `/pr` → `/retro`.
 
 ## Checks
 
-`.github/workflows/ci.yml` defines the checks: frozen install, lint, typecheck, the API unit and
-real-PostgreSQL integration tests, the builds and the container images, each run inside the
-pinned development container (`deploy/podman/dev.Containerfile`). When CI does not run on a pull
-request, run the checks the change touches the same way and record their exact results in the
-pull request: that record is its check.
+Every change passes `git diff --check <base>...HEAD`, where `<base>` is the integration-branch
+commit the task started from; a change that touches only documentation needs nothing more.
+`.github/workflows/ci.yml` defines the other checks, and its `ci-gate` job names the jobs that
+must pass. When CI does not run on a pull request, run each of those jobs locally the way
+`ci.yml` runs it and record each job's exact result in the pull request: that record is the
+pull request's check.
 
 ## Agent skills
 
@@ -84,7 +89,7 @@ also for pull request bodies.
 
 ### Triage labels
 
-The five default labels; labels never authorize work. See `docs/agents/triage-labels.md`.
+The five default labels. See `docs/agents/triage-labels.md`.
 
 ### Domain docs
 
@@ -108,19 +113,17 @@ databases and container tooling before relying on it:
 
 ## Engineering principles
 
-Carried over from Principles II–V of the retired Constitution (Principle I is under Authority):
-
 - **Feature-bounded and simple.** Work one active feature at a time, within the boundaries and
   dependencies of `docs/09-feature-map.md`. Build only what current requirements need, following
   `Simple — Structured — Sustainable`: speculative architecture needs a current business
   requirement. `application-foundation` is a technical bootstrap exception, never a generic
   shared-framework catch-all.
 - **Rootless Podman.** Normal local application services and infrastructure dependencies run in
-  Rootless Podman; Git repositories, worktrees and Claude Code CLI stay on the Fedora host.
-  Containers stay OCI-portable, and application code never couples to Podman APIs. Quadlet is
-  the production service-management baseline; local development orchestration, including any
-  use of Quadlet, follows `TECHNOLOGY.md`. Where it marks a development detail Deferred, the
-  feature's specification decides it.
+  Rootless Podman; Git repositories, worktrees and engineering workflow tooling, Claude Code CLI
+  included, stay on the Fedora host. Containers stay OCI-portable, and application code never
+  couples to Podman APIs. Quadlet is the production service-management baseline; local
+  development orchestration, including any use of Quadlet, follows `TECHNOLOGY.md`. Where it
+  marks a development detail Deferred, the feature's specification decides it.
 - **Server-side security and data integrity.** Authorization is authoritative server-side and
   fails closed; frontend validation is never authoritative for business invariants. PostgreSQL
   constraints and transactions are part of the integrity boundary where they apply. Business
