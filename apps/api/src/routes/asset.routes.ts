@@ -9,12 +9,11 @@ import {
   RetryTokenConflictError,
   StaleBeforeConflictError,
   ValidationError,
-  REFERENCE_ID_FIELDS,
-  LEGACY_TEXT_FIELDS,
   type CorrectAssetInput,
   type RegisterAssetInput,
   type BulkRegisterAssetInput,
 } from '../services/asset.service.ts';
+import { LEGACY_TEXT_FIELDS, REFERENCE_ID_FIELDS } from '../services/assignment.service.ts';
 import { isValidUuid, CapabilityService } from '../services/capability.service.ts';
 
 export interface AssetRoutesOptions {
