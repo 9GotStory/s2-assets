@@ -61,9 +61,12 @@ with `/code-review` → `/pr` → `/retro`.
   independent reviewer.
 - **Acceptance:** evidence-based (passing checks, runtime evidence where the change needs it),
   then the Product Owner's acceptance. Claude Code's own review verdict is never acceptance.
-- **Merges:** GitHub `9GotStory/s2-assets` is the source of truth. Branch each task from its
-  feature's integration branch (`feature/002-asset-registry` for Feature 002) and target its pull
-  request there. When a pull request stays in scope and its checks pass, merge it yourself:
+- **Merges:** GitHub `9GotStory/s2-assets` is the source of truth. Each feature has one
+  integration branch, branched from `main` when the feature starts and named
+  `feature/<NNN>-<slug>` after its row in `docs/09-feature-map.md` (for example
+  `feature/003-asset-assignment-movement`). Branch each task from its feature's integration
+  branch and target its pull request there. When a pull request stays in scope and its checks
+  pass, merge it yourself:
   - run `gh pr merge <n> --repo 9GotStory/s2-assets --merge --match-head-commit <headRefOid>`
     as a standalone command;
   - then fetch and confirm that the merge commit's second parent is `<headRefOid>` and that
