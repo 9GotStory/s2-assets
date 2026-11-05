@@ -480,6 +480,43 @@ describe('Initial Assignment (Seam A - F003-T1)', () => {
       expect(found.json().total_count).toBe(0);
     });
 
+    it('refuses dimension values to an actor who may register but not record an assignment, and still registers without them', async () => {
+      const room = await entry('locations', 'ห้องไม่มีสิทธิ์กำหนด');
+      const capabilities = app.capabilityService!;
+      const original = capabilities.hasCapability;
+      // Only an Asset Custodian holds both capabilities today, so the second check is isolated here.
+      capabilities.hasCapability = async (userId: string, capability: string) =>
+        capability === 'assignment:reassign' ? false : original.call(capabilities, userId, capability);
+      try {
+        const single = await post(custodian, '/assets', {
+          name: 'ลงทะเบียนโดยไม่มีสิทธิ์กำหนด',
+          location_id: room.id,
+          effective_date: null,
+        });
+        expect(single.statusCode).toBe(403);
+        expect(single.json()).toMatchObject({ code: 'FORBIDDEN' });
+        expect(single.json().message).toContain('assignment:reassign');
+        const batch = await post(
+          custodian,
+          '/assets/bulk-register',
+          {
+            location_id: room.id,
+            effective_date: null,
+            items: [{ item_key: '6f1c5a52-5d0f-4b2a-9c1e-000000000011', name: 'ลงทะเบียนโดยไม่มีสิทธิ์กำหนด' }],
+          },
+          { 'x-retry-token': 'ia-no-assign' }
+        );
+        expect(batch.statusCode).toBe(403);
+
+        const plain = await post(custodian, '/assets', { name: 'ลงทะเบียนได้โดยไม่กำหนด' });
+        expect(plain.statusCode).toBe(201);
+      } finally {
+        capabilities.hasCapability = original;
+      }
+      const found = await get(readonly, `/assets/search?field=name&value=${encodeURIComponent('ลงทะเบียนโดยไม่มีสิทธิ์กำหนด')}`);
+      expect(found.json().total_count).toBe(0);
+    });
+
     it('shows the assignment timeline to every role with asset:view and to no one else', async () => {
       const room = await entry('locations', 'ห้องดูประวัติ');
       const assetId = (await post(custodian, '/assets', { name: 'มีประวัติให้ดู', location_id: room.id, effective_date: null })).json()
@@ -622,6 +659,88 @@ describe('Initial Assignment (Seam A - F003-T1)', () => {
       expect(await byText('legacy_responsible_person_text', 'สมพร')).toEqual([id]);
       expect(await byText('legacy_organization_unit_text', 'store room 9')).toEqual([]);
       expect(await byText('legacy_responsible_person_text', 'store room 9')).toEqual([]);
+    });
+  });
+
+  describe('Current Assignment over several facts (MR-03, AS-06)', () => {
+    it('derives each dimension from its latest effective fact and lists the facts by Effective Date, unknown first', async () => {
+      const roomA = await entry('locations', 'ห้องลำดับ ก');
+      const roomB = await entry('locations', 'ห้องลำดับ ข');
+      const roomC = await entry('locations', 'ห้องลำดับ ค');
+      const person = await entry('persons', 'นางสาวลำดับ ง');
+      const registered = (
+        await post(custodian, '/assets', {
+          name: 'ลำดับเหตุการณ์',
+          location_id: roomA.id,
+          legacy_responsible_person_text: 'ครูเดิม',
+          effective_date: null,
+        })
+      ).json();
+      const assetId = registered.asset.id;
+
+      // Reassignments are recorded through the API from F003-T2; here they are seeded as facts,
+      // recorded out of Effective Date order.
+      const reassignment = async (effectiveDate: string, recordedAt: string, dimension: string, values: Record<string, string>) => {
+        const eventId = (
+          await pool.query(
+            `INSERT INTO assignment_events (asset_id, kind, effective_date, recorded_at, recorded_by, provenance)
+             VALUES ($1, 'REASSIGNMENT', $2, $3, $4, 'RECORDED') RETURNING id`,
+            [assetId, effectiveDate, recordedAt, custodian.id]
+          )
+        ).rows[0].id;
+        const columns = Object.keys(values);
+        await pool.query(
+          `INSERT INTO assignment_changes (event_id, event_kind, dimension, ${columns.join(', ')})
+           VALUES ($1, 'REASSIGNMENT', $2, ${columns.map((_, i) => `$${i + 3}`).join(', ')})`,
+          [eventId, dimension, ...Object.values(values)]
+        );
+        return eventId as string;
+      };
+      const toB = await reassignment('2026-10-01', '2026-11-05T01:00:00Z', 'LOCATION', {
+        prior_location_id: roomA.id,
+        new_location_id: roomB.id,
+      });
+      const toC = await reassignment('2026-09-01', '2026-11-05T02:00:00Z', 'LOCATION', {
+        prior_location_id: roomA.id,
+        new_location_id: roomC.id,
+      });
+      const toPerson = await reassignment('2026-10-01', '2026-11-05T03:00:00Z', 'RESPONSIBLE_PERSON', {
+        prior_legacy_text: 'ครูเดิม',
+        new_person_id: person.id,
+      });
+
+      const timeline = await timelineOf(assetId);
+      expect(timeline.map((event: any) => [event.id, event.kind, event.effective_date])).toEqual([
+        [registered.initial_assignment.id, 'INITIAL', null],
+        [toC, 'REASSIGNMENT', '2026-09-01'],
+        [toB, 'REASSIGNMENT', '2026-10-01'],
+        [toPerson, 'REASSIGNMENT', '2026-10-01'],
+      ]);
+      expect(timeline[2].changes).toEqual([
+        {
+          dimension: 'location',
+          prior: { entry: { id: roomA.id, name: 'ห้องลำดับ ก', is_active: true }, legacy_text: null },
+          new: { entry: { id: roomB.id, name: 'ห้องลำดับ ข', is_active: true }, legacy_text: null },
+        },
+      ]);
+
+      // The latest effective fact of each dimension holds, whenever it was recorded.
+      const detail = (await get(readonly, `/assets/${assetId}`)).json();
+      expect(detail.current_assignment).toEqual({
+        location: { id: roomB.id, name: 'ห้องลำดับ ข', is_active: true },
+        organization_unit: null,
+        responsible_person: { id: person.id, name: 'นางสาวลำดับ ง', is_active: true },
+        legacy_location_text: null,
+        legacy_organization_unit_text: null,
+        legacy_responsible_person_text: null,
+      });
+      const ids = async (query: string) => (await get(readonly, `/assets/search?${query}`)).json().items.map((i: any) => i.id);
+      expect(await ids(`location_id=${roomB.id}`)).toEqual([assetId]);
+      expect(await ids(`location_id=${roomA.id}`)).toEqual([]);
+      expect(await ids(`location_id=${roomC.id}`)).toEqual([]);
+      expect(await ids(`responsible_person_id=${person.id}`)).toEqual([assetId]);
+      // The old-register wording stays findable after its dimension moved on (#50 search decision).
+      expect(await ids(`field=legacy_responsible_person_text&value=${encodeURIComponent('ครูเดิม')}`)).toEqual([assetId]);
     });
   });
 

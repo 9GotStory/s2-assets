@@ -1,7 +1,7 @@
 import pg from 'pg';
 import { isValidUuid } from './capability.service.ts';
 import { hasDisallowedControlChars } from './control-characters.ts';
-import { findUnassignableEntry, REFERENCE_LISTS } from './reference.service.ts';
+import { findUnassignableEntry } from './reference.service.ts';
 import { ValidationError } from './validation-error.ts';
 
 /**
@@ -30,7 +30,8 @@ export interface ReferenceEntrySummary {
   is_active: boolean;
 }
 
-// The Current Assignment: each dimension's entry by its current name, and its Legacy text.
+// The Current Assignment: each dimension's entry by its current name, and its Legacy text. The
+// shape is Feature 002's, which the asset search and detail already return.
 export interface CurrentAssignment {
   location: ReferenceEntrySummary | null;
   organization_unit: ReferenceEntrySummary | null;
@@ -40,7 +41,7 @@ export interface CurrentAssignment {
   legacy_responsible_person_text: string | null;
 }
 
-// The Initial Assignment a registration records with its dimension values (Q11, Q17).
+// The Initial Assignment a registration records with its dimension values (#50 Q11, Q17).
 export interface InitialAssignmentInput extends AssignmentInput {
   effective_date?: string | null;
   document_reference?: string | null;
@@ -80,21 +81,6 @@ export interface AssignmentEvent {
   changes: AssignmentChange[];
 }
 
-// The entry field of each dimension (location_id, organization_unit_id, responsible_person_id).
-export const REFERENCE_ID_FIELDS = Object.values(REFERENCE_LISTS).map(({ assetColumn }) => assetColumn);
-
-export const LEGACY_TEXT_FIELDS = [
-  'legacy_location_text',
-  'legacy_organization_unit_text',
-  'legacy_responsible_person_text',
-] as const;
-
-export type LegacyTextField = (typeof LEGACY_TEXT_FIELDS)[number];
-
-export const LEGACY_TEXT_MAX_LENGTH = 500;
-
-export const ASSIGNMENT_FIELDS: readonly AssignmentField[] = [...REFERENCE_ID_FIELDS, ...LEGACY_TEXT_FIELDS];
-
 // Each dimension's name in the API and in the database, its input fields, and its entry column in
 // assignment_changes with the Reference List table that column names.
 const DIMENSIONS = [
@@ -124,10 +110,39 @@ const DIMENSIONS = [
   },
 ] as const;
 
-/**
- * Validates and normalizes optional dimension values. Ids must be UUIDs; Legacy text is trimmed,
- * blank becomes null, and it is kept as recorded otherwise.
- */
+// The entry field of each dimension (location_id, organization_unit_id, responsible_person_id).
+export const REFERENCE_ID_FIELDS = DIMENSIONS.map(({ idField }) => idField);
+
+export const LEGACY_TEXT_FIELDS = DIMENSIONS.map(({ legacyField }) => legacyField);
+
+export type LegacyTextField = (typeof LEGACY_TEXT_FIELDS)[number];
+
+export const ASSIGNMENT_FIELDS: readonly AssignmentField[] = [...REFERENCE_ID_FIELDS, ...LEGACY_TEXT_FIELDS];
+
+export const LEGACY_TEXT_MAX_LENGTH = 500;
+export const DOCUMENT_REFERENCE_MAX_LENGTH = 500;
+export const REMARK_MAX_LENGTH = 2000;
+
+// Optional text kept as given (Legacy text, document reference, remark): trimmed, blank as none,
+// bounded, and free of control characters other than line breaks and tabs, as in Feature 002.
+function normalizeText(value: unknown, field: string, maxLength: number, label: string): string | null {
+  if (value === undefined || value === null) {
+    return null;
+  }
+  if (typeof value !== 'string') {
+    throw new ValidationError(`${field} must be a string or null${label}`);
+  }
+  const text = value.trim();
+  if (text.length > maxLength) {
+    throw new ValidationError(`${field} must be at most ${maxLength} characters${label}`);
+  }
+  if (hasDisallowedControlChars(text)) {
+    throw new ValidationError(`${field} must not contain control characters${label}`);
+  }
+  return text.length > 0 ? text : null;
+}
+
+/** Validates and normalizes optional dimension values: ids must be UUIDs; Legacy text is kept as recorded. */
 export function normalizeAssignment(input: AssignmentInput, label: string = ''): AssignmentValues {
   const values = {} as AssignmentValues;
   for (const field of REFERENCE_ID_FIELDS) {
@@ -141,23 +156,7 @@ export function normalizeAssignment(input: AssignmentInput, label: string = ''):
     }
   }
   for (const field of LEGACY_TEXT_FIELDS) {
-    const value = input[field];
-    if (value === undefined || value === null) {
-      values[field] = null;
-      continue;
-    }
-    if (typeof value !== 'string') {
-      throw new ValidationError(`${field} must be a string or null${label}`);
-    }
-    const text = value.trim();
-    if (text.length > LEGACY_TEXT_MAX_LENGTH) {
-      throw new ValidationError(`${field} must be at most ${LEGACY_TEXT_MAX_LENGTH} characters${label}`);
-    }
-    // Line breaks and tabs are allowed in Legacy text; other control characters are not.
-    if (hasDisallowedControlChars(text)) {
-      throw new ValidationError(`${field} must not contain control characters${label}`);
-    }
-    values[field] = text.length > 0 ? text : null;
+    values[field] = normalizeText(input[field], field, LEGACY_TEXT_MAX_LENGTH, label);
   }
   return values;
 }
@@ -179,7 +178,7 @@ const BANGKOK_DATE = new Intl.DateTimeFormat('en-CA', {
   day: '2-digit',
 });
 
-/** The Asia/Bangkok calendar date of an instant, as YYYY-MM-DD: "today" for an Effective Date (Q2). */
+/** The Asia/Bangkok calendar date of an instant, as YYYY-MM-DD: "today" for an Effective Date (#50 Q2). */
 export function bangkokDate(instant: Date): string {
   const parts = Object.fromEntries(BANGKOK_DATE.formatToParts(instant).map(({ type, value }) => [type, value]));
   return `${parts.year}-${parts.month}-${parts.day}`;
@@ -216,31 +215,9 @@ function normalizeEffectiveDate(value: unknown, today: string, label: string): s
   return value;
 }
 
-export const DOCUMENT_REFERENCE_MAX_LENGTH = 500;
-export const REMARK_MAX_LENGTH = 2000;
-
-// An optional document reference or remark (AS-07, Q5): trimmed, blank as none, bounded, and free
-// of control characters other than line breaks and tabs, as Feature 002's evidence text.
-function normalizeFactText(value: unknown, field: string, maxLength: number, label: string): string | null {
-  if (value === undefined || value === null) {
-    return null;
-  }
-  if (typeof value !== 'string') {
-    throw new ValidationError(`${field} must be a string or null${label}`);
-  }
-  const text = value.trim();
-  if (text.length > maxLength) {
-    throw new ValidationError(`${field} must be at most ${maxLength} characters${label}`);
-  }
-  if (hasDisallowedControlChars(text)) {
-    throw new ValidationError(`${field} must not contain control characters${label}`);
-  }
-  return text.length > 0 ? text : null;
-}
-
 /**
  * The Initial Assignment a registration records, or null when it names no dimension value. Its
- * Effective Date must then be given: a date no later than `today`, or null for unknown (Q11).
+ * Effective Date must then be given: a date no later than `today`, or null for unknown (#50 Q11).
  */
 export function normalizeInitialAssignment(
   input: InitialAssignmentInput,
@@ -265,32 +242,15 @@ export function normalizeInitialAssignment(
   return {
     values,
     effective_date: normalizeEffectiveDate(input.effective_date, today, label),
-    document_reference: normalizeFactText(input.document_reference, 'document_reference', DOCUMENT_REFERENCE_MAX_LENGTH, label),
-    remark: normalizeFactText(input.remark, 'remark', REMARK_MAX_LENGTH, label),
+    document_reference: normalizeText(input.document_reference, 'document_reference', DOCUMENT_REFERENCE_MAX_LENGTH, label),
+    remark: normalizeText(input.remark, 'remark', REMARK_MAX_LENGTH, label),
   };
 }
 
 /**
- * Every named entry must be in its own dimension's list and, unless `allowInactive`, active (D7);
- * each is locked FOR SHARE (see findUnassignableEntry).
- */
-export async function assertAssignableEntries(
-  client: pg.PoolClient | pg.Pool,
-  values: Partial<AssignmentValues>,
-  label: string = '',
-  { allowInactive = false }: { allowInactive?: boolean } = {}
-): Promise<void> {
-  const field = await findUnassignableEntry(client, values, { allowInactive });
-  if (field) {
-    throw new ValidationError(
-      allowInactive ? `${field} must name an entry of its list${label}` : `${field} must name an active entry${label}`
-    );
-  }
-}
-
-/**
- * An Initial Assignment's entries: a deactivated entry may be named only for an Effective Date
- * before today or unknown, so that old history can name closed rooms and departed staff (Q16).
+ * An Initial Assignment's entries must each be in their own dimension's list. A deactivated entry
+ * may be named only for an Effective Date before today or unknown, so that old history can name
+ * closed rooms and departed staff (#50 Q16); each entry is locked FOR SHARE (see findUnassignableEntry).
  */
 export async function assertInitialAssignmentEntries(
   client: pg.PoolClient | pg.Pool,
@@ -299,7 +259,12 @@ export async function assertInitialAssignmentEntries(
   label: string = ''
 ): Promise<void> {
   const allowInactive = facts.effective_date === null || facts.effective_date < today;
-  await assertAssignableEntries(client, facts.values, label, { allowInactive });
+  const field = await findUnassignableEntry(client, facts.values, { allowInactive });
+  if (field) {
+    throw new ValidationError(
+      allowInactive ? `${field} must name an entry of its list${label}` : `${field} must name an active entry${label}`
+    );
+  }
 }
 
 /**
@@ -333,12 +298,16 @@ export async function recordInitialAssignment(
   return eventId;
 }
 
-// The latest change of one dimension for the Asset whose id is `assetId` (SQL), in the order of
-// facts: Effective Date with unknown first, then Recorded At, then event id (MR-03).
-const latestChange = (dimension: string, assetId: string, select: string) => `SELECT ${select}
+// An entry by its current name and active flag, or null when no entry is named.
+const entrySummary = (id: string | null, name: string, isActive: boolean): ReferenceEntrySummary | null =>
+  id ? { id, name, is_active: isActive } : null;
+
+// The latest change of one dimension of the Asset whose id is the SQL expression `assetIdSql`, in
+// the order of facts: Effective Date with unknown first, then Recorded At, then event id (MR-03).
+const latestChange = (dimension: string, assetIdSql: string, select: string) => `SELECT ${select}
          FROM assignment_changes c
          JOIN assignment_events e ON e.id = c.event_id
-         WHERE e.asset_id = ${assetId} AND c.dimension = '${dimension}'
+         WHERE e.asset_id = ${assetIdSql} AND c.dimension = '${dimension}'
          ORDER BY e.effective_date DESC NULLS LAST, e.recorded_at DESC, e.id DESC
          LIMIT 1`;
 
@@ -348,7 +317,19 @@ const CURRENT_COLUMNS = DIMENSIONS.map(
        cur_${key}_entry.is_active AS ${key}_active, cur_${key}.legacy_text AS ${legacyField}`
 ).join(',\n       ');
 
-// Joins the Current Assignment of the row aliased `alias`, whose `id` is the Asset's.
+/**
+ * Joins the Current Assignment of the row aliased `alias`, whose `id` is the Asset's. For the
+ * Location of `asset` it writes, and likewise for the other two dimensions:
+ *
+ *   LEFT JOIN LATERAL (
+ *     SELECT c.new_location_id AS entry_id, c.new_legacy_text AS legacy_text
+ *     FROM assignment_changes c JOIN assignment_events e ON e.id = c.event_id
+ *     WHERE e.asset_id = asset.id AND c.dimension = 'LOCATION'
+ *     ORDER BY e.effective_date DESC NULLS LAST, e.recorded_at DESC, e.id DESC
+ *     LIMIT 1
+ *   ) cur_location ON true
+ *   LEFT JOIN locations cur_location_entry ON cur_location_entry.id = cur_location.entry_id
+ */
 const currentJoins = (alias: string) =>
   DIMENSIONS.map(
     ({ key, dimension, column, table }) => `LEFT JOIN LATERAL (
@@ -358,18 +339,13 @@ const currentJoins = (alias: string) =>
   ).join('\n       ');
 
 // The Current Assignment from a row selected with CURRENT_COLUMNS.
-const currentAssignmentOf = (row: any): CurrentAssignment => {
-  const entry = (key: string, idField: string): ReferenceEntrySummary | null =>
-    row[idField] ? { id: row[idField], name: row[`${key}_name`], is_active: row[`${key}_active`] } : null;
-  return {
-    location: entry('location', 'location_id'),
-    organization_unit: entry('organization_unit', 'organization_unit_id'),
-    responsible_person: entry('responsible_person', 'responsible_person_id'),
-    legacy_location_text: row.legacy_location_text ?? null,
-    legacy_organization_unit_text: row.legacy_organization_unit_text ?? null,
-    legacy_responsible_person_text: row.legacy_responsible_person_text ?? null,
-  };
-};
+const currentAssignmentOf = (row: any): CurrentAssignment =>
+  Object.fromEntries(
+    DIMENSIONS.flatMap(({ key, idField, legacyField }) => [
+      [key, entrySummary(row[idField] ?? null, row[`${key}_name`], row[`${key}_active`])],
+      [legacyField, row[legacyField] ?? null],
+    ])
+  ) as unknown as CurrentAssignment;
 
 /** The Current Assignment of one Asset, derived from its facts, and its assignment version. */
 export async function readCurrentAssignment(
@@ -384,10 +360,9 @@ export async function readCurrentAssignment(
   return { current: currentAssignmentOf(row), version: row.assignment_version ?? 0 };
 }
 
-const valueOf = (row: any, side: 'prior' | 'new'): AssignmentValue => ({
-  entry: row[`${side}_entry_id`]
-    ? { id: row[`${side}_entry_id`], name: row[`${side}_entry_name`], is_active: row[`${side}_entry_active`] }
-    : null,
+// One side of a change row selected by readAssignmentTimeline.
+const changeValueOf = (row: any, side: 'prior' | 'new'): AssignmentValue => ({
+  entry: entrySummary(row[`${side}_entry_id`] ?? null, row[`${side}_entry_name`], row[`${side}_entry_active`]),
   legacy_text: row[`${side}_legacy_text`] ?? null,
 });
 
@@ -405,8 +380,9 @@ export async function readAssignmentTimeline(
      ORDER BY e.effective_date ASC NULLS FIRST, e.recorded_at ASC, e.id ASC`,
     [assetId]
   );
-  // Each side's entry is in its dimension's own column; the others are null (assignment_changes_own_list).
-  const entrySide = (side: 'prior' | 'new') => ({
+  // Each side's entry is in its dimension's own column and the others are null
+  // (assignment_changes_own_list), so COALESCE picks it with its name and active flag.
+  const entryOf = (side: 'prior' | 'new') => ({
     id: `COALESCE(${DIMENSIONS.map(({ column }) => `c.${side}_${column}`).join(', ')})`,
     name: `COALESCE(${DIMENSIONS.map(({ key }) => `${side}_${key}.name`).join(', ')})`,
     active: `COALESCE(${DIMENSIONS.map(({ key }) => `${side}_${key}.is_active`).join(', ')})`,
@@ -414,18 +390,18 @@ export async function readAssignmentTimeline(
       ({ key, column, table }) => `LEFT JOIN ${table} ${side}_${key} ON ${side}_${key}.id = c.${side}_${column}`
     ).join('\n     '),
   });
-  const prior = entrySide('prior');
-  const next = entrySide('new');
+  const priorSide = entryOf('prior');
+  const newSide = entryOf('new');
   const changesRes = await client.query(
     `SELECT c.event_id, c.dimension,
-            ${prior.id} AS prior_entry_id, ${prior.name} AS prior_entry_name, ${prior.active} AS prior_entry_active,
-            c.prior_legacy_text,
-            ${next.id} AS new_entry_id, ${next.name} AS new_entry_name, ${next.active} AS new_entry_active,
-            c.new_legacy_text
+            ${priorSide.id} AS prior_entry_id, ${priorSide.name} AS prior_entry_name,
+            ${priorSide.active} AS prior_entry_active, c.prior_legacy_text,
+            ${newSide.id} AS new_entry_id, ${newSide.name} AS new_entry_name,
+            ${newSide.active} AS new_entry_active, c.new_legacy_text
      FROM assignment_changes c
      JOIN assignment_events e ON e.id = c.event_id
-     ${prior.joins}
-     ${next.joins}
+     ${priorSide.joins}
+     ${newSide.joins}
      WHERE e.asset_id = $1`,
     [assetId]
   );
@@ -442,7 +418,11 @@ export async function readAssignmentTimeline(
     changes: DIMENSIONS.flatMap(({ key, dimension }) =>
       changesRes.rows
         .filter((change: any) => change.event_id === row.id && change.dimension === dimension)
-        .map((change: any) => ({ dimension: key, prior: valueOf(change, 'prior'), new: valueOf(change, 'new') }))
+        .map((change: any) => ({
+          dimension: key,
+          prior: changeValueOf(change, 'prior'),
+          new: changeValueOf(change, 'new'),
+        }))
     ),
   }));
 }
@@ -457,7 +437,7 @@ export const assignmentSearch = {
     const { dimension, column } = DIMENSIONS.find(({ idField }) => idField === field)!;
     return `(${latestChange(dimension, 'a.id', `c.new_${column}`)}) = ${param}`;
   },
-  // The Legacy text of the Asset's Initial Assignment, current or not (the spec's search decision).
+  // The Legacy text of the Asset's Initial Assignment, current or not (#50, the spec's search decision).
   legacyTextFilter: (field: LegacyTextField, param: string): string => {
     const { dimension } = DIMENSIONS.find(({ legacyField }) => legacyField === field)!;
     return `EXISTS (SELECT 1

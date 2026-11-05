@@ -5,7 +5,7 @@ import { AssetCorrectionForm } from '../components/AssetCorrectionForm';
 import { AssetQrLabel } from '../components/AssetQrLabel';
 import { AssignmentSection } from '../components/AssignmentSection';
 import { EvidencePanel } from '../components/EvidencePanel';
-import { type AssetReferenceContext } from '../components/ReferenceContextFields';
+import { type CurrentAssignment } from '../components/ReferenceContextFields';
 
 export interface AssetRecord {
   id: string;
@@ -37,7 +37,7 @@ export interface AssetDetailResponse {
   asset: AssetRecord;
   history: HistoryRecord[];
   // F003-T1: the Permanent Assignment in effect, derived from the assignment facts.
-  current_assignment?: AssetReferenceContext;
+  current_assignment?: CurrentAssignment;
   assignment_version?: number;
   can_correct?: boolean;
 }

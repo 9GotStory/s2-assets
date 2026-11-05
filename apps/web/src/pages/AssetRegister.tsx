@@ -1,17 +1,19 @@
 import React, { useEffect, useState, useRef } from 'react';
 import { useNavigate, Link, useSearchParams } from 'react-router';
 import {
-  EMPTY_INITIAL_ASSIGNMENT,
   EMPTY_REFERENCE_CONTEXT,
   ReferenceContextFields,
-  effectiveDateError,
-  effectiveDateOf,
   hasReferenceValues,
-  initialAssignmentPayload,
   useReferenceLists,
-  type InitialAssignmentDraft,
   type ReferenceContextValues,
 } from '../components/ReferenceContextFields';
+import {
+  EMPTY_INITIAL_ASSIGNMENT,
+  InitialAssignmentFields,
+  initialAssignmentError,
+  initialAssignmentPayload,
+  type InitialAssignmentDraft,
+} from '../components/InitialAssignmentFields';
 
 export interface DuplicateCandidate {
   id: string;
@@ -273,11 +275,9 @@ export const AssetRegister: React.FC = () => {
       return;
     }
 
-    const dateError = hasReferenceValues(referenceContext)
-      ? effectiveDateError(effectiveDateOf(initialAssignment, isLegacy))
-      : null;
-    if (dateError) {
-      setErrorMessage(dateError);
+    const assignmentError = initialAssignmentError(referenceContext, initialAssignment, isLegacy);
+    if (assignmentError) {
+      setErrorMessage(assignmentError);
       return;
     }
 
@@ -914,12 +914,16 @@ export const AssetRegister: React.FC = () => {
               onChange={(field, value) => setReferenceContext((current) => ({ ...current, [field]: value }))}
               lists={referenceLists.lists}
               listError={referenceLists.error}
-              initialAssignment={{
-                effectiveDate: effectiveDateOf(initialAssignment, isLegacy),
-                draft: initialAssignment,
-                onChange: setInitialAssignment,
-              }}
-            />
+            >
+              {hasReferenceValues(referenceContext) && (
+                <InitialAssignmentFields
+                  idPrefix="register"
+                  draft={initialAssignment}
+                  isLegacy={isLegacy}
+                  onChange={setInitialAssignment}
+                />
+              )}
+            </ReferenceContextFields>
 
             {/* Acquisition Linkage */}
             <div style={{ marginBottom: '1.5rem' }}>

@@ -87,7 +87,7 @@ describe('CapabilityService Unit Tests (T024 - US2)', () => {
         'evidence:correct',
         'assignment:reassign',
       ]);
-      // F003 Q3: only an Asset Custodian records Initial Assignments and Reassignments.
+      // #50 Q3: only an Asset Custodian records Initial Assignments and Reassignments.
       for (const role of ['SYSTEM_MAINTAINER', 'ADMINISTRATOR', 'READ_ONLY']) {
         expect(ROLE_CAPABILITY_MAP[role]).not.toContain('assignment:reassign');
       }

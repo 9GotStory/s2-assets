@@ -3,7 +3,7 @@ import { useQuery } from '@tanstack/react-query';
 import {
   REFERENCE_DIMENSIONS,
   entryLabel,
-  type AssetReferenceContext,
+  type CurrentAssignment,
   type ReferenceEntry,
 } from './ReferenceContextFields';
 
@@ -32,7 +32,7 @@ export interface AssignmentEvent {
   changes: AssignmentChange[];
 }
 
-// Labels from GLOSSARY.md (F003 Q18).
+// Labels from GLOSSARY.md (#50 Q18).
 const KIND_LABELS: Record<AssignmentEvent['kind'], string> = {
   INITIAL: 'กำหนดครั้งแรก',
   REASSIGNMENT: 'ย้าย / เปลี่ยนผู้รับผิดชอบ',
@@ -56,7 +56,7 @@ const valueText = (value: AssignmentValue): string => {
 
 export interface AssignmentSectionProps {
   assetId: string;
-  currentAssignment?: AssetReferenceContext;
+  currentAssignment?: CurrentAssignment;
   actorId?: string | null;
   // A new detail read also reads the timeline again.
   dataUpdatedAt?: number;

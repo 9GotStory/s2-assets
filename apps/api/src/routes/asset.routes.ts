@@ -46,7 +46,8 @@ const initialAssignmentFields = {
   remark: z.string().nullable().optional(),
 };
 
-// T4 (#25): a correction names the expected-before value of each reference field it changes.
+// Feature 002 correction fields (#25 D3). Accepted here only for AssetService to refuse them with a
+// domain message: the registry correction no longer changes the Permanent Assignment (#50 Q1).
 const expectedReferenceContextFields = {
   expected_location_id: z.string().nullable().optional(),
   expected_organization_unit_id: z.string().nullable().optional(),
@@ -138,27 +139,14 @@ export const assetRoutes: FastifyPluginAsync<AssetRoutesOptions> = async (
     options.assetService ??
     new AssetService({ db: options.db });
 
-  // F003 Q3: dimension values at registration record an Initial Assignment, which needs
-  // 'assignment:reassign' besides the registration capability. Fails closed without a service.
-  const sendUnlessMayAssign = async (
+  // #50 Q3: dimension values at registration record an Initial Assignment, which needs
+  // 'assignment:reassign' besides the registration capability. Fails closed without a capability service.
+  const mayRecordInitialAssignment = async (
     userId: string,
-    body: RegisterAssetInput | BulkRegisterAssetInput,
-    reply: FastifyReply
-  ): Promise<FastifyReply | null> => {
-    if (!namesAssignmentValues(body)) {
-      return null;
-    }
-    const canAssign = capabilityService ? await capabilityService.hasCapability(userId, 'assignment:reassign') : false;
-    if (canAssign) {
-      return null;
-    }
-    return reply.status(403).send({
-      statusCode: 403,
-      code: 'FORBIDDEN',
-      error: 'FORBIDDEN',
-      message: "Forbidden: requires 'assignment:reassign' capability to record an Initial Assignment",
-    });
-  };
+    body: RegisterAssetInput | BulkRegisterAssetInput
+  ): Promise<boolean> =>
+    !namesAssignmentValues(body) ||
+    (capabilityService ? await capabilityService.hasCapability(userId, 'assignment:reassign') : false);
 
   const getPublicAppOrigin = (): string | undefined => {
     return (fastify as any).publicAppOrigin ?? options.publicAppOrigin;
@@ -322,9 +310,13 @@ export const assetRoutes: FastifyPluginAsync<AssetRoutesOptions> = async (
         }
       }
 
-      const assignDenied = await sendUnlessMayAssign(user.id, body, reply);
-      if (assignDenied) {
-        return assignDenied;
+      if (!(await mayRecordInitialAssignment(user.id, body))) {
+        return reply.status(403).send({
+          statusCode: 403,
+          code: 'FORBIDDEN',
+          error: 'FORBIDDEN',
+          message: "Forbidden: requires 'assignment:reassign' capability to record an Initial Assignment",
+        });
       }
 
       try {
@@ -462,9 +454,13 @@ export const assetRoutes: FastifyPluginAsync<AssetRoutesOptions> = async (
         }
       }
 
-      const assignDenied = await sendUnlessMayAssign(user.id, body, reply);
-      if (assignDenied) {
-        return assignDenied;
+      if (!(await mayRecordInitialAssignment(user.id, body))) {
+        return reply.status(403).send({
+          statusCode: 403,
+          code: 'FORBIDDEN',
+          error: 'FORBIDDEN',
+          message: "Forbidden: requires 'assignment:reassign' capability to record an Initial Assignment",
+        });
       }
 
       try {

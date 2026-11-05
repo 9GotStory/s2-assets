@@ -27,7 +27,7 @@ export function isReferenceKind(kind: unknown): kind is ReferenceKind {
 /**
  * Locks each entry an Asset is to name FOR SHARE, so a concurrent deactivation waits for the
  * caller's write, and returns the first Asset column whose entry is missing from its own list or,
- * unless `allowInactive`, inactive: only active entries are assigned now (D7, F003 Q16).
+ * unless `allowInactive`, inactive: only active entries are assigned now (D7, #50 Q16).
  */
 export async function findUnassignableEntry(
   client: pg.PoolClient | pg.Pool,

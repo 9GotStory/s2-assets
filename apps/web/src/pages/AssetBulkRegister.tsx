@@ -1,18 +1,20 @@
 import React, { useEffect, useState, useRef, useCallback } from 'react';
 import { useNavigate, Link, useSearchParams } from 'react-router';
 import {
-  EMPTY_INITIAL_ASSIGNMENT,
   EMPTY_REFERENCE_CONTEXT,
   ReferenceContextFields,
-  effectiveDateError,
-  effectiveDateOf,
   hasReferenceValues,
-  initialAssignmentPayload,
   useReferenceLists,
-  type InitialAssignmentDraft,
   type ReferenceContextField,
   type ReferenceContextValues,
 } from '../components/ReferenceContextFields';
+import {
+  EMPTY_INITIAL_ASSIGNMENT,
+  InitialAssignmentFields,
+  initialAssignmentError,
+  initialAssignmentPayload,
+  type InitialAssignmentDraft,
+} from '../components/InitialAssignmentFields';
 
 export interface BulkItemFormState {
   item_key: string;
@@ -483,7 +485,7 @@ export const AssetBulkRegister: React.FC = () => {
     setErrorMessage(null);
   };
 
-  // The shared Effective Date starts at "ไม่ทราบ" when any item is legacy, so no date is invented (Q11).
+  // The shared Effective Date starts at "ไม่ทราบ" when any item is legacy, so no date is invented (#50 Q11).
   const batchHasLegacyItem = items.some((itm) => itm.is_legacy);
 
   // Submit handler: validates input, builds verbatim payload, sends request
@@ -522,11 +524,9 @@ export const AssetBulkRegister: React.FC = () => {
       return;
     }
 
-    const dateError = hasReferenceValues(sharedReferenceContext)
-      ? effectiveDateError(effectiveDateOf(sharedInitialAssignment, batchHasLegacyItem))
-      : null;
-    if (dateError) {
-      setErrorMessage(dateError);
+    const assignmentError = initialAssignmentError(sharedReferenceContext, sharedInitialAssignment, batchHasLegacyItem);
+    if (assignmentError) {
+      setErrorMessage(assignmentError);
       return;
     }
 
@@ -1377,7 +1377,7 @@ export const AssetBulkRegister: React.FC = () => {
               />
             </div>
 
-            {/* Shared Initial Assignment (T4 #25 decision 1, F003 Q17) */}
+            {/* Shared Initial Assignment (T4 #25 decision 1, #50 Q17) */}
             <ReferenceContextFields
               idPrefix="bulk"
               legend="สถานที่ หน่วยงาน และผู้รับผิดชอบของทุกรายการในชุดนี้ (ไม่บังคับ)"
@@ -1386,12 +1386,16 @@ export const AssetBulkRegister: React.FC = () => {
               lists={referenceLists.lists}
               listError={referenceLists.error}
               disabled={Boolean(uncertainSnapshot) || isSubmitting || isVerifyingSession || Boolean(forbiddenError)}
-              initialAssignment={{
-                effectiveDate: effectiveDateOf(sharedInitialAssignment, batchHasLegacyItem),
-                draft: sharedInitialAssignment,
-                onChange: handleSharedInitialAssignmentChange,
-              }}
-            />
+            >
+              {hasReferenceValues(sharedReferenceContext) && (
+                <InitialAssignmentFields
+                  idPrefix="bulk"
+                  draft={sharedInitialAssignment}
+                  isLegacy={batchHasLegacyItem}
+                  onChange={handleSharedInitialAssignmentChange}
+                />
+              )}
+            </ReferenceContextFields>
 
             {/* Row-Correlated Candidate Warnings Alert (F1, F4) */}
             {!isVerifyingSession && !forbiddenError && warnings.length > 0 && (

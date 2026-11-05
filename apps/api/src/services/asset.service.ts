@@ -90,12 +90,12 @@ export interface BulkRegisterAssetResult {
   shared_acquisition_id: string | null;
 }
 
-// The dimension fields and expected-before values a Feature 002 correction named; refused since F003 Q1.
-export type ExpectedReferenceContextInput = {
+// The dimension fields and expected-before values a Feature 002 correction named; refused since #50 Q1.
+export type ExpectedAssignmentInput = {
   [K in keyof AssignmentInput as `expected_${K}`]?: string | null;
 };
 
-export interface CorrectAssetInput extends AssignmentInput, ExpectedReferenceContextInput {
+export interface CorrectAssetInput extends AssignmentInput, ExpectedAssignmentInput {
   name?: string | null;
   asset_number?: string | null;
   serial_number?: string | null;
@@ -295,7 +295,7 @@ function isValidExactUuid(val: unknown): val is string {
 }
 
 /**
- * F003 Q1 (#25 D3 as amended, ADR 0001): the registry correction edits name, Asset Number and
+ * #50 Q1 (#25 D3 as amended, ADR 0001): the registry correction edits name, Asset Number and
  * Serial Number only. Location, OrganizationUnit and Responsible Person change only through an
  * assignment action, so a correction naming any of them, or its expected-before value, is refused.
  */
@@ -695,7 +695,7 @@ export class AssetService {
     ]);
     const historyRow: AssetHistoryRecord = historyRes.rows[0];
 
-    // The Initial Assignment is a fact of its own, committed with the registration (docs/04 §2.3, Q17).
+    // The Initial Assignment is a fact of its own, committed with the registration (docs/04 §2.3, #50 Q17).
     const initialAssignmentId = initial ? await recordInitialAssignment(client, { assetId, actorId, facts: initial }) : null;
 
     return {

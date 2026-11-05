@@ -152,7 +152,8 @@ describe('Initial Assignment Migration Integration (Seam C - F003-T1)', () => {
         changes: { name: { before: 'เครื่องพิมพ์', after: 'เครื่องพิมพ์ย้ายห้อง' } },
       });
 
-      // An entry and Legacy text of the same dimension; a later correction only cleared a value.
+      // An entry and Legacy text of the same dimension. A later correction cleared a value, which left
+      // the values as they are carried over, so its recorder and time are the Initial Assignment's.
       ids.cleared = await asset('ตู้เก็บเอกสาร', '2026-10-05T03:00:00Z', {
         location_id: ids.room101,
         legacy_location_text: 'ห้องเก่า (ทะเบียนเดิม)',
@@ -207,21 +208,21 @@ describe('Initial Assignment Migration Integration (Seam C - F003-T1)', () => {
           remark: null,
         },
         {
-          asset_id: ids.cleared,
-          kind: 'INITIAL',
-          effective_date: null,
-          recorded_by: ids.corrector,
-          recorded_at: new Date('2026-10-05T03:00:00Z'),
-          provenance: 'CARRIED_OVER_F002',
-          document_reference: null,
-          remark: null,
-        },
-        {
           asset_id: ids.moved,
           kind: 'INITIAL',
           effective_date: null,
           recorded_by: ids.corrector,
           recorded_at: new Date('2026-10-10T03:00:00Z'),
+          provenance: 'CARRIED_OVER_F002',
+          document_reference: null,
+          remark: null,
+        },
+        {
+          asset_id: ids.cleared,
+          kind: 'INITIAL',
+          effective_date: null,
+          recorded_by: ids.registrar,
+          recorded_at: new Date('2026-10-15T03:00:00Z'),
           provenance: 'CARRIED_OVER_F002',
           document_reference: null,
           remark: null,
@@ -248,10 +249,10 @@ describe('Initial Assignment Migration Integration (Seam C - F003-T1)', () => {
       });
       expect(changes.rows).toEqual([
         change(ids.placeholder, 'ORGANIZATION_UNIT', { new_legacy_text: 'กองพัสดุ (ข้อความเดิม)' }),
-        change(ids.cleared, 'LOCATION', { new_location_id: ids.room101, new_legacy_text: 'ห้องเก่า (ทะเบียนเดิม)' }),
         change(ids.moved, 'LOCATION', { new_location_id: ids.room202 }),
         change(ids.moved, 'ORGANIZATION_UNIT', { new_organization_unit_id: ids.finance }),
         change(ids.moved, 'RESPONSIBLE_PERSON', { new_legacy_text: 'คุณเดิม (ทะเบียนเดิม)' }),
+        change(ids.cleared, 'LOCATION', { new_location_id: ids.room101, new_legacy_text: 'ห้องเก่า (ทะเบียนเดิม)' }),
       ]);
 
       const versions = await client.query(`SELECT id, assignment_version FROM assets`);
@@ -315,6 +316,14 @@ describe('Initial Assignment Migration Integration (Seam C - F003-T1)', () => {
       );
       await expect(change(reassignment, 'REASSIGNMENT', 'RESPONSIBLE_PERSON', { new_person_id: ids.room101 })).rejects.toThrow(
         /assignment_changes_new_person_id_fkey/
+      );
+      // An Initial Assignment has no prior value, and each of its changes sets a value.
+      const placeholderInitial = await initialOf(ids.placeholder);
+      await expect(
+        change(placeholderInitial, 'INITIAL', 'LOCATION', { prior_location_id: ids.room101, new_location_id: ids.room202 })
+      ).rejects.toThrow(/assignment_changes_initial_no_prior/);
+      await expect(change(placeholderInitial, 'INITIAL', 'LOCATION', {})).rejects.toThrow(
+        /assignment_changes_initial_sets_value/
       );
       // New Legacy text only on an Initial Assignment; a change names its event's real kind.
       await expect(change(reassignment, 'REASSIGNMENT', 'LOCATION', { new_legacy_text: 'ห้องใหม่' })).rejects.toThrow(
