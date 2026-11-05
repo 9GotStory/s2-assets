@@ -32,6 +32,21 @@ export default tseslint.config(
     },
   },
   {
+    // A FastifyReply is thenable: awaiting a Promise<FastifyReply> waits until the reply is sent and
+    // yields undefined, so a helper that hands one back lets its route run on after a 403 (#51).
+    files: ['apps/api/src/**/*.ts'],
+    rules: {
+      'no-restricted-syntax': [
+        'error',
+        {
+          selector: "TSTypeReference[typeName.name='Promise'] TSTypeReference[typeName.name='FastifyReply']",
+          message:
+            'A FastifyReply is thenable, so awaiting it yields undefined. Return a decision (such as a boolean) and let the route handler send the reply.',
+        },
+      ],
+    },
+  },
+  {
     files: ['**/tests/**', '**/tests/**/*', '**/*.test.ts', '**/*.spec.ts'],
     rules: {
       'prefer-const': 'off',
