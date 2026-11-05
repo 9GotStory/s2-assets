@@ -31,10 +31,6 @@ for provenance or forensics.
   `BLUEPRINT.md`, `TECHNOLOGY.md`, `docs/`, `features/` and the Feature 001 artifacts describe
   earlier delivery: they select no tool, role or workflow for new work, and the business and
   technical content around them still binds.
-- Until 2026-11-03, Feature 002 work ran through Multica, AGY, Codex and ChatGPT. Its Multica
-  runs, `agent/agy-developer/*` branches and `multica-agent` trailers are provenance; a
-  Multica-era approval becomes current authority only when the Product Owner confirms it on the
-  GitHub Issue or in the session.
 
 ## Workflow
 
@@ -76,12 +72,13 @@ with `/code-review` → `/pr` → `/retro`.
 
 ## Checks
 
-Every change passes `git diff --check <base>...HEAD`, where `<base>` is the integration-branch
-commit the task started from; a change that touches only documentation needs nothing more.
-`.github/workflows/ci.yml` defines the other checks, and its `ci-gate` job names the jobs that
-must pass. When CI does not run on a pull request, run each of those jobs locally the way
-`ci.yml` runs it and record each job's exact result in the pull request: that record is the
-pull request's check.
+`.github/workflows/ci.yml` defines the checks, and its `ci-gate` job names the jobs that must
+pass. On a pull request, CI also runs `git diff --check` and `scripts/check-glossary.sh` against
+the base. Locally, run a job through `scripts/ci/<job>.sh` where one exists, and otherwise the
+way `ci.yml` runs it. When CI does not run on a pull request, run each job locally and record
+each job's exact result in the pull request: that record is the pull request's check. A change
+that touches only documentation needs only `git diff --check <base>...HEAD`, where `<base>` is the
+integration-branch commit the task started from.
 
 ## Agent skills
 
