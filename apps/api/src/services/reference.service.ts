@@ -26,17 +26,21 @@ export function isReferenceKind(kind: unknown): kind is ReferenceKind {
 
 /**
  * Locks each entry an Asset is to name FOR SHARE, so a concurrent deactivation waits for the
- * caller's write, and returns the first Asset column whose entry is missing or inactive: only
- * active entries are assigned (D7).
+ * caller's write, and returns the first Asset column whose entry is missing from its own list or,
+ * unless `allowInactive`, inactive: only active entries are assigned now (D7, F003 Q16).
  */
 export async function findUnassignableEntry(
   client: pg.PoolClient | pg.Pool,
-  ids: Partial<Record<AssetReferenceColumn, string | null>>
+  ids: Partial<Record<AssetReferenceColumn, string | null>>,
+  { allowInactive = false }: { allowInactive?: boolean } = {}
 ): Promise<AssetReferenceColumn | null> {
   for (const { table, assetColumn } of Object.values(REFERENCE_LISTS)) {
     const id = ids[assetColumn];
     if (!id) continue;
-    const res = await client.query(`SELECT 1 FROM ${table} WHERE id = $1 AND is_active FOR SHARE`, [id]);
+    const res = await client.query(
+      `SELECT 1 FROM ${table} WHERE id = $1 AND (is_active OR $2::boolean) FOR SHARE`,
+      [id, allowInactive]
+    );
     if (res.rows.length === 0) {
       return assetColumn;
     }

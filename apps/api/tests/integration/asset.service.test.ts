@@ -97,8 +97,8 @@ describe('AssetService Integration Tests (Seam A - Core Service & Transactions)'
       expect(result.asset.name).toBe('Dell Latitude 5420 Laptop');
       expect(result.asset.asset_number).toBe('AST-2026-001');
       expect(result.asset.serial_number).toBe('SN-ABC123XYZ');
-      expect(result.asset.legacy_organization_unit_text).toBeNull();
-      expect(result.asset.organization_unit_id).toBeNull();
+      // No dimension value was given, so no Initial Assignment is recorded (F003-T1).
+      expect(result.initial_assignment).toBeNull();
       expect(result.asset.category).toBeNull();
       expect(result.asset.source_reference).toBe('PO-2026-88');
       expect(result.asset.source_notes).toBe('Delivered in good condition');

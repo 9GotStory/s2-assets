@@ -3,15 +3,11 @@ import { useParams, useNavigate, Link } from 'react-router';
 import { QueryClient, QueryClientProvider, useQuery, useQueryClient } from '@tanstack/react-query';
 import { AssetCorrectionForm } from '../components/AssetCorrectionForm';
 import { AssetQrLabel } from '../components/AssetQrLabel';
+import { AssignmentSection } from '../components/AssignmentSection';
 import { EvidencePanel } from '../components/EvidencePanel';
-import {
-  REFERENCE_DIMENSIONS,
-  entryLabel,
-  type AssetReferenceColumns,
-  type AssetReferenceContext,
-} from '../components/ReferenceContextFields';
+import { type AssetReferenceContext } from '../components/ReferenceContextFields';
 
-export interface AssetRecord extends Partial<AssetReferenceColumns> {
+export interface AssetRecord {
   id: string;
   asset_number: string | null;
   serial_number: string | null;
@@ -40,7 +36,9 @@ export interface HistoryRecord {
 export interface AssetDetailResponse {
   asset: AssetRecord;
   history: HistoryRecord[];
-  reference_context?: AssetReferenceContext;
+  // F003-T1: the Permanent Assignment in effect, derived from the assignment facts.
+  current_assignment?: AssetReferenceContext;
+  assignment_version?: number;
   can_correct?: boolean;
 }
 
@@ -485,7 +483,7 @@ const AssetDetailContent: React.FC = () => {
     );
   }
 
-  const { asset, history = [], reference_context: referenceContext } = assetData;
+  const { asset, history = [], current_assignment: currentAssignment } = assetData;
   const can_correct = Boolean(assetData.can_correct && !isCorrectionRevoked);
   const registrationFact = history.find((h) => h.action === 'REGISTERED');
   const isLegacy = Boolean(
@@ -706,25 +704,6 @@ const AssetDetailContent: React.FC = () => {
               🏷️ ยังไม่ระบุหมวดหมู่ (Uncategorized)
             </dd>
 
-            {/* Reference context (T4, D7-A): each dimension and its legacy text, kept apart */}
-            {REFERENCE_DIMENSIONS.map(({ entryField, legacyField, label }) => {
-              const entry = referenceContext?.[entryField] ?? null;
-              const legacyText = referenceContext?.[legacyField] ?? null;
-              return (
-                <React.Fragment key={entryField}>
-                  <dt style={{ fontWeight: 500, color: '#4b5563' }}>{label}:</dt>
-                  <dd id={`detail-${entryField}`} style={{ margin: 0, color: '#111827' }}>
-                    {entry
-                      ? entryLabel(entry)
-                      : !legacyText && <span style={{ color: '#9ca3af' }}>ไม่ระบุ</span>}
-                    {legacyText && (
-                      <div style={{ fontSize: '0.8125rem', color: '#6b7280' }}>ข้อความเดิม: {legacyText}</div>
-                    )}
-                  </dd>
-                </React.Fragment>
-              );
-            })}
-
             <dt style={{ fontWeight: 500, color: '#4b5563' }}>
               เอกสาร / บันทึกที่มา:
             </dt>
@@ -774,6 +753,15 @@ const AssetDetailContent: React.FC = () => {
             )}
           </dl>
         </section>
+
+        {/* Permanent Assignment (F003-T1, ADR 0001): Current Assignment and timeline */}
+        <AssignmentSection
+          assetId={asset.id}
+          currentAssignment={currentAssignment}
+          actorId={currentUser?.id ?? null}
+          dataUpdatedAt={dataUpdatedAt}
+          onPermissionRevoked={handlePermissionRevoked}
+        />
 
         {/* QR Code and Minimal Printing Panel (T8) */}
         <AssetQrLabel
@@ -990,7 +978,6 @@ const AssetDetailContent: React.FC = () => {
           <section aria-labelledby="correction-heading">
             <AssetCorrectionForm
               asset={asset}
-              actorId={currentUser?.id ?? null}
               isLegacy={isLegacy}
               csrfToken={csrfToken}
               dataUpdatedAt={dataUpdatedAt}

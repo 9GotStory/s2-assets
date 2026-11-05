@@ -1,6 +1,7 @@
 import React, { useEffect, useState } from 'react';
 
-// T4 (#25, D7-A): the three reference dimensions an Asset may name, each with separate legacy text.
+// The three dimensions of an Asset's Permanent Assignment (T4 #25, D7-A; F003 ADR 0001), each
+// with separate Legacy text.
 export const REFERENCE_DIMENSIONS = [
   {
     kind: 'locations',
@@ -67,6 +68,72 @@ export const referenceContextPayload = (values: ReferenceContextValues): Partial
   Object.fromEntries(
     REFERENCE_CONTEXT_FIELDS.filter((field) => values[field].trim() !== '').map((field) => [field, values[field].trim()])
   );
+
+export const hasReferenceValues = (values: ReferenceContextValues): boolean =>
+  REFERENCE_CONTEXT_FIELDS.some((field) => values[field].trim() !== '');
+
+const BANGKOK_DATE = new Intl.DateTimeFormat('en-CA', {
+  timeZone: 'Asia/Bangkok',
+  year: 'numeric',
+  month: '2-digit',
+  day: '2-digit',
+});
+
+// Today's Asia/Bangkok date as YYYY-MM-DD: the latest Effective Date a fact may have (F003 Q2).
+export const bangkokToday = (): string => {
+  const parts = Object.fromEntries(BANGKOK_DATE.formatToParts(new Date()).map(({ type, value }) => [type, value]));
+  return `${parts.year}-${parts.month}-${parts.day}`;
+};
+
+// An Effective Date (วันที่มีผล): a date, or unknown (ไม่ทราบ).
+export interface EffectiveDateChoice {
+  date: string;
+  unknown: boolean;
+}
+
+// F003-T1: the facts an Initial Assignment carries besides its values. A null effectiveDate means
+// the user has not chosen one, so it follows the registration's default.
+export interface InitialAssignmentDraft {
+  effectiveDate: EffectiveDateChoice | null;
+  documentReference: string;
+  remark: string;
+}
+
+export const EMPTY_INITIAL_ASSIGNMENT: InitialAssignmentDraft = { effectiveDate: null, documentReference: '', remark: '' };
+
+// Q11: "ไม่ทราบ" for a legacy registration, so no date is invented; the registration date otherwise.
+export const effectiveDateOf = (draft: InitialAssignmentDraft, isLegacy: boolean): EffectiveDateChoice =>
+  draft.effectiveDate ?? (isLegacy ? { date: '', unknown: true } : { date: bangkokToday(), unknown: false });
+
+// Why the Effective Date cannot be sent, or null when it can.
+export const effectiveDateError = (choice: EffectiveDateChoice): string | null => {
+  if (choice.unknown) {
+    return null;
+  }
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(choice.date)) {
+    return 'กรุณาระบุวันที่มีผล หรือเลือก “ไม่ทราบ”';
+  }
+  return choice.date > bangkokToday() ? 'วันที่มีผลต้องไม่เกินวันนี้' : null;
+};
+
+// What a registration sends for its Initial Assignment: the values with their facts, or nothing
+// when no dimension is filled (AR-06).
+export const initialAssignmentPayload = (
+  values: ReferenceContextValues,
+  draft: InitialAssignmentDraft,
+  isLegacy: boolean
+): Record<string, string | null> => {
+  if (!hasReferenceValues(values)) {
+    return {};
+  }
+  const effectiveDate = effectiveDateOf(draft, isLegacy);
+  return {
+    ...referenceContextPayload(values),
+    effective_date: effectiveDate.unknown ? null : effectiveDate.date,
+    document_reference: draft.documentReference.trim() || null,
+    remark: draft.remark.trim() || null,
+  };
+};
 
 export const entryLabel = (entry: ReferenceEntry): string =>
   entry.is_active ? entry.name : `${entry.name} (ปิดใช้งาน)`;
@@ -159,6 +226,95 @@ const inputStyle: React.CSSProperties = {
   backgroundColor: '#ffffff',
 };
 
+export interface InitialAssignmentFieldsProps {
+  idPrefix: string;
+  effectiveDate: EffectiveDateChoice;
+  draft: InitialAssignmentDraft;
+  onChange: (draft: InitialAssignmentDraft) => void;
+}
+
+/**
+ * The Initial Assignment's Effective Date (a date or "ไม่ทราบ"), document reference and remark,
+ * shown once a dimension is filled (F003 Q11, Q17, Q5).
+ */
+export const InitialAssignmentFields: React.FC<InitialAssignmentFieldsProps> = ({
+  idPrefix,
+  effectiveDate,
+  draft,
+  onChange,
+}) => (
+  <div
+    id={`${idPrefix}-initial-assignment`}
+    style={{ borderTop: '1px solid #e5e7eb', paddingTop: '0.75rem', marginTop: '0.25rem' }}
+  >
+    <p style={{ margin: '0 0 0.5rem 0', fontSize: '0.8125rem', fontWeight: 600, color: '#374151' }}>
+      กำหนดครั้งแรก
+    </p>
+    <label htmlFor={`${idPrefix}-effective_date`} style={labelStyle}>
+      วันที่มีผล
+    </label>
+    <div style={{ display: 'flex', alignItems: 'center', gap: '1rem', marginBottom: '0.25rem' }}>
+      <input
+        id={`${idPrefix}-effective_date`}
+        type="date"
+        value={effectiveDate.unknown ? '' : effectiveDate.date}
+        max={bangkokToday()}
+        disabled={effectiveDate.unknown}
+        onChange={(e) => onChange({ ...draft, effectiveDate: { date: e.target.value, unknown: false } })}
+        style={{ ...inputStyle, width: 'auto' }}
+      />
+      <label style={{ display: 'flex', alignItems: 'center', gap: '0.375rem', fontSize: '0.875rem', color: '#374151' }}>
+        <input
+          id={`${idPrefix}-effective_date_unknown`}
+          type="checkbox"
+          checked={effectiveDate.unknown}
+          onChange={(e) =>
+            onChange({
+              ...draft,
+              effectiveDate: e.target.checked
+                ? { date: effectiveDate.date, unknown: true }
+                : { date: effectiveDate.date || bangkokToday(), unknown: false },
+            })
+          }
+        />
+        ไม่ทราบ
+      </label>
+    </div>
+    <p style={{ margin: '0 0 0.75rem 0', fontSize: '0.75rem', color: '#6b7280' }}>
+      วันที่ค่าเหล่านี้เริ่มเป็นจริง ไม่เกินวันนี้ ข้อมูลตกทอดเริ่มที่ “ไม่ทราบ” เพื่อไม่สร้างวันที่ขึ้นเอง
+    </p>
+    <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '0.75rem' }}>
+      <div>
+        <label htmlFor={`${idPrefix}-document_reference`} style={labelStyle}>
+          เอกสารอ้างอิง (ไม่บังคับ)
+        </label>
+        <input
+          id={`${idPrefix}-document_reference`}
+          type="text"
+          value={draft.documentReference}
+          maxLength={500}
+          onChange={(e) => onChange({ ...draft, documentReference: e.target.value })}
+          placeholder="เช่น เลขที่บันทึกข้อความ"
+          style={inputStyle}
+        />
+      </div>
+      <div>
+        <label htmlFor={`${idPrefix}-assignment_remark`} style={labelStyle}>
+          หมายเหตุ (ไม่บังคับ)
+        </label>
+        <textarea
+          id={`${idPrefix}-assignment_remark`}
+          value={draft.remark}
+          maxLength={2000}
+          rows={2}
+          onChange={(e) => onChange({ ...draft, remark: e.target.value })}
+          style={inputStyle}
+        />
+      </div>
+    </div>
+  </div>
+);
+
 export interface ReferenceContextFieldsProps {
   idPrefix: string;
   legend?: string;
@@ -169,21 +325,24 @@ export interface ReferenceContextFieldsProps {
   // Entries the Asset names already; they stay selectable after deactivation.
   currentIds?: Partial<Record<ReferenceIdField, string | null>>;
   disabled?: boolean;
+  // F003-T1: the Initial Assignment's facts, asked for once any dimension is filled.
+  initialAssignment?: Omit<InitialAssignmentFieldsProps, 'idPrefix'>;
 }
 
 /**
  * Optional Location, OrganizationUnit and Responsible Person, each picked from its list,
- * with the legacy text kept as recorded when it matches no entry (D7-A, AR-10).
+ * with the Legacy text kept as recorded when it matches no entry (D7-A, AR-10).
  */
 export const ReferenceContextFields: React.FC<ReferenceContextFieldsProps> = ({
   idPrefix,
-  legend = 'ข้อมูลอ้างอิง (ไม่บังคับ)',
+  legend = 'สถานที่ หน่วยงาน และผู้รับผิดชอบ (ไม่บังคับ)',
   values,
   onChange,
   lists,
   listError,
   currentIds = {},
   disabled = false,
+  initialAssignment,
 }) => (
   <fieldset
     id={`${idPrefix}-reference-context`}
@@ -242,5 +401,8 @@ export const ReferenceContextFields: React.FC<ReferenceContextFieldsProps> = ({
         </div>
       </div>
     ))}
+    {initialAssignment && hasReferenceValues(values) && (
+      <InitialAssignmentFields idPrefix={idPrefix} {...initialAssignment} />
+    )}
   </fieldset>
 );

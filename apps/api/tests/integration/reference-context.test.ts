@@ -18,6 +18,8 @@ const migrationFolder = path.resolve(__dirname, '../../../../packages/db/src/mig
 
 type Actor = { id: string; cookie: string; csrf: string };
 
+const TODAY = '2026-11-05';
+
 // T4 (#25): D7-A reference lists and Asset reference context (Seam A).
 describe('Reference Context Integration Tests (Seam A - T4)', () => {
   let container: StartedPostgreSqlContainer;
@@ -74,7 +76,13 @@ describe('Reference Context Integration Tests (Seam A - T4)', () => {
 
     pool = new Pool({ connectionString: databaseUrl });
     sessionService = new SessionService({ db: pool });
-    app = await buildApp({ db: pool, cookieSecret: 'test-secret-at-least-32-chars-long-reference', logger: false });
+    // The API's "today" is 5 November 2026 in Bangkok (TODAY), so Effective Dates are deterministic.
+    app = await buildApp({
+      db: pool,
+      cookieSecret: 'test-secret-at-least-32-chars-long-reference',
+      logger: false,
+      clock: () => new Date('2026-11-05T05:00:00Z'),
+    });
 
     const passwordHash = await UserService.hashPassword('Password123!');
     const createUserWithRole = async (username: string, role: string) => {
@@ -268,9 +276,10 @@ describe('Reference Context Integration Tests (Seam A - T4)', () => {
     });
   });
 
-  describe('Asset reference context (AC-13, AC-14, AC-15, AR-06, AR-10)', () => {
+  // F003-T1 (#51): the reference context given at registration is the Asset's Initial Assignment.
+  describe('Asset reference context as the Initial Assignment (AC-13, AC-14, AC-15, AR-06, AR-10)', () => {
 
-    it('registers an Asset with chosen references and legacy text, and shows both on its detail', async () => {
+    it('registers an Asset with chosen references and legacy text, and shows both as its Current Assignment', async () => {
       const location = await entry('locations', 'อาคาร 1 ห้อง 101');
       const unit = await entry('organization-units', 'กลุ่มงานพัสดุ');
       const person = await entry('persons', 'นายสมชาย รักงาน');
@@ -281,13 +290,14 @@ describe('Reference Context Integration Tests (Seam A - T4)', () => {
         organization_unit_id: unit.id,
         responsible_person_id: person.id,
         legacy_location_text: '  ห้องเก่า 3 (ทะเบียนเดิม) ',
+        effective_date: TODAY,
       });
       expect(registered.statusCode).toBe(201);
       const assetId = registered.json().asset.id;
 
       const detail = await get(readonly, `/assets/${assetId}`);
       expect(detail.statusCode).toBe(200);
-      expect(detail.json().reference_context).toEqual({
+      expect(detail.json().current_assignment).toEqual({
         location: { id: location.id, name: 'อาคาร 1 ห้อง 101', is_active: true },
         organization_unit: { id: unit.id, name: 'กลุ่มงานพัสดุ', is_active: true },
         responsible_person: { id: person.id, name: 'นายสมชาย รักงาน', is_active: true },
@@ -300,8 +310,9 @@ describe('Reference Context Integration Tests (Seam A - T4)', () => {
     it('registers without any reference context and invents none (AC-13, AC-15)', async () => {
       const registered = await post(custodian, '/assets', { name: 'โต๊ะประชุมส่วนกลาง' });
       expect(registered.statusCode).toBe(201);
-      const detail = (await get(readonly, `/assets/${registered.json().asset.id}`)).json();
-      expect(detail.reference_context).toEqual({
+      const assetId = registered.json().asset.id;
+      const detail = (await get(readonly, `/assets/${assetId}`)).json();
+      expect(detail.current_assignment).toEqual({
         location: null,
         organization_unit: null,
         responsible_person: null,
@@ -309,21 +320,22 @@ describe('Reference Context Integration Tests (Seam A - T4)', () => {
         legacy_organization_unit_text: null,
         legacy_responsible_person_text: null,
       });
-      const assignments = await pool.query(
-        `SELECT count(*)::int AS n FROM asset_history WHERE asset_id = $1 AND action <> 'REGISTERED'`,
-        [registered.json().asset.id]
-      );
-      expect(assignments.rows[0].n).toBe(0);
+      expect(detail.history.map((h: any) => h.action)).toEqual(['REGISTERED']);
+      expect((await get(readonly, `/assets/${assetId}/assignments`)).json().items).toEqual([]);
     });
 
-    it('makes a registration wait for a concurrent deactivation of its entry, then refuses the entry', async () => {
+    it('makes a registration wait for a concurrent deactivation of its entry, then refuses the entry for today', async () => {
       const room = await entry('locations', 'ห้องกำลังปิด');
       const before = (await pool.query('SELECT count(*)::int AS n FROM assets')).rows[0].n;
       const deactivation = await pool.connect();
       try {
         await deactivation.query('BEGIN');
         await deactivation.query('UPDATE locations SET is_active = false, version = version + 1 WHERE id = $1', [room.id]);
-        const registration = post(custodian, '/assets', { name: 'ลงทะเบียนระหว่างปิด', location_id: room.id });
+        const registration = post(custodian, '/assets', {
+          name: 'ลงทะเบียนระหว่างปิด',
+          location_id: room.id,
+          effective_date: TODAY,
+        });
 
         // The registration's FOR SHARE lock must wait behind the uncommitted deactivation.
         let waiting = 0;
@@ -359,7 +371,7 @@ describe('Reference Context Integration Tests (Seam A - T4)', () => {
         { organization_unit: 'กลุ่มงานพัสดุ' },
       ];
       for (const extra of cases) {
-        const res = await post(custodian, '/assets', { name: 'ไม่ควรถูกบันทึก', ...extra });
+        const res = await post(custodian, '/assets', { name: 'ไม่ควรถูกบันทึก', effective_date: TODAY, ...extra });
         expect(res.statusCode, JSON.stringify(extra)).toBe(400);
       }
       expect((await pool.query('SELECT count(*)::int AS n FROM assets')).rows[0].n).toBe(before);
@@ -372,6 +384,7 @@ describe('Reference Context Integration Tests (Seam A - T4)', () => {
         location_id: location.id,
         organization_unit_id: unit.id,
         legacy_responsible_person_text: 'ครูเวรประจำห้อง (ทะเบียนเดิม)',
+        effective_date: TODAY,
         items: [
           { item_key: '7e1c5a52-5d0f-4b2a-9c1e-000000000001', name: 'เก้าอี้นักเรียน 1' },
           { item_key: '7e1c5a52-5d0f-4b2a-9c1e-000000000002', name: 'เก้าอี้นักเรียน 2' },
@@ -395,7 +408,7 @@ describe('Reference Context Integration Tests (Seam A - T4)', () => {
       const ids = first.json().results.map((r: any) => r.asset_id);
       expect(ids).toHaveLength(2);
       for (const id of ids) {
-        const context = (await get(readonly, `/assets/${id}`)).json().reference_context;
+        const context = (await get(readonly, `/assets/${id}`)).json().current_assignment;
         expect(context.location).toMatchObject({ id: location.id, name: 'ห้องเรียนรวม 2' });
         expect(context.organization_unit).toMatchObject({ id: unit.id, name: 'กลุ่มงานส่งเสริม' });
         expect(context.responsible_person).toBeNull();
@@ -426,7 +439,13 @@ describe('Reference Context Integration Tests (Seam A - T4)', () => {
 
   describe('Search by reference context (AC-14, AC-23, AC-24)', () => {
     const register = async (name: string, context: Record<string, unknown>) =>
-      (await post(custodian, '/assets', { name, ...context })).json().asset.id as string;
+      (
+        await post(custodian, '/assets', {
+          name,
+          ...context,
+          ...(Object.keys(context).length > 0 ? { effective_date: null } : {}),
+        })
+      ).json().asset.id as string;
     const search = async (actor: Actor, query: string) => get(actor, `/assets/search?${query}`);
 
     it('filters each dimension on its own and combines them with AND, for every registry viewer', async () => {
@@ -487,7 +506,8 @@ describe('Reference Context Integration Tests (Seam A - T4)', () => {
     });
   });
 
-  describe('Correcting reference context (D3 asset:correct, with reason and history)', () => {
+  // #25 D3 as amended by F003 Q1 (ADR 0001): asset:correct no longer changes the reference context.
+  describe('Correcting reference context is refused (#25 D3 as amended, ADR 0001)', () => {
     const identity = (asset: any) => ({
       expected_name: asset.name,
       expected_asset_number: asset.asset_number,
@@ -497,57 +517,51 @@ describe('Reference Context Integration Tests (Seam A - T4)', () => {
     const correct = (actor: Actor, asset: any, body: Record<string, unknown>) =>
       post(actor, `/assets/${asset.id}/correct`, { ...identity(asset), retry_token: `ref-correct-${++token}`, ...body });
 
-    it('lets a Custodian or Administrator change, set and clear context with a reason, recorded as history', async () => {
+    it('refuses a Custodian or Administrator who changes, sets or clears context, and keeps the Initial Assignment', async () => {
       const roomA = await entry('locations', 'ห้องแก้ไข A');
       const roomB = await entry('locations', 'ห้องแก้ไข B');
       const unit = await entry('organization-units', 'หน่วยแก้ไข');
       const asset = (
-        await post(custodian, '/assets', { name: 'แก้ไขบริบท', location_id: roomA.id, legacy_responsible_person_text: 'คุณเดิม' })
+        await post(custodian, '/assets', {
+          name: 'แก้ไขบริบท',
+          location_id: roomA.id,
+          legacy_responsible_person_text: 'คุณเดิม',
+          effective_date: null,
+        })
       ).json().asset;
 
-      const res = await correct(custodian, asset, {
-        location_id: roomB.id,
-        expected_location_id: roomA.id,
-        organization_unit_id: unit.id,
-        expected_organization_unit_id: null,
-        legacy_responsible_person_text: null,
-        expected_legacy_responsible_person_text: 'คุณเดิม',
-        reason: 'ย้ายบันทึกให้ตรงห้องจริง',
-      });
-      expect(res.statusCode).toBe(200);
-      expect(res.json().history.payload).toEqual({
-        reason: 'ย้ายบันทึกให้ตรงห้องจริง',
-        changes: {
-          location_id: { before: roomA.id, after: roomB.id },
-          organization_unit_id: { before: null, after: unit.id },
-          legacy_responsible_person_text: { before: 'คุณเดิม', after: null },
-        },
-      });
+      for (const [actor, body] of [
+        [custodian, { location_id: roomB.id, expected_location_id: roomA.id, reason: 'ย้ายบันทึกให้ตรงห้องจริง' }],
+        [custodian, { organization_unit_id: unit.id, expected_organization_unit_id: null, reason: 'ระบุหน่วยงาน' }],
+        [admin, { legacy_responsible_person_text: null, expected_legacy_responsible_person_text: 'คุณเดิม', reason: 'ล้างข้อความเดิม' }],
+        [admin, { location_id: roomB.id, expected_location_id: roomB.id, reason: 'ตรวจซ้ำ' }],
+      ] as const) {
+        const res = await correct(actor, asset, body);
+        expect(res.statusCode, JSON.stringify(body)).toBe(400);
+        expect(res.json().code).toBe('VALIDATION_FAILED');
+      }
 
       const detail = (await get(readonly, `/assets/${asset.id}`)).json();
-      expect(detail.reference_context).toMatchObject({
-        location: { id: roomB.id, name: 'ห้องแก้ไข B' },
-        organization_unit: { id: unit.id },
-        responsible_person: null,
-        legacy_responsible_person_text: null,
+      expect(detail.current_assignment).toMatchObject({
+        location: { id: roomA.id, name: 'ห้องแก้ไข A' },
+        organization_unit: null,
+        legacy_responsible_person_text: 'คุณเดิม',
       });
-      expect(detail.history.map((h: any) => h.action)).toEqual(['REGISTERED', 'CORRECTED']);
-
-      // An Administrator corrects too; an unchanged value is a no-op without history.
-      const again = await correct(admin, asset, { location_id: roomB.id, expected_location_id: roomB.id, reason: 'ตรวจซ้ำ' });
-      expect(again.statusCode).toBe(200);
-      expect(again.json()).toMatchObject({ noop: true, history: null });
+      expect(detail.history.map((h: any) => h.action)).toEqual(['REGISTERED']);
+      const timeline = (await get(readonly, `/assets/${asset.id}/assignments`)).json().items;
+      expect(timeline.map((event: any) => [event.kind, event.effective_date])).toEqual([['INITIAL', null]]);
     });
 
-    it('refuses corrections without expected-before, with stale or inactive values, without a reason, or by a viewer', async () => {
+    it('refuses context with or without expected-before or a reason, and a viewer; other corrections keep a deactivated entry', async () => {
       const room = await entry('locations', 'ห้องแก้ไขปฏิเสธ');
       const closed = await entry('locations', 'ห้องปิดแล้ว');
       await post(admin, `/references/locations/${closed.id}`, { expected_version: 1, is_active: false });
-      const asset = (await post(custodian, '/assets', { name: 'แก้ไขไม่ได้', location_id: room.id })).json().asset;
+      const asset = (await post(custodian, '/assets', { name: 'แก้ไขไม่ได้', location_id: room.id, effective_date: null })).json()
+        .asset;
 
       const refusals: [Actor, Record<string, unknown>, number][] = [
         [custodian, { location_id: null, reason: 'ไม่มีค่าก่อนแก้' }, 400],
-        [custodian, { location_id: null, expected_location_id: '00000000-0000-4000-8000-000000000000', reason: 'ค่าก่อนแก้ไม่ตรง' }, 409],
+        [custodian, { location_id: null, expected_location_id: '00000000-0000-4000-8000-000000000000', reason: 'ค่าก่อนแก้ไม่ตรง' }, 400],
         [custodian, { location_id: closed.id, expected_location_id: room.id, reason: 'รายการปิดแล้ว' }, 400],
         [custodian, { location_id: 'not-a-uuid', expected_location_id: room.id, reason: 'รูปแบบผิด' }, 400],
         [custodian, { legacy_location_text: 'x'.repeat(501), expected_legacy_location_text: null, reason: 'ยาวเกิน' }, 400],
@@ -558,21 +572,19 @@ describe('Reference Context Integration Tests (Seam A - T4)', () => {
         expect((await correct(actor, asset, body)).statusCode, JSON.stringify(body)).toBe(status);
       }
       const detail = (await get(readonly, `/assets/${asset.id}`)).json();
-      expect(detail.reference_context.location).toMatchObject({ id: room.id });
+      expect(detail.current_assignment.location).toMatchObject({ id: room.id });
       expect(detail.history.map((h: any) => h.action)).toEqual(['REGISTERED']);
 
-      // A stale conflict names the current value so the client can show it.
-      const stale = await correct(custodian, asset, { location_id: null, expected_location_id: closed.id, reason: 'ค่าเก่า' });
-      expect(stale.json().current_values).toMatchObject({ location_id: room.id });
-
-      // An entry deactivated after assignment stays on the Asset while other facts are corrected.
+      // An entry deactivated after assignment stays the Current Assignment while other facts are corrected.
       await post(admin, `/references/locations/${room.id}`, { expected_version: 1, is_active: false });
       const rename = await correct(custodian, asset, { name: 'แก้ชื่อได้', reason: 'ชื่อจริง' });
       expect(rename.statusCode).toBe(200);
-      expect(rename.json().asset.location_id).toBe(room.id);
+      const renamed = (await get(readonly, `/assets/${asset.id}`)).json();
+      expect(renamed.asset.name).toBe('แก้ชื่อได้');
+      expect(renamed.current_assignment.location).toEqual({ id: room.id, name: 'ห้องแก้ไขปฏิเสธ', is_active: false });
     });
 
-    it('replays a retried correction and rejects a reused token with a different context', async () => {
+    it('stores no retry receipt for a refused context correction, so its token still serves a valid correction', async () => {
       const room = await entry('locations', 'ห้องแก้ไขซ้ำ');
       const asset = (await post(custodian, '/assets', { name: 'แก้ซ้ำ' })).json().asset;
       const body = {
@@ -582,11 +594,13 @@ describe('Reference Context Integration Tests (Seam A - T4)', () => {
         expected_location_id: null,
         reason: 'ระบุห้อง',
       };
-      const first = await post(custodian, `/assets/${asset.id}/correct`, body);
-      const replay = await post(custodian, `/assets/${asset.id}/correct`, body);
-      expect(first.statusCode).toBe(200);
-      expect(replay.json()).toEqual(first.json());
-      expect((await post(custodian, `/assets/${asset.id}/correct`, { ...body, location_id: null })).statusCode).toBe(409);
+      expect((await post(custodian, `/assets/${asset.id}/correct`, body)).statusCode).toBe(400);
+      expect((await post(custodian, `/assets/${asset.id}/correct`, body)).statusCode).toBe(400);
+
+      const { location_id: _location, expected_location_id: _expected, ...nameOnly } = body;
+      const renamed = await post(custodian, `/assets/${asset.id}/correct`, { ...nameOnly, name: 'แก้ซ้ำแล้ว' });
+      expect(renamed.statusCode).toBe(200);
+      expect(renamed.json().history.payload.changes).toEqual({ name: { before: 'แก้ซ้ำ', after: 'แก้ซ้ำแล้ว' } });
     });
   });
 });

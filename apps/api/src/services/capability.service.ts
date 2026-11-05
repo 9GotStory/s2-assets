@@ -32,17 +32,18 @@ export const KNOWN_CAPABILITIES = [
   'evidence:create',
   'evidence:correct',
   'reference:maintain',
+  'assignment:reassign',
 ] as const;
 
 export type Capability = (typeof KNOWN_CAPABILITIES)[number];
 
 /**
- * Immutable role-to-capability mapping (T1, T2, T3, T4, T5, T6 & T7 approved matrix).
+ * Immutable role-to-capability mapping (Feature 002 T1–T7 and Feature 003 approved matrix).
  *
  * - SYSTEM_MAINTAINER: grants 'system:maintain' (preserves foundation maintenance grant)
  * - ADMINISTRATOR: grants 'system:maintain', 'asset:view', 'asset:correct', 'asset:search', 'acquisition:view', 'evidence:view', 'evidence:correct', 'reference:maintain'
  * - READ_ONLY: grants 'asset:view', 'asset:search', 'acquisition:view', 'evidence:view' (view and search for registry, acquisitions & evidence)
- * - ASSET_CUSTODIAN: grants 'asset:view', 'asset:duplicate-check', 'asset:register', 'asset:bulk-register', 'asset:correct', 'asset:search', 'acquisition:create', 'acquisition:view', 'evidence:view', 'evidence:create', 'evidence:correct'
+ * - ASSET_CUSTODIAN: grants 'asset:view', 'asset:duplicate-check', 'asset:register', 'asset:bulk-register', 'asset:correct', 'asset:search', 'acquisition:create', 'acquisition:view', 'evidence:view', 'evidence:create', 'evidence:correct', 'assignment:reassign' (F003 Q3: Initial Assignment and Reassignment)
  * - Unknown roles: empty / unmapped
  */
 export const ROLE_CAPABILITY_MAP: Readonly<Record<string, readonly string[]>> = Object.freeze({
@@ -75,6 +76,7 @@ export const ROLE_CAPABILITY_MAP: Readonly<Record<string, readonly string[]>> = 
     'evidence:view',
     'evidence:create',
     'evidence:correct',
+    'assignment:reassign',
   ] as const),
 });
 

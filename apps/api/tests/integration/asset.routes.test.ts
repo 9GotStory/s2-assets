@@ -170,6 +170,9 @@ describe('Asset Routes & Security Matrix Integration Tests (Seam A)', () => {
   beforeEach(async () => {
     await pool.query('DELETE FROM registration_retry_tokens');
     await pool.query('DELETE FROM asset_history');
+    // Assignment facts restrict deleting their Asset (F003-T1), so they go first.
+    await pool.query('DELETE FROM assignment_changes');
+    await pool.query('DELETE FROM assignment_events');
     await pool.query('DELETE FROM assets');
     if (custodianUser?.id) {
       await pool.query(
@@ -630,19 +633,24 @@ describe('Asset Routes & Security Matrix Integration Tests (Seam A)', () => {
       });
       const idA = JSON.parse(regA.body).asset.id;
 
-      // 2. Direct seed of legacy Asset WITH legacy OrganizationUnit text (D7)
-      const seedB = await pool.query(
-        `INSERT INTO assets (id, name, legacy_organization_unit_text, registered_by)
-         VALUES (gen_random_uuid(), 'Accounting Printer', 'Accounting Division', $1)
-         RETURNING id;`,
-        [custodianUser.id]
-      );
-      const idB = seedB.rows[0].id;
-      await pool.query(
-        `INSERT INTO asset_history (id, asset_id, action, actor_id, payload)
-         VALUES (gen_random_uuid(), $1, 'REGISTERED', $2, '{"name": "Accounting Printer"}'::jsonb)`,
-        [idB, custodianUser.id]
-      );
+      // 2. Custodian registers a legacy Asset WITH legacy OrganizationUnit text (D7), which becomes
+      // its Initial Assignment with an unknown Effective Date (F003-T1)
+      const regB = await app.inject({
+        method: 'POST',
+        url: '/assets',
+        headers: {
+          cookie: custodianUser.cookie,
+          'x-csrf-token': custodianUser.csrf,
+        },
+        payload: {
+          name: 'Accounting Printer',
+          is_legacy: true,
+          legacy_organization_unit_text: 'Accounting Division',
+          effective_date: null,
+        },
+      });
+      expect(regB.statusCode).toBe(201);
+      const idB = JSON.parse(regB.body).asset.id;
 
       // 3. Read-only user can view record A (no org unit)
       const readA = await app.inject({
@@ -652,7 +660,8 @@ describe('Asset Routes & Security Matrix Integration Tests (Seam A)', () => {
       });
       expect(readA.statusCode).toBe(200);
       expect(JSON.parse(readA.body).asset.name).toBe('Office Common Projector');
-      expect(JSON.parse(readA.body).asset.legacy_organization_unit_text).toBeNull();
+      expect(JSON.parse(readA.body).current_assignment.organization_unit).toBeNull();
+      expect(JSON.parse(readA.body).current_assignment.legacy_organization_unit_text).toBeNull();
 
       // 4. Administrator can view record B (specific org unit)
       const readB = await app.inject({
@@ -661,7 +670,7 @@ describe('Asset Routes & Security Matrix Integration Tests (Seam A)', () => {
         headers: { cookie: adminUser.cookie },
       });
       expect(readB.statusCode).toBe(200);
-      expect(JSON.parse(readB.body).asset.legacy_organization_unit_text).toBe('Accounting Division');
+      expect(JSON.parse(readB.body).current_assignment.legacy_organization_unit_text).toBe('Accounting Division');
     });
   });
 
@@ -1886,9 +1895,9 @@ describe('Asset Routes & Security Matrix Integration Tests (Seam A)', () => {
       // Insert an asset for testing in each test (since outer beforeEach clears assets)
       const insertRes = await pool.query(
         `INSERT INTO assets (
-          name, asset_number, serial_number, registered_by, category, legacy_organization_unit_text
+          name, asset_number, serial_number, registered_by, category
         ) VALUES (
-          'Test QR Asset', 'QR-ASSET-001', 'SN-QR-999', $1, NULL, NULL
+          'Test QR Asset', 'QR-ASSET-001', 'SN-QR-999', $1, NULL
         ) RETURNING id;`,
         [custodianUser.id]
       );

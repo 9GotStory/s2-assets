@@ -7,7 +7,9 @@ import { ValidationError } from './validation-error.ts';
 /**
  * An Asset's Permanent Assignment (ADR 0001): its Location, OrganizationUnit and Responsible
  * Person. Each dimension names an entry of its Reference List, keeps Legacy text that matches no
- * entry, or is empty (AR-06, AR-10). Every read and write of the dimensions goes through here.
+ * entry, or is empty (AR-06, AR-10). The values live in assignment facts: an event per business
+ * action, with an Effective Date and a Recorded At, and a change per dimension it sets. Every read
+ * and write of the dimensions goes through here.
  */
 export interface AssignmentInput {
   location_id?: string | null;
@@ -38,6 +40,46 @@ export interface CurrentAssignment {
   legacy_responsible_person_text: string | null;
 }
 
+// The Initial Assignment a registration records with its dimension values (Q11, Q17).
+export interface InitialAssignmentInput extends AssignmentInput {
+  effective_date?: string | null;
+  document_reference?: string | null;
+  remark?: string | null;
+}
+
+export interface InitialAssignmentFacts {
+  values: AssignmentValues;
+  // null is "ไม่ทราบ" (unknown).
+  effective_date: string | null;
+  document_reference: string | null;
+  remark: string | null;
+}
+
+export interface AssignmentValue {
+  entry: ReferenceEntrySummary | null;
+  legacy_text: string | null;
+}
+
+export interface AssignmentChange {
+  dimension: 'location' | 'organization_unit' | 'responsible_person';
+  prior: AssignmentValue;
+  new: AssignmentValue;
+}
+
+// One fact of an Asset's assignment timeline.
+export interface AssignmentEvent {
+  id: string;
+  kind: 'INITIAL' | 'REASSIGNMENT';
+  effective_date: string | null;
+  recorded_at: string;
+  recorded_by: string;
+  recorded_by_username: string | null;
+  provenance: 'RECORDED' | 'CARRIED_OVER_F002';
+  document_reference: string | null;
+  remark: string | null;
+  changes: AssignmentChange[];
+}
+
 // The entry field of each dimension (location_id, organization_unit_id, responsible_person_id).
 export const REFERENCE_ID_FIELDS = Object.values(REFERENCE_LISTS).map(({ assetColumn }) => assetColumn);
 
@@ -52,6 +94,35 @@ export type LegacyTextField = (typeof LEGACY_TEXT_FIELDS)[number];
 export const LEGACY_TEXT_MAX_LENGTH = 500;
 
 export const ASSIGNMENT_FIELDS: readonly AssignmentField[] = [...REFERENCE_ID_FIELDS, ...LEGACY_TEXT_FIELDS];
+
+// Each dimension's name in the API and in the database, its input fields, and its entry column in
+// assignment_changes with the Reference List table that column names.
+const DIMENSIONS = [
+  {
+    key: 'location',
+    dimension: 'LOCATION',
+    idField: 'location_id',
+    legacyField: 'legacy_location_text',
+    column: 'location_id',
+    table: 'locations',
+  },
+  {
+    key: 'organization_unit',
+    dimension: 'ORGANIZATION_UNIT',
+    idField: 'organization_unit_id',
+    legacyField: 'legacy_organization_unit_text',
+    column: 'organization_unit_id',
+    table: 'organization_units',
+  },
+  {
+    key: 'responsible_person',
+    dimension: 'RESPONSIBLE_PERSON',
+    idField: 'responsible_person_id',
+    legacyField: 'legacy_responsible_person_text',
+    column: 'person_id',
+    table: 'persons',
+  },
+] as const;
 
 /**
  * Validates and normalizes optional dimension values. Ids must be UUIDs; Legacy text is trimmed,
@@ -94,112 +165,286 @@ export function normalizeAssignment(input: AssignmentInput, label: string = ''):
 export const hasAssignmentValues = (values: Partial<AssignmentValues>): boolean =>
   Object.values(values).some((value) => value !== null && value !== undefined);
 
-/** Every named entry must be active now (D7); each is locked FOR SHARE (see findUnassignableEntry). */
+// Whether a request names any dimension value, before validation: what an authorization check sees.
+export const namesAssignmentValues = (input: AssignmentInput): boolean =>
+  ASSIGNMENT_FIELDS.some((field) => input[field] !== undefined && input[field] !== null);
+
+// The facts an Initial Assignment carries besides its dimension values.
+const INITIAL_ASSIGNMENT_FACT_FIELDS = ['effective_date', 'document_reference', 'remark'] as const;
+
+const BANGKOK_DATE = new Intl.DateTimeFormat('en-CA', {
+  timeZone: 'Asia/Bangkok',
+  year: 'numeric',
+  month: '2-digit',
+  day: '2-digit',
+});
+
+/** The Asia/Bangkok calendar date of an instant, as YYYY-MM-DD: "today" for an Effective Date (Q2). */
+export function bangkokDate(instant: Date): string {
+  const parts = Object.fromEntries(BANGKOK_DATE.formatToParts(instant).map(({ type, value }) => [type, value]));
+  return `${parts.year}-${parts.month}-${parts.day}`;
+}
+
+const DATE_PATTERN = /^(\d{4})-(\d{2})-(\d{2})$/;
+
+// A YYYY-MM-DD date of the Gregorian calendar from year 1, which PostgreSQL stores as given.
+const isCalendarDate = (value: string): boolean => {
+  const match = DATE_PATTERN.exec(value);
+  if (!match) {
+    return false;
+  }
+  const [year, month, day] = match.slice(1).map(Number);
+  const leap = (year % 4 === 0 && year % 100 !== 0) || year % 400 === 0;
+  const daysInMonth = [31, leap ? 29 : 28, 31, 30, 31, 30, 31, 31, 30, 31, 30, 31][month - 1];
+  return year >= 1 && daysInMonth !== undefined && day >= 1 && day <= daysInMonth;
+};
+
+/**
+ * An Initial Assignment's Effective Date as given: a calendar date no later than `today`, with no
+ * lower bound, or null for unknown. Dates compare as text, which YYYY-MM-DD keeps in calendar order.
+ */
+function normalizeEffectiveDate(value: unknown, today: string, label: string): string | null {
+  if (value === null) {
+    return null;
+  }
+  if (typeof value !== 'string' || !isCalendarDate(value)) {
+    throw new ValidationError(`effective_date must be a date (YYYY-MM-DD) or null for unknown${label}`);
+  }
+  if (value > today) {
+    throw new ValidationError(`effective_date must not be after today (${today}, Asia/Bangkok)${label}`);
+  }
+  return value;
+}
+
+export const DOCUMENT_REFERENCE_MAX_LENGTH = 500;
+export const REMARK_MAX_LENGTH = 2000;
+
+// An optional document reference or remark (AS-07, Q5): trimmed, blank as none, bounded, and free
+// of control characters other than line breaks and tabs, as Feature 002's evidence text.
+function normalizeFactText(value: unknown, field: string, maxLength: number, label: string): string | null {
+  if (value === undefined || value === null) {
+    return null;
+  }
+  if (typeof value !== 'string') {
+    throw new ValidationError(`${field} must be a string or null${label}`);
+  }
+  const text = value.trim();
+  if (text.length > maxLength) {
+    throw new ValidationError(`${field} must be at most ${maxLength} characters${label}`);
+  }
+  if (hasDisallowedControlChars(text)) {
+    throw new ValidationError(`${field} must not contain control characters${label}`);
+  }
+  return text.length > 0 ? text : null;
+}
+
+/**
+ * The Initial Assignment a registration records, or null when it names no dimension value. Its
+ * Effective Date must then be given: a date no later than `today`, or null for unknown (Q11).
+ */
+export function normalizeInitialAssignment(
+  input: InitialAssignmentInput,
+  today: string,
+  label: string = ''
+): InitialAssignmentFacts | null {
+  const values = normalizeAssignment(input, label);
+  if (!hasAssignmentValues(values)) {
+    const stray = INITIAL_ASSIGNMENT_FACT_FIELDS.filter((field) => input[field] !== undefined);
+    if (stray.length > 0) {
+      throw new ValidationError(
+        `${stray.join(', ')} belongs to an Initial Assignment and needs a Location, OrganizationUnit or Responsible Person value${label}`
+      );
+    }
+    return null;
+  }
+  if (input.effective_date === undefined) {
+    throw new ValidationError(
+      `effective_date is required with a Location, OrganizationUnit or Responsible Person value: a date (YYYY-MM-DD) or null for unknown${label}`
+    );
+  }
+  return {
+    values,
+    effective_date: normalizeEffectiveDate(input.effective_date, today, label),
+    document_reference: normalizeFactText(input.document_reference, 'document_reference', DOCUMENT_REFERENCE_MAX_LENGTH, label),
+    remark: normalizeFactText(input.remark, 'remark', REMARK_MAX_LENGTH, label),
+  };
+}
+
+/**
+ * Every named entry must be in its own dimension's list and, unless `allowInactive`, active (D7);
+ * each is locked FOR SHARE (see findUnassignableEntry).
+ */
 export async function assertAssignableEntries(
   client: pg.PoolClient | pg.Pool,
   values: Partial<AssignmentValues>,
+  label: string = '',
+  { allowInactive = false }: { allowInactive?: boolean } = {}
+): Promise<void> {
+  const field = await findUnassignableEntry(client, values, { allowInactive });
+  if (field) {
+    throw new ValidationError(
+      allowInactive ? `${field} must name an entry of its list${label}` : `${field} must name an active entry${label}`
+    );
+  }
+}
+
+/**
+ * An Initial Assignment's entries: a deactivated entry may be named only for an Effective Date
+ * before today or unknown, so that old history can name closed rooms and departed staff (Q16).
+ */
+export async function assertInitialAssignmentEntries(
+  client: pg.PoolClient | pg.Pool,
+  facts: InitialAssignmentFacts,
+  today: string,
   label: string = ''
 ): Promise<void> {
-  const field = await findUnassignableEntry(client, values);
-  if (field) {
-    throw new ValidationError(`${field} must name an active entry${label}`);
-  }
+  const allowInactive = facts.effective_date === null || facts.effective_date < today;
+  await assertAssignableEntries(client, facts.values, label, { allowInactive });
 }
 
-// The values stored on an `assets` row.
-export const assignmentValuesOf = (row: any): AssignmentValues => ({
-  location_id: row.location_id ?? null,
-  organization_unit_id: row.organization_unit_id ?? null,
-  responsible_person_id: row.responsible_person_id ?? null,
-  legacy_location_text: row.legacy_location_text ?? null,
-  legacy_organization_unit_text: row.legacy_organization_unit_text ?? null,
-  legacy_responsible_person_text: row.legacy_responsible_person_text ?? null,
-});
-
-const ASSIGNMENT_COLUMNS = `location_id, organization_unit_id, responsible_person_id,
-       legacy_location_text, legacy_organization_unit_text, legacy_responsible_person_text`;
-
-/** Stores the values given at registration on the just-inserted Asset. */
+/**
+ * Records an Asset's Initial Assignment, one change per dimension it sets, and increments the
+ * Asset's assignment version, all in the caller's transaction. Returns the event id.
+ */
 export async function recordInitialAssignment(
   client: pg.PoolClient | pg.Pool,
-  assetId: string,
-  values: AssignmentValues
-): Promise<void> {
-  if (!hasAssignmentValues(values)) {
-    return;
-  }
-  await writeAssignmentValues(client, assetId, values);
-}
-
-/** The stored values of one Asset. */
-export async function readAssignmentValues(
-  client: pg.PoolClient | pg.Pool,
-  assetId: string
-): Promise<AssignmentValues> {
-  const res = await client.query(`SELECT ${ASSIGNMENT_COLUMNS} FROM assets WHERE id = $1`, [assetId]);
-  return assignmentValuesOf(res.rows[0] ?? {});
-}
-
-/** Replaces the stored values of one Asset (the Feature 002 registry correction). */
-export async function writeAssignmentValues(
-  client: pg.PoolClient | pg.Pool,
-  assetId: string,
-  values: AssignmentValues
-): Promise<void> {
-  await client.query(
-    `UPDATE assets
-     SET location_id = $2, organization_unit_id = $3, responsible_person_id = $4,
-         legacy_location_text = $5, legacy_organization_unit_text = $6, legacy_responsible_person_text = $7
-     WHERE id = $1`,
-    [
-      assetId,
-      values.location_id,
-      values.organization_unit_id,
-      values.responsible_person_id,
-      values.legacy_location_text,
-      values.legacy_organization_unit_text,
-      values.legacy_responsible_person_text,
-    ]
+  { assetId, actorId, facts }: { assetId: string; actorId: string; facts: InitialAssignmentFacts }
+): Promise<string> {
+  const eventRes = await client.query(
+    `INSERT INTO assignment_events (asset_id, kind, effective_date, recorded_by, provenance, document_reference, remark)
+     VALUES ($1, 'INITIAL', $2, $3, 'RECORDED', $4, $5)
+     RETURNING id`,
+    [assetId, facts.effective_date, actorId, facts.document_reference, facts.remark]
   );
+  const eventId: string = eventRes.rows[0].id;
+  for (const { dimension, idField, legacyField, column } of DIMENSIONS) {
+    const entryId = facts.values[idField];
+    const legacyText = facts.values[legacyField];
+    if (entryId === null && legacyText === null) {
+      continue;
+    }
+    await client.query(
+      `INSERT INTO assignment_changes (event_id, event_kind, dimension, new_${column}, new_legacy_text)
+       VALUES ($1, 'INITIAL', $2, $3, $4)`,
+      [eventId, dimension, entryId, legacyText]
+    );
+  }
+  await client.query('UPDATE assets SET assignment_version = assignment_version + 1 WHERE id = $1', [assetId]);
+  return eventId;
 }
+
+// The latest change of one dimension for the Asset whose id is `assetId` (SQL), in the order of
+// facts: Effective Date with unknown first, then Recorded At, then event id (MR-03).
+const latestChange = (dimension: string, assetId: string, select: string) => `SELECT ${select}
+         FROM assignment_changes c
+         JOIN assignment_events e ON e.id = c.event_id
+         WHERE e.asset_id = ${assetId} AND c.dimension = '${dimension}'
+         ORDER BY e.effective_date DESC NULLS LAST, e.recorded_at DESC, e.id DESC
+         LIMIT 1`;
 
 // The Current Assignment columns, with each entry's name, joined by currentJoins.
-const CURRENT_COLUMNS = `cur.location_id, cur.organization_unit_id, cur.responsible_person_id,
-       cur.legacy_location_text, cur.legacy_organization_unit_text, cur.legacy_responsible_person_text,
-       l.name AS location_name, l.is_active AS location_active,
-       o.name AS organization_unit_name, o.is_active AS organization_unit_active,
-       p.name AS responsible_person_name, p.is_active AS responsible_person_active`;
-// Joins the Current Assignment of the row aliased `alias`, whose `id` is the Asset's.
-const currentJoins = (alias: string) => `LEFT JOIN assets cur ON cur.id = ${alias}.id
-       LEFT JOIN locations l ON l.id = cur.location_id
-       LEFT JOIN organization_units o ON o.id = cur.organization_unit_id
-       LEFT JOIN persons p ON p.id = cur.responsible_person_id`;
+const CURRENT_COLUMNS = DIMENSIONS.map(
+  ({ key, idField, legacyField }) => `cur_${key}.entry_id AS ${idField}, cur_${key}_entry.name AS ${key}_name,
+       cur_${key}_entry.is_active AS ${key}_active, cur_${key}.legacy_text AS ${legacyField}`
+).join(',\n       ');
 
-// The Current Assignment from a row selected with currentColumns.
+// Joins the Current Assignment of the row aliased `alias`, whose `id` is the Asset's.
+const currentJoins = (alias: string) =>
+  DIMENSIONS.map(
+    ({ key, dimension, column, table }) => `LEFT JOIN LATERAL (
+         ${latestChange(dimension, `${alias}.id`, `c.new_${column} AS entry_id, c.new_legacy_text AS legacy_text`)}
+       ) cur_${key} ON true
+       LEFT JOIN ${table} cur_${key}_entry ON cur_${key}_entry.id = cur_${key}.entry_id`
+  ).join('\n       ');
+
+// The Current Assignment from a row selected with CURRENT_COLUMNS.
 const currentAssignmentOf = (row: any): CurrentAssignment => {
-  const entry = (prefix: string): ReferenceEntrySummary | null =>
-    row[`${prefix}_id`] ? { id: row[`${prefix}_id`], name: row[`${prefix}_name`], is_active: row[`${prefix}_active`] } : null;
+  const entry = (key: string, idField: string): ReferenceEntrySummary | null =>
+    row[idField] ? { id: row[idField], name: row[`${key}_name`], is_active: row[`${key}_active`] } : null;
   return {
-    location: entry('location'),
-    organization_unit: entry('organization_unit'),
-    responsible_person: entry('responsible_person'),
+    location: entry('location', 'location_id'),
+    organization_unit: entry('organization_unit', 'organization_unit_id'),
+    responsible_person: entry('responsible_person', 'responsible_person_id'),
     legacy_location_text: row.legacy_location_text ?? null,
     legacy_organization_unit_text: row.legacy_organization_unit_text ?? null,
     legacy_responsible_person_text: row.legacy_responsible_person_text ?? null,
   };
 };
 
-/** The Current Assignment of one Asset and its stored values. */
+/** The Current Assignment of one Asset, derived from its facts, and its assignment version. */
 export async function readCurrentAssignment(
   client: pg.PoolClient | pg.Pool,
   assetId: string
-): Promise<{ values: AssignmentValues; current: CurrentAssignment }> {
+): Promise<{ current: CurrentAssignment; version: number }> {
   const res = await client.query(
-    `SELECT ${CURRENT_COLUMNS} FROM (SELECT $1::uuid AS id) asset ${currentJoins('asset')}`,
+    `SELECT a.assignment_version, ${CURRENT_COLUMNS} FROM assets a ${currentJoins('a')} WHERE a.id = $1`,
     [assetId]
   );
   const row = res.rows[0] ?? {};
-  return { values: assignmentValuesOf(row), current: currentAssignmentOf(row) };
+  return { current: currentAssignmentOf(row), version: row.assignment_version ?? 0 };
+}
+
+const valueOf = (row: any, side: 'prior' | 'new'): AssignmentValue => ({
+  entry: row[`${side}_entry_id`]
+    ? { id: row[`${side}_entry_id`], name: row[`${side}_entry_name`], is_active: row[`${side}_entry_active`] }
+    : null,
+  legacy_text: row[`${side}_legacy_text`] ?? null,
+});
+
+/** An Asset's assignment facts in the order of facts, each with its changes in dimension order. */
+export async function readAssignmentTimeline(
+  client: pg.PoolClient | pg.Pool,
+  assetId: string
+): Promise<AssignmentEvent[]> {
+  const eventsRes = await client.query(
+    `SELECT e.id, e.kind, to_char(e.effective_date, 'YYYY-MM-DD') AS effective_date, e.recorded_at,
+            e.recorded_by, u.username AS recorded_by_username, e.provenance, e.document_reference, e.remark
+     FROM assignment_events e
+     LEFT JOIN users u ON u.id = e.recorded_by
+     WHERE e.asset_id = $1
+     ORDER BY e.effective_date ASC NULLS FIRST, e.recorded_at ASC, e.id ASC`,
+    [assetId]
+  );
+  // Each side's entry is in its dimension's own column; the others are null (assignment_changes_own_list).
+  const entrySide = (side: 'prior' | 'new') => ({
+    id: `COALESCE(${DIMENSIONS.map(({ column }) => `c.${side}_${column}`).join(', ')})`,
+    name: `COALESCE(${DIMENSIONS.map(({ key }) => `${side}_${key}.name`).join(', ')})`,
+    active: `COALESCE(${DIMENSIONS.map(({ key }) => `${side}_${key}.is_active`).join(', ')})`,
+    joins: DIMENSIONS.map(
+      ({ key, column, table }) => `LEFT JOIN ${table} ${side}_${key} ON ${side}_${key}.id = c.${side}_${column}`
+    ).join('\n     '),
+  });
+  const prior = entrySide('prior');
+  const next = entrySide('new');
+  const changesRes = await client.query(
+    `SELECT c.event_id, c.dimension,
+            ${prior.id} AS prior_entry_id, ${prior.name} AS prior_entry_name, ${prior.active} AS prior_entry_active,
+            c.prior_legacy_text,
+            ${next.id} AS new_entry_id, ${next.name} AS new_entry_name, ${next.active} AS new_entry_active,
+            c.new_legacy_text
+     FROM assignment_changes c
+     JOIN assignment_events e ON e.id = c.event_id
+     ${prior.joins}
+     ${next.joins}
+     WHERE e.asset_id = $1`,
+    [assetId]
+  );
+  return eventsRes.rows.map((row: any) => ({
+    id: row.id,
+    kind: row.kind,
+    effective_date: row.effective_date ?? null,
+    recorded_at: new Date(row.recorded_at).toISOString(),
+    recorded_by: row.recorded_by,
+    recorded_by_username: row.recorded_by_username ?? null,
+    provenance: row.provenance,
+    document_reference: row.document_reference ?? null,
+    remark: row.remark ?? null,
+    changes: DIMENSIONS.flatMap(({ key, dimension }) =>
+      changesRes.rows
+        .filter((change: any) => change.event_id === row.id && change.dimension === dimension)
+        .map((change: any) => ({ dimension: key, prior: valueOf(change, 'prior'), new: valueOf(change, 'new') }))
+    ),
+  }));
 }
 
 /**
@@ -208,8 +453,19 @@ export async function readCurrentAssignment(
  * Assignment, and a legacy-text search matches that dimension's Legacy text alone.
  */
 export const assignmentSearch = {
-  entryFilter: (field: (typeof REFERENCE_ID_FIELDS)[number], param: string): string => `a.${field} = ${param}`,
-  legacyTextFilter: (field: LegacyTextField, param: string): string => `a.${field} ILIKE ${param} ESCAPE '\\'`,
+  entryFilter: (field: (typeof REFERENCE_ID_FIELDS)[number], param: string): string => {
+    const { dimension, column } = DIMENSIONS.find(({ idField }) => idField === field)!;
+    return `(${latestChange(dimension, 'a.id', `c.new_${column}`)}) = ${param}`;
+  },
+  // The Legacy text of the Asset's Initial Assignment, current or not (the spec's search decision).
+  legacyTextFilter: (field: LegacyTextField, param: string): string => {
+    const { dimension } = DIMENSIONS.find(({ legacyField }) => legacyField === field)!;
+    return `EXISTS (SELECT 1
+         FROM assignment_changes c
+         JOIN assignment_events e ON e.id = c.event_id
+         WHERE e.asset_id = a.id AND e.kind = 'INITIAL' AND c.dimension = '${dimension}'
+           AND c.new_legacy_text ILIKE ${param} ESCAPE '\\')`;
+  },
   // The Current Assignment of each result row: select `columns` over `joins(alias)`, read with `current`.
   columns: CURRENT_COLUMNS,
   joins: currentJoins,

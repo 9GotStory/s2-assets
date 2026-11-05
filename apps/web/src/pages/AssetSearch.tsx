@@ -659,7 +659,7 @@ export const AssetSearch: React.FC = () => {
               </div>
             </div>
 
-            {/* Reference filters (T4, D7-A): each dimension narrows the results on its own */}
+            {/* Current Assignment filters (T4 D7-A, F003-T1): each dimension narrows the results on its own */}
             <div
               style={{
                 display: 'grid',
@@ -797,7 +797,7 @@ export const AssetSearch: React.FC = () => {
                         หมายเลขเครื่อง
                       </th>
                       <th style={{ padding: '0.75rem 1rem', fontWeight: 600, color: '#374151' }}>
-                        ข้อมูลอ้างอิง
+                        สถานที่ หน่วยงาน และผู้รับผิดชอบ
                       </th>
                       <th style={{ padding: '0.75rem 1rem', fontWeight: 600, color: '#374151' }}>
                         รหัสอ้างอิงถาวร (Stable ID)
