@@ -16,7 +16,7 @@ packages are technical boundaries, not separate business vocabularies.
 - `docs/08-non-functional-requirements.md`: relevant security, integrity and
   quality requirements.
 - `docs/09-feature-map.md`: feature dependencies and boundaries.
-- `TECHNOLOGY.md` v1.1.0: selected technical baseline.
+- `TECHNOLOGY.md` v1.2.0: selected technical baseline.
 - The approved feature specification, decisions and exact authorized ticket.
 
 Read only relevant sections. Use established Asset, Acquisition, Stable ID,

@@ -11,7 +11,7 @@ It replaces the UID-1001 (`multica-agent`) Compose runtime `s2-assets-dev` (Web 
 `127.0.0.1:5173`), which was coordinated by Multica and retired on 2026-11-03. This runtime
 started from a fresh database: no data, credentials or caches were taken from UID 1001.
 
-Authority: `TECHNOLOGY.md` v1.1.0 §9 (Development environment, Development orchestration).
+Authority: `TECHNOLOGY.md` v1.2.0 §9 (Development environment, Development orchestration).
 
 ## Topology
 

@@ -13,7 +13,7 @@ Higher sources win; a lower source never silently overrides a higher one.
 2. `BLUEPRINT.md` v1.0.2, frozen.
 3. The active Feature Brief in `features/`.
 4. The canonical Business Rules in `docs/06-business-rules.md`.
-5. `TECHNOLOGY.md` v1.1.0, the selected technical baseline.
+5. `TECHNOLOGY.md` v1.2.0, the selected technical baseline.
 6. Approved specifications, decisions and tickets in the issue tracker.
 7. Code, tests and evidence.
 
