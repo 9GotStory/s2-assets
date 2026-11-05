@@ -160,6 +160,15 @@ test.describe.serial('Asset Registry Real SPA -> Composed API -> PostgreSQL Jour
     ]);
   };
 
+  // Switches the actor for a fresh page load. The API renews the session cookie on every response,
+  // so a request still in flight from the previous actor's page can restore that actor's cookie
+  // after addCookies; Journey 12 flaked that way. Leaving the page first settles those requests.
+  // A switch under a mounted page, which the actor-switch journeys test, keeps using loginAs.
+  const switchActor = async (page: any, context: any, userId: string) => {
+    await page.goto('about:blank');
+    await loginAs(page, context, userId);
+  };
+
   test('Journey 1: minimal ordinary registration -> linked detail/history view', async ({ page, context }) => {
     await loginAs(page, context, custodianUserId);
 
@@ -1690,7 +1699,7 @@ test.describe.serial('Asset Registry Real SPA -> Composed API -> PostgreSQL Jour
     await expect(page.locator('#asset-detail-heading')).not.toBeVisible();
 
     // 5. Test search page session revocation on focus
-    await loginAs(page, context, readonlyUserId);
+    await switchActor(page, context, readonlyUserId);
     await page.goto(`${targetBaseUrl}/assets/search`);
     await expect(page.locator('#asset-search-table')).toBeVisible();
 
@@ -2258,7 +2267,7 @@ test.describe.serial('Asset Registry Real SPA -> Composed API -> PostgreSQL Jour
     await expect(page.getByRole('heading', { level: 1, name: 'เข้าสู่ระบบ' })).toBeVisible();
 
     // Part B: Duplicate preview 403 suppresses form and triggers reauthorization
-    await loginAs(page, context, adminUserId);
+    await switchActor(page, context, adminUserId);
     await page.goto(`${targetBaseUrl}/assets/${testAssetId}`);
     await expect(page.locator('#asset-detail-heading')).toBeVisible();
 
@@ -2277,7 +2286,7 @@ test.describe.serial('Asset Registry Real SPA -> Composed API -> PostgreSQL Jour
     await expect(page.locator('[data-testid="read-only-notice"]')).toBeVisible();
 
     // Part C: Mutation 401 immediately redirects without entering uncertain retry
-    await loginAs(page, context, adminUserId);
+    await switchActor(page, context, adminUserId);
     await page.goto(`${targetBaseUrl}/assets/${testAssetId}`);
     await expect(page.locator('#asset-detail-heading')).toBeVisible();
 
@@ -2299,7 +2308,7 @@ test.describe.serial('Asset Registry Real SPA -> Composed API -> PostgreSQL Jour
     await expect(page.locator('button#retry-uncertain-btn')).not.toBeVisible();
 
     // Part D: Mutation 403 immediately suppresses form without entering uncertain retry
-    await loginAs(page, context, adminUserId);
+    await switchActor(page, context, adminUserId);
     await page.goto(`${targetBaseUrl}/assets/${testAssetId}`);
     await expect(page.locator('#asset-detail-heading')).toBeVisible();
 
@@ -2341,7 +2350,7 @@ test.describe.serial('Asset Registry Real SPA -> Composed API -> PostgreSQL Jour
       [crypto.randomUUID(), deniedAssetId, deniedUserId, JSON.stringify({ name: 'เครื่องแม่ข่ายทดสอบ Denied' })]
     );
 
-    await loginAs(page, context, deniedUserId);
+    await switchActor(page, context, deniedUserId);
     await page.goto(`${targetBaseUrl}/assets/${deniedAssetId}`);
     await expect(page.locator('#asset-detail-heading')).toBeVisible();
     await expect(page.locator('#asset-correction-form')).toBeVisible();
@@ -2431,7 +2440,7 @@ test.describe.serial('Asset Registry Real SPA -> Composed API -> PostgreSQL Jour
       [crypto.randomUUID(), permAssetId, permUserId, JSON.stringify({ name: 'เครื่องแม่ข่ายทดสอบ Permitted' })]
     );
 
-    await loginAs(page, context, permUserId);
+    await switchActor(page, context, permUserId);
     await page.goto(`${targetBaseUrl}/assets/${permAssetId}`);
     await expect(page.locator('#asset-detail-heading')).toBeVisible();
     await expect(page.locator('#asset-correction-form')).toBeVisible();
@@ -2502,7 +2511,7 @@ test.describe.serial('Asset Registry Real SPA -> Composed API -> PostgreSQL Jour
 
     // Part G: Mounted AssetDetailContent held session-check released after navigation does not redirect to /login
     // Uses explicit request-start/release/completion coordination instead of arbitrary sleep
-    await loginAs(page, context, adminUserId);
+    await switchActor(page, context, adminUserId);
     await page.goto(`${targetBaseUrl}/assets/${testAssetId}`);
     await expect(page.locator('#asset-detail-heading')).toBeVisible();
 
@@ -3012,14 +3021,14 @@ test.describe.serial('Asset Registry Real SPA -> Composed API -> PostgreSQL Jour
     await expect(page.locator('#fact-amount')).toContainText('120000.00 THB');
 
     // 9. Read-only user access: can view acquisition facts and linked assets
-    await loginAs(page, context, readonlyUserId);
+    await switchActor(page, context, readonlyUserId);
     await page.goto(`${targetBaseUrl}/acquisitions/${createdAcqId}`);
     await expect(page.locator('#acquisition-detail-heading')).toBeVisible();
     await expect(page.locator('#fact-amount')).toContainText('120000.00 THB');
     await expect(page.locator('#linked-assets-table')).toContainText('E2E-ACQ-AST-01');
 
     // 10. Maintainer user access: denied with 403 Forbidden
-    await loginAs(page, context, maintainerUserId);
+    await switchActor(page, context, maintainerUserId);
     await page.goto(`${targetBaseUrl}/acquisitions/${createdAcqId}`);
     await expect(page.locator('#acquisition-error-alert')).toBeVisible();
     await expect(page.locator('#acquisition-error-alert')).toContainText('403 Forbidden');
@@ -3099,7 +3108,7 @@ test.describe.serial('Asset Registry Real SPA -> Composed API -> PostgreSQL Jour
     const a = await res.json();
 
     await context.clearCookies();
-    await loginAs(page, context, readonlyUserId);
+    await switchActor(page, context, readonlyUserId);
     await page.goto(`${targetBaseUrl}/acquisitions/${a.id}`);
     await expect(page.locator('#fact-amount')).toContainText('9876.54');
 
@@ -4192,7 +4201,7 @@ test.describe.serial('Asset Registry Real SPA -> Composed API -> PostgreSQL Jour
       `INSERT INTO user_roles (user_id, role_id) VALUES ('${tempUserId}', 'ASSET_CUSTODIAN')`
     );
 
-    await loginAs(page, context, tempUserId);
+    await switchActor(page, context, tempUserId);
     await page.goto(`${targetBaseUrl}/assets/${assetId}`);
     await expect(page.locator('[data-testid="add-evidence-btn"]')).toBeVisible();
 
@@ -5680,7 +5689,7 @@ test.describe.serial('Asset Registry Real SPA -> Composed API -> PostgreSQL Jour
     expect(counts.rows[0]).toEqual({ l: 2, o: 1, p: 1 });
 
     // A Read-only User sees the lists, without maintenance controls.
-    await loginAs(page, context, readonlyUserId);
+    await switchActor(page, context, readonlyUserId);
     await page.goto(`${targetBaseUrl}/admin/references`);
     await expect(page.getByTestId('reference-read-only-notice')).toBeVisible();
     await expect(page.locator('#reference-table')).toContainText('Store Room E2E North');
@@ -5845,7 +5854,7 @@ test.describe.serial('Asset Registry Real SPA -> Composed API -> PostgreSQL Jour
     ]);
 
     for (const viewer of [custodianUserId, readonlyUserId]) {
-      await loginAs(page, context, viewer);
+      await switchActor(page, context, viewer);
       await page.goto(`${targetBaseUrl}/assets/${assetId}`);
       await expect(page.locator('#detail-location')).toHaveText('Store Room E2E North');
       await expect(page.locator('#detail-organization_unit')).toHaveText('ข้อความเดิม: กองพัสดุ (ทะเบียนปี 2540)');
