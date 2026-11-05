@@ -4,13 +4,11 @@ on:
   push:
     branches:
       - main
-      - feature/001-application-foundation
-      - feature/002-asset-registry
+      - 'feature/*'
   pull_request:
     branches:
       - main
-      - feature/001-application-foundation
-      - feature/002-asset-registry
+      - 'feature/*'
   workflow_dispatch:
 
 permissions:
