@@ -35,6 +35,8 @@ export interface AppOptions {
   sessionTtlMs?: number;
   plugin?: (app: FastifyInstance) => Promise<void> | void;
   publicAppOrigin?: string;
+  // The current time for business-date rules (F003: an Effective Date is no later than today).
+  clock?: () => Date;
 }
 
 export function redactSecrets(message: string): string {
@@ -179,7 +181,7 @@ export async function buildApp(options: AppOptions = {}): Promise<FastifyInstanc
     });
     const capabilityService = new CapabilityService({ db: dbClient });
 
-    const assetService = new AssetService({ db: dbClient });
+    const assetService = new AssetService({ db: dbClient, clock: options.clock });
     const acquisitionService = new AcquisitionService({ db: dbClient });
     const evidenceService = new EvidenceService({ db: dbClient, capabilityService });
 

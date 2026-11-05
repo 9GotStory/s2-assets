@@ -1,6 +1,7 @@
 import React, { useEffect, useState } from 'react';
 
-// T4 (#25, D7-A): the three reference dimensions an Asset may name, each with separate legacy text.
+// The three dimensions of an Asset's Permanent Assignment (T4 #25, D7-A; ADR 0001), each with
+// separate Legacy text.
 export const REFERENCE_DIMENSIONS = [
   {
     kind: 'locations',
@@ -36,7 +37,9 @@ export interface ReferenceEntry {
   version?: number;
 }
 
-export interface AssetReferenceContext {
+// The Current Assignment (F003-T1, GLOSSARY.md): each dimension's entry by its current name, and
+// its Legacy text, as the asset detail and search return it.
+export interface CurrentAssignment {
   location: ReferenceEntry | null;
   organization_unit: ReferenceEntry | null;
   responsible_person: ReferenceEntry | null;
@@ -44,9 +47,6 @@ export interface AssetReferenceContext {
   legacy_organization_unit_text: string | null;
   legacy_responsible_person_text: string | null;
 }
-
-// The reference columns of an Asset record, null when not recorded.
-export type AssetReferenceColumns = Record<ReferenceContextField, string | null>;
 
 // Form values, where '' means none.
 export type ReferenceContextValues = Record<ReferenceContextField, string>;
@@ -67,6 +67,9 @@ export const referenceContextPayload = (values: ReferenceContextValues): Partial
   Object.fromEntries(
     REFERENCE_CONTEXT_FIELDS.filter((field) => values[field].trim() !== '').map((field) => [field, values[field].trim()])
   );
+
+export const hasReferenceValues = (values: ReferenceContextValues): boolean =>
+  REFERENCE_CONTEXT_FIELDS.some((field) => values[field].trim() !== '');
 
 export const entryLabel = (entry: ReferenceEntry): string =>
   entry.is_active ? entry.name : `${entry.name} (ปิดใช้งาน)`;
@@ -141,7 +144,8 @@ export function useReferenceLists(
   return loaded && loaded.key === actorKey ? loaded : { lists: NO_LISTS, error: null };
 }
 
-const labelStyle: React.CSSProperties = {
+// The field styles of the registration forms' fieldsets.
+export const fieldLabelStyle: React.CSSProperties = {
   display: 'block',
   fontSize: '0.875rem',
   fontWeight: 600,
@@ -149,7 +153,7 @@ const labelStyle: React.CSSProperties = {
   marginBottom: '0.375rem',
 };
 
-const inputStyle: React.CSSProperties = {
+export const fieldInputStyle: React.CSSProperties = {
   width: '100%',
   padding: '0.625rem 0.75rem',
   border: '1px solid #d1d5db',
@@ -166,24 +170,24 @@ export interface ReferenceContextFieldsProps {
   onChange: (field: ReferenceContextField, value: string) => void;
   lists: ReferenceLists;
   listError?: string | null;
-  // Entries the Asset names already; they stay selectable after deactivation.
-  currentIds?: Partial<Record<ReferenceIdField, string | null>>;
   disabled?: boolean;
+  // Shown after the dimensions, inside the same fieldset (F003-T1: the Initial Assignment's facts).
+  children?: React.ReactNode;
 }
 
 /**
  * Optional Location, OrganizationUnit and Responsible Person, each picked from its list,
- * with the legacy text kept as recorded when it matches no entry (D7-A, AR-10).
+ * with the Legacy text kept as recorded when it matches no entry (D7-A, AR-10).
  */
 export const ReferenceContextFields: React.FC<ReferenceContextFieldsProps> = ({
   idPrefix,
-  legend = 'ข้อมูลอ้างอิง (ไม่บังคับ)',
+  legend = 'สถานที่ หน่วยงาน และผู้รับผิดชอบ (ไม่บังคับ)',
   values,
   onChange,
   lists,
   listError,
-  currentIds = {},
   disabled = false,
+  children,
 }) => (
   <fieldset
     id={`${idPrefix}-reference-context`}
@@ -207,18 +211,18 @@ export const ReferenceContextFields: React.FC<ReferenceContextFieldsProps> = ({
         style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '0.75rem', marginBottom: '0.75rem' }}
       >
         <div>
-          <label htmlFor={`${idPrefix}-${idField}`} style={labelStyle}>
+          <label htmlFor={`${idPrefix}-${idField}`} style={fieldLabelStyle}>
             {label}
           </label>
           <select
             id={`${idPrefix}-${idField}`}
             value={values[idField]}
             onChange={(e) => onChange(idField, e.target.value)}
-            style={inputStyle}
+            style={fieldInputStyle}
           >
             <option value="">— ไม่ระบุ —</option>
             {lists[kind]
-              .filter((entry) => entry.is_active || entry.id === currentIds[idField])
+              .filter((entry) => entry.is_active)
               .map((entry) => (
                 <option key={entry.id} value={entry.id}>
                   {entryLabel(entry)}
@@ -227,7 +231,7 @@ export const ReferenceContextFields: React.FC<ReferenceContextFieldsProps> = ({
           </select>
         </div>
         <div>
-          <label htmlFor={`${idPrefix}-${legacyField}`} style={labelStyle}>
+          <label htmlFor={`${idPrefix}-${legacyField}`} style={fieldLabelStyle}>
             ข้อความเดิม
           </label>
           <input
@@ -237,10 +241,11 @@ export const ReferenceContextFields: React.FC<ReferenceContextFieldsProps> = ({
             maxLength={500}
             onChange={(e) => onChange(legacyField, e.target.value)}
             placeholder="เว้นว่างได้"
-            style={inputStyle}
+            style={fieldInputStyle}
           />
         </div>
       </div>
     ))}
+    {children}
   </fieldset>
 );

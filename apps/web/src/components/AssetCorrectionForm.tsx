@@ -2,19 +2,9 @@ import React, { useState, useRef, useEffect } from 'react';
 import { useForm } from 'react-hook-form';
 import { z } from 'zod';
 import type { AssetRecord } from '../pages/AssetDetail';
-import {
-  REFERENCE_CONTEXT_FIELDS,
-  ReferenceContextFields,
-  useReferenceLists,
-  type AssetReferenceColumns,
-  type ReferenceContextField,
-  type ReferenceContextValues,
-} from './ReferenceContextFields';
 
 export interface AssetCorrectionFormProps {
   asset: AssetRecord;
-  // The verified actor the reference lists are loaded for (T4).
-  actorId?: string | null;
   isLegacy?: boolean;
   csrfToken?: string | null;
   dataUpdatedAt?: number;
@@ -24,7 +14,7 @@ export interface AssetCorrectionFormProps {
   onRefresh?: () => Promise<AssetRecord | null>;
 }
 
-interface FormValues extends ReferenceContextValues {
+interface FormValues {
   name: string;
   asset_number: string;
   serial_number: string;
@@ -32,8 +22,9 @@ interface FormValues extends ReferenceContextValues {
   explicit_continuation: boolean;
 }
 
-// The expected-before values a correction is checked against: identity and, since T4, reference context.
-type Baseline = { name: string | null; asset_number: string | null; serial_number: string | null } & AssetReferenceColumns;
+// The expected-before values a correction is checked against. Since F003 Q1 (#25 D3 as amended) the
+// registry correction edits name, Asset Number and Serial Number only.
+type Baseline = { name: string | null; asset_number: string | null; serial_number: string | null };
 
 type CorrectionPayload = {
   name: string | null;
@@ -45,16 +36,12 @@ type CorrectionPayload = {
   reason: string | null;
   explicit_continuation: boolean;
   retry_token: string;
-} & Partial<Record<ReferenceContextField | `expected_${ReferenceContextField}`, string | null>>;
-
-const referenceColumnsOf = (asset: AssetRecord): AssetReferenceColumns =>
-  Object.fromEntries(REFERENCE_CONTEXT_FIELDS.map((field) => [field, asset[field] ?? null])) as AssetReferenceColumns;
+};
 
 const baselineOf = (asset: AssetRecord): Baseline => ({
   name: asset.name,
   asset_number: asset.asset_number,
   serial_number: asset.serial_number,
-  ...referenceColumnsOf(asset),
 });
 
 const formValuesOf = (asset: AssetRecord): FormValues => ({
@@ -63,9 +50,6 @@ const formValuesOf = (asset: AssetRecord): FormValues => ({
   serial_number: asset.serial_number || '',
   reason: '',
   explicit_continuation: false,
-  ...(Object.fromEntries(
-    REFERENCE_CONTEXT_FIELDS.map((field) => [field, asset[field] ?? ''])
-  ) as ReferenceContextValues),
 });
 
 interface DuplicateCandidate {
@@ -77,7 +61,6 @@ interface DuplicateCandidate {
 
 export const AssetCorrectionForm: React.FC<AssetCorrectionFormProps> = ({
   asset,
-  actorId = null,
   isLegacy = false,
   csrfToken,
   dataUpdatedAt,
@@ -91,7 +74,6 @@ export const AssetCorrectionForm: React.FC<AssetCorrectionFormProps> = ({
   const stalledPageCountRef = useRef<number>(0);
   const awaitingRefreshSinceTimestampRef = useRef<number>(0);
   const [isReloadingLatest, setIsReloadingLatest] = useState(false);
-  const referenceLists = useReferenceLists(true, actorId);
 
   // Baseline expected-before state to prevent silent rebasing during edits
   const [baselineExpected, setBaselineExpected] = useState<Baseline>(() => baselineOf(asset));
@@ -130,11 +112,6 @@ export const AssetCorrectionForm: React.FC<AssetCorrectionFormProps> = ({
     defaultValues: formValuesOf(asset),
   });
 
-  // The reference fields render through ReferenceContextFields and change by setValue.
-  useEffect(() => {
-    REFERENCE_CONTEXT_FIELDS.forEach((field) => register(field));
-  }, [register]);
-
   const { errors, isDirty } = formState;
 
   // Rebase baseline only when not dirty, or reconcile on confirmed read (F-01, F-03)
@@ -170,12 +147,6 @@ export const AssetCorrectionForm: React.FC<AssetCorrectionFormProps> = ({
     asset.name,
     asset.asset_number,
     asset.serial_number,
-    asset.location_id,
-    asset.organization_unit_id,
-    asset.responsible_person_id,
-    asset.legacy_location_text,
-    asset.legacy_organization_unit_text,
-    asset.legacy_responsible_person_text,
     asset.updated_at,
     dataUpdatedAt,
     isDirty,
@@ -567,22 +538,11 @@ export const AssetCorrectionForm: React.FC<AssetCorrectionFormProps> = ({
     const rawName = data.name === '' ? null : data.name;
     const trimmedReason = (data.reason || '').trim();
 
-    // T4 (#25): each changed reference field, with its expected-before value.
-    const referenceChanges: Partial<CorrectionPayload> = Object.fromEntries(
-      REFERENCE_CONTEXT_FIELDS.filter((field) => (data[field].trim() || null) !== baselineExpected[field]).flatMap(
-        (field) => [
-          [field, data[field].trim() || null],
-          [`expected_${field}`, baselineExpected[field]],
-        ]
-      )
-    );
-
     // Check no-op against baseline expected
     const isNoOp =
       rawName === (baselineExpected.name ?? null) &&
       rawAssetNumber === (baselineExpected.asset_number ?? null) &&
-      rawSerialNumber === (baselineExpected.serial_number ?? null) &&
-      Object.keys(referenceChanges).length === 0;
+      rawSerialNumber === (baselineExpected.serial_number ?? null);
 
     // 1. Zod client-side validation
     const schema = z.object({
@@ -626,7 +586,6 @@ export const AssetCorrectionForm: React.FC<AssetCorrectionFormProps> = ({
       reason: isNoOp && trimmedReason.length === 0 ? null : trimmedReason,
       explicit_continuation: data.explicit_continuation,
       retry_token: retryTokenRef.current,
-      ...referenceChanges,
     };
 
     await executeSubmission(payload);
@@ -1047,19 +1006,16 @@ export const AssetCorrectionForm: React.FC<AssetCorrectionFormProps> = ({
         </div>
       )}
 
-      {/* Reference context (T4, D3 asset:correct) */}
-      <ReferenceContextFields
-        idPrefix="correction"
-        legend="ข้อมูลอ้างอิง: แก้การบันทึกที่ผิด (ไม่ใช่การย้ายหรือโอนครุภัณฑ์)"
-        values={
-          Object.fromEntries(REFERENCE_CONTEXT_FIELDS.map((field) => [field, watch(field)])) as ReferenceContextValues
-        }
-        onChange={(field, value) => setValue(field, value, { shouldDirty: true })}
-        lists={referenceLists.lists}
-        listError={referenceLists.error}
-        currentIds={baselineExpected}
-        disabled={isFormDisabled}
-      />
+      {/* F003 Q1 (#25 D3 as amended): the Permanent Assignment is not corrected here */}
+      <p
+        data-testid="correction-assignment-note"
+        style={{ margin: '0 0 1.25rem 0', fontSize: '0.8125rem', color: '#4b5563' }}
+      >
+        สถานที่ หน่วยงาน และผู้รับผิดชอบไม่ได้แก้ที่ฟอร์มนี้ ดูที่หัวข้อ{' '}
+        <a href="#assignment-heading" style={{ color: '#2563eb' }}>
+          สถานที่ หน่วยงาน และผู้รับผิดชอบ
+        </a>
+      </p>
 
       {/* Reason Field (Mandatory per P2) */}
       <div style={{ marginBottom: '1.25rem' }}>

@@ -3,11 +3,17 @@ import { useNavigate, Link, useSearchParams } from 'react-router';
 import {
   EMPTY_REFERENCE_CONTEXT,
   ReferenceContextFields,
-  referenceContextPayload,
+  hasReferenceValues,
   useReferenceLists,
-  type AssetReferenceColumns,
   type ReferenceContextValues,
 } from '../components/ReferenceContextFields';
+import {
+  EMPTY_INITIAL_ASSIGNMENT,
+  InitialAssignmentFields,
+  initialAssignmentError,
+  initialAssignmentPayload,
+  type InitialAssignmentDraft,
+} from '../components/InitialAssignmentFields';
 
 export interface DuplicateCandidate {
   id: string;
@@ -26,7 +32,7 @@ export interface DuplicateCandidatesResponse {
 }
 
 export interface RegisterAssetResponse {
-  asset: AssetReferenceColumns & {
+  asset: {
     id: string;
     name: string | null;
     asset_number: string | null;
@@ -59,6 +65,8 @@ export const AssetRegister: React.FC = () => {
   const [explicitContinuation, setExplicitContinuation] = useState(false);
   const [acquisitionId, setAcquisitionId] = useState(initialAcquisitionId);
   const [referenceContext, setReferenceContext] = useState<ReferenceContextValues>(EMPTY_REFERENCE_CONTEXT);
+  // F003-T1: the Initial Assignment's Effective Date, document reference and remark.
+  const [initialAssignment, setInitialAssignment] = useState<InitialAssignmentDraft>(EMPTY_INITIAL_ASSIGNMENT);
 
   // Maintain persistent retry token across retries for the same registration intent (Spec Finding 5)
   const [retryToken] = useState(() => crypto.randomUUID());
@@ -267,6 +275,12 @@ export const AssetRegister: React.FC = () => {
       return;
     }
 
+    const assignmentError = initialAssignmentError(referenceContext, initialAssignment, isLegacy);
+    if (assignmentError) {
+      setErrorMessage(assignmentError);
+      return;
+    }
+
     setIsSubmitting(true);
     setErrorMessage(null);
 
@@ -294,7 +308,7 @@ export const AssetRegister: React.FC = () => {
         explicit_continuation: explicitContinuation,
         retry_token: retryToken,
         acquisition_id: acquisitionId.trim() ? acquisitionId.trim() : null,
-        ...referenceContextPayload(referenceContext),
+        ...initialAssignmentPayload(referenceContext, initialAssignment, isLegacy),
       };
 
       const response = await fetch('/assets', {
@@ -893,14 +907,23 @@ export const AssetRegister: React.FC = () => {
               />
             </div>
 
-            {/* Reference context (T4, D7-A) */}
+            {/* Initial Assignment (F003-T1): the dimensions and, once one is filled, its Effective Date */}
             <ReferenceContextFields
               idPrefix="register"
               values={referenceContext}
               onChange={(field, value) => setReferenceContext((current) => ({ ...current, [field]: value }))}
               lists={referenceLists.lists}
               listError={referenceLists.error}
-            />
+            >
+              {hasReferenceValues(referenceContext) && (
+                <InitialAssignmentFields
+                  idPrefix="register"
+                  draft={initialAssignment}
+                  isLegacy={isLegacy}
+                  onChange={setInitialAssignment}
+                />
+              )}
+            </ReferenceContextFields>
 
             {/* Acquisition Linkage */}
             <div style={{ marginBottom: '1.5rem' }}>

@@ -7,7 +7,9 @@ needs the same three dimensions as a Permanent Assignment with Effective Dates a
 one set of values cannot carry both meanings. On 2026-11-05, in the Feature 003 grilling session,
 the Product Owner made them one concept: the values given at registration become the Initial
 Assignment, and afterwards they change only through a Reassignment or an Assignment Correction, so
-`asset:correct` no longer edits them.
+`asset:correct` no longer edits them. The Feature 003 specification,
+[#50](https://github.com/9GotStory/s2-assets/issues/50), records the decision with the Product
+Owner's words and builds the assignment model on it.
 
 ## Considered options
 

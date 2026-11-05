@@ -9,12 +9,15 @@ import {
   RetryTokenConflictError,
   StaleBeforeConflictError,
   ValidationError,
-  REFERENCE_ID_FIELDS,
-  LEGACY_TEXT_FIELDS,
   type CorrectAssetInput,
   type RegisterAssetInput,
   type BulkRegisterAssetInput,
 } from '../services/asset.service.ts';
+import {
+  LEGACY_TEXT_FIELDS,
+  REFERENCE_ID_FIELDS,
+  namesAssignmentValues,
+} from '../services/assignment.service.ts';
 import { isValidUuid, CapabilityService } from '../services/capability.service.ts';
 
 export interface AssetRoutesOptions {
@@ -34,7 +37,17 @@ const referenceContextFields = {
   legacy_responsible_person_text: z.string().nullable().optional(),
 };
 
-// T4 (#25): a correction names the expected-before value of each reference field it changes.
+// F003-T1 (#51): the Initial Assignment a registration records with those values. A null
+// effective_date is "ไม่ทราบ" (unknown).
+const initialAssignmentFields = {
+  ...referenceContextFields,
+  effective_date: z.string().nullable().optional(),
+  document_reference: z.string().nullable().optional(),
+  remark: z.string().nullable().optional(),
+};
+
+// Feature 002 correction fields (#25 D3). Accepted here only for AssetService to refuse them with a
+// domain message: the registry correction no longer changes the Permanent Assignment (#50 Q1).
 const expectedReferenceContextFields = {
   expected_location_id: z.string().nullable().optional(),
   expected_organization_unit_id: z.string().nullable().optional(),
@@ -56,7 +69,7 @@ const RegisterAssetSchema = z
     retry_token: z.string().optional(),
     category: z.null().optional(),
     acquisition_id: z.string().nullable().optional(),
-    ...referenceContextFields,
+    ...initialAssignmentFields,
   })
   .strict();
 
@@ -79,7 +92,7 @@ const BulkRegisterAssetSchema = z
     explicit_continuation: z.boolean().optional(),
     items: z.array(BulkRegisterItemSchema).min(1).max(100),
     retry_token: z.string().optional(),
-    ...referenceContextFields,
+    ...initialAssignmentFields,
   })
   .strict();
 
@@ -125,6 +138,15 @@ export const assetRoutes: FastifyPluginAsync<AssetRoutesOptions> = async (
   const assetService =
     options.assetService ??
     new AssetService({ db: options.db });
+
+  // #50 Q3: dimension values at registration record an Initial Assignment, which needs
+  // 'assignment:reassign' besides the registration capability. Fails closed without a capability service.
+  const mayRecordInitialAssignment = async (
+    userId: string,
+    body: RegisterAssetInput | BulkRegisterAssetInput
+  ): Promise<boolean> =>
+    !namesAssignmentValues(body) ||
+    (capabilityService ? await capabilityService.hasCapability(userId, 'assignment:reassign') : false);
 
   const getPublicAppOrigin = (): string | undefined => {
     return (fastify as any).publicAppOrigin ?? options.publicAppOrigin;
@@ -288,6 +310,15 @@ export const assetRoutes: FastifyPluginAsync<AssetRoutesOptions> = async (
         }
       }
 
+      if (!(await mayRecordInitialAssignment(user.id, body))) {
+        return reply.status(403).send({
+          statusCode: 403,
+          code: 'FORBIDDEN',
+          error: 'FORBIDDEN',
+          message: "Forbidden: requires 'assignment:reassign' capability to record an Initial Assignment",
+        });
+      }
+
       try {
         const result = await assetService.registerAsset(user.id, body, {
           retryToken,
@@ -421,6 +452,15 @@ export const assetRoutes: FastifyPluginAsync<AssetRoutesOptions> = async (
               "Forbidden: requires 'acquisition:view' capability to link an acquisition",
           });
         }
+      }
+
+      if (!(await mayRecordInitialAssignment(user.id, body))) {
+        return reply.status(403).send({
+          statusCode: 403,
+          code: 'FORBIDDEN',
+          error: 'FORBIDDEN',
+          message: "Forbidden: requires 'assignment:reassign' capability to record an Initial Assignment",
+        });
       }
 
       try {
@@ -700,6 +740,44 @@ export const assetRoutes: FastifyPluginAsync<AssetRoutesOptions> = async (
         ...result,
         can_correct: canCorrect,
       });
+    }
+  );
+
+  /**
+   * GET /:id/assignments
+   * The Asset's assignment timeline (F003-T1, AS-06, MR-04): every assignment fact in the order of
+   * facts, each with its kind, Effective Date or unknown, Recorded At, recorder, provenance, changes,
+   * document reference and remark.
+   * Protected: requires 'asset:view' capability, like the Asset itself
+   */
+  fastify.get(
+    '/:id/assignments',
+    {
+      preHandler: [requireCapability('asset:view')],
+    },
+    async (request: FastifyRequest, reply: FastifyReply) => {
+      const { id } = (request.params || {}) as { id: string };
+
+      if (!isValidUuid(id)) {
+        return reply.status(400).send({
+          statusCode: 400,
+          code: 'INVALID_ID',
+          error: 'INVALID_ID',
+          message: 'Asset ID must be a valid UUID string',
+        });
+      }
+
+      const items = await assetService.getAssignmentTimeline(id);
+      if (!items) {
+        return reply.status(404).send({
+          statusCode: 404,
+          code: 'NOT_FOUND',
+          error: 'NOT_FOUND',
+          message: 'Asset not found',
+        });
+      }
+
+      return reply.status(200).send({ items });
     }
   );
 
