@@ -40,7 +40,7 @@ export interface InitialAssignmentDraft {
 export const EMPTY_INITIAL_ASSIGNMENT: InitialAssignmentDraft = { effectiveDate: null, documentReference: '', remark: '' };
 
 // #50 Q11: "ไม่ทราบ" for a legacy registration, so no date is invented; the registration date otherwise.
-const effectiveDateOf = (draft: InitialAssignmentDraft, isLegacy: boolean): EffectiveDateChoice =>
+export const effectiveDateOf = (draft: InitialAssignmentDraft, isLegacy: boolean): EffectiveDateChoice =>
   draft.effectiveDate ?? (isLegacy ? { date: '', unknown: true } : { date: bangkokToday(), unknown: false });
 
 // Why a registration with these dimension values cannot be sent, or null when it can.

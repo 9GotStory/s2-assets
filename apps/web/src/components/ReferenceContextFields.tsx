@@ -171,6 +171,8 @@ export interface ReferenceContextFieldsProps {
   lists: ReferenceLists;
   listError?: string | null;
   disabled?: boolean;
+  // Also offers deactivated entries, labelled (#50 Q16: a fact dated before today or of unknown date).
+  offerInactive?: boolean;
   // Shown after the dimensions, inside the same fieldset (F003-T1: the Initial Assignment's facts).
   children?: React.ReactNode;
 }
@@ -187,6 +189,7 @@ export const ReferenceContextFields: React.FC<ReferenceContextFieldsProps> = ({
   lists,
   listError,
   disabled = false,
+  offerInactive = false,
   children,
 }) => (
   <fieldset
@@ -222,7 +225,7 @@ export const ReferenceContextFields: React.FC<ReferenceContextFieldsProps> = ({
           >
             <option value="">— ไม่ระบุ —</option>
             {lists[kind]
-              .filter((entry) => entry.is_active)
+              .filter((entry) => entry.is_active || offerInactive)
               .map((entry) => (
                 <option key={entry.id} value={entry.id}>
                   {entryLabel(entry)}

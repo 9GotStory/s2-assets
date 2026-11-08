@@ -39,7 +39,7 @@ const referenceContextFields = {
 
 // F003-T1 (#51): the Initial Assignment a registration records with those values. A null
 // effective_date is "ไม่ทราบ" (unknown).
-const initialAssignmentFields = {
+export const initialAssignmentFields = {
   ...referenceContextFields,
   effective_date: z.string().nullable().optional(),
   document_reference: z.string().nullable().optional(),
@@ -716,9 +716,11 @@ export const assetRoutes: FastifyPluginAsync<AssetRoutesOptions> = async (
       }
 
       let canCorrect = false;
+      let canReassign = false;
       let canViewAcquisition = false;
       if (request.user && capabilityService) {
         canCorrect = await capabilityService.hasCapability(request.user.id, 'asset:correct');
+        canReassign = await capabilityService.hasCapability(request.user.id, 'assignment:reassign');
         canViewAcquisition = await capabilityService.hasCapability(request.user.id, 'acquisition:view');
       }
 
@@ -739,6 +741,7 @@ export const assetRoutes: FastifyPluginAsync<AssetRoutesOptions> = async (
       return reply.status(200).send({
         ...result,
         can_correct: canCorrect,
+        can_reassign: canReassign,
       });
     }
   );

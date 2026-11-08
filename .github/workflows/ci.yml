@@ -479,7 +479,7 @@ jobs:
 
           # Every spec must be wired into one of the two runs below.
           SPECS=$(cd "$RUNNER_WORKSPACE/apps/web/tests/e2e" && ls -- *.spec.ts | sort | tr '\n' ' ')
-          if [ "$SPECS" != "asset.spec.ts auth.spec.ts " ]; then
+          if [ "$SPECS" != "asset.spec.ts assignment.spec.ts auth.spec.ts " ]; then
             echo "ERROR: the E2E specs changed (${SPECS}): wire each one into a run in ci.yml" >&2
             exit 1
           fi
@@ -530,9 +530,10 @@ jobs:
             pnpm --filter web exec playwright test tests/e2e/auth.spec.ts --output test-results/auth \
             || E2E_STATUS=1
 
-          # asset.spec.ts starts its own Testcontainers PostgreSQL, API and Vite server, so it runs
-          # like the integration job: host network and the rootless Podman socket.
-          echo "Executing asset.spec.ts with host network and socket control..."
+          # asset.spec.ts and assignment.spec.ts each start their own Testcontainers PostgreSQL, API
+          # and Vite server, so they run like the integration job: host network and the rootless
+          # Podman socket.
+          echo "Executing asset.spec.ts and assignment.spec.ts with host network and socket control..."
           podman run --name s2_browser_runner --rm \
             --network=host \
             --ipc=host \
@@ -544,7 +545,7 @@ jobs:
             -e TESTCONTAINERS_HOST_OVERRIDE="127.0.0.1" \
             -e CI=true \
             s2-assets-browser:ci \
-            pnpm --filter web exec playwright test tests/e2e/asset.spec.ts --output test-results/asset \
+            pnpm --filter web exec playwright test tests/e2e/asset.spec.ts tests/e2e/assignment.spec.ts --output test-results/asset \
             || E2E_STATUS=1
 
           exit "$E2E_STATUS"

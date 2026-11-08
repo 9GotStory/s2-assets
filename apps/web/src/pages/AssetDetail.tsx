@@ -40,6 +40,7 @@ export interface AssetDetailResponse {
   current_assignment?: CurrentAssignment;
   assignment_version?: number;
   can_correct?: boolean;
+  can_reassign?: boolean;
 }
 
 export const AssetDetail: React.FC = () => {
@@ -761,6 +762,21 @@ const AssetDetailContent: React.FC = () => {
           actorId={currentUser?.id ?? null}
           dataUpdatedAt={dataUpdatedAt}
           onPermissionRevoked={handlePermissionRevoked}
+          canReassign={Boolean(assetData.can_reassign && !isCorrectionRevoked)}
+          assignmentVersion={assetData.assignment_version ?? 0}
+          isLegacy={isLegacy}
+          csrfToken={csrfToken}
+          onRecorded={async () => {
+            setRefreshError(null);
+            const refetchResult = await refetch();
+            if (refetchResult.isError) {
+              setRefreshError('บันทึกรายการสำเร็จ แต่การดึงข้อมูลล่าสุดล้มเหลว กรุณากดปุ่มเพื่อโหลดข้อมูลใหม่');
+            }
+          }}
+          onRefresh={async () => {
+            const refetchResult = await refetch();
+            return refetchResult.isError ? null : (refetchResult.data?.assignment_version ?? null);
+          }}
         />
 
         {/* QR Code and Minimal Printing Panel (T8) */}

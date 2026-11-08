@@ -15,6 +15,7 @@ import { authRoutes } from './routes/auth.routes.ts';
 import { systemRoutes } from './routes/system.routes.ts';
 import { healthRoutes } from './routes/health.routes.ts';
 import { assetRoutes } from './routes/asset.routes.ts';
+import { assignmentRoutes } from './routes/assignment.routes.ts';
 import { acquisitionRoutes } from './routes/acquisition.routes.ts';
 import { evidenceRoutes } from './routes/evidence.routes.ts';
 import { referenceRoutes } from './routes/reference.routes.ts';
@@ -22,6 +23,7 @@ import { UserService, type DatabaseClient } from './services/user.service.ts';
 import { SessionService } from './services/session.service.ts';
 import { CapabilityService } from './services/capability.service.ts';
 import { AssetService } from './services/asset.service.ts';
+import { AssignmentRecordingService } from './services/assignment-recording.service.ts';
 import { AcquisitionService } from './services/acquisition.service.ts';
 import { EvidenceService } from './services/evidence.service.ts';
 
@@ -243,6 +245,11 @@ export async function buildApp(options: AppOptions = {}): Promise<FastifyInstanc
       capabilityService,
       db: dbClient,
       publicAppOrigin,
+    });
+
+    await app.register(assignmentRoutes, {
+      prefix: '/assets',
+      assignmentRecordingService: new AssignmentRecordingService({ db: dbClient, clock: options.clock }),
     });
 
     // Acquisition routes mounted under /acquisitions
