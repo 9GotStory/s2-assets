@@ -13,13 +13,14 @@ import {
   type AssignmentEvent,
   type CurrentAssignment,
   type InitialAssignmentInput,
+  type ReassignmentInput,
 } from './assignment.service.ts';
 import { ValidationError } from './validation-error.ts';
 
-export interface RecordAssignmentInput extends InitialAssignmentInput {
-  kind: 'INITIAL' | 'REASSIGNMENT';
-  expected_assignment_version: number;
-}
+export type RecordAssignmentInput = { expected_assignment_version: number } & (
+  | ({ kind: 'INITIAL' } & InitialAssignmentInput)
+  | ({ kind: 'REASSIGNMENT' } & ReassignmentInput)
+);
 
 export interface RecordedAssignment {
   event: AssignmentEvent;

@@ -182,7 +182,7 @@ test.describe.serial('Assignment journeys: Real SPA -> Composed API -> PostgreSQ
     await page.locator('#assignment-location_id').selectOption(newRoom.id);
     await page.locator('#assignment-organization_unit_id').selectOption({ label: 'ล้างค่า (ไม่ระบุ)' });
     await page.locator('#assignment-document_reference').fill('บันทึกข้อความ ที่ 7/2569');
-    await page.locator('#assignment-remark').fill('ย้ายตามการจัดห้องใหม่');
+    await page.locator('#assignment-assignment_remark').fill('ย้ายตามการจัดห้องใหม่');
     await page.locator('#assignment-submit').click();
 
     await expect(page.locator('#assignment-form')).toHaveCount(0);

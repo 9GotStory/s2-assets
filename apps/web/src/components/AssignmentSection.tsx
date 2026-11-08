@@ -1,14 +1,10 @@
 import React, { useState } from 'react';
 import { useQuery } from '@tanstack/react-query';
-import { AssignmentForm } from './AssignmentForm';
+import type { AssignmentSaveProps } from './AssignmentSaveForm';
+import { InitialAssignmentForm } from './InitialAssignmentForm';
+import { ReassignmentForm } from './ReassignmentForm';
 import { REFERENCE_DIMENSIONS, entryLabel, type CurrentAssignment } from './ReferenceContextFields';
-import { valueText, type AssignmentEvent } from './assignmentFacts';
-
-// Labels from GLOSSARY.md (#50 Q18).
-const KIND_LABELS: Record<AssignmentEvent['kind'], string> = {
-  INITIAL: 'กำหนดครั้งแรก',
-  REASSIGNMENT: 'ย้าย / เปลี่ยนผู้รับผิดชอบ',
-};
+import { KIND_LABELS, valueText, type AssignmentEvent } from './assignmentFacts';
 
 const THAI_DATE = new Intl.DateTimeFormat('th-TH', { dateStyle: 'long', timeZone: 'UTC' });
 const THAI_DATE_TIME = new Intl.DateTimeFormat('th-TH', {
@@ -29,12 +25,12 @@ export interface AssignmentSectionProps {
   dataUpdatedAt?: number;
   onPermissionRevoked?: (statusCode?: number) => void;
   // Whether the viewer holds 'assignment:reassign', and what recording a fact needs (F003-T2).
-  canReassign?: boolean;
-  assignmentVersion?: number;
-  isLegacy?: boolean;
-  csrfToken?: string | null;
-  onRecorded?: () => Promise<void>;
-  onRefresh?: () => Promise<number | null>;
+  canReassign: boolean;
+  assignmentVersion: number;
+  isLegacy: boolean;
+  csrfToken: string | null;
+  onRecorded: () => Promise<void>;
+  onRefresh: () => Promise<number | null>;
 }
 
 /**
@@ -47,10 +43,10 @@ export const AssignmentSection: React.FC<AssignmentSectionProps> = ({
   actorId = null,
   dataUpdatedAt,
   onPermissionRevoked,
-  canReassign = false,
-  assignmentVersion = 0,
-  isLegacy = false,
-  csrfToken = null,
+  canReassign,
+  assignmentVersion,
+  isLegacy,
+  csrfToken,
   onRecorded,
   onRefresh,
 }) => {
@@ -82,6 +78,20 @@ export const AssignmentSection: React.FC<AssignmentSectionProps> = ({
   // The action on offer: an Initial Assignment while the Asset has none, a Reassignment after it.
   const offeredKind: AssignmentEvent['kind'] | null =
     canReassign && timeline.data ? (timeline.data.some(({ kind }) => kind === 'INITIAL') ? 'REASSIGNMENT' : 'INITIAL') : null;
+
+  const save: AssignmentSaveProps = {
+    assetId,
+    assignmentVersion,
+    csrfToken,
+    onRecorded: async () => {
+      await onRecorded();
+      setOpenKind(null);
+      setWasRecorded(true);
+    },
+    onRefresh,
+    onCancel: () => setOpenKind(null),
+    onPermissionRevoked,
+  };
 
   return (
     <section aria-labelledby="assignment-heading" id="assignment-section" style={{ marginBottom: '2rem' }}>
@@ -128,25 +138,9 @@ export const AssignmentSection: React.FC<AssignmentSectionProps> = ({
         </div>
       )}
 
-      {canReassign && openKind ? (
-        <AssignmentForm
-          assetId={assetId}
-          kind={openKind}
-          isLegacy={isLegacy}
-          assignmentVersion={assignmentVersion}
-          timeline={timeline.data}
-          actorId={actorId}
-          csrfToken={csrfToken}
-          onRecorded={async () => {
-            await onRecorded?.();
-            setOpenKind(null);
-            setWasRecorded(true);
-          }}
-          onRefresh={onRefresh ?? (async () => null)}
-          onCancel={() => setOpenKind(null)}
-          onPermissionRevoked={onPermissionRevoked}
-        />
-      ) : (
+      {canReassign && openKind === 'INITIAL' && <InitialAssignmentForm save={save} isLegacy={isLegacy} actorId={actorId} />}
+      {canReassign && openKind === 'REASSIGNMENT' && <ReassignmentForm save={save} timeline={timeline.data} actorId={actorId} />}
+      {!(canReassign && openKind) &&
         offeredKind && (
           <button
             type="button"
@@ -169,8 +163,7 @@ export const AssignmentSection: React.FC<AssignmentSectionProps> = ({
           >
             {KIND_LABELS[offeredKind]}
           </button>
-        )
-      )}
+        )}
 
       {timeline.isError && timeline.error?.status !== 401 && timeline.error?.status !== 403 && (
         <div role="alert" data-testid="assignment-timeline-error" style={{ color: '#b91c1c', fontSize: '0.875rem' }}>

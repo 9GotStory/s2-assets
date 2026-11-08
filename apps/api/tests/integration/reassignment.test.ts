@@ -83,6 +83,20 @@ describe('Reassign one Asset (Seam A - F003-T2)', () => {
   const reassign = (assetId: string, payload: Record<string, unknown>, token?: string) =>
     record(assetId, { kind: 'REASSIGNMENT', ...payload }, token);
 
+  // Runs `work` with 'assignment:reassign' answered by `answer` instead of the role map, which grants
+  // capabilities together and so could hide a gate that fails open.
+  const withReassignCapability = async <T>(answer: () => Promise<boolean>, work: () => Promise<T>): Promise<T> => {
+    const capabilities = app.capabilityService!;
+    const original = capabilities.hasCapability;
+    capabilities.hasCapability = async (userId: string, capability: string) =>
+      capability === 'assignment:reassign' ? answer() : original.call(capabilities, userId, capability);
+    try {
+      return await work();
+    } finally {
+      capabilities.hasCapability = original;
+    }
+  };
+
   // What an observer reads of an Asset's assignment, to show that a refused write changed nothing.
   const assignmentOf = async (assetId: string) => {
     const detail = await detailOf(assetId);
@@ -686,9 +700,22 @@ describe('Reassign one Asset (Seam A - F003-T2)', () => {
       const found = await get(readonly, `/assets/search?field=legacy_location_text&value=${encodeURIComponent('ตึกเก่า')}`);
       expect(found.json().items.map((item: any) => item.id)).toContain(assetId);
 
-      // Reassigning to clear keeps the old wording too.
-      const cleared = await reassign(assetId, { expected_assignment_version: 2, effective_date: '2026-11-02', responsible_person_id: person.id });
-      expect(cleared.json().event.changes[0].prior).toEqual({ entry: null, legacy_text: 'คุณเก่า ทะเบียนเดิม' });
+      // A second dimension's Legacy text stays as the prior value of its own Reassignment.
+      const replaced = await reassign(assetId, { expected_assignment_version: 2, effective_date: '2026-11-02', responsible_person_id: person.id });
+      expect(replaced.json().event.changes[0].prior).toEqual({ entry: null, legacy_text: 'คุณเก่า ทะเบียนเดิม' });
+    });
+
+    it('clears a dimension that holds only Legacy text, keeping the wording as the prior value', async () => {
+      const assetId = await registered({ name: 'ตรวจล้างข้อความเดิม', legacy_organization_unit_text: 'กองเก่า (ทะเบียนเดิม)', effective_date: null });
+
+      const res = await reassign(assetId, { expected_assignment_version: 1, effective_date: '2026-11-01', organization_unit_id: null });
+      expect(res.statusCode).toBe(201);
+      expect(res.json().event.changes).toEqual([
+        { dimension: 'organization_unit', prior: { entry: null, legacy_text: 'กองเก่า (ทะเบียนเดิม)' }, new: NO_VALUE },
+      ]);
+      const { current_assignment: current } = await detailOf(assetId);
+      expect(current.organization_unit).toBeNull();
+      expect(current.legacy_organization_unit_text).toBeNull();
     });
 
     it('counts picking the entry already named as a change when it replaces Legacy text beside that entry', async () => {
@@ -870,6 +897,42 @@ describe('Reassign one Asset (Seam A - F003-T2)', () => {
       expect(corrected.statusCode).toBe(201);
     });
 
+    it('keeps the same contract on an Initial Assignment: replay, changed payload, and concurrent submissions', async () => {
+      const room = await entry('locations', 'ห้องส่งซ้ำครั้งแรก');
+      const other = await entry('locations', 'ห้องส่งซ้ำครั้งแรก 2');
+      const payload = { kind: 'INITIAL', expected_assignment_version: 0, effective_date: null, location_id: room.id, legacy_responsible_person_text: 'คุณเก่า' };
+
+      const assetId = await registered({ name: 'ตรวจส่งซ้ำครั้งแรก' });
+      const first = await record(assetId, payload, 'initial-replay');
+      expect(first.statusCode).toBe(201);
+      const replay = await record(assetId, payload, 'initial-replay');
+      expect(replay.statusCode).toBe(201);
+      expect(replay.json()).toEqual(first.json());
+      expect(await timelineOf(assetId)).toHaveLength(1);
+
+      const before = await assignmentOf(assetId);
+      for (const changed of [
+        { location_id: other.id },
+        { effective_date: '2026-11-01' },
+        { legacy_responsible_person_text: 'คุณอื่น' },
+        { remark: 'อื่น' },
+      ]) {
+        const res = await record(assetId, { ...payload, ...changed }, 'initial-replay');
+        expect(res.statusCode, JSON.stringify(changed)).toBe(409);
+        expect(res.json().code).toBe('RETRY_TOKEN_PAYLOAD_MISMATCH');
+      }
+      expect(await assignmentOf(assetId)).toEqual(before);
+
+      const concurrent = await registered({ name: 'ตรวจส่งพร้อมกันครั้งแรก' });
+      const responses = await Promise.all(Array.from({ length: 8 }, () => record(concurrent, payload, 'initial-concurrent')));
+      for (const res of responses) {
+        expect(res.statusCode).toBe(201);
+        expect(res.json()).toEqual(responses[0].json());
+      }
+      expect(await timelineOf(concurrent)).toHaveLength(1);
+      expect((await detailOf(concurrent)).assignment_version).toBe(1);
+    });
+
     it('requires one nonblank token of at most 128 characters, from the header or the body', async () => {
       const { assetId, payload } = await placed('ห้องตรวจโทเค็น');
       const body = { kind: 'REASSIGNMENT', ...payload };
@@ -967,37 +1030,22 @@ describe('Reassign one Asset (Seam A - F003-T2)', () => {
     it("refuses a Custodian whose 'assignment:reassign' alone is denied, and writes nothing", async () => {
       const { assetId, payload } = await target('ตรวจถอนสิทธิ์');
       const before = await assignmentOf(assetId);
-      const capabilities = app.capabilityService!;
-      const original = capabilities.hasCapability;
-      capabilities.hasCapability = async (userId: string, capability: string) =>
-        capability === 'assignment:reassign' ? false : original.call(capabilities, userId, capability);
-      try {
-        const res = await record(assetId, payload, 'capability-denied');
-        expect(res.statusCode).toBe(403);
-      } finally {
-        capabilities.hasCapability = original;
-      }
+      const res = await withReassignCapability(async () => false, () => record(assetId, payload, 'capability-denied'));
+      expect(res.statusCode).toBe(403);
       expect(await assignmentOf(assetId)).toEqual(before);
     });
 
     it('fails closed when the capability lookup fails, and writes nothing', async () => {
       const { assetId, payload } = await target('ตรวจค้นสิทธิ์ล้ม');
       const before = await assignmentOf(assetId);
-      const capabilities = app.capabilityService!;
-      const original = capabilities.hasCapability;
-      capabilities.hasCapability = async (userId: string, capability: string) => {
-        if (capability === 'assignment:reassign') {
+      const res = await withReassignCapability(
+        async () => {
           throw new Error('lookup failed');
-        }
-        return original.call(capabilities, userId, capability);
-      };
-      try {
-        const res = await record(assetId, payload, 'capability-lookup-failed');
-        expect(res.statusCode).toBeGreaterThanOrEqual(500);
-        expect(res.body).not.toContain('lookup failed');
-      } finally {
-        capabilities.hasCapability = original;
-      }
+        },
+        () => record(assetId, payload, 'capability-lookup-failed')
+      );
+      expect(res.statusCode).toBeGreaterThanOrEqual(500);
+      expect(res.body).not.toContain('lookup failed');
       expect(await assignmentOf(assetId)).toEqual(before);
     });
 
@@ -1026,15 +1074,8 @@ describe('Reassign one Asset (Seam A - F003-T2)', () => {
       // A System Maintainer has no asset:view, so never reads the page.
       expect((await get(maintainer, `/assets/${assetId}`)).statusCode).toBe(403);
 
-      const capabilities = app.capabilityService!;
-      const original = capabilities.hasCapability;
-      capabilities.hasCapability = async (userId: string, capability: string) =>
-        capability === 'assignment:reassign' ? false : original.call(capabilities, userId, capability);
-      try {
-        expect((await get(custodian, `/assets/${assetId}`)).json().can_reassign).toBe(false);
-      } finally {
-        capabilities.hasCapability = original;
-      }
+      const denied = await withReassignCapability(async () => false, () => get(custodian, `/assets/${assetId}`));
+      expect(denied.json().can_reassign).toBe(false);
     });
   });
 });

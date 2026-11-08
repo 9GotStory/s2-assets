@@ -144,6 +144,28 @@ export function useReferenceLists(
   return loaded && loaded.key === actorKey ? loaded : { lists: NO_LISTS, error: null };
 }
 
+/** Once deactivated entries are no longer offered, a chosen one leaves the selection (#50 Q16). */
+export function useClearClosedEntries<T extends Record<ReferenceIdField, string>>(
+  offerInactive: boolean,
+  lists: ReferenceLists,
+  setValues: React.Dispatch<React.SetStateAction<T>>
+): void {
+  useEffect(() => {
+    if (offerInactive) {
+      return;
+    }
+    setValues((current) => {
+      const next = { ...current };
+      for (const { kind, idField } of REFERENCE_DIMENSIONS) {
+        if (lists[kind].some((entry) => entry.id === current[idField] && !entry.is_active)) {
+          next[idField] = '' as T[ReferenceIdField];
+        }
+      }
+      return next;
+    });
+  }, [offerInactive, lists, setValues]);
+}
+
 // The field styles of the registration forms' fieldsets.
 export const fieldLabelStyle: React.CSSProperties = {
   display: 'block',

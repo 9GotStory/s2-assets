@@ -1,7 +1,7 @@
 import type { FastifyPluginAsync, FastifyRequest } from 'fastify';
 import { z } from 'zod';
 import { requireCapability } from '../middleware/authorization.ts';
-import { initialAssignmentFields } from './asset.routes.ts';
+import { assignmentFactFields } from './asset.routes.ts';
 import {
   NotFoundError,
   RetryTokenConflictError,
@@ -20,7 +20,7 @@ const RecordAssignmentSchema = z
     kind: z.enum(['INITIAL', 'REASSIGNMENT']),
     expected_assignment_version: z.number().int().min(0),
     retry_token: z.string().optional(),
-    ...initialAssignmentFields,
+    ...assignmentFactFields,
   })
   .strict();
 
@@ -44,13 +44,12 @@ const refusalOf = (err: unknown) => {
 
 const RETRY_TOKEN_MAX_LENGTH = 128;
 
-// The retry token of a request, from its header or its body as in Feature 002's correction, or why
-// there is none to use.
+// The retry token of a request, from its header or its body, or why there is none to use.
 const retryTokenOf = (
   headers: FastifyRequest['headers'],
   bodyToken: string | undefined
 ): { token: string } | { refusal: string } => {
-  const fromHeader = ((headers['idempotency-key'] || headers['x-retry-token']) as string | undefined)?.trim();
+  const fromHeader = (headers['x-retry-token'] as string | undefined)?.trim();
   const fromBody = bodyToken?.trim();
   if (fromHeader && fromBody && fromHeader !== fromBody) {
     return { refusal: 'Conflicting retry token values between header and body' };

@@ -1,4 +1,5 @@
 import React from 'react';
+import { AssignmentNoteFields, assignmentNotesPayload, type AssignmentNotes } from './AssignmentNoteFields';
 import {
   fieldInputStyle,
   fieldLabelStyle,
@@ -6,22 +7,10 @@ import {
   referenceContextPayload,
   type ReferenceContextValues,
 } from './ReferenceContextFields';
+import { bangkokToday, effectiveDateError } from './assignmentFacts';
 
 // F003-T1 (#51): the Initial Assignment a registration records with its dimension values, and the
 // facts it carries besides them: an Effective Date, a document reference and a remark (#50 Q5, Q11, Q17).
-
-const BANGKOK_DATE = new Intl.DateTimeFormat('en-CA', {
-  timeZone: 'Asia/Bangkok',
-  year: 'numeric',
-  month: '2-digit',
-  day: '2-digit',
-});
-
-// Today's Asia/Bangkok date as YYYY-MM-DD: the latest Effective Date a fact may have (#50 Q2).
-export const bangkokToday = (): string => {
-  const parts = Object.fromEntries(BANGKOK_DATE.formatToParts(new Date()).map(({ type, value }) => [type, value]));
-  return `${parts.year}-${parts.month}-${parts.day}`;
-};
 
 // An Effective Date (วันที่มีผล): a date, or unknown (ไม่ทราบ).
 export interface EffectiveDateChoice {
@@ -31,10 +20,8 @@ export interface EffectiveDateChoice {
 
 // What the user entered. A null effectiveDate means no date was chosen yet, so it follows the
 // registration's default.
-export interface InitialAssignmentDraft {
+export interface InitialAssignmentDraft extends AssignmentNotes {
   effectiveDate: EffectiveDateChoice | null;
-  documentReference: string;
-  remark: string;
 }
 
 export const EMPTY_INITIAL_ASSIGNMENT: InitialAssignmentDraft = { effectiveDate: null, documentReference: '', remark: '' };
@@ -53,10 +40,7 @@ export const initialAssignmentError = (
   if (!hasReferenceValues(values) || effectiveDate.unknown) {
     return null;
   }
-  if (!/^\d{4}-\d{2}-\d{2}$/.test(effectiveDate.date)) {
-    return 'กรุณาระบุวันที่มีผล หรือเลือก “ไม่ทราบ”';
-  }
-  return effectiveDate.date > bangkokToday() ? 'วันที่มีผลต้องไม่เกินวันนี้' : null;
+  return effectiveDateError(effectiveDate.date, 'กรุณาระบุวันที่มีผล หรือเลือก “ไม่ทราบ”');
 };
 
 // What a registration sends for its Initial Assignment: the values with their facts, or nothing
@@ -73,8 +57,7 @@ export const initialAssignmentPayload = (
   return {
     ...referenceContextPayload(values),
     effective_date: effectiveDate.unknown ? null : effectiveDate.date,
-    document_reference: draft.documentReference.trim() || null,
-    remark: draft.remark.trim() || null,
+    ...assignmentNotesPayload(draft),
   };
 };
 
@@ -131,35 +114,7 @@ export const InitialAssignmentFields: React.FC<InitialAssignmentFieldsProps> = (
       <p style={{ margin: '0 0 0.75rem 0', fontSize: '0.75rem', color: '#6b7280' }}>
         วันที่ค่าเหล่านี้เริ่มเป็นจริง ไม่เกินวันนี้ ข้อมูลตกทอดเริ่มที่ “ไม่ทราบ” เพื่อไม่สร้างวันที่ขึ้นเอง
       </p>
-      <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '0.75rem' }}>
-        <div>
-          <label htmlFor={`${idPrefix}-document_reference`} style={fieldLabelStyle}>
-            เอกสารอ้างอิง (ไม่บังคับ)
-          </label>
-          <input
-            id={`${idPrefix}-document_reference`}
-            type="text"
-            value={draft.documentReference}
-            maxLength={500}
-            onChange={(e) => onChange({ ...draft, documentReference: e.target.value })}
-            placeholder="เช่น เลขที่บันทึกข้อความ"
-            style={fieldInputStyle}
-          />
-        </div>
-        <div>
-          <label htmlFor={`${idPrefix}-assignment_remark`} style={fieldLabelStyle}>
-            หมายเหตุ (ไม่บังคับ)
-          </label>
-          <textarea
-            id={`${idPrefix}-assignment_remark`}
-            value={draft.remark}
-            maxLength={2000}
-            rows={2}
-            onChange={(e) => onChange({ ...draft, remark: e.target.value })}
-            style={fieldInputStyle}
-          />
-        </div>
-      </div>
+      <AssignmentNoteFields idPrefix={idPrefix} notes={draft} onChange={(notes) => onChange({ ...draft, ...notes })} />
     </div>
   );
 };

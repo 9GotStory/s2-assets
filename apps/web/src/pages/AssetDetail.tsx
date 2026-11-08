@@ -78,7 +78,7 @@ const AssetDetailContent: React.FC = () => {
   const [currentUser, setCurrentUser] = useState<{ id: string; role?: string } | null>(null);
   const [sessionLoading, setSessionLoading] = useState(true);
   const [refreshError, setRefreshError] = useState<string | null>(null);
-  const [isCorrectionRevoked, setIsCorrectionRevoked] = useState(false);
+  const [isPermissionRevoked, setIsPermissionRevoked] = useState(false);
   const [terminalError, setTerminalError] = useState<string | null>(null);
   const [isReauthorizing, setIsReauthorizing] = useState(false);
 
@@ -347,7 +347,7 @@ const AssetDetailContent: React.FC = () => {
 
   const handlePermissionRevoked = useCallback(
     async (statusCode?: number) => {
-      setIsCorrectionRevoked(true);
+      setIsPermissionRevoked(true);
 
       if (statusCode === 401) {
         if (!isMountedRef.current) return;
@@ -485,7 +485,7 @@ const AssetDetailContent: React.FC = () => {
   }
 
   const { asset, history = [], current_assignment: currentAssignment } = assetData;
-  const can_correct = Boolean(assetData.can_correct && !isCorrectionRevoked);
+  const can_correct = Boolean(assetData.can_correct && !isPermissionRevoked);
   const registrationFact = history.find((h) => h.action === 'REGISTERED');
   const isLegacy = Boolean(
     registrationFact?.payload &&
@@ -762,7 +762,7 @@ const AssetDetailContent: React.FC = () => {
           actorId={currentUser?.id ?? null}
           dataUpdatedAt={dataUpdatedAt}
           onPermissionRevoked={handlePermissionRevoked}
-          canReassign={Boolean(assetData.can_reassign && !isCorrectionRevoked)}
+          canReassign={Boolean(assetData.can_reassign && !isPermissionRevoked)}
           assignmentVersion={assetData.assignment_version ?? 0}
           isLegacy={isLegacy}
           csrfToken={csrfToken}
