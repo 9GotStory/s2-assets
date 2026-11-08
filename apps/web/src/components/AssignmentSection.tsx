@@ -1,42 +1,10 @@
-import React from 'react';
+import React, { useState } from 'react';
 import { useQuery } from '@tanstack/react-query';
-import {
-  REFERENCE_DIMENSIONS,
-  entryLabel,
-  type CurrentAssignment,
-  type ReferenceEntry,
-} from './ReferenceContextFields';
-
-// One fact of an Asset's assignment timeline (GET /assets/:id/assignments, F003-T1).
-export interface AssignmentValue {
-  entry: ReferenceEntry | null;
-  legacy_text: string | null;
-}
-
-export interface AssignmentChange {
-  dimension: (typeof REFERENCE_DIMENSIONS)[number]['entryField'];
-  prior: AssignmentValue;
-  new: AssignmentValue;
-}
-
-export interface AssignmentEvent {
-  id: string;
-  kind: 'INITIAL' | 'REASSIGNMENT';
-  effective_date: string | null;
-  recorded_at: string;
-  recorded_by: string;
-  recorded_by_username: string | null;
-  provenance: 'RECORDED' | 'CARRIED_OVER_F002';
-  document_reference: string | null;
-  remark: string | null;
-  changes: AssignmentChange[];
-}
-
-// Labels from GLOSSARY.md (#50 Q18).
-const KIND_LABELS: Record<AssignmentEvent['kind'], string> = {
-  INITIAL: 'กำหนดครั้งแรก',
-  REASSIGNMENT: 'ย้าย / เปลี่ยนผู้รับผิดชอบ',
-};
+import type { AssignmentSaveProps } from './AssignmentSaveForm';
+import { InitialAssignmentForm } from './InitialAssignmentForm';
+import { ReassignmentForm } from './ReassignmentForm';
+import { REFERENCE_DIMENSIONS, entryLabel, type CurrentAssignment } from './ReferenceContextFields';
+import { KIND_LABELS, valueText, type AssignmentEvent } from './assignmentFacts';
 
 const THAI_DATE = new Intl.DateTimeFormat('th-TH', { dateStyle: 'long', timeZone: 'UTC' });
 const THAI_DATE_TIME = new Intl.DateTimeFormat('th-TH', {
@@ -49,11 +17,6 @@ const THAI_RECORDED_DATE = new Intl.DateTimeFormat('th-TH', { dateStyle: 'long',
 // A calendar date (YYYY-MM-DD) in Thai.
 const thaiDate = (date: string) => THAI_DATE.format(new Date(`${date}T00:00:00Z`));
 
-const valueText = (value: AssignmentValue): string => {
-  const parts = [value.entry ? entryLabel(value.entry) : null, value.legacy_text ? `ข้อความเดิม: ${value.legacy_text}` : null];
-  return parts.filter(Boolean).join(' / ') || 'ไม่ระบุ';
-};
-
 export interface AssignmentSectionProps {
   assetId: string;
   currentAssignment?: CurrentAssignment;
@@ -61,6 +24,13 @@ export interface AssignmentSectionProps {
   // A new detail read also reads the timeline again.
   dataUpdatedAt?: number;
   onPermissionRevoked?: (statusCode?: number) => void;
+  // Whether the viewer holds 'assignment:reassign', and what recording a fact needs (F003-T2).
+  canReassign: boolean;
+  assignmentVersion: number;
+  isLegacy: boolean;
+  csrfToken: string | null;
+  onRecorded: () => Promise<void>;
+  onRefresh: () => Promise<number | null>;
 }
 
 /**
@@ -73,7 +43,17 @@ export const AssignmentSection: React.FC<AssignmentSectionProps> = ({
   actorId = null,
   dataUpdatedAt,
   onPermissionRevoked,
+  canReassign,
+  assignmentVersion,
+  isLegacy,
+  csrfToken,
+  onRecorded,
+  onRefresh,
 }) => {
+  // The kind of fact the open form records, fixed when it opens.
+  const [openKind, setOpenKind] = useState<AssignmentEvent['kind'] | null>(null);
+  const [wasRecorded, setWasRecorded] = useState(false);
+
   const timeline = useQuery<AssignmentEvent[], Error & { status?: number }>({
     queryKey: ['asset-assignments', actorId, assetId, dataUpdatedAt],
     queryFn: async ({ signal }) => {
@@ -90,7 +70,28 @@ export const AssignmentSection: React.FC<AssignmentSectionProps> = ({
       return (await res.json()).items;
     },
     enabled: Boolean(actorId),
+    // A new detail read keeps this actor's timeline, and so an open form, until the new one arrives.
+    placeholderData: (previous, previousQuery) =>
+      previousQuery?.queryKey[1] === actorId && previousQuery?.queryKey[2] === assetId ? previous : undefined,
   });
+
+  // The action on offer: an Initial Assignment while the Asset has none, a Reassignment after it.
+  const offeredKind: AssignmentEvent['kind'] | null =
+    canReassign && timeline.data ? (timeline.data.some(({ kind }) => kind === 'INITIAL') ? 'REASSIGNMENT' : 'INITIAL') : null;
+
+  const save: AssignmentSaveProps = {
+    assetId,
+    assignmentVersion,
+    csrfToken,
+    onRecorded: async () => {
+      await onRecorded();
+      setOpenKind(null);
+      setWasRecorded(true);
+    },
+    onRefresh,
+    onCancel: () => setOpenKind(null),
+    onPermissionRevoked,
+  };
 
   return (
     <section aria-labelledby="assignment-heading" id="assignment-section" style={{ marginBottom: '2rem' }}>
@@ -130,6 +131,39 @@ export const AssignmentSection: React.FC<AssignmentSectionProps> = ({
           );
         })}
       </dl>
+
+      {wasRecorded && (
+        <div role="status" data-testid="assignment-recorded" style={{ color: '#065f46', fontSize: '0.875rem', marginBottom: '0.75rem' }}>
+          บันทึกรายการเรียบร้อยแล้ว
+        </div>
+      )}
+
+      {canReassign && openKind === 'INITIAL' && <InitialAssignmentForm save={save} isLegacy={isLegacy} actorId={actorId} />}
+      {canReassign && openKind === 'REASSIGNMENT' && <ReassignmentForm save={save} timeline={timeline.data} actorId={actorId} />}
+      {!(canReassign && openKind) &&
+        offeredKind && (
+          <button
+            type="button"
+            id="assignment-action"
+            onClick={() => {
+              setWasRecorded(false);
+              setOpenKind(offeredKind);
+            }}
+            style={{
+              padding: '0.5rem 1rem',
+              backgroundColor: '#2563eb',
+              color: '#ffffff',
+              border: 'none',
+              borderRadius: '6px',
+              fontSize: '0.875rem',
+              fontWeight: 500,
+              cursor: 'pointer',
+              marginBottom: '1rem',
+            }}
+          >
+            {KIND_LABELS[offeredKind]}
+          </button>
+        )}
 
       {timeline.isError && timeline.error?.status !== 401 && timeline.error?.status !== 403 && (
         <div role="alert" data-testid="assignment-timeline-error" style={{ color: '#b91c1c', fontSize: '0.875rem' }}>

@@ -40,6 +40,7 @@ export interface AssetDetailResponse {
   current_assignment?: CurrentAssignment;
   assignment_version?: number;
   can_correct?: boolean;
+  can_reassign?: boolean;
 }
 
 export const AssetDetail: React.FC = () => {
@@ -77,7 +78,7 @@ const AssetDetailContent: React.FC = () => {
   const [currentUser, setCurrentUser] = useState<{ id: string; role?: string } | null>(null);
   const [sessionLoading, setSessionLoading] = useState(true);
   const [refreshError, setRefreshError] = useState<string | null>(null);
-  const [isCorrectionRevoked, setIsCorrectionRevoked] = useState(false);
+  const [isPermissionRevoked, setIsPermissionRevoked] = useState(false);
   const [terminalError, setTerminalError] = useState<string | null>(null);
   const [isReauthorizing, setIsReauthorizing] = useState(false);
 
@@ -346,7 +347,7 @@ const AssetDetailContent: React.FC = () => {
 
   const handlePermissionRevoked = useCallback(
     async (statusCode?: number) => {
-      setIsCorrectionRevoked(true);
+      setIsPermissionRevoked(true);
 
       if (statusCode === 401) {
         if (!isMountedRef.current) return;
@@ -484,7 +485,7 @@ const AssetDetailContent: React.FC = () => {
   }
 
   const { asset, history = [], current_assignment: currentAssignment } = assetData;
-  const can_correct = Boolean(assetData.can_correct && !isCorrectionRevoked);
+  const can_correct = Boolean(assetData.can_correct && !isPermissionRevoked);
   const registrationFact = history.find((h) => h.action === 'REGISTERED');
   const isLegacy = Boolean(
     registrationFact?.payload &&
@@ -761,6 +762,21 @@ const AssetDetailContent: React.FC = () => {
           actorId={currentUser?.id ?? null}
           dataUpdatedAt={dataUpdatedAt}
           onPermissionRevoked={handlePermissionRevoked}
+          canReassign={Boolean(assetData.can_reassign && !isPermissionRevoked)}
+          assignmentVersion={assetData.assignment_version ?? 0}
+          isLegacy={isLegacy}
+          csrfToken={csrfToken}
+          onRecorded={async () => {
+            setRefreshError(null);
+            const refetchResult = await refetch();
+            if (refetchResult.isError) {
+              setRefreshError('บันทึกรายการสำเร็จ แต่การดึงข้อมูลล่าสุดล้มเหลว กรุณากดปุ่มเพื่อโหลดข้อมูลใหม่');
+            }
+          }}
+          onRefresh={async () => {
+            const refetchResult = await refetch();
+            return refetchResult.isError ? null : (refetchResult.data?.assignment_version ?? null);
+          }}
         />
 
         {/* QR Code and Minimal Printing Panel (T8) */}

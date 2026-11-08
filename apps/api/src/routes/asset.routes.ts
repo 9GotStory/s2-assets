@@ -37,9 +37,9 @@ const referenceContextFields = {
   legacy_responsible_person_text: z.string().nullable().optional(),
 };
 
-// F003-T1 (#51): the Initial Assignment a registration records with those values. A null
+// F003-T1 (#51): those values with the facts an assignment action carries besides them. A null
 // effective_date is "ไม่ทราบ" (unknown).
-const initialAssignmentFields = {
+export const assignmentFactFields = {
   ...referenceContextFields,
   effective_date: z.string().nullable().optional(),
   document_reference: z.string().nullable().optional(),
@@ -69,7 +69,7 @@ const RegisterAssetSchema = z
     retry_token: z.string().optional(),
     category: z.null().optional(),
     acquisition_id: z.string().nullable().optional(),
-    ...initialAssignmentFields,
+    ...assignmentFactFields,
   })
   .strict();
 
@@ -92,7 +92,7 @@ const BulkRegisterAssetSchema = z
     explicit_continuation: z.boolean().optional(),
     items: z.array(BulkRegisterItemSchema).min(1).max(100),
     retry_token: z.string().optional(),
-    ...initialAssignmentFields,
+    ...assignmentFactFields,
   })
   .strict();
 
@@ -716,9 +716,11 @@ export const assetRoutes: FastifyPluginAsync<AssetRoutesOptions> = async (
       }
 
       let canCorrect = false;
+      let canReassign = false;
       let canViewAcquisition = false;
       if (request.user && capabilityService) {
         canCorrect = await capabilityService.hasCapability(request.user.id, 'asset:correct');
+        canReassign = await capabilityService.hasCapability(request.user.id, 'assignment:reassign');
         canViewAcquisition = await capabilityService.hasCapability(request.user.id, 'acquisition:view');
       }
 
@@ -739,6 +741,7 @@ export const assetRoutes: FastifyPluginAsync<AssetRoutesOptions> = async (
       return reply.status(200).send({
         ...result,
         can_correct: canCorrect,
+        can_reassign: canReassign,
       });
     }
   );

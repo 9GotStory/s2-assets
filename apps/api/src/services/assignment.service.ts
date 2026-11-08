@@ -30,9 +30,9 @@ export interface ReferenceEntrySummary {
   is_active: boolean;
 }
 
-// The Current Assignment: each dimension's entry by its current name, and its Legacy text. The
-// shape is Feature 002's, which the asset search and detail already return.
-export interface CurrentAssignment {
+// A Permanent Assignment as read from the facts: each dimension's entry by its current name, and its
+// Legacy text. The shape is Feature 002's, which the asset search and detail already return.
+export interface PermanentAssignment {
   location: ReferenceEntrySummary | null;
   organization_unit: ReferenceEntrySummary | null;
   responsible_person: ReferenceEntrySummary | null;
@@ -41,12 +41,21 @@ export interface CurrentAssignment {
   legacy_responsible_person_text: string | null;
 }
 
-// The Initial Assignment a registration records with its dimension values (#50 Q11, Q17).
-export interface InitialAssignmentInput extends AssignmentInput {
+// The Permanent Assignment in effect today.
+export type CurrentAssignment = PermanentAssignment;
+
+// The facts an assignment action carries besides its dimension values (#50 Q5, Q11).
+interface AssignmentFactInput {
   effective_date?: string | null;
   document_reference?: string | null;
   remark?: string | null;
 }
+
+// The Initial Assignment a registration records with its dimension values (#50 Q11, Q17).
+export interface InitialAssignmentInput extends AssignmentInput, AssignmentFactInput {}
+
+// A Reassignment's request. Legacy text can be named here only for the service to refuse it.
+export interface ReassignmentInput extends AssignmentInput, AssignmentFactInput {}
 
 export interface InitialAssignmentFacts {
   values: AssignmentValues;
@@ -247,10 +256,26 @@ export function normalizeInitialAssignment(
   };
 }
 
+// Each entry must be in its own dimension's list and, unless `allowInactive`, active. Each is locked
+// FOR SHARE (see findUnassignableEntry).
+async function assertAssignableEntries(
+  client: pg.PoolClient | pg.Pool,
+  ids: Parameters<typeof findUnassignableEntry>[1],
+  allowInactive: boolean,
+  label: string = ''
+): Promise<void> {
+  const field = await findUnassignableEntry(client, ids, { allowInactive });
+  if (field) {
+    throw new ValidationError(
+      allowInactive ? `${field} must name an entry of its list${label}` : `${field} must name an active entry${label}`
+    );
+  }
+}
+
 /**
  * An Initial Assignment's entries must each be in their own dimension's list. A deactivated entry
  * may be named only for an Effective Date before today or unknown, so that old history can name
- * closed rooms and departed staff (#50 Q16); each entry is locked FOR SHARE (see findUnassignableEntry).
+ * closed rooms and departed staff (#50 Q16).
  */
 export async function assertInitialAssignmentEntries(
   client: pg.PoolClient | pg.Pool,
@@ -258,13 +283,7 @@ export async function assertInitialAssignmentEntries(
   today: string,
   label: string = ''
 ): Promise<void> {
-  const allowInactive = facts.effective_date === null || facts.effective_date < today;
-  const field = await findUnassignableEntry(client, facts.values, { allowInactive });
-  if (field) {
-    throw new ValidationError(
-      allowInactive ? `${field} must name an entry of its list${label}` : `${field} must name an active entry${label}`
-    );
-  }
+  await assertAssignableEntries(client, facts.values, facts.effective_date === null || facts.effective_date < today, label);
 }
 
 /**
@@ -298,28 +317,111 @@ export async function recordInitialAssignment(
   return eventId;
 }
 
+// What a Reassignment asks for. A dimension left out of `targets` stays as it is; null clears it.
+export interface ReassignmentFacts {
+  targets: Partial<Record<(typeof REFERENCE_ID_FIELDS)[number], string | null>>;
+  effective_date: string;
+  document_reference: string | null;
+  remark: string | null;
+}
+
+/**
+ * A Reassignment's request. Each new value names an entry or, for the OrganizationUnit and the
+ * Responsible Person only, clears the dimension (#50 Q15); Legacy text is never a new value (Q14).
+ * Its Effective Date is a real date no later than `today`: unknown belongs to an Initial Assignment (Q11).
+ */
+export function normalizeReassignment(input: ReassignmentInput, today: string): ReassignmentFacts {
+  const legacy = LEGACY_TEXT_FIELDS.filter((field) => input[field] !== undefined);
+  if (legacy.length > 0) {
+    throw new ValidationError(`A Reassignment names Reference List entries, never Legacy text (${legacy.join(', ')})`);
+  }
+  if (input.location_id === null) {
+    throw new ValidationError('A Reassignment cannot clear the Location: name another entry');
+  }
+  if (input.effective_date === undefined || input.effective_date === null) {
+    throw new ValidationError('effective_date is required on a Reassignment: a date (YYYY-MM-DD), never unknown');
+  }
+  const values = normalizeAssignment(input);
+  return {
+    targets: Object.fromEntries(
+      REFERENCE_ID_FIELDS.filter((field) => input[field] !== undefined).map((field) => [field, values[field]])
+    ),
+    effective_date: normalizeEffectiveDate(input.effective_date, today, '') as string,
+    document_reference: normalizeText(input.document_reference, 'document_reference', DOCUMENT_REFERENCE_MAX_LENGTH, ''),
+    remark: normalizeText(input.remark, 'remark', REMARK_MAX_LENGTH, ''),
+  };
+}
+
+/**
+ * Records a Reassignment and increments the Asset's assignment version, in the caller's transaction
+ * and under its lock on the Asset. Each prior value is the one in effect at the Effective Date; a
+ * dimension whose new value equals it is dropped, and a request left with no change is refused
+ * (MR-01). Returns the event id.
+ */
+export async function recordReassignment(
+  client: pg.PoolClient | pg.Pool,
+  { assetId, actorId, facts, today }: { assetId: string; actorId: string; facts: ReassignmentFacts; today: string }
+): Promise<string> {
+  const prior = await readAssignmentAt(client, assetId, facts.effective_date);
+  const changes = DIMENSIONS.flatMap(({ key, dimension, idField, legacyField, column }) => {
+    const target = facts.targets[idField];
+    const priorEntry = prior[key]?.id ?? null;
+    const priorLegacy = prior[legacyField];
+    return target === undefined || (target === priorEntry && priorLegacy === null)
+      ? []
+      : [{ dimension, idField, column, target, priorEntry, priorLegacy }];
+  });
+  if (changes.length === 0) {
+    throw new ValidationError('This Reassignment changes nothing at its Effective Date');
+  }
+  await assertAssignableEntries(
+    client,
+    Object.fromEntries(changes.map(({ idField, target }) => [idField, target])),
+    facts.effective_date < today
+  );
+
+  const eventRes = await client.query(
+    `INSERT INTO assignment_events (asset_id, kind, effective_date, recorded_by, provenance, document_reference, remark)
+     VALUES ($1, 'REASSIGNMENT', $2, $3, 'RECORDED', $4, $5)
+     RETURNING id`,
+    [assetId, facts.effective_date, actorId, facts.document_reference, facts.remark]
+  );
+  const eventId: string = eventRes.rows[0].id;
+  for (const { dimension, column, target, priorEntry, priorLegacy } of changes) {
+    await client.query(
+      `INSERT INTO assignment_changes (event_id, event_kind, dimension, prior_${column}, prior_legacy_text, new_${column})
+       VALUES ($1, 'REASSIGNMENT', $2, $3, $4, $5)`,
+      [eventId, dimension, priorEntry, priorLegacy, target]
+    );
+  }
+  await client.query('UPDATE assets SET assignment_version = assignment_version + 1 WHERE id = $1', [assetId]);
+  return eventId;
+}
+
 // An entry by its current name and active flag, or null when no entry is named.
 const entrySummary = (id: string | null, name: string, isActive: boolean): ReferenceEntrySummary | null =>
   id ? { id, name, is_active: isActive } : null;
 
 // The latest change of one dimension of the Asset whose id is the SQL expression `assetIdSql`, in
 // the order of facts: Effective Date with unknown first, then Recorded At, then event id (MR-03).
-const latestChange = (dimension: string, assetIdSql: string, select: string) => `SELECT ${select}
+// `eventCondition`, a SQL condition on the event `e`, narrows the facts considered.
+const latestChange = (dimension: string, assetIdSql: string, select: string, eventCondition = 'true') => `SELECT ${select}
          FROM assignment_changes c
          JOIN assignment_events e ON e.id = c.event_id
-         WHERE e.asset_id = ${assetIdSql} AND c.dimension = '${dimension}'
+         WHERE e.asset_id = ${assetIdSql} AND c.dimension = '${dimension}' AND ${eventCondition}
          ORDER BY e.effective_date DESC NULLS LAST, e.recorded_at DESC, e.id DESC
          LIMIT 1`;
 
-// The Current Assignment columns, with each entry's name, joined by currentJoins.
-const CURRENT_COLUMNS = DIMENSIONS.map(
-  ({ key, idField, legacyField }) => `cur_${key}.entry_id AS ${idField}, cur_${key}_entry.name AS ${key}_name,
-       cur_${key}_entry.is_active AS ${key}_active, cur_${key}.legacy_text AS ${legacyField}`
+// The columns of a Permanent Assignment, with each entry's name, joined by assignmentJoins.
+const ASSIGNMENT_COLUMNS = DIMENSIONS.map(
+  ({ key, idField, legacyField }) => `dim_${key}.entry_id AS ${idField}, dim_${key}_entry.name AS ${key}_name,
+       dim_${key}_entry.is_active AS ${key}_active, dim_${key}.legacy_text AS ${legacyField}`
 ).join(',\n       ');
 
 /**
- * Joins the Current Assignment of the row aliased `alias`, whose `id` is the Asset's. For the
- * Location of `asset` it writes, and likewise for the other two dimensions:
+ * Joins the Permanent Assignment of the row aliased `alias`, whose `id` is the Asset's: its Current
+ * Assignment, unless `eventCondition` narrows the facts. For the Location of `asset` it writes, and
+ * likewise for the other two dimensions:
  *
  *   LEFT JOIN LATERAL (
  *     SELECT c.new_location_id AS entry_id, c.new_legacy_text AS legacy_text
@@ -327,25 +429,25 @@ const CURRENT_COLUMNS = DIMENSIONS.map(
  *     WHERE e.asset_id = asset.id AND c.dimension = 'LOCATION'
  *     ORDER BY e.effective_date DESC NULLS LAST, e.recorded_at DESC, e.id DESC
  *     LIMIT 1
- *   ) cur_location ON true
- *   LEFT JOIN locations cur_location_entry ON cur_location_entry.id = cur_location.entry_id
+ *   ) dim_location ON true
+ *   LEFT JOIN locations dim_location_entry ON dim_location_entry.id = dim_location.entry_id
  */
-const currentJoins = (alias: string) =>
+const assignmentJoins = (alias: string, eventCondition?: string) =>
   DIMENSIONS.map(
     ({ key, dimension, column, table }) => `LEFT JOIN LATERAL (
-         ${latestChange(dimension, `${alias}.id`, `c.new_${column} AS entry_id, c.new_legacy_text AS legacy_text`)}
-       ) cur_${key} ON true
-       LEFT JOIN ${table} cur_${key}_entry ON cur_${key}_entry.id = cur_${key}.entry_id`
+         ${latestChange(dimension, `${alias}.id`, `c.new_${column} AS entry_id, c.new_legacy_text AS legacy_text`, eventCondition)}
+       ) dim_${key} ON true
+       LEFT JOIN ${table} dim_${key}_entry ON dim_${key}_entry.id = dim_${key}.entry_id`
   ).join('\n       ');
 
-// The Current Assignment from a row selected with CURRENT_COLUMNS.
-const currentAssignmentOf = (row: any): CurrentAssignment =>
+// The Permanent Assignment from a row selected with ASSIGNMENT_COLUMNS.
+const permanentAssignmentOf = (row: any): PermanentAssignment =>
   Object.fromEntries(
     DIMENSIONS.flatMap(({ key, idField, legacyField }) => [
       [key, entrySummary(row[idField] ?? null, row[`${key}_name`], row[`${key}_active`])],
       [legacyField, row[legacyField] ?? null],
     ])
-  ) as unknown as CurrentAssignment;
+  ) as unknown as PermanentAssignment;
 
 /** The Current Assignment of one Asset, derived from its facts, and its assignment version. */
 export async function readCurrentAssignment(
@@ -353,11 +455,30 @@ export async function readCurrentAssignment(
   assetId: string
 ): Promise<{ current: CurrentAssignment; version: number }> {
   const res = await client.query(
-    `SELECT a.assignment_version, ${CURRENT_COLUMNS} FROM assets a ${currentJoins('a')} WHERE a.id = $1`,
+    `SELECT a.assignment_version, ${ASSIGNMENT_COLUMNS} FROM assets a ${assignmentJoins('a')} WHERE a.id = $1`,
     [assetId]
   );
   const row = res.rows[0] ?? {};
-  return { current: currentAssignmentOf(row), version: row.assignment_version ?? 0 };
+  return { current: permanentAssignmentOf(row), version: row.assignment_version ?? 0 };
+}
+
+/**
+ * The Permanent Assignment in effect on an Effective Date: each dimension's latest fact at or before
+ * it, facts of unknown date included (they come first). A fact recorded now follows every fact on
+ * its own date, so these are its prior values.
+ */
+async function readAssignmentAt(
+  client: pg.PoolClient | pg.Pool,
+  assetId: string,
+  effectiveDate: string
+): Promise<PermanentAssignment> {
+  const res = await client.query(
+    `SELECT ${ASSIGNMENT_COLUMNS}
+     FROM assets a ${assignmentJoins('a', '(e.effective_date IS NULL OR e.effective_date <= $2::date)')}
+     WHERE a.id = $1`,
+    [assetId, effectiveDate]
+  );
+  return permanentAssignmentOf(res.rows[0]);
 }
 
 // One side of a change row selected by readAssignmentTimeline.
@@ -447,7 +568,7 @@ export const assignmentSearch = {
            AND c.new_legacy_text ILIKE ${param} ESCAPE '\\')`;
   },
   // The Current Assignment of each result row: select `columns` over `joins(alias)`, read with `current`.
-  columns: CURRENT_COLUMNS,
-  joins: currentJoins,
-  current: currentAssignmentOf,
+  columns: ASSIGNMENT_COLUMNS,
+  joins: assignmentJoins,
+  current: permanentAssignmentOf,
 };

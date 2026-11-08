@@ -144,6 +144,28 @@ export function useReferenceLists(
   return loaded && loaded.key === actorKey ? loaded : { lists: NO_LISTS, error: null };
 }
 
+/** Once deactivated entries are no longer offered, a chosen one leaves the selection (#50 Q16). */
+export function useClearClosedEntries<T extends Record<ReferenceIdField, string>>(
+  offerInactive: boolean,
+  lists: ReferenceLists,
+  setValues: React.Dispatch<React.SetStateAction<T>>
+): void {
+  useEffect(() => {
+    if (offerInactive) {
+      return;
+    }
+    setValues((current) => {
+      const next = { ...current };
+      for (const { kind, idField } of REFERENCE_DIMENSIONS) {
+        if (lists[kind].some((entry) => entry.id === current[idField] && !entry.is_active)) {
+          next[idField] = '' as T[ReferenceIdField];
+        }
+      }
+      return next;
+    });
+  }, [offerInactive, lists, setValues]);
+}
+
 // The field styles of the registration forms' fieldsets.
 export const fieldLabelStyle: React.CSSProperties = {
   display: 'block',
@@ -171,6 +193,8 @@ export interface ReferenceContextFieldsProps {
   lists: ReferenceLists;
   listError?: string | null;
   disabled?: boolean;
+  // Also offers deactivated entries, labelled (#50 Q16: a fact dated before today or of unknown date).
+  offerInactive?: boolean;
   // Shown after the dimensions, inside the same fieldset (F003-T1: the Initial Assignment's facts).
   children?: React.ReactNode;
 }
@@ -187,6 +211,7 @@ export const ReferenceContextFields: React.FC<ReferenceContextFieldsProps> = ({
   lists,
   listError,
   disabled = false,
+  offerInactive = false,
   children,
 }) => (
   <fieldset
@@ -222,7 +247,7 @@ export const ReferenceContextFields: React.FC<ReferenceContextFieldsProps> = ({
           >
             <option value="">— ไม่ระบุ —</option>
             {lists[kind]
-              .filter((entry) => entry.is_active)
+              .filter((entry) => entry.is_active || offerInactive)
               .map((entry) => (
                 <option key={entry.id} value={entry.id}>
                   {entryLabel(entry)}

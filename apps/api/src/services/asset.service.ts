@@ -140,13 +140,13 @@ export class NotFoundError extends Error {
 export class StaleBeforeConflictError extends Error {
   statusCode: number;
   code: string;
-  current_values?: Record<string, string | null>;
-  expected_values?: Record<string, string | null>;
+  current_values?: Record<string, string | number | null>;
+  expected_values?: Record<string, string | number | null>;
 
   constructor(
     message: string = 'Current asset state differs from expected before values',
-    currentValues?: Record<string, string | null>,
-    expectedValues?: Record<string, string | null>
+    currentValues?: Record<string, string | number | null>,
+    expectedValues?: Record<string, string | number | null>
   ) {
     super(message);
     this.name = 'StaleBeforeConflictError';
