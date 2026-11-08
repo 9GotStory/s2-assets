@@ -35,6 +35,9 @@ RUN pnpm --filter api deploy --prod /deployed-api
 # Stage 2: Minimal production runtime image
 FROM docker.io/library/node:24.21.0-alpine
 
+# Take the Alpine fixes the pinned base image lacks (CVE-2026-107891, CVE-2026-85091)
+RUN apk upgrade --no-cache musl musl-utils zlib
+
 WORKDIR /app
 
 # Ensure application directory ownership for non-root execution
