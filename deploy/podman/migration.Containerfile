@@ -40,6 +40,9 @@ WORKDIR /app
 # Ensure application directory ownership for non-root execution
 RUN chown node:node /app
 
+# Remove unused npm bundle and commands from runtime stage
+RUN rm -rf /usr/local/lib/node_modules/npm /usr/local/bin/npm /usr/local/bin/npx
+
 # Copy production runtime artifacts and pruned dependencies from builder stage
 COPY --chown=node:node --from=builder /deployed-db/package.json ./package.json
 COPY --chown=node:node --from=builder /deployed-db/src ./src

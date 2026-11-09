@@ -54,7 +54,8 @@ with `/code-review` → `/pr` → `/retro`.
   scope or the baseline is materially unclear, ask them; report a failed checkout, runtime or
   skill invocation exactly as it happened.
 - **Review:** report self-review as self-review; a Claude Code session or subagent is never an
-  independent reviewer.
+  independent reviewer. When a review's fixes change more than 200 lines, run `/code-review` over
+  those fixes too.
 - **Acceptance:** evidence-based (passing checks, runtime evidence where the change needs it),
   then the Product Owner's acceptance. Claude Code's own review verdict is never acceptance.
 - **Merges:** GitHub `9GotStory/s2-assets` is the source of truth. Each feature has one
@@ -74,9 +75,10 @@ with `/code-review` → `/pr` → `/retro`.
 
 `.github/workflows/ci.yml` defines the checks, and its `ci-gate` job names the jobs that must
 pass. On a pull request, CI also runs `git diff --check` and `scripts/check-glossary.sh` against
-the base. Locally, run a job through `scripts/ci/<job>.sh` where one exists, and otherwise the
-way `ci.yml` runs it. When CI does not run on a pull request, run each job locally and record
-each job's exact result in the pull request: that record is the pull request's check. A change
+the base. Locally, run each job through its script in `scripts/ci/`, `security-scan.sh` included,
+before pushing, so that a finding reaches the Product Owner with the ticket's other decisions.
+When CI does not run on a pull request, run each job locally and record each job's exact result
+in the pull request: that record is the pull request's check. A change
 that touches only documentation needs only `git diff --check <base>...HEAD`, where `<base>` is the
 integration-branch commit the task started from.
 
