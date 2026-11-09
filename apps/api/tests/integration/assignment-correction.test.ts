@@ -1012,7 +1012,6 @@ describe('Correct or void an assignment fact (Seam A - F003-T3)', () => {
   });
 
   describe('Authorization (Q3, US 47)', () => {
-    // Runs `work` with 'assignment:correct' answered by `answer` instead of the role map.
     const withCorrectCapability = <T>(answer: () => Promise<boolean>, work: () => Promise<T>): Promise<T> =>
       withCapabilityAnswer(app, 'assignment:correct', answer, work);
 

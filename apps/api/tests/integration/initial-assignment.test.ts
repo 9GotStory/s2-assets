@@ -9,7 +9,7 @@ import { runMigrator } from '../../../../packages/db/src/migrator.ts';
 import { buildApp } from '../../src/app.ts';
 import { SessionService } from '../../src/services/session.service.ts';
 import { UserService } from '../../src/services/user.service.ts';
-import { withCapabilityDenied } from './support/capability-helpers.ts';
+import { withCapabilityAnswer } from './support/capability-helpers.ts';
 
 const { Pool } = pg;
 
@@ -490,7 +490,7 @@ describe('Initial Assignment (Seam A - F003-T1)', () => {
     it('refuses dimension values to an actor who may register but not record an assignment, and still registers without them', async () => {
       const room = await entry('locations', 'ห้องไม่มีสิทธิ์กำหนด');
       // Only an Asset Custodian holds both capabilities today, so the second check is isolated here.
-      await withCapabilityDenied(app, 'assignment:reassign', async () => {
+      await withCapabilityAnswer(app, 'assignment:reassign', async () => false, async () => {
         const single = await post(custodian, '/assets', {
           name: 'ลงทะเบียนโดยไม่มีสิทธิ์กำหนด',
           location_id: room.id,

@@ -2,7 +2,7 @@ import * as crypto from 'node:crypto';
 import { describe, it, expect, beforeAll, afterAll } from 'vitest';
 import { startApiHarness, type Actor, type ApiHarness } from './support/api-harness.ts';
 import { NO_VALUE, assignmentHelpers, at, type Entry } from './support/assignment-helpers.ts';
-import { withCapabilityDenied } from './support/capability-helpers.ts';
+import { withCapabilityAnswer } from './support/capability-helpers.ts';
 
 // F003-T4 (#54): when assignment facts disagree, the system says so.
 describe('Assignment Conflicts (Seam A - F003-T4)', () => {
@@ -500,7 +500,7 @@ describe('Assignment Conflicts (Seam A - F003-T4)', () => {
     });
 
     it("is refused without 'asset:search', and returns no Asset", async () => {
-      await withCapabilityDenied(api.app, 'asset:search', async () => {
+      await withCapabilityAnswer(api.app, 'asset:search', async () => false, async () => {
         const res = await api.get(readonly, FILTER);
         expect(res.statusCode).toBe(403);
         expect(res.json().items).toBeUndefined();

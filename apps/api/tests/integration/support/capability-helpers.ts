@@ -21,7 +21,3 @@ export async function withCapabilityAnswer<T>(
     capabilities.hasCapability = original;
   }
 }
-
-/** Runs `work` with `capability` alone denied. */
-export const withCapabilityDenied = <T>(app: FastifyInstance, capability: string, work: () => Promise<T>): Promise<T> =>
-  withCapabilityAnswer(app, capability, async () => false, work);

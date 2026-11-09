@@ -7,7 +7,7 @@ and CI.
 ## Every capability gate has an isolating test
 
 A Seam A test covers each capability check that a change adds or touches:
-- it denies that one capability, through `withCapabilityDenied` or `withCapabilityAnswer` in
+- it denies that one capability, through `withCapabilityAnswer` in
   `apps/api/tests/integration/support/capability-helpers.ts`;
 - it asserts the refusal and, for a route that can commit a write, that nothing was written.
 
@@ -31,8 +31,8 @@ name for a new concept. In F003-T1, the first draft typed the Current Assignment
 
 ## A feature's code gets its own files
 
-Put a feature's new routes, services, components, integration tests and browser journeys in files
-named after its domain concept, as with Feature 003's `assignment.service.ts`. The Feature 002 files
+Put a feature's new routes, services, integration tests and browser journeys in files named after
+its domain concept, as with Feature 003's `assignment.service.ts`. The Feature 002 files
 (`asset.service.ts`, `asset.routes.ts`, `asset.routes.test.ts`, `asset.spec.ts`, and the pages
 `AssetSearch`, `AssetRegister`, `AssetDetail` and `AssetBulkRegister`) already run past a thousand
 lines, and every change that touches one of them reads it whole.
