@@ -170,16 +170,19 @@ describe('Initial Assignment (Seam A - F003-T1)', () => {
               dimension: 'location',
               prior: NO_VALUE,
               new: { entry: { id: room.id, name: 'ห้องพัสดุ ชั้น 1', is_active: true }, legacy_text: null },
+              conflict: null,
             },
             {
               dimension: 'organization_unit',
               prior: NO_VALUE,
               new: { entry: { id: unit.id, name: 'กลุ่มงานพัสดุ', is_active: true }, legacy_text: null },
+              conflict: null,
             },
             {
               dimension: 'responsible_person',
               prior: NO_VALUE,
               new: { entry: null, legacy_text: 'คุณสมศรี (ทะเบียนเดิม)' },
+              conflict: null,
             },
           ],
         },
@@ -378,7 +381,7 @@ describe('Initial Assignment (Seam A - F003-T1)', () => {
 
       const closedEntry = { id: closed.id, name: 'ห้องที่ปิดไปแล้ว', is_active: false };
       expect(past.json().initial_assignment.changes).toEqual([
-        { dimension: 'location', prior: NO_VALUE, new: { entry: closedEntry, legacy_text: null } },
+        { dimension: 'location', prior: NO_VALUE, new: { entry: closedEntry, legacy_text: null }, conflict: null },
       ]);
       const detail = (await get(readonly, `/assets/${past.json().asset.id}`)).json();
       expect(detail.current_assignment.location).toEqual(closedEntry);
@@ -723,6 +726,8 @@ describe('Initial Assignment (Seam A - F003-T1)', () => {
           dimension: 'location',
           prior: { entry: { id: roomA.id, name: 'ห้องลำดับ ก', is_active: true }, legacy_text: null },
           new: { entry: { id: roomB.id, name: 'ห้องลำดับ ข', is_active: true }, legacy_text: null },
+          // Seeded out of order, this fact's prior value is not the one just before it.
+          conflict: { value_just_before: { entry: { id: roomC.id, name: 'ห้องลำดับ ค', is_active: true }, legacy_text: null } },
         },
       ]);
 

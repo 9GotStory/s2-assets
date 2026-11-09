@@ -1,7 +1,14 @@
 import * as crypto from 'node:crypto';
 import pg from 'pg';
 import { NotFoundError, RetryTokenConflictError, StaleBeforeConflictError, canonicalJson } from './asset.service.ts';
-import { readAssignmentTimeline, readCurrentAssignment, type AssignmentEvent, type CurrentAssignment } from './assignment.service.ts';
+import { AssignmentConflictWarningError, newAssignmentConflicts } from './assignment-conflict.ts';
+import {
+  readAssignmentConflicts,
+  readAssignmentTimeline,
+  readCurrentAssignment,
+  type AssignmentEvent,
+  type CurrentAssignment,
+} from './assignment.service.ts';
 
 export interface RecordedAssignment {
   event: AssignmentEvent;
@@ -18,6 +25,10 @@ export interface AssignmentWriteRequest {
   expectedVersion: number;
   // The normalized request, which the retry fingerprint covers.
   payload: unknown;
+  // Whether the request confirms the Assignment Conflicts this write would create (#50 Q12).
+  explicitContinuation: boolean;
+  // Whether `write` records a new fact, whose id does not outlive a refusal.
+  recordsNewFact: boolean;
 }
 
 /**
@@ -25,14 +36,16 @@ export interface AssignmentWriteRequest {
  * keeps. It locks the Asset, checks the client's expected assignment version and writes; `write`
  * returns the id of the event it wrote and increments the version. Feature 002's retry-token
  * contract holds: an identical replay returns the committed result, and a changed payload under the
- * same token is refused without writes.
+ * same token is refused without writes. A write that would create new Assignment Conflicts is refused
+ * with a warning unless the request confirms them, and the expected version ties that confirmation to
+ * the timeline the user saw.
  */
 export async function writeAssignmentOnce(
   db: pg.Pool | any,
-  { actorId, assetId, operation, retryToken, expectedVersion, payload }: AssignmentWriteRequest,
+  { actorId, assetId, operation, retryToken, expectedVersion, payload, explicitContinuation, recordsNewFact }: AssignmentWriteRequest,
   write: (client: pg.PoolClient) => Promise<string>
 ): Promise<RecordedAssignment> {
-  const fingerprint = crypto.createHash('sha256').update(canonicalJson(payload)).digest('hex');
+  const fingerprint = crypto.createHash('sha256').update(canonicalJson({ payload, explicit_continuation: explicitContinuation })).digest('hex');
   const client: pg.PoolClient = await db.connect();
   try {
     await client.query('BEGIN');
@@ -65,7 +78,18 @@ export async function writeAssignmentOnce(
       );
     }
 
+    const conflictsBefore = explicitContinuation ? [] : await readAssignmentConflicts(client, assetId);
     const eventId = await write(client);
+    if (!explicitContinuation) {
+      // The trial write lets the same reads decide; the refusal rolls it back, so nothing is saved.
+      const created = newAssignmentConflicts(conflictsBefore, await readAssignmentConflicts(client, assetId));
+      if (created.length > 0) {
+        throw new AssignmentConflictWarningError(
+          created.map((conflict) => (recordsNewFact && conflict.event_id === eventId ? { ...conflict, event_id: null } : conflict))
+        );
+      }
+    }
+
     const { current, version } = await readCurrentAssignment(client, assetId);
     const timeline = await readAssignmentTimeline(client, assetId);
     const result: RecordedAssignment = {

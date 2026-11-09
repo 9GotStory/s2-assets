@@ -8,6 +8,7 @@ import {
   StaleBeforeConflictError,
   ValidationError,
 } from '../services/asset.service.ts';
+import { AssignmentConflictWarningError } from '../services/assignment-conflict.ts';
 import { AssignmentCorrectionService, type CorrectAssignmentInput } from '../services/assignment-correction.service.ts';
 import { AssignmentRecordingService, type RecordAssignmentInput } from '../services/assignment-recording.service.ts';
 import { isValidUuid } from '../services/capability.service.ts';
@@ -22,6 +23,7 @@ const RecordAssignmentSchema = z
     kind: z.enum(['INITIAL', 'REASSIGNMENT']),
     expected_assignment_version: z.number().int().min(0),
     retry_token: z.string().optional(),
+    explicit_continuation: z.boolean().optional(),
     ...assignmentFactFields,
   })
   .strict();
@@ -45,6 +47,7 @@ const correctionFields = {
   expected_assignment_version: z.number().int().min(0),
   reason: z.string().nullable().optional(),
   retry_token: z.string().optional(),
+  explicit_continuation: z.boolean().optional(),
 };
 
 const CorrectAssignmentSchema = z.discriminatedUnion('action', [
@@ -79,6 +82,9 @@ const refusalOf = (err: unknown) => {
       current_values: err.current_values,
       expected_values: err.expected_values,
     };
+  }
+  if (err instanceof AssignmentConflictWarningError) {
+    return { ...errorBody(err.statusCode, err.code, err.message), conflicts: err.conflicts };
   }
   if (err instanceof RetryTokenConflictError || err instanceof NotFoundError || err instanceof ValidationError) {
     return errorBody(err.statusCode, err.code, err.message);

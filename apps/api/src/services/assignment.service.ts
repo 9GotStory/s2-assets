@@ -76,6 +76,8 @@ export interface AssignmentChange {
   dimension: AssignmentDimension;
   prior: AssignmentValue;
   new: AssignmentValue;
+  // The value just before this change, when its stored prior value differs from it.
+  conflict: { value_just_before: AssignmentValue } | null;
 }
 
 // A value as the store holds it. A correction record names an entry by id, so it reads by its current name (#50 Q20).
@@ -123,6 +125,19 @@ export interface AssignmentEvent {
   is_voided: boolean;
   changes: AssignmentChange[];
   corrections: AssignmentCorrection[];
+}
+
+// One Assignment Conflict (#50): a change whose stored prior value differs from the value just before
+// it in the order of facts. Computed on read and never stored (ACQ-08).
+export interface AssignmentConflict {
+  asset_id: string;
+  // null for a fact that a refused write would have recorded: it has no id until it is saved.
+  event_id: string | null;
+  kind: AssignmentEvent['kind'];
+  effective_date: string | null;
+  dimension: AssignmentDimension;
+  recorded_prior: AssignmentValue;
+  value_just_before: AssignmentValue;
 }
 
 // Each dimension's name in the API and in the database, its input fields, and its entry column in
@@ -528,18 +543,12 @@ const changeValueOf = (row: any, side: 'prior' | 'new'): AssignmentValue => ({
 export const isDimensionField = (stored: StoredCorrectionField): stored is Extract<StoredCorrectionField, { field: AssignmentDimension }> =>
   DIMENSIONS.some(({ key }) => key === stored.field);
 
-// The entries that correction records name, by id, with their current names and active flags.
-async function readCorrectionEntries(
+// The entries named by id, with their current names and active flags.
+async function readEntries(
   client: pg.PoolClient | pg.Pool,
-  fields: StoredCorrectionField[]
+  entryIds: (string | null)[]
 ): Promise<Map<string, ReferenceEntrySummary>> {
-  const ids = new Set(
-    fields
-      .filter(isDimensionField)
-      .flatMap(({ before, after }) => [before, after])
-      .flatMap((change) => (change ? [change.prior.entry_id, change.new.entry_id] : []))
-      .filter((id) => id !== null)
-  );
+  const ids = new Set(entryIds.filter((id) => id !== null));
   if (ids.size === 0) {
     return new Map();
   }
@@ -548,6 +557,67 @@ async function readCorrectionEntries(
     [[...ids]]
   );
   return new Map(res.rows.map((row: any) => [row.id, { id: row.id, name: row.name, is_active: row.is_active }]));
+}
+
+// The entries that correction records name.
+const readCorrectionEntries = (
+  client: pg.PoolClient | pg.Pool,
+  fields: StoredCorrectionField[]
+): Promise<Map<string, ReferenceEntrySummary>> =>
+  readEntries(
+    client,
+    fields
+      .filter(isDimensionField)
+      .flatMap(({ before, after }) => [before, after])
+      .flatMap((change) => (change ? [change.prior.entry_id, change.new.entry_id] : []))
+  );
+
+// The entry of one side of a change: it is in its dimension's own column and the others are null
+// (assignment_changes_own_list).
+const changeEntryId = (side: 'prior' | 'new') => `COALESCE(${DIMENSIONS.map(({ column }) => `c.${side}_${column}`).join(', ')})`;
+
+// The Assignment Conflicts of the Asset whose id is the SQL expression `assetIdSql`: each change whose
+// stored prior value, entry and Legacy text, differs from the new value of the preceding change of its
+// dimension in the order of facts, or from empty when none precedes it. A voided fact takes no part (#50).
+const conflictingChanges = (assetIdSql: string) => `SELECT *
+         FROM (
+           SELECT e.asset_id, e.id AS event_id, e.kind, e.effective_date, e.recorded_at, c.dimension,
+                  ${changeEntryId('prior')} AS prior_entry_id, c.prior_legacy_text,
+                  LAG(${changeEntryId('new')}) OVER facts AS before_entry_id,
+                  LAG(c.new_legacy_text) OVER facts AS before_legacy_text
+           FROM assignment_changes c
+           JOIN assignment_events e ON e.id = c.event_id
+           WHERE e.asset_id = ${assetIdSql} AND NOT e.is_voided
+           WINDOW facts AS (PARTITION BY c.dimension ORDER BY e.effective_date ASC NULLS FIRST, e.recorded_at ASC, e.id ASC)
+         ) ordered
+         WHERE prior_entry_id IS DISTINCT FROM before_entry_id OR prior_legacy_text IS DISTINCT FROM before_legacy_text`;
+
+/** An Asset's Assignment Conflicts in the order of facts, each fact's in dimension order. */
+export async function readAssignmentConflicts(
+  client: pg.PoolClient | pg.Pool,
+  assetId: string
+): Promise<AssignmentConflict[]> {
+  const res = await client.query(
+    `SELECT conflicts.asset_id, conflicts.event_id, conflicts.kind, to_char(conflicts.effective_date, 'YYYY-MM-DD') AS effective_date,
+            conflicts.dimension, conflicts.prior_entry_id, conflicts.prior_legacy_text, conflicts.before_entry_id, conflicts.before_legacy_text
+     FROM (${conflictingChanges('$1::uuid')}) conflicts
+     ORDER BY conflicts.effective_date ASC NULLS FIRST, conflicts.recorded_at ASC, conflicts.event_id ASC, conflicts.dimension ASC`,
+    [assetId]
+  );
+  const entries = await readEntries(
+    client,
+    res.rows.flatMap((row: any) => [row.prior_entry_id, row.before_entry_id])
+  );
+  const entryOf = (id: string | null): ReferenceEntrySummary | null => (id ? (entries.get(id) ?? null) : null);
+  return res.rows.map((row: any) => ({
+    asset_id: row.asset_id,
+    event_id: row.event_id,
+    kind: row.kind,
+    effective_date: row.effective_date ?? null,
+    dimension: DIMENSIONS.find(({ dimension }) => dimension === row.dimension)!.key,
+    recorded_prior: { entry: entryOf(row.prior_entry_id), legacy_text: row.prior_legacy_text ?? null },
+    value_just_before: { entry: entryOf(row.before_entry_id), legacy_text: row.before_legacy_text ?? null },
+  }));
 }
 
 const correctionFieldOf = (stored: StoredCorrectionField, entries: Map<string, ReferenceEntrySummary>): AssignmentCorrectionField => {
@@ -561,6 +631,12 @@ const correctionFieldOf = (stored: StoredCorrectionField, entries: Map<string, R
   const changeOf = (change: StoredChange | null) => change && { prior: valueOf(change.prior), new: valueOf(change.new) };
   return { field: stored.field, before: changeOf(stored.before), after: changeOf(stored.after) };
 };
+
+/** Whether an Asset has any Assignment Conflict. */
+export async function hasAssignmentConflict(client: pg.PoolClient | pg.Pool, assetId: string): Promise<boolean> {
+  const res = await client.query(`SELECT EXISTS (${conflictingChanges('$1::uuid')}) AS has_conflict`, [assetId]);
+  return res.rows[0].has_conflict;
+}
 
 /** An Asset's assignment facts in the order of facts, each with its changes in dimension order and its corrections in the order made. */
 export async function readAssignmentTimeline(
@@ -579,7 +655,7 @@ export async function readAssignmentTimeline(
   // Each side's entry is in its dimension's own column and the others are null
   // (assignment_changes_own_list), so COALESCE picks it with its name and active flag.
   const entryOf = (side: 'prior' | 'new') => ({
-    id: `COALESCE(${DIMENSIONS.map(({ column }) => `c.${side}_${column}`).join(', ')})`,
+    id: changeEntryId(side),
     name: `COALESCE(${DIMENSIONS.map(({ key }) => `${side}_${key}.name`).join(', ')})`,
     active: `COALESCE(${DIMENSIONS.map(({ key }) => `${side}_${key}.is_active`).join(', ')})`,
     joins: DIMENSIONS.map(
@@ -614,6 +690,11 @@ export async function readAssignmentTimeline(
     client,
     correctionsRes.rows.flatMap((correction: any) => correction.changes)
   );
+  const conflicts = await readAssignmentConflicts(client, assetId);
+  const conflictOf = (eventId: string, key: AssignmentDimension): AssignmentChange['conflict'] => {
+    const conflict = conflicts.find(({ event_id, dimension }) => event_id === eventId && dimension === key);
+    return conflict ? { value_just_before: conflict.value_just_before } : null;
+  };
   return eventsRes.rows.map((row: any) => ({
     id: row.id,
     kind: row.kind,
@@ -632,6 +713,7 @@ export async function readAssignmentTimeline(
           dimension: key,
           prior: changeValueOf(change, 'prior'),
           new: changeValueOf(change, 'new'),
+          conflict: conflictOf(row.id, key),
         }))
     ),
     corrections: correctionsRes.rows
@@ -731,6 +813,8 @@ export const assignmentSearch = {
          WHERE e.asset_id = a.id AND e.kind = 'INITIAL' AND NOT e.is_voided AND c.dimension = '${dimension}'
            AND c.new_legacy_text ILIKE ${param} ESCAPE '\\')`;
   },
+  // The Asset has at least one Assignment Conflict.
+  conflictFilter: `EXISTS (${conflictingChanges('a.id')})`,
   // The Current Assignment of each result row: select `columns` over `joins(alias)`, read with `current`.
   columns: ASSIGNMENT_COLUMNS,
   joins: assignmentJoins,

@@ -39,6 +39,8 @@ export interface AssetDetailResponse {
   // F003-T1: the Permanent Assignment in effect, derived from the assignment facts.
   current_assignment?: CurrentAssignment;
   assignment_version?: number;
+  // F003-T4: whether any Assignment Conflict stands.
+  has_assignment_conflict?: boolean;
   can_correct?: boolean;
   can_reassign?: boolean;
   can_correct_assignment?: boolean;
@@ -766,6 +768,7 @@ const AssetDetailContent: React.FC = () => {
           canReassign={Boolean(assetData.can_reassign && !isPermissionRevoked)}
           canCorrectAssignment={Boolean(assetData.can_correct_assignment && !isPermissionRevoked)}
           assignmentVersion={assetData.assignment_version ?? 0}
+          hasAssignmentConflict={Boolean(assetData.has_assignment_conflict)}
           isLegacy={isLegacy}
           csrfToken={csrfToken}
           onRecorded={async () => {

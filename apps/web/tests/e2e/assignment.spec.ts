@@ -319,6 +319,8 @@ test.describe.serial('Assignment journeys: Real SPA -> Composed API -> PostgreSQ
       action: 'AMEND',
       reason: 'เลือกห้องผิดรายการ',
       changes: { location: { new: { entry_id: rightRoom.id } } },
+      // The later fact still records wrongRoom as its prior value, until it is voided below.
+      explicit_continuation: true,
     });
     await correctBehindTheForm(voidedEvent.id, 4, { action: 'VOID', reason: 'ไม่เคยย้ายจริง' });
 
@@ -448,5 +450,137 @@ test.describe.serial('Assignment journeys: Real SPA -> Composed API -> PostgreSQ
     await expect(form).toHaveCount(0);
     await expect(page.locator('#detail-location')).toHaveText('ห้องแก้จากฟอร์ม ข E2E');
     await expect(action).toHaveText('ย้าย / เปลี่ยนผู้รับผิดชอบ');
+  });
+
+  test('Journey F003-T4.1: a backdated Reassignment warns, is confirmed and marked, can be found, and a correction clears it', async ({ page, context }) => {
+    const roomA = await entryIn('locations', 'ห้องขัดแย้ง ก E2E');
+    const roomB = await entryIn('locations', 'ห้องขัดแย้ง ข E2E');
+    const roomC = await entryIn('locations', 'ห้องขัดแย้ง ค E2E');
+    const assetId = await register({ name: 'ตู้ขัดแย้ง E2E', location_id: roomA.id, effective_date: '2024-01-01' });
+    const later = (await reassignBehindTheForm(assetId, 1, '2024-06-01', roomC.id)).event;
+    const consistentId = await register({ name: 'ตู้ไม่ขัดแย้ง E2E', location_id: roomA.id, effective_date: '2024-01-01' });
+
+    const count = async () =>
+      (await pool.query('SELECT count(*)::int AS count FROM assignment_events WHERE asset_id = $1', [assetId])).rows[0].count;
+    const notice = page.getByTestId('assignment-conflict-notice');
+    const marker = page.getByTestId(`assignment-conflict-${later.id}-location`);
+    const form = page.locator('#assignment-form');
+
+    await loginAs(context, custodianUserId);
+    await page.goto(`${targetBaseUrl}/assets/${assetId}`);
+    await expect(page.locator('#detail-location')).toHaveText('ห้องขัดแย้ง ค E2E');
+    await expect(notice).toHaveCount(0);
+
+    await page.locator('#assignment-action').click();
+    await page.locator('#assignment-effective_date').fill('2024-03-01');
+    await page.locator('#assignment-location_id').selectOption(roomB.id);
+    await page.locator('#assignment-submit').click();
+
+    // The warning lists the contradiction, and nothing is saved.
+    const warning = page.getByTestId('assignment-conflict-warning');
+    await expect(warning).toContainText('ย้าย / เปลี่ยนผู้รับผิดชอบ');
+    await expect(warning).toContainText('บันทึกค่าเดิมไว้ว่า ห้องขัดแย้ง ก E2E');
+    await expect(warning).toContainText('ค่าก่อนหน้าคือ ห้องขัดแย้ง ข E2E');
+    expect(await count()).toBe(2);
+
+    // What is confirmed is what the warning covers: the fields are locked until the user goes back.
+    await expect(page.locator('#assignment-location_id')).toBeDisabled();
+    await page.locator('#assignment-conflict-back').click();
+    await expect(warning).toHaveCount(0);
+    await expect(page.locator('#assignment-location_id')).toBeEnabled();
+    await page.locator('#assignment-submit').click();
+    await expect(warning).toBeVisible();
+
+    await page.locator('#assignment-conflict-confirm').click();
+    await expect(form).toHaveCount(0);
+    expect(await count()).toBe(3);
+
+    // The Asset page says so, and the Current Assignment still follows the latest Effective Date (MR-03).
+    await expect(notice).toContainText('มีประวัติขัดแย้งค้างตรวจ');
+    await expect(marker).toContainText('บันทึกค่าเดิมไว้ว่า ห้องขัดแย้ง ก E2E');
+    await expect(marker).toContainText('ค่าก่อนหน้าคือ ห้องขัดแย้ง ข E2E');
+    await expect(page.locator('#detail-location')).toHaveText('ห้องขัดแย้ง ค E2E');
+
+    // The asset list finds it.
+    await page.goto(`${targetBaseUrl}/assets/search`);
+    await expect(page.getByTestId(`search-result-row-${consistentId}`)).toBeVisible();
+    await page.locator('#search-filter-has_assignment_conflict').check();
+    await page.locator('#search-submit-btn').click();
+    await expect(page.getByTestId(`search-result-row-${assetId}`)).toBeVisible();
+    await expect(page.getByTestId(`search-result-row-${consistentId}`)).toHaveCount(0);
+
+    // A correction that makes the facts consistent clears it, with no confirmation.
+    await page.getByTestId(`asset-detail-link-${assetId}`).click();
+    await page.getByTestId(`assignment-amend-${later.id}`).click();
+    await page.locator('#assignment-amend-location-prior').selectOption(roomB.id);
+    await page.locator('#assignment-correction-reason').fill('ค่าเดิมต้องเป็นห้อง ข');
+    await page.locator('#assignment-submit').click();
+    await expect(form).toHaveCount(0);
+    await expect(notice).toHaveCount(0);
+    await expect(marker).toHaveCount(0);
+
+    await page.goto(`${targetBaseUrl}/assets/search`);
+    await page.locator('#search-filter-has_assignment_conflict').check();
+    await page.locator('#search-submit-btn').click();
+    await expect(page.locator('#search-results-region')).toBeVisible();
+    await expect(page.getByTestId(`search-result-row-${assetId}`)).toHaveCount(0);
+  });
+
+  test('Journey F003-T4.2: corrections and an Initial Assignment warn too, and a stale confirmation has to be warned again', async ({ page, context }) => {
+    const roomA = await entryIn('locations', 'ห้องเตือนแก้ ก E2E');
+    const roomB = await entryIn('locations', 'ห้องเตือนแก้ ข E2E');
+    const roomC = await entryIn('locations', 'ห้องเตือนแก้ ค E2E');
+    const assetId = await register({ name: 'ตู้เตือนแก้ E2E', location_id: roomA.id, effective_date: '2024-01-01' });
+    const first = (await reassignBehindTheForm(assetId, 1, '2024-03-01', roomB.id)).event;
+    await reassignBehindTheForm(assetId, 2, '2024-06-01', roomC.id);
+    const initial = (await pool.query(`SELECT id FROM assignment_events WHERE asset_id = $1 AND kind = 'INITIAL'`, [assetId])).rows[0];
+
+    const warning = page.getByTestId('assignment-conflict-warning');
+    const form = page.locator('#assignment-form');
+
+    await loginAs(context, custodianUserId);
+    await page.goto(`${targetBaseUrl}/assets/${assetId}`);
+    await expect(page.locator('#detail-location')).toHaveText('ห้องเตือนแก้ ค E2E');
+
+    // Voiding a fact that a later fact's prior value relies on warns first.
+    await page.getByTestId(`assignment-void-${first.id}`).click();
+    await page.locator('#assignment-correction-reason').fill('ไม่เคยย้ายจริง');
+    await page.locator('#assignment-submit').click();
+    await expect(warning).toContainText('ค่าก่อนหน้าคือ ห้องเตือนแก้ ก E2E');
+
+    // Someone else records a fact after the warning: the confirmation is refused as stale.
+    await correctionService.correct(custodianUserId, assetId, initial.id, { action: 'AMEND', expected_assignment_version: 3, reason: 'คนอื่นแก้', remark: 'หมายเหตุจากคนอื่น' } as any, { retryToken: crypto.randomUUID() });
+    await page.locator('#assignment-conflict-confirm').click();
+    await expect(page.getByTestId('assignment-form-error')).toContainText('มีการบันทึกรายการอื่น');
+    await expect(page.getByTestId(`assignment-fact-${first.id}`)).toHaveCSS('text-decoration-line', 'none');
+
+    // After reading the latest facts, the save warns again instead of carrying the old confirmation over.
+    await page.locator('#assignment-reload').click();
+    await expect(page.getByTestId('assignment-form-error')).toHaveCount(0);
+    await page.locator('#assignment-submit').click();
+    await expect(warning).toBeVisible();
+    await page.locator('#assignment-conflict-confirm').click();
+    await expect(form).toHaveCount(0);
+    await expect(page.getByTestId(`assignment-fact-${first.id}`)).toHaveCSS('text-decoration-line', 'line-through');
+
+    // With the Initial Assignment voided as well, a new one dated after a Reassignment warns about itself.
+    await page.getByTestId(`assignment-void-${initial.id}`).click();
+    await page.locator('#assignment-correction-reason').fill('กำหนดผิด');
+    await page.locator('#assignment-submit').click();
+    await expect(warning).toBeVisible();
+    await page.locator('#assignment-conflict-confirm').click();
+    await expect(form).toHaveCount(0);
+
+    const action = page.locator('#assignment-action');
+    await expect(action).toHaveText('กำหนดครั้งแรก');
+    await action.click();
+    await page.locator('#assignment-location_id').selectOption(roomA.id);
+    await page.locator('#assignment-effective_date').fill('2025-01-01');
+    await page.locator('#assignment-submit').click();
+    await expect(warning).toContainText('รายการที่กำลังบันทึก');
+    await expect(warning).toContainText('ค่าก่อนหน้าคือ ห้องเตือนแก้ ค E2E');
+    await page.locator('#assignment-conflict-confirm').click();
+    await expect(form).toHaveCount(0);
+    await expect(page.getByTestId('assignment-conflict-notice')).toBeVisible();
   });
 });

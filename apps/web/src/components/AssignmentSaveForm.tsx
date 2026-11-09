@@ -1,4 +1,6 @@
 import React, { useRef, useState } from 'react';
+import { AssignmentConflictWarning } from './AssignmentConflictWarning';
+import type { AssignmentConflict } from './assignmentFacts';
 
 // What saving an assignment fact needs from the Asset page.
 export interface AssignmentSaveProps {
@@ -32,6 +34,12 @@ interface SaveFailure {
 
 type SaveRequest = Record<string, unknown> & { retry_token: string };
 
+// The conflicts a save would create, and the request they were found for.
+interface ConflictWarning {
+  request: SaveRequest;
+  conflicts: AssignmentConflict[];
+}
+
 const recoveryButtonStyle = (isSubmitting: boolean): React.CSSProperties => ({
   marginLeft: '1rem',
   padding: '0.375rem 0.75rem',
@@ -48,7 +56,9 @@ const recoveryButtonStyle = (isSubmitting: boolean): React.CSSProperties => ({
 /**
  * The form around one assignment fact: its heading, save and cancel, and what happens to a save.
  * A retry after an unknown outcome resends the same request under the same token, so one action
- * records one event (US 28). A stale save is refused until the latest facts are read (US 27).
+ * records one event (US 28). A stale save is refused until the latest facts are read (US 27). A save
+ * that would create Assignment Conflicts waits for confirmation, with the fields locked so that what
+ * is confirmed is the request warned about (US 29, 37).
  */
 export const AssignmentSaveForm: React.FC<AssignmentSaveFormProps> = ({
   assignmentVersion,
@@ -69,14 +79,16 @@ export const AssignmentSaveForm: React.FC<AssignmentSaveFormProps> = ({
   const [expectedVersion, setExpectedVersion] = useState(assignmentVersion);
   const [failure, setFailure] = useState<SaveFailure | null>(null);
   const [isSubmitting, setIsSubmitting] = useState(false);
+  const [conflictWarning, setConflictWarning] = useState<ConflictWarning | null>(null);
   // The request whose outcome is unknown.
   const uncertainRef = useRef<SaveRequest | null>(null);
 
-  const isLocked = isSubmitting || failure?.next === 'retry';
+  const isLocked = isSubmitting || failure?.next === 'retry' || conflictWarning !== null;
 
   const send = async (request: SaveRequest) => {
     setIsSubmitting(true);
     setFailure(null);
+    setConflictWarning(null);
     uncertainRef.current = request;
 
     let res: Response;
@@ -113,6 +125,10 @@ export const AssignmentSaveForm: React.FC<AssignmentSaveFormProps> = ({
     if (res.status === 400 || res.status === 404 || res.status === 409) {
       uncertainRef.current = null;
       const body = await res.json().catch(() => null);
+      if (body?.code === 'ASSIGNMENT_CONFLICTS_FOUND') {
+        setConflictWarning({ request, conflicts: body.conflicts });
+        return;
+      }
       setFailure(
         body?.code === 'STALE_BEFORE_CONFLICT'
           ? { message: 'มีการบันทึกรายการอื่นของครุภัณฑ์นี้หลังจากเปิดฟอร์ม กรุณาโหลดข้อมูลล่าสุดแล้วตรวจสอบอีกครั้ง', next: 'reload' }
@@ -199,6 +215,15 @@ export const AssignmentSaveForm: React.FC<AssignmentSaveFormProps> = ({
             </button>
           )}
         </div>
+      )}
+
+      {conflictWarning && (
+        <AssignmentConflictWarning
+          conflicts={conflictWarning.conflicts}
+          // The same request keeps its expected version, which ties the confirmation to the timeline warned about.
+          onConfirm={() => void send({ ...conflictWarning.request, explicit_continuation: true })}
+          onBack={() => setConflictWarning(null)}
+        />
       )}
 
       {children(isLocked)}

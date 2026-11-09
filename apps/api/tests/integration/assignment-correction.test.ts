@@ -95,6 +95,10 @@ describe('Correct or void an assignment fact (Seam A - F003-T3)', () => {
   const voidFact = (assetId: string, eventId: string, version: number, options?: { token?: string; actor?: Actor }) =>
     correct(assetId, eventId, { action: 'VOID', expected_assignment_version: version, reason: 'บันทึกผิด' }, options);
 
+  // Voids a fact that a standing fact's prior value relies on, confirming the conflict that leaves.
+  const voidConfirmed = (assetId: string, eventId: string, version: number) =>
+    correct(assetId, eventId, { action: 'VOID', expected_assignment_version: version, reason: 'บันทึกผิด', explicit_continuation: true });
+
   // What an observer reads of an Asset's assignment, to show that a refused write changed nothing.
   const assignmentOf = async (assetId: string) => {
     const detail = await detailOf(assetId);
@@ -301,7 +305,7 @@ describe('Correct or void an assignment fact (Seam A - F003-T3)', () => {
 
         const [event] = await timelineOf(assetId);
         expect(event.changes).toEqual([
-          { dimension: 'location', prior: NO_VALUE, new: { entry: null, legacy_text: 'ห้องตามทะเบียนเก่า' } },
+          { dimension: 'location', prior: NO_VALUE, new: { entry: null, legacy_text: 'ห้องตามทะเบียนเก่า' }, conflict: null },
         ]);
         expect(event.corrections.at(-1).changes).toEqual([
           {
@@ -420,9 +424,9 @@ describe('Correct or void an assignment fact (Seam A - F003-T3)', () => {
         const of = (row: { id: string; name: string }) => ({ entry: summary(row), legacy_text: null });
         const [, stored] = await timelineOf(assetId);
         expect(stored.changes).toEqual([
-          { dimension: 'location', prior: of(roomA), new: of(roomC) },
-          { dimension: 'organization_unit', prior: of(unitA), new: NO_VALUE },
-          { dimension: 'responsible_person', prior: of(personA), new: NO_VALUE },
+          { dimension: 'location', prior: of(roomA), new: of(roomC), conflict: null },
+          { dimension: 'organization_unit', prior: of(unitA), new: NO_VALUE, conflict: null },
+          { dimension: 'responsible_person', prior: of(personA), new: NO_VALUE, conflict: null },
         ]);
         expect(stored.corrections[0].changes).toEqual([
           { field: 'location', before: { prior: of(roomA), new: of(roomB) }, after: { prior: of(roomA), new: of(roomC) } },
@@ -442,6 +446,7 @@ describe('Correct or void an assignment fact (Seam A - F003-T3)', () => {
             organization_unit: { prior: valueOf(unitBefore, 'กองเก่า') },
             responsible_person: { prior: valueOf(null, ' คุณเก่า ') },
           },
+          explicit_continuation: true,
         });
         expect(res.statusCode).toBe(201);
         const [, stored] = await timelineOf(assetId);
@@ -452,7 +457,7 @@ describe('Correct or void an assignment fact (Seam A - F003-T3)', () => {
         ]);
 
         // Emptying a prior value is a value like any other, and the Current Assignment follows new values only.
-        expect((await amend(assetId, event.id, 3, { changes: { location: { prior: valueOf(null) } } })).statusCode).toBe(201);
+        expect((await amend(assetId, event.id, 3, { changes: { location: { prior: valueOf(null) } }, explicit_continuation: true })).statusCode).toBe(201);
         const [, emptied] = await timelineOf(assetId);
         expect(emptied.changes[0].prior).toEqual(NO_VALUE);
       });
@@ -706,14 +711,14 @@ describe('Correct or void an assignment fact (Seam A - F003-T3)', () => {
       const second = { kind: 'INITIAL', effective_date: '2026-01-02', location_id: roomC.id };
       expect((await record(assetId, { ...second, expected_assignment_version: 2 })).statusCode).toBe(400);
 
-      expect((await voidFact(assetId, initial.id, 2)).statusCode).toBe(201);
+      expect((await voidConfirmed(assetId, initial.id, 2)).statusCode).toBe(201);
       expect((await detailOf(assetId)).current_assignment.location.id).toBe(roomB.id);
 
       // A Reassignment needs a standing Initial Assignment.
       const refused = await record(assetId, { kind: 'REASSIGNMENT', expected_assignment_version: 3, effective_date: '2026-07-01', location_id: roomC.id });
       expect(refused.statusCode).toBe(400);
 
-      expect((await record(assetId, { ...second, expected_assignment_version: 3 })).statusCode).toBe(201);
+      expect((await record(assetId, { ...second, expected_assignment_version: 3, explicit_continuation: true })).statusCode).toBe(201);
       const timeline = await timelineOf(assetId);
       expect(timeline.map((event: any) => [event.kind, event.is_voided])).toEqual([
         ['INITIAL', true],
@@ -732,7 +737,7 @@ describe('Correct or void an assignment fact (Seam A - F003-T3)', () => {
         );
       await expect(insertInitial()).rejects.toThrow(/assignment_events_one_initial/);
 
-      expect((await voidFact(assetId, initial.id, 2)).statusCode).toBe(201);
+      expect((await voidConfirmed(assetId, initial.id, 2)).statusCode).toBe(201);
       const again = await insertInitial();
       expect(again.rows).toHaveLength(1);
 

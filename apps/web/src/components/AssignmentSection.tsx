@@ -38,6 +38,8 @@ export interface AssignmentSectionProps {
   // Whether the viewer holds 'assignment:correct' (F003-T3).
   canCorrectAssignment: boolean;
   assignmentVersion: number;
+  // Whether any Assignment Conflict stands (F003-T4).
+  hasAssignmentConflict: boolean;
   isLegacy: boolean;
   csrfToken: string | null;
   onRecorded: () => Promise<void>;
@@ -57,6 +59,7 @@ export const AssignmentSection: React.FC<AssignmentSectionProps> = ({
   canReassign,
   canCorrectAssignment,
   assignmentVersion,
+  hasAssignmentConflict,
   isLegacy,
   csrfToken,
   onRecorded,
@@ -155,6 +158,24 @@ export const AssignmentSection: React.FC<AssignmentSectionProps> = ({
           );
         })}
       </dl>
+
+      {hasAssignmentConflict && (
+        <div
+          role="status"
+          data-testid="assignment-conflict-notice"
+          style={{
+            padding: '0.75rem 1rem',
+            backgroundColor: '#fef3c7',
+            border: '1px solid #f59e0b',
+            borderRadius: '6px',
+            color: '#92400e',
+            fontSize: '0.875rem',
+            marginBottom: '1rem',
+          }}
+        >
+          มีประวัติขัดแย้งค้างตรวจ: ค่าเดิมที่บันทึกไว้ในบางรายการไม่ตรงกับค่าก่อนหน้า ดูรายการที่มีเครื่องหมายในประวัติด้านล่าง
+        </div>
+      )}
 
       {wasRecorded && (
         <div role="status" data-testid="assignment-recorded" style={{ color: '#065f46', fontSize: '0.875rem', marginBottom: '0.75rem' }}>

@@ -209,6 +209,7 @@ describe('Reassign one Asset (Seam A - F003-T2)', () => {
             dimension: 'location',
             prior: { entry: { id: from.id, name: 'ห้องพัสดุเดิม', is_active: true }, legacy_text: null },
             new: { entry: { id: to.id, name: 'ห้องพัสดุใหม่', is_active: true }, legacy_text: null },
+            conflict: null,
           },
         ],
         corrections: [],
@@ -241,11 +242,13 @@ describe('Reassign one Asset (Seam A - F003-T2)', () => {
           dimension: 'location',
           prior: { entry: { id: room.id, name: 'ห้องหลายมิติ เดิม', is_active: true }, legacy_text: null },
           new: { entry: { id: newRoom.id, name: 'ห้องหลายมิติ ใหม่', is_active: true }, legacy_text: null },
+          conflict: null,
         },
         {
           dimension: 'responsible_person',
           prior: NO_VALUE,
           new: { entry: { id: person.id, name: 'คุณหลายมิติ', is_active: true }, legacy_text: null },
+          conflict: null,
         },
       ]);
     });
@@ -274,8 +277,8 @@ describe('Reassign one Asset (Seam A - F003-T2)', () => {
         document_reference: 'สมุดทะเบียน เล่ม 2',
       });
       expect(timeline[0].changes).toEqual([
-        { dimension: 'location', prior: NO_VALUE, new: { entry: { id: room.id, name: 'ห้องกำหนดภายหลัง', is_active: true }, legacy_text: null } },
-        { dimension: 'responsible_person', prior: NO_VALUE, new: { entry: null, legacy_text: 'คุณสมชาย (ทะเบียนเก่า)' } },
+        { dimension: 'location', prior: NO_VALUE, new: { entry: { id: room.id, name: 'ห้องกำหนดภายหลัง', is_active: true }, legacy_text: null }, conflict: null },
+        { dimension: 'responsible_person', prior: NO_VALUE, new: { entry: null, legacy_text: 'คุณสมชาย (ทะเบียนเก่า)' }, conflict: null },
       ]);
       const detail = await detailOf(assetId);
       expect(detail.assignment_version).toBe(1);
@@ -440,9 +443,9 @@ describe('Reassign one Asset (Seam A - F003-T2)', () => {
       expect((await reassign(assetId, { expected_assignment_version: 1, effective_date: '2026-06-01', location_id: b.id })).statusCode).toBe(201);
       expect((await reassign(assetId, { expected_assignment_version: 2, effective_date: '2026-09-01', location_id: c.id })).statusCode).toBe(201);
 
-      const backdated = await reassign(assetId, { expected_assignment_version: 3, effective_date: '2026-07-15', location_id: d.id });
+      const backdated = await reassign(assetId, { expected_assignment_version: 3, effective_date: '2026-07-15', location_id: d.id, explicit_continuation: true });
       expect(backdated.statusCode).toBe(201);
-      expect(backdated.json().event.changes).toEqual([{ dimension: 'location', prior: at(b), new: at(d) }]);
+      expect(backdated.json().event.changes).toEqual([{ dimension: 'location', prior: at(b), new: at(d), conflict: null }]);
 
       // The facts read in Effective Date order, and the Current Assignment follows the latest date.
       const timeline = await timelineOf(assetId);
@@ -458,7 +461,7 @@ describe('Reassign one Asset (Seam A - F003-T2)', () => {
       expect(early.json().event.changes[0].prior).toEqual(at(a));
 
       const dated = await registered({ name: 'ตรวจก่อนทุกข้อเท็จจริง', location_id: a.id, effective_date: '2026-10-01' });
-      const before = await reassign(dated, { expected_assignment_version: 1, effective_date: '2026-09-01', location_id: c.id });
+      const before = await reassign(dated, { expected_assignment_version: 1, effective_date: '2026-09-01', location_id: c.id, explicit_continuation: true });
       expect(before.statusCode).toBe(201);
       expect(before.json().event.changes[0].prior).toEqual(NO_VALUE);
     });
@@ -470,7 +473,7 @@ describe('Reassign one Asset (Seam A - F003-T2)', () => {
 
       const sameDate = await reassign(assetId, { expected_assignment_version: 2, effective_date: '2026-11-01', location_id: c.id });
       expect(sameDate.statusCode).toBe(201);
-      expect(sameDate.json().event.changes).toEqual([{ dimension: 'location', prior: at(b), new: at(c) }]);
+      expect(sameDate.json().event.changes).toEqual([{ dimension: 'location', prior: at(b), new: at(c), conflict: null }]);
       expect((await detailOf(assetId)).current_assignment.location.id).toBe(c.id);
       const timeline = await timelineOf(assetId);
       expect(timeline[1].changes[0].new.entry.id).toBe(b.id);
@@ -490,7 +493,7 @@ describe('Reassign one Asset (Seam A - F003-T2)', () => {
         responsible_person_id: null,
       });
       expect(res.statusCode).toBe(201);
-      expect(res.json().event.changes).toEqual([{ dimension: 'location', prior: at(a), new: at(b) }]);
+      expect(res.json().event.changes).toEqual([{ dimension: 'location', prior: at(a), new: at(b), conflict: null }]);
     });
 
     it('refuses a request left with no change, at the Effective Date, without writing', async () => {
@@ -534,8 +537,8 @@ describe('Reassign one Asset (Seam A - F003-T2)', () => {
       });
       expect(res.statusCode).toBe(201);
       expect(res.json().event.changes).toEqual([
-        { dimension: 'organization_unit', prior: { entry: { id: unit.id, name: 'หน่วยล้างค่า', is_active: true }, legacy_text: null }, new: NO_VALUE },
-        { dimension: 'responsible_person', prior: { entry: { id: person.id, name: 'คุณล้างค่า', is_active: true }, legacy_text: null }, new: NO_VALUE },
+        { dimension: 'organization_unit', prior: { entry: { id: unit.id, name: 'หน่วยล้างค่า', is_active: true }, legacy_text: null }, new: NO_VALUE, conflict: null },
+        { dimension: 'responsible_person', prior: { entry: { id: person.id, name: 'คุณล้างค่า', is_active: true }, legacy_text: null }, new: NO_VALUE, conflict: null },
       ]);
       const { current_assignment: current } = await detailOf(assetId);
       expect(current.location.id).toBe(room.id);
@@ -691,6 +694,7 @@ describe('Reassign one Asset (Seam A - F003-T2)', () => {
           dimension: 'location',
           prior: { entry: null, legacy_text: 'ตึกเก่า ชั้นสอง' },
           new: { entry: { id: room.id, name: 'ห้องแทนข้อความเดิม', is_active: true }, legacy_text: null },
+          conflict: null,
         },
       ]);
       const detail = await detailOf(assetId);
@@ -713,7 +717,7 @@ describe('Reassign one Asset (Seam A - F003-T2)', () => {
       const res = await reassign(assetId, { expected_assignment_version: 1, effective_date: '2026-11-01', organization_unit_id: null });
       expect(res.statusCode).toBe(201);
       expect(res.json().event.changes).toEqual([
-        { dimension: 'organization_unit', prior: { entry: null, legacy_text: 'กองเก่า (ทะเบียนเดิม)' }, new: NO_VALUE },
+        { dimension: 'organization_unit', prior: { entry: null, legacy_text: 'กองเก่า (ทะเบียนเดิม)' }, new: NO_VALUE, conflict: null },
       ]);
       const { current_assignment: current } = await detailOf(assetId);
       expect(current.organization_unit).toBeNull();

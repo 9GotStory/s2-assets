@@ -38,10 +38,11 @@ export type SearchFieldType =
   | 'stable_id'
   | (typeof REFERENCE_DIMENSIONS)[number]['legacyField'];
 
-// T4 (#25): one exact entry per dimension, '' for any; the server combines them with AND.
-export type ReferenceFilters = Record<ReferenceIdField, string>;
+// T4 (#25): one exact entry per dimension, '' for any; the server combines them with AND. F003-T4
+// (#54): has_assignment_conflict is 'true' to list only Assets with an Assignment Conflict, '' for any.
+export type AssetListFilters = Record<ReferenceIdField | 'has_assignment_conflict', string>;
 
-const NO_REFERENCE_FILTERS: ReferenceFilters = { location_id: '', organization_unit_id: '', responsible_person_id: '' };
+const NO_FILTERS: AssetListFilters = { location_id: '', organization_unit_id: '', responsible_person_id: '', has_assignment_conflict: '' };
 
 export const AssetSearch: React.FC = () => {
   const navigate = useNavigate();
@@ -49,12 +50,12 @@ export const AssetSearch: React.FC = () => {
   // Form input state
   const [selectedField, setSelectedField] = useState<SearchFieldType>('all');
   const [searchValue, setSearchValue] = useState<string>('');
-  const [selectedFilters, setSelectedFilters] = useState<ReferenceFilters>(NO_REFERENCE_FILTERS);
+  const [selectedFilters, setSelectedFilters] = useState<AssetListFilters>(NO_FILTERS);
 
   // Active query state (what the current results reflect)
   const [activeField, setActiveField] = useState<SearchFieldType>('all');
   const [activeValue, setActiveValue] = useState<string>('');
-  const [activeFilters, setActiveFilters] = useState<ReferenceFilters>(NO_REFERENCE_FILTERS);
+  const [activeFilters, setActiveFilters] = useState<AssetListFilters>(NO_FILTERS);
   const [offset, setOffset] = useState<number>(0);
   const limit = 25;
 
@@ -79,7 +80,7 @@ export const AssetSearch: React.FC = () => {
   // Active query refs for revalidation re-fetch
   const activeFieldRef = useRef<SearchFieldType>(activeField);
   const activeValueRef = useRef<string>(activeValue);
-  const activeFiltersRef = useRef<ReferenceFilters>(activeFilters);
+  const activeFiltersRef = useRef<AssetListFilters>(activeFilters);
   const offsetRef = useRef<number>(offset);
 
   useEffect(() => {
@@ -163,10 +164,10 @@ export const AssetSearch: React.FC = () => {
           clearSearchState();
           setSelectedField('all');
           setSearchValue('');
-          setSelectedFilters(NO_REFERENCE_FILTERS);
+          setSelectedFilters(NO_FILTERS);
           activeFieldRef.current = 'all';
           activeValueRef.current = '';
-          activeFiltersRef.current = NO_REFERENCE_FILTERS;
+          activeFiltersRef.current = NO_FILTERS;
           offsetRef.current = 0;
         }
         currentActorIdRef.current = actorId;
@@ -193,7 +194,7 @@ export const AssetSearch: React.FC = () => {
 
   // Execute search with generation tracking and actor epoch binding
   const executeSearch = useCallback(
-    async (field: SearchFieldType, value: string, targetOffset: number, filters: ReferenceFilters) => {
+    async (field: SearchFieldType, value: string, targetOffset: number, filters: AssetListFilters) => {
       // 1. Invalidate/abort obsolete requests before awaiting
       if (abortControllerRef.current) {
         abortControllerRef.current.abort();
@@ -225,7 +226,7 @@ export const AssetSearch: React.FC = () => {
       const capturedActorId = session.actorId;
       const effectiveField = session.actorChanged ? 'all' : field;
       const effectiveValue = session.actorChanged ? '' : value;
-      const effectiveFilters = session.actorChanged ? NO_REFERENCE_FILTERS : filters;
+      const effectiveFilters = session.actorChanged ? NO_FILTERS : filters;
       const effectiveOffset = session.actorChanged ? 0 : targetOffset;
       setListActorId(capturedActorId ?? null);
 
@@ -236,9 +237,9 @@ export const AssetSearch: React.FC = () => {
           queryParams.set('field', effectiveField);
           queryParams.set('value', effectiveValue);
         }
-        for (const [filter, entryId] of Object.entries(effectiveFilters)) {
-          if (entryId) {
-            queryParams.set(filter, entryId);
+        for (const [filter, filterValue] of Object.entries(effectiveFilters)) {
+          if (filterValue) {
+            queryParams.set(filter, filterValue);
           }
         }
         queryParams.set('limit', String(limit));
@@ -395,7 +396,7 @@ export const AssetSearch: React.FC = () => {
   // Initial browse on mount
   useEffect(() => {
     isMountedRef.current = true;
-    executeSearch('all', '', 0, NO_REFERENCE_FILTERS);
+    executeSearch('all', '', 0, NO_FILTERS);
     return () => {
       isMountedRef.current = false;
       ++searchGenRef.current;
@@ -411,8 +412,8 @@ export const AssetSearch: React.FC = () => {
   const handleReset = () => {
     setSelectedField('all');
     setSearchValue('');
-    setSelectedFilters(NO_REFERENCE_FILTERS);
-    executeSearch('all', '', 0, NO_REFERENCE_FILTERS);
+    setSelectedFilters(NO_FILTERS);
+    executeSearch('all', '', 0, NO_FILTERS);
   };
 
   const handlePrevPage = () => {
@@ -705,6 +706,28 @@ export const AssetSearch: React.FC = () => {
                 </div>
               ))}
             </div>
+            <label
+              htmlFor="search-filter-has_assignment_conflict"
+              style={{
+                display: 'flex',
+                alignItems: 'center',
+                gap: '0.375rem',
+                marginTop: '0.75rem',
+                fontSize: '0.875rem',
+                fontWeight: 500,
+                color: '#374151',
+              }}
+            >
+              <input
+                id="search-filter-has_assignment_conflict"
+                type="checkbox"
+                checked={selectedFilters.has_assignment_conflict === 'true'}
+                onChange={(e) =>
+                  setSelectedFilters((current) => ({ ...current, has_assignment_conflict: e.target.checked ? 'true' : '' }))
+                }
+              />
+              มีประวัติขัดแย้งค้างตรวจ
+            </label>
             {referenceLists.error && (
               <div role="alert" style={{ marginTop: '0.5rem', fontSize: '0.8125rem', color: '#b91c1c' }}>
                 {referenceLists.error}

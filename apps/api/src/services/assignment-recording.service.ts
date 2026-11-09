@@ -12,7 +12,7 @@ import {
 import { writeAssignmentOnce, type RecordedAssignment } from './assignment-write.ts';
 import { ValidationError } from './validation-error.ts';
 
-export type RecordAssignmentInput = { expected_assignment_version: number } & (
+export type RecordAssignmentInput = { expected_assignment_version: number; explicit_continuation?: boolean } & (
   | ({ kind: 'INITIAL' } & InitialAssignmentInput)
   | ({ kind: 'REASSIGNMENT' } & ReassignmentInput)
 );
@@ -72,6 +72,8 @@ export class AssignmentRecordingService {
         retryToken,
         expectedVersion: input.expected_assignment_version,
         payload: { version: 1, kind: input.kind, expected_assignment_version: input.expected_assignment_version, facts },
+        explicitContinuation: input.explicit_continuation === true,
+        recordsNewFact: true,
       },
       async (client) => {
         const initialRes = await client.query(
