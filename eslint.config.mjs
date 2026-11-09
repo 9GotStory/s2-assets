@@ -48,7 +48,7 @@ export default tseslint.config(
   },
   {
     // #66: a request that starts while a page's last route is removed can stay paused with no
-    // response, so a journey removes every route only as its last step.
+    // response, so unrouteAll is only the last statement of its block.
     files: ['apps/web/tests/e2e/**/*.ts'],
     rules: {
       'no-restricted-syntax': [
