@@ -35,6 +35,15 @@ export interface RetryableWrite {
   explicitContinuation: boolean;
 }
 
+// Ends a transaction that will not be kept. A connection already closed has nothing to roll back.
+export async function rollbackQuietly(client: pg.PoolClient): Promise<void> {
+  try {
+    await client.query('ROLLBACK');
+  } catch {
+    // ignore rollback error on closed connection
+  }
+}
+
 /**
  * One transaction under Feature 002's retry-token contract. `work` runs at most once per token: an
  * identical replay returns the committed result, and a changed payload under the same token is
@@ -76,11 +85,7 @@ export async function commitOnce<Result>(
     await client.query('COMMIT');
     return result;
   } catch (err) {
-    try {
-      await client.query('ROLLBACK');
-    } catch {
-      // ignore rollback error on closed connection
-    }
+    await rollbackQuietly(client);
     throw err;
   } finally {
     client.release();

@@ -139,14 +139,17 @@ export const assetRoutes: FastifyPluginAsync<AssetRoutesOptions> = async (
     options.assetService ??
     new AssetService({ db: options.db });
 
+  // Whether the user holds 'assignment:reassign'. Fails closed without a capability service.
+  const mayReassign = async (userId: string): Promise<boolean> =>
+    capabilityService ? capabilityService.hasCapability(userId, 'assignment:reassign') : false;
+
   // #50 Q3: dimension values at registration record an Initial Assignment, which needs
-  // 'assignment:reassign' besides the registration capability. Fails closed without a capability service.
+  // 'assignment:reassign' besides the registration capability.
   const mayRecordInitialAssignment = async (
     userId: string,
     body: RegisterAssetInput | BulkRegisterAssetInput
   ): Promise<boolean> =>
-    !namesAssignmentValues(body) ||
-    (capabilityService ? await capabilityService.hasCapability(userId, 'assignment:reassign') : false);
+    !namesAssignmentValues(body) || (await mayReassign(userId));
 
   const getPublicAppOrigin = (): string | undefined => {
     return (fastify as any).publicAppOrigin ?? options.publicAppOrigin;
@@ -679,9 +682,7 @@ export const assetRoutes: FastifyPluginAsync<AssetRoutesOptions> = async (
         });
 
         // F003-T5 (#55): whether the list offers selecting rows for "ย้ายหลายรายการ". The server decides again.
-        const canReassign = request.user && capabilityService
-          ? await capabilityService.hasCapability(request.user.id, 'assignment:reassign')
-          : false;
+        const canReassign = request.user ? await mayReassign(request.user.id) : false;
 
         return reply.status(200).send({ ...result, can_reassign: canReassign });
       } catch (err: any) {

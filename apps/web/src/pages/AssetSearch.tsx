@@ -2,10 +2,11 @@ import React, { useEffect, useState, useRef, useCallback } from 'react';
 import { useNavigate, Link } from 'react-router';
 import {
   BULK_REASSIGNMENT_MAX_ASSETS,
+  BulkReassignmentBar,
   BulkReassignmentPanel,
+  assetLabelOf,
   type BulkSelectedAsset,
 } from '../components/BulkReassignmentPanel';
-import { BULK_REASSIGNMENT_LABEL } from '../components/assignmentFacts';
 import {
   REFERENCE_DIMENSIONS,
   entryLabel,
@@ -831,57 +832,12 @@ export const AssetSearch: React.FC = () => {
             </div>
 
             {canReassign && (
-              <div
-                id="bulk-reassign-bar"
-                style={{
-                  display: 'flex',
-                  alignItems: 'center',
-                  gap: '0.75rem',
-                  marginBottom: '1rem',
-                  fontSize: '0.875rem',
-                  color: '#374151',
-                }}
-              >
-                <span id="bulk-reassign-count">
-                  เลือกแล้ว {selection.size} รายการ (ไม่เกิน {BULK_REASSIGNMENT_MAX_ASSETS})
-                </span>
-                <button
-                  type="button"
-                  id="bulk-reassign-open"
-                  disabled={selection.size === 0 || isBulkPanelOpen}
-                  onClick={() => setIsBulkPanelOpen(true)}
-                  style={{
-                    padding: '0.375rem 0.75rem',
-                    backgroundColor: selection.size === 0 || isBulkPanelOpen ? '#9ca3af' : '#2563eb',
-                    color: '#ffffff',
-                    border: 'none',
-                    borderRadius: '4px',
-                    fontSize: '0.875rem',
-                    fontWeight: 500,
-                    cursor: selection.size === 0 || isBulkPanelOpen ? 'not-allowed' : 'pointer',
-                  }}
-                >
-                  {BULK_REASSIGNMENT_LABEL}
-                </button>
-                {selection.size > 0 && !isBulkPanelOpen && (
-                  <button
-                    type="button"
-                    id="bulk-reassign-clear"
-                    onClick={() => setSelection(new Map())}
-                    style={{
-                      padding: '0.375rem 0.75rem',
-                      backgroundColor: '#ffffff',
-                      color: '#4b5563',
-                      border: '1px solid #d1d5db',
-                      borderRadius: '4px',
-                      fontSize: '0.875rem',
-                      cursor: 'pointer',
-                    }}
-                  >
-                    ล้างการเลือก
-                  </button>
-                )}
-              </div>
+              <BulkReassignmentBar
+                selectedCount={selection.size}
+                isPanelOpen={isBulkPanelOpen}
+                onOpen={() => setIsBulkPanelOpen(true)}
+                onClear={() => setSelection(new Map())}
+              />
             )}
 
             {results.length === 0 ? (
@@ -947,7 +903,7 @@ export const AssetSearch: React.FC = () => {
                             <input
                               type="checkbox"
                               data-testid={`asset-select-${item.id}`}
-                              aria-label={`เลือก ${item.name || item.asset_number || item.id}`}
+                              aria-label={`เลือก ${assetLabelOf(item, item.id)}`}
                               checked={selection.has(item.id)}
                               disabled={isBulkPanelOpen || (!selection.has(item.id) && selection.size >= BULK_REASSIGNMENT_MAX_ASSETS)}
                               onChange={() => toggleSelected(item)}

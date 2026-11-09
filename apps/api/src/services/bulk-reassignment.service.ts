@@ -18,7 +18,7 @@ import {
   type ReassignmentFacts,
   type ReassignmentInput,
 } from './assignment.service.ts';
-import { commitOnce } from './assignment-write.ts';
+import { commitOnce, rollbackQuietly } from './assignment-write.ts';
 import { ValidationError } from './validation-error.ts';
 
 // #50 Q4: as many as a bulk registration (Feature 002 D4).
@@ -66,6 +66,9 @@ interface AppliedBatch {
   assets: AppliedAsset[];
   conflicts: AssignmentConflict[];
 }
+
+const unchangedOf = (assets: AppliedAsset[]): BulkReassignmentResult['unchanged'] =>
+  assets.flatMap(({ asset_id, version_read, event }) => (event ? [] : [{ asset_id, assignment_version: version_read }]));
 
 interface BatchWrite {
   assetIds: string[];
@@ -197,15 +200,11 @@ export class BulkReassignmentService {
             ? [{ asset_id, assignment_version: version_read, changes: event.changes.map(({ dimension, prior, new: value }) => ({ dimension, prior, new: value })) }]
             : []
         ),
-        unchanged: assets.flatMap(({ asset_id, version_read, event }) => (event ? [] : [{ asset_id, assignment_version: version_read }])),
+        unchanged: unchangedOf(assets),
         conflicts,
       };
     } finally {
-      try {
-        await client.query('ROLLBACK');
-      } catch {
-        // ignore rollback error on closed connection
-      }
+      await rollbackQuietly(client);
       client.release();
     }
   }
@@ -244,7 +243,7 @@ export class BulkReassignmentService {
         return {
           bulk_reference: bulkReference,
           changed: assets.flatMap(({ asset_id, version_read, event }) => (event ? [{ asset_id, event, assignment_version: version_read + 1 }] : [])),
-          unchanged: assets.flatMap(({ asset_id, version_read, event }) => (event ? [] : [{ asset_id, assignment_version: version_read }])),
+          unchanged: unchangedOf(assets),
         };
       }
     );

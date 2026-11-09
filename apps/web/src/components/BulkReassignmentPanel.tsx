@@ -70,8 +70,66 @@ const recoveryButtonStyle: React.CSSProperties = {
   whiteSpace: 'nowrap',
 };
 
-const labelOf = ({ name, asset_number }: { name: string | null; asset_number: string | null }, id: string): string =>
+export const assetLabelOf = ({ name, asset_number }: { name: string | null; asset_number: string | null }, id: string): string =>
   name || asset_number || id;
+
+export interface BulkReassignmentBarProps {
+  selectedCount: number;
+  isPanelOpen: boolean;
+  onOpen: () => void;
+  onClear: () => void;
+}
+
+/** Above the asset list: how many rows are selected, and "ย้ายหลายรายการ". */
+export const BulkReassignmentBar: React.FC<BulkReassignmentBarProps> = ({ selectedCount, isPanelOpen, onOpen, onClear }) => {
+  const cannotOpen = selectedCount === 0 || isPanelOpen;
+  return (
+    <div
+      id="bulk-reassign-bar"
+      style={{ display: 'flex', alignItems: 'center', gap: '0.75rem', marginBottom: '1rem', fontSize: '0.875rem', color: '#374151' }}
+    >
+      <span id="bulk-reassign-count">
+        เลือกแล้ว {selectedCount} รายการ (ไม่เกิน {BULK_REASSIGNMENT_MAX_ASSETS})
+      </span>
+      <button
+        type="button"
+        id="bulk-reassign-open"
+        disabled={cannotOpen}
+        onClick={onOpen}
+        style={{
+          padding: '0.375rem 0.75rem',
+          backgroundColor: cannotOpen ? '#9ca3af' : '#2563eb',
+          color: '#ffffff',
+          border: 'none',
+          borderRadius: '4px',
+          fontSize: '0.875rem',
+          fontWeight: 500,
+          cursor: cannotOpen ? 'not-allowed' : 'pointer',
+        }}
+      >
+        {BULK_REASSIGNMENT_LABEL}
+      </button>
+      {selectedCount > 0 && !isPanelOpen && (
+        <button
+          type="button"
+          id="bulk-reassign-clear"
+          onClick={onClear}
+          style={{
+            padding: '0.375rem 0.75rem',
+            backgroundColor: '#ffffff',
+            color: '#4b5563',
+            border: '1px solid #d1d5db',
+            borderRadius: '4px',
+            fontSize: '0.875rem',
+            cursor: 'pointer',
+          }}
+        >
+          ล้างการเลือก
+        </button>
+      )}
+    </div>
+  );
+};
 
 export interface BulkReassignmentPanelProps {
   selected: BulkSelectedAsset[];
@@ -108,7 +166,7 @@ export const BulkReassignmentPanel: React.FC<BulkReassignmentPanelProps> = ({
   const assetById = new Map(selected.map((asset) => [asset.id, asset]));
   const assetLabel = (assetId: string): string => {
     const asset = assetById.get(assetId);
-    return asset ? labelOf(asset, assetId) : assetId;
+    return asset ? assetLabelOf(asset, assetId) : assetId;
   };
 
   const post = (url: string, body: Record<string, unknown>, retryToken?: string): Promise<Response> =>
@@ -258,7 +316,7 @@ export const BulkReassignmentPanel: React.FC<BulkReassignmentPanelProps> = ({
             <ul style={{ margin: '0.5rem 0 0 0', paddingLeft: '1.25rem' }}>
               {failure.needingInitial.map((asset) => (
                 <li key={asset.asset_id}>
-                  <Link to={`/assets/${asset.asset_id}`}>{labelOf(asset, asset.asset_id)}</Link>
+                  <Link to={`/assets/${asset.asset_id}`}>{assetLabelOf(asset, asset.asset_id)}</Link>
                 </li>
               ))}
             </ul>

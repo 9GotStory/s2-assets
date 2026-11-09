@@ -407,7 +407,7 @@ export function normalizeReassignment(input: ReassignmentInput, today: string): 
   };
 }
 
-export interface RecordReassignmentInput {
+export interface ReassignmentWrite {
   assetId: string;
   actorId: string;
   facts: ReassignmentFacts;
@@ -422,7 +422,7 @@ export interface RecordReassignmentInput {
  */
 export async function recordReassignmentIfItChanges(
   client: pg.PoolClient | pg.Pool,
-  { assetId, actorId, facts, today, bulkReference = null }: RecordReassignmentInput & { bulkReference?: string | null }
+  { assetId, actorId, facts, today, bulkReference }: ReassignmentWrite & { bulkReference?: string }
 ): Promise<string | null> {
   const prior = await readAssignmentAt(client, assetId, facts.effective_date);
   const changes = DIMENSIONS.flatMap(({ key, dimension, idField, legacyField, column }) => {
@@ -446,7 +446,7 @@ export async function recordReassignmentIfItChanges(
     `INSERT INTO assignment_events (asset_id, kind, effective_date, recorded_by, provenance, document_reference, remark, bulk_reference)
      VALUES ($1, 'REASSIGNMENT', $2, $3, 'RECORDED', $4, $5, $6)
      RETURNING id`,
-    [assetId, facts.effective_date, actorId, facts.document_reference, facts.remark, bulkReference]
+    [assetId, facts.effective_date, actorId, facts.document_reference, facts.remark, bulkReference ?? null]
   );
   const eventId: string = eventRes.rows[0].id;
   for (const { dimension, column, target, priorEntry, priorLegacy } of changes) {
@@ -461,7 +461,7 @@ export async function recordReassignmentIfItChanges(
 }
 
 /** Records a Reassignment as above, refusing one that changes nothing (MR-01). Returns the event id. */
-export async function recordReassignment(client: pg.PoolClient | pg.Pool, input: RecordReassignmentInput): Promise<string> {
+export async function recordReassignment(client: pg.PoolClient | pg.Pool, input: ReassignmentWrite): Promise<string> {
   const eventId = await recordReassignmentIfItChanges(client, input);
   if (eventId === null) {
     throw new ValidationError('This Reassignment changes nothing at its Effective Date');

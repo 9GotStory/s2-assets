@@ -32,6 +32,19 @@ describe('Bulk Reassignment (Seam A - F003-T5)', () => {
   const bulk = async (assetIds: string[], payload: Record<string, unknown>, token: string = crypto.randomUUID(), actor: Actor = custodian) =>
     api.post(actor, '/assets/bulk-reassignments', { assets: await selectionOf(assetIds), ...payload }, { 'x-retry-token': token });
 
+  // Runs `check` with 'assignment:reassign' alone denied: roles grant capabilities together, so only this isolates its gate.
+  const withReassignDenied = async (check: () => Promise<void>) => {
+    const capabilities = api.app.capabilityService!;
+    const original = capabilities.hasCapability;
+    capabilities.hasCapability = async (userId: string, capability: string) =>
+      capability === 'assignment:reassign' ? false : original.call(capabilities, userId, capability);
+    try {
+      await check();
+    } finally {
+      capabilities.hasCapability = original;
+    }
+  };
+
   beforeAll(async () => {
     api = await startApiHarness({ clock: () => new Date('2026-11-05T05:00:00Z') });
     admin = await api.actor('admin_bulk', 'ADMINISTRATOR');
@@ -106,6 +119,23 @@ describe('Bulk Reassignment (Seam A - F003-T5)', () => {
       }
     });
 
+    it('keeps Legacy text as the prior value, and it leaves the Current Assignment (#50 Q14)', async () => {
+      const [target] = await entries('locations', 'ห้องจากข้อความเดิม', 1);
+      const registeredWithText = await api.post(custodian, '/assets', { name: 'ของข้อความเดิม', legacy_location_text: 'ห้องตามทะเบียนเก่า', effective_date: null });
+      expect(registeredWithText.statusCode).toBe(201);
+      const assetId = registeredWithText.json().asset.id;
+
+      const res = await bulk([assetId], { effective_date: TODAY, location_id: target.id });
+
+      expect(res.statusCode).toBe(201);
+      expect(res.json().changed[0].event.changes).toEqual([
+        { dimension: 'location', prior: { entry: null, legacy_text: 'ห้องตามทะเบียนเก่า' }, new: at(target), conflict: null },
+      ]);
+      const { current_assignment: current } = await detailOf(assetId);
+      expect(current.location.id).toBe(target.id);
+      expect(current.legacy_location_text).toBeNull();
+    });
+
     it('takes prior values at the Effective Date, not today', async () => {
       const [roomA, roomB, target] = await entries('locations', 'ห้องย้อนหลัง', 3);
       const assetId = await registered(roomA);
@@ -171,6 +201,20 @@ describe('Bulk Reassignment (Seam A - F003-T5)', () => {
       expect(atLimit.json().changed).toHaveLength(100);
       expect(new Set(atLimit.json().changed.map(({ event }: any) => event.bulk_reference)).size).toBe(1);
     }, 60_000);
+
+    it('refuses an Asset with no expected assignment version', async () => {
+      const [roomA, target] = await entries('locations', 'ห้องไม่มีรุ่น', 2);
+      const assetId = await registered(roomA);
+      const res = await api.post(
+        custodian,
+        '/assets/bulk-reassignments',
+        { assets: [{ asset_id: assetId }], effective_date: TODAY, location_id: target.id },
+        { 'x-retry-token': crypto.randomUUID() }
+      );
+      expect(res.statusCode).toBe(400);
+      expect(res.json().code).toBe('VALIDATION_FAILED');
+      expect(await timelineOf(assetId)).toHaveLength(1);
+    });
 
     it('refuses an Asset named twice, and an id that is not a UUID', async () => {
       const [roomA, target] = await entries('locations', 'ห้องซ้ำ', 2);
@@ -557,17 +601,13 @@ describe('Bulk Reassignment (Seam A - F003-T5)', () => {
       const assetId = await registered(roomA);
       expect((await preview([assetId], { effective_date: TODAY, location_id: target.id }, readonly)).statusCode).toBe(403);
 
-      const capabilities = api.app.capabilityService!;
-      const original = capabilities.hasCapability;
-      capabilities.hasCapability = async (userId: string, capability: string) =>
-        capability === 'assignment:reassign' ? false : original.call(capabilities, userId, capability);
-      try {
+      const before = await assignmentOf(assetId);
+      await withReassignDenied(async () => {
         const res = await preview([assetId], { effective_date: TODAY, location_id: target.id });
         expect(res.statusCode).toBe(403);
         expect(res.json().error.code).toBe('FORBIDDEN');
-      } finally {
-        capabilities.hasCapability = original;
-      }
+      });
+      expect(await assignmentOf(assetId)).toEqual(before);
 
       const withToken = await preview([assetId], { effective_date: TODAY, location_id: target.id, retry_token: 'x' });
       expect(withToken.statusCode).toBe(400);
@@ -585,15 +625,9 @@ describe('Bulk Reassignment (Seam A - F003-T5)', () => {
       expect((await rowsNamed(readonly, 'ของรายการสิทธิ์')).json().can_reassign).toBe(false);
       expect((await rowsNamed(admin, 'ของรายการสิทธิ์')).json().can_reassign).toBe(false);
 
-      const capabilities = api.app.capabilityService!;
-      const original = capabilities.hasCapability;
-      capabilities.hasCapability = async (userId: string, capability: string) =>
-        capability === 'assignment:reassign' ? false : original.call(capabilities, userId, capability);
-      try {
+      await withReassignDenied(async () => {
         expect((await rowsNamed(custodian, 'ของรายการสิทธิ์')).json().can_reassign).toBe(false);
-      } finally {
-        capabilities.hasCapability = original;
-      }
+      });
     });
   });
 
@@ -625,17 +659,11 @@ describe('Bulk Reassignment (Seam A - F003-T5)', () => {
       const [roomA, target] = await entries('locations', 'ห้องไม่มีสิทธิ์ย้าย', 2);
       const assetId = await registered(roomA);
       const before = await assignmentOf(assetId);
-      const capabilities = api.app.capabilityService!;
-      const original = capabilities.hasCapability;
-      capabilities.hasCapability = async (userId: string, capability: string) =>
-        capability === 'assignment:reassign' ? false : original.call(capabilities, userId, capability);
-      try {
+      await withReassignDenied(async () => {
         const res = await bulk([assetId], { effective_date: TODAY, location_id: target.id });
         expect(res.statusCode).toBe(403);
         expect(res.json().error.code).toBe('FORBIDDEN');
-      } finally {
-        capabilities.hasCapability = original;
-      }
+      });
       expect(await assignmentOf(assetId)).toEqual(before);
     });
   });
