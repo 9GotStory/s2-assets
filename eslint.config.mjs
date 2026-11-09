@@ -57,6 +57,17 @@ export default tseslint.config(
           selector: "ExpressionStatement:not(:last-child) > AwaitExpression > CallExpression[callee.property.name='unrouteAll']",
           message: 'Remove routes by name until the journey ends: unrouteAll takes the catch-all route with it (#66).',
         },
+        {
+          // Playwright 1.63 marks networkidle DISCOURAGED for tests and points to web assertions.
+          selector: "Literal[value='networkidle']",
+          message: 'Wait with a web assertion on what the page shows: Playwright discourages networkidle in tests (#75).',
+        },
+        {
+          // #75: a read that lands between the two statements finds the user with no role.
+          selector:
+            'ExpressionStatement:matches([expression.argument.arguments.0.value=/DELETE FROM user_roles/], [expression.argument.arguments.0.quasis.0.value.raw=/DELETE FROM user_roles/]) + ExpressionStatement:matches([expression.argument.arguments.0.value=/INSERT INTO user_roles/], [expression.argument.arguments.0.quasis.0.value.raw=/INSERT INTO user_roles/])',
+          message: 'Change a role with one UPDATE, so that no read of an open page finds the user without one (#75).',
+        },
       ],
     },
   },

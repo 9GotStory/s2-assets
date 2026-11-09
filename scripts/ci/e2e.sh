@@ -87,6 +87,21 @@ podman run --rm --network=host --ipc=host --security-opt label=disable \
 failures=0
 remove_new_test_containers "$before"
 
+# Prints the last responses of 400 or more in each kept trace: an unexpected 401 or 403 is the usual
+# reason a later step timed out. The query string stays out of the log.
+print_failed_responses() {
+  local trace lines
+  while IFS= read -r -d '' trace; do
+    lines=$(unzip -p "$trace" '*.network' | jq -r '
+      select(.snapshot.response.status >= 400)
+      | "  \(.snapshot.response.status) \(.snapshot.request.method) \(.snapshot.request.url | sub("^https?://[^/]+"; "") | sub("\\?.*"; ""))"' \
+      | tail -n 8)
+    [[ -n $lines ]] || continue
+    note "last failed responses in $(basename "$(dirname "$trace")"):" >&2
+    echo "$lines" >&2
+  done < <(find "$1" -name trace.zip -print0)
+}
+
 # Copies a failed run's results out of the workspace. A run with no results takes no slot.
 keep_failed_results() {
   local results="$WORKSPACE/apps/web/test-results" kept
@@ -94,6 +109,7 @@ keep_failed_results() {
   [[ -n $(ls -A "$results" 2>/dev/null) ]] && mkdir -p "$kept" && cp -r "$results/." "$kept/" || return 1
   ls -1dt "$FAILED_RUNS"/*/ | tail -n +4 | xargs -r -d '\n' rm -rf --
   note "journeys failed; results in $kept" >&2
+  print_failed_responses "$kept" || true
 }
 
 if ((status != 0)); then

@@ -15,6 +15,13 @@ Roles grant capabilities together, so the role map can hide a gate that fails op
 (#51), a registration refused for `assignment:reassign` answered 403 and still committed the Asset.
 Only the isolating test showed it.
 
+## A test of absence needs a state where the thing would be there
+
+An assertion that an action, a field or a row is absent proves something only when the same state
+shows it to someone allowed to see it. In F004-T1 (#75), a Read-only User's missing action was
+asserted on an Asset already On Loan, where nobody is offered it, and a 404 came from a URL no route
+serves. Neither test could fail.
+
 ## Helpers decide, handlers reply
 
 A route helper returns a decision, such as a boolean or a result, and the route handler sends the
@@ -29,6 +36,14 @@ It lets through any name that already exists, so review judges whether new code 
 name for a new concept. In F003-T1, the first draft typed the Current Assignment with Feature
 002's `AssetReferenceContext`.
 
+## A text field's kind decides its control characters
+
+A name, a phone number or a token is one line and refuses every control character
+(`hasStrictControlChars`). New code checks before it trims, so a line break at the end is refused,
+not dropped. Free text, such as a document reference, a remark, a note or a reason, keeps tab and
+line breaks and refuses the rest (`normalizeText`), as in Features 002 and 003. The first review of
+F004-T1 (#75) read a Condition note as one line, and the second undid the fix.
+
 ## A feature's code gets its own files
 
 Put a feature's new routes, services, integration tests and browser journeys in files named after
@@ -40,4 +55,5 @@ existing feature stays beside that feature's journeys, as Journey T7.17 does in 
 
 In application code, SQL on an existing table stays in the module that owns the table, as
 `assignment.service.ts` owns `assignment_changes`; the feature's own file holds its rules and calls
-that module.
+that module. A read may join another module's table to show or filter by its names; a write, a lock
+or a check that decides a rule goes through the owner.

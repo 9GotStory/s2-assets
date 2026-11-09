@@ -3822,11 +3822,7 @@ test.describe.serial('Asset Registry Real SPA -> Composed API -> PostgreSQL Jour
 
     // Now revoke ASSET_CUSTODIAN in PostgreSQL and set READ_ONLY
     await pool.query(
-      `DELETE FROM user_roles WHERE user_id = $1 AND role_id = 'ASSET_CUSTODIAN'`,
-      [custodianUserId]
-    );
-    await pool.query(
-      `INSERT INTO user_roles (user_id, role_id) VALUES ($1, 'READ_ONLY')`,
+      `UPDATE user_roles SET role_id = 'READ_ONLY' WHERE user_id = $1 AND role_id = 'ASSET_CUSTODIAN'`,
       [custodianUserId]
     );
 
@@ -3846,11 +3842,7 @@ test.describe.serial('Asset Registry Real SPA -> Composed API -> PostgreSQL Jour
     } finally {
       // Restore role in DB
       await pool.query(
-        `DELETE FROM user_roles WHERE user_id = $1 AND role_id = 'READ_ONLY'`,
-        [custodianUserId]
-      );
-      await pool.query(
-        `INSERT INTO user_roles (user_id, role_id) VALUES ($1, 'ASSET_CUSTODIAN')`,
+        `UPDATE user_roles SET role_id = 'ASSET_CUSTODIAN' WHERE user_id = $1 AND role_id = 'READ_ONLY'`,
         [custodianUserId]
       );
     }
