@@ -70,10 +70,45 @@ export interface AssignmentValue {
   legacy_text: string | null;
 }
 
+export type AssignmentDimension = 'location' | 'organization_unit' | 'responsible_person';
+
 export interface AssignmentChange {
-  dimension: 'location' | 'organization_unit' | 'responsible_person';
+  dimension: AssignmentDimension;
   prior: AssignmentValue;
   new: AssignmentValue;
+}
+
+// A value as a correction record keeps it. An entry is named by id, so it reads by its current name (#50 Q20).
+export interface CorrectedValue {
+  entry_id: string | null;
+  legacy_text: string | null;
+}
+
+// A dimension of an event as a correction record keeps it; null is a dimension the event does not have.
+export type CorrectedChange = { prior: CorrectedValue; new: CorrectedValue } | null;
+
+// The before and after of one changed field, as the correction record stores it.
+export type StoredCorrectionField =
+  | { field: 'effective_date' | 'document_reference' | 'remark'; before: string | null; after: string | null }
+  | { field: AssignmentDimension; before: CorrectedChange; after: CorrectedChange };
+
+export type AssignmentCorrectionField =
+  | { field: 'effective_date' | 'document_reference' | 'remark'; before: string | null; after: string | null }
+  | {
+      field: AssignmentDimension;
+      before: Pick<AssignmentChange, 'prior' | 'new'> | null;
+      after: Pick<AssignmentChange, 'prior' | 'new'> | null;
+    };
+
+// One Assignment Correction of a fact (MR-06): who, when, why, and the before and after.
+export interface AssignmentCorrection {
+  id: string;
+  action: 'AMENDED' | 'VOIDED';
+  reason: string;
+  recorded_at: string;
+  recorded_by: string;
+  recorded_by_username: string | null;
+  changes: AssignmentCorrectionField[];
 }
 
 // One fact of an Asset's assignment timeline.
@@ -87,12 +122,14 @@ export interface AssignmentEvent {
   provenance: 'RECORDED' | 'CARRIED_OVER_F002';
   document_reference: string | null;
   remark: string | null;
+  is_voided: boolean;
   changes: AssignmentChange[];
+  corrections: AssignmentCorrection[];
 }
 
 // Each dimension's name in the API and in the database, its input fields, and its entry column in
 // assignment_changes with the Reference List table that column names.
-const DIMENSIONS = [
+export const DIMENSIONS = [
   {
     key: 'location',
     dimension: 'LOCATION',
@@ -134,7 +171,7 @@ export const REMARK_MAX_LENGTH = 2000;
 
 // Optional text kept as given (Legacy text, document reference, remark): trimmed, blank as none,
 // bounded, and free of control characters other than line breaks and tabs, as in Feature 002.
-function normalizeText(value: unknown, field: string, maxLength: number, label: string): string | null {
+export function normalizeText(value: unknown, field: string, maxLength: number, label: string): string | null {
   if (value === undefined || value === null) {
     return null;
   }
@@ -208,10 +245,10 @@ const isCalendarDate = (value: string): boolean => {
 };
 
 /**
- * An Initial Assignment's Effective Date as given: a calendar date no later than `today`, with no
+ * An assignment fact's Effective Date as given: a calendar date no later than `today`, with no
  * lower bound, or null for unknown. Dates compare as text, which YYYY-MM-DD keeps in calendar order.
  */
-function normalizeEffectiveDate(value: unknown, today: string, label: string): string | null {
+export function normalizeEffectiveDate(value: unknown, today: string, label: string): string | null {
   if (value === null) {
     return null;
   }
@@ -258,7 +295,7 @@ export function normalizeInitialAssignment(
 
 // Each entry must be in its own dimension's list and, unless `allowInactive`, active. Each is locked
 // FOR SHARE (see findUnassignableEntry).
-async function assertAssignableEntries(
+export async function assertAssignableEntries(
   client: pg.PoolClient | pg.Pool,
   ids: Parameters<typeof findUnassignableEntry>[1],
   allowInactive: boolean,
@@ -404,11 +441,11 @@ const entrySummary = (id: string | null, name: string, isActive: boolean): Refer
 
 // The latest change of one dimension of the Asset whose id is the SQL expression `assetIdSql`, in
 // the order of facts: Effective Date with unknown first, then Recorded At, then event id (MR-03).
-// `eventCondition`, a SQL condition on the event `e`, narrows the facts considered.
+// A voided fact takes no part. `eventCondition`, a SQL condition on the event `e`, narrows the facts considered.
 const latestChange = (dimension: string, assetIdSql: string, select: string, eventCondition = 'true') => `SELECT ${select}
          FROM assignment_changes c
          JOIN assignment_events e ON e.id = c.event_id
-         WHERE e.asset_id = ${assetIdSql} AND c.dimension = '${dimension}' AND ${eventCondition}
+         WHERE e.asset_id = ${assetIdSql} AND c.dimension = '${dimension}' AND NOT e.is_voided AND ${eventCondition}
          ORDER BY e.effective_date DESC NULLS LAST, e.recorded_at DESC, e.id DESC
          LIMIT 1`;
 
@@ -426,7 +463,7 @@ const ASSIGNMENT_COLUMNS = DIMENSIONS.map(
  *   LEFT JOIN LATERAL (
  *     SELECT c.new_location_id AS entry_id, c.new_legacy_text AS legacy_text
  *     FROM assignment_changes c JOIN assignment_events e ON e.id = c.event_id
- *     WHERE e.asset_id = asset.id AND c.dimension = 'LOCATION'
+ *     WHERE e.asset_id = asset.id AND c.dimension = 'LOCATION' AND NOT e.is_voided
  *     ORDER BY e.effective_date DESC NULLS LAST, e.recorded_at DESC, e.id DESC
  *     LIMIT 1
  *   ) dim_location ON true
@@ -487,14 +524,51 @@ const changeValueOf = (row: any, side: 'prior' | 'new'): AssignmentValue => ({
   legacy_text: row[`${side}_legacy_text`] ?? null,
 });
 
-/** An Asset's assignment facts in the order of facts, each with its changes in dimension order. */
+export const isDimensionField = (stored: StoredCorrectionField): stored is Extract<StoredCorrectionField, { field: AssignmentDimension }> =>
+  DIMENSIONS.some(({ key }) => key === stored.field);
+
+// The entries that correction records name, by id, with their current names and active flags.
+async function readCorrectionEntries(
+  client: pg.PoolClient | pg.Pool,
+  fields: StoredCorrectionField[]
+): Promise<Map<string, ReferenceEntrySummary>> {
+  const ids = new Set(
+    fields
+      .filter(isDimensionField)
+      .flatMap(({ before, after }) => [before, after])
+      .flatMap((change) => (change ? [change.prior.entry_id, change.new.entry_id] : []))
+      .filter((id) => id !== null)
+  );
+  if (ids.size === 0) {
+    return new Map();
+  }
+  const res = await client.query(
+    DIMENSIONS.map(({ table }) => `SELECT id, name, is_active FROM ${table} WHERE id = ANY($1::uuid[])`).join(' UNION ALL '),
+    [[...ids]]
+  );
+  return new Map(res.rows.map((row: any) => [row.id, { id: row.id, name: row.name, is_active: row.is_active }]));
+}
+
+const correctionFieldOf = (stored: StoredCorrectionField, entries: Map<string, ReferenceEntrySummary>): AssignmentCorrectionField => {
+  if (!isDimensionField(stored)) {
+    return stored;
+  }
+  const valueOf = ({ entry_id, legacy_text }: CorrectedValue): AssignmentValue => ({
+    entry: entry_id ? (entries.get(entry_id) ?? null) : null,
+    legacy_text,
+  });
+  const changeOf = (change: CorrectedChange) => change && { prior: valueOf(change.prior), new: valueOf(change.new) };
+  return { field: stored.field, before: changeOf(stored.before), after: changeOf(stored.after) };
+};
+
+/** An Asset's assignment facts in the order of facts, each with its changes in dimension order and its corrections in the order made. */
 export async function readAssignmentTimeline(
   client: pg.PoolClient | pg.Pool,
   assetId: string
 ): Promise<AssignmentEvent[]> {
   const eventsRes = await client.query(
     `SELECT e.id, e.kind, to_char(e.effective_date, 'YYYY-MM-DD') AS effective_date, e.recorded_at,
-            e.recorded_by, u.username AS recorded_by_username, e.provenance, e.document_reference, e.remark
+            e.recorded_by, u.username AS recorded_by_username, e.provenance, e.document_reference, e.remark, e.is_voided
      FROM assignment_events e
      LEFT JOIN users u ON u.id = e.recorded_by
      WHERE e.asset_id = $1
@@ -526,6 +600,19 @@ export async function readAssignmentTimeline(
      WHERE e.asset_id = $1`,
     [assetId]
   );
+  const correctionsRes = await client.query(
+    `SELECT r.id, r.event_id, r.action, r.reason, r.changes, r.recorded_at, r.recorded_by, u.username AS recorded_by_username
+     FROM assignment_corrections r
+     JOIN assignment_events e ON e.id = r.event_id
+     LEFT JOIN users u ON u.id = r.recorded_by
+     WHERE e.asset_id = $1
+     ORDER BY r.recorded_at ASC, r.id ASC`,
+    [assetId]
+  );
+  const correctionEntries = await readCorrectionEntries(
+    client,
+    correctionsRes.rows.flatMap((correction: any) => correction.changes)
+  );
   return eventsRes.rows.map((row: any) => ({
     id: row.id,
     kind: row.kind,
@@ -536,6 +623,7 @@ export async function readAssignmentTimeline(
     provenance: row.provenance,
     document_reference: row.document_reference ?? null,
     remark: row.remark ?? null,
+    is_voided: row.is_voided,
     changes: DIMENSIONS.flatMap(({ key, dimension }) =>
       changesRes.rows
         .filter((change: any) => change.event_id === row.id && change.dimension === dimension)
@@ -545,6 +633,17 @@ export async function readAssignmentTimeline(
           new: changeValueOf(change, 'new'),
         }))
     ),
+    corrections: correctionsRes.rows
+      .filter((correction: any) => correction.event_id === row.id)
+      .map((correction: any) => ({
+        id: correction.id,
+        action: correction.action,
+        reason: correction.reason,
+        recorded_at: new Date(correction.recorded_at).toISOString(),
+        recorded_by: correction.recorded_by,
+        recorded_by_username: correction.recorded_by_username ?? null,
+        changes: correction.changes.map((field: StoredCorrectionField) => correctionFieldOf(field, correctionEntries)),
+      })),
   }));
 }
 
@@ -558,13 +657,13 @@ export const assignmentSearch = {
     const { dimension, column } = DIMENSIONS.find(({ idField }) => idField === field)!;
     return `(${latestChange(dimension, 'a.id', `c.new_${column}`)}) = ${param}`;
   },
-  // The Legacy text of the Asset's Initial Assignment, current or not (#50, the spec's search decision).
+  // The Legacy text of the Asset's non-voided Initial Assignment, current or not (#50, the spec's search decision).
   legacyTextFilter: (field: LegacyTextField, param: string): string => {
     const { dimension } = DIMENSIONS.find(({ legacyField }) => legacyField === field)!;
     return `EXISTS (SELECT 1
          FROM assignment_changes c
          JOIN assignment_events e ON e.id = c.event_id
-         WHERE e.asset_id = a.id AND e.kind = 'INITIAL' AND c.dimension = '${dimension}'
+         WHERE e.asset_id = a.id AND e.kind = 'INITIAL' AND NOT e.is_voided AND c.dimension = '${dimension}'
            AND c.new_legacy_text ILIKE ${param} ESCAPE '\\')`;
   },
   // The Current Assignment of each result row: select `columns` over `joins(alias)`, read with `current`.

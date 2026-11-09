@@ -355,9 +355,13 @@ describe('Initial Assignment Migration Integration (Seam C - F003-T1)', () => {
       url.pathname = '/fresh_setup';
       return url.toString();
     });
-    const fresh = await runMigrator({ command: 'latest', databaseUrl: freshUrl, migrationFolder });
-    expect(fresh.error).toBeUndefined();
-    expect(fresh.results?.map((result) => result.migrationName).at(-1)).toBe('0006_initial_assignment');
+    let lastApplied: string | undefined;
+    for (let step = 1; step <= 6; step++) {
+      const fresh = await runMigrator({ command: 'up', databaseUrl: freshUrl, migrationFolder });
+      expect(fresh.error).toBeUndefined();
+      lastApplied = fresh.results?.[0]?.migrationName;
+    }
+    expect(lastApplied).toBe('0006_initial_assignment');
 
     const upgraded = await withClient(schemaOf);
     const freshSchema = await connect(freshUrl, schemaOf);

@@ -10,7 +10,7 @@ import {
   useReferenceLists,
   type ReferenceIdField,
 } from './ReferenceContextFields';
-import { bangkokToday, effectiveDateError, isBeforeToday, valueText, valuesAt, type AssignmentEvent } from './assignmentFacts';
+import { KIND_LABELS, bangkokToday, effectiveDateError, isBeforeToday, valueText, valuesAt, type AssignmentEvent } from './assignmentFacts';
 
 // The new value chosen for each dimension: no change (''), CLEAR, or an entry id.
 type ReassignmentTargets = Record<ReferenceIdField, string>;
@@ -75,9 +75,10 @@ export const ReassignmentForm: React.FC<ReassignmentFormProps> = ({ save, timeli
   return (
     <AssignmentSaveForm
       {...save}
-      kind="REASSIGNMENT"
+      heading={KIND_LABELS.REASSIGNMENT}
+      saveUrl={`/assets/${save.assetId}/assignments`}
       requestError={requestError}
-      requestBody={() => ({ effective_date: effectiveDate, ...requestedTargets(targets), ...assignmentNotesPayload(notes) })}
+      requestBody={() => ({ kind: 'REASSIGNMENT', effective_date: effectiveDate, ...requestedTargets(targets), ...assignmentNotesPayload(notes) })}
     >
       {(isLocked) => (
         <fieldset disabled={isLocked} style={{ border: 'none', padding: 0, margin: '0 0 1rem 0' }}>

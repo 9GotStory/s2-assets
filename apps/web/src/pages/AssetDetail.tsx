@@ -41,6 +41,7 @@ export interface AssetDetailResponse {
   assignment_version?: number;
   can_correct?: boolean;
   can_reassign?: boolean;
+  can_correct_assignment?: boolean;
 }
 
 export const AssetDetail: React.FC = () => {
@@ -763,6 +764,7 @@ const AssetDetailContent: React.FC = () => {
           dataUpdatedAt={dataUpdatedAt}
           onPermissionRevoked={handlePermissionRevoked}
           canReassign={Boolean(assetData.can_reassign && !isPermissionRevoked)}
+          canCorrect={Boolean(assetData.can_correct_assignment && !isPermissionRevoked)}
           assignmentVersion={assetData.assignment_version ?? 0}
           isLegacy={isLegacy}
           csrfToken={csrfToken}

@@ -16,7 +16,7 @@ import {
   useReferenceLists,
   type ReferenceContextValues,
 } from './ReferenceContextFields';
-import { isBeforeToday } from './assignmentFacts';
+import { KIND_LABELS, isBeforeToday } from './assignmentFacts';
 
 export interface InitialAssignmentFormProps {
   save: AssignmentSaveProps;
@@ -38,13 +38,14 @@ export const InitialAssignmentForm: React.FC<InitialAssignmentFormProps> = ({ sa
   return (
     <AssignmentSaveForm
       {...save}
-      kind="INITIAL"
+      heading={KIND_LABELS.INITIAL}
+      saveUrl={`/assets/${save.assetId}/assignments`}
       requestError={() =>
         hasReferenceValues(values)
           ? initialAssignmentError(values, draft, isLegacy)
           : 'กรุณาระบุสถานที่ หน่วยงาน หรือผู้รับผิดชอบอย่างน้อยหนึ่งรายการ'
       }
-      requestBody={() => initialAssignmentPayload(values, draft, isLegacy)}
+      requestBody={() => ({ kind: 'INITIAL', ...initialAssignmentPayload(values, draft, isLegacy) })}
     >
       {(isLocked) => (
         <ReferenceContextFields

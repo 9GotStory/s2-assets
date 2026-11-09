@@ -13,6 +13,7 @@ import { UserService } from '../../../api/src/services/user.service.ts';
 import { SessionService } from '../../../api/src/services/session.service.ts';
 import { AssetService } from '../../../api/src/services/asset.service.ts';
 import { AssignmentRecordingService } from '../../../api/src/services/assignment-recording.service.ts';
+import { AssignmentCorrectionService } from '../../../api/src/services/assignment-correction.service.ts';
 import { ReferenceService, type ReferenceKind } from '../../../api/src/services/reference.service.ts';
 import { repositoryProxyConfig } from '../../vite.config.ts';
 
@@ -33,6 +34,7 @@ test.describe.serial('Assignment journeys: Real SPA -> Composed API -> PostgreSQ
   let sessionService: SessionService;
   let assetService: AssetService;
   let recordingService: AssignmentRecordingService;
+  let correctionService: AssignmentCorrectionService;
   let referenceService: ReferenceService;
 
   let custodianUserId: string;
@@ -61,6 +63,7 @@ test.describe.serial('Assignment journeys: Real SPA -> Composed API -> PostgreSQ
     sessionService = new SessionService({ db: pool });
     assetService = new AssetService({ db: pool });
     recordingService = new AssignmentRecordingService({ db: pool });
+    correctionService = new AssignmentCorrectionService({ db: pool });
     referenceService = new ReferenceService({ db: pool });
 
     fastifyApp = await buildApp({
@@ -297,6 +300,63 @@ test.describe.serial('Assignment journeys: Real SPA -> Composed API -> PostgreSQ
       await expect(lastEvent(page)).toContainText('ย้าย / เปลี่ยนผู้รับผิดชอบ');
       await expect(page.locator('#assignment-action')).toHaveCount(0);
       await expect(page.locator('#assignment-form')).toHaveCount(0);
+    }
+  });
+
+  test('Journey F003-T3.1: a Read-only User sees corrections and voided facts with no correction action; holders of assignment:correct are offered it', async ({ page, context }) => {
+    const firstRoom = await entryIn('locations', 'ห้องแก้แล้ว E2E');
+    const wrongRoom = await entryIn('locations', 'ห้องที่บันทึกผิด E2E');
+    const rightRoom = await entryIn('locations', 'ห้องที่ถูกต้อง E2E');
+    const assetId = await register({ name: 'ตู้มีการแก้ไข E2E', location_id: firstRoom.id, effective_date: '2024-01-01' });
+    const correctedEvent = (await reassignBehindTheForm(assetId, 1, '2024-06-01', wrongRoom.id)).event;
+    const voidedEvent = (await reassignBehindTheForm(assetId, 2, '2024-07-01', rightRoom.id)).event;
+
+    const correctBehindTheForm = (eventId: string, version: number, input: Record<string, unknown>) =>
+      correctionService.correct(custodianUserId, assetId, eventId, { expected_assignment_version: version, ...input } as any, {
+        retryToken: crypto.randomUUID(),
+      });
+    await correctBehindTheForm(correctedEvent.id, 3, {
+      action: 'AMEND',
+      reason: 'เลือกห้องผิดรายการ',
+      changes: { location: { new: { entry_id: rightRoom.id } } },
+    });
+    await correctBehindTheForm(voidedEvent.id, 4, { action: 'VOID', reason: 'ไม่เคยย้ายจริง' });
+
+    const correctedFact = page.getByTestId(`assignment-event-${correctedEvent.id}`);
+    const voidedFact = page.getByTestId(`assignment-event-${voidedEvent.id}`);
+    const offers = page.locator('[data-testid^="assignment-amend-"], [data-testid^="assignment-void-"]');
+
+    await loginAs(context, readonlyUserId);
+    await page.goto(`${targetBaseUrl}/assets/${assetId}`);
+
+    // The Current Assignment follows the facts that stand: the void and the amendment both count.
+    await expect(page.locator('#detail-location')).toHaveText('ห้องที่ถูกต้อง E2E');
+
+    // Each correction shows who, the reason and before → after.
+    const corrections = page.getByTestId(`assignment-corrections-${correctedEvent.id}`);
+    await expect(corrections).toContainText('แก้ไขรายการที่บันทึกผิด');
+    await expect(corrections).toContainText('custodian_assign');
+    await expect(corrections).toContainText('เหตุผล: เลือกห้องผิดรายการ');
+    await expect(corrections).toContainText('ห้องแก้แล้ว E2E → ห้องที่บันทึกผิด E2E แก้เป็น ห้องแก้แล้ว E2E → ห้องที่ถูกต้อง E2E');
+
+    // A voided fact stays, struck through, with its reason.
+    await expect(page.getByTestId(`assignment-fact-${voidedEvent.id}`)).toHaveCSS('text-decoration-line', 'line-through');
+    await expect(page.getByTestId(`assignment-voided-${voidedEvent.id}`)).toHaveText('ยกเลิกแล้ว');
+    await expect(voidedFact).toContainText('เหตุผล: ไม่เคยย้ายจริง');
+    await expect(page.getByTestId(`assignment-fact-${correctedEvent.id}`)).toHaveCSS('text-decoration-line', 'none');
+
+    await expect(page.locator('[data-testid^="assignment-event-"]')).toHaveCount(3);
+    await expect(offers).toHaveCount(0);
+
+    // Holders of assignment:correct are offered both actions on each fact that stands, and none on a voided one.
+    for (const holder of [custodianUserId, adminUserId]) {
+      await page.goto('about:blank');
+      await loginAs(context, holder);
+      await page.goto(`${targetBaseUrl}/assets/${assetId}`);
+      await expect(correctedFact.getByTestId(`assignment-amend-${correctedEvent.id}`)).toHaveText('แก้ไขรายการที่บันทึกผิด');
+      await expect(correctedFact.getByTestId(`assignment-void-${correctedEvent.id}`)).toHaveText('ยกเลิกรายการ (บันทึกผิด)');
+      await expect(page.getByTestId(`assignment-amend-${voidedEvent.id}`)).toHaveCount(0);
+      await expect(page.getByTestId(`assignment-void-${voidedEvent.id}`)).toHaveCount(0);
     }
   });
 });

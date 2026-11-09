@@ -8,11 +8,13 @@ import {
   StaleBeforeConflictError,
   ValidationError,
 } from '../services/asset.service.ts';
+import { AssignmentCorrectionService, type CorrectAssignmentInput } from '../services/assignment-correction.service.ts';
 import { AssignmentRecordingService, type RecordAssignmentInput } from '../services/assignment-recording.service.ts';
 import { isValidUuid } from '../services/capability.service.ts';
 
 export interface AssignmentRoutesOptions {
   assignmentRecordingService: AssignmentRecordingService;
+  assignmentCorrectionService: AssignmentCorrectionService;
 }
 
 const RecordAssignmentSchema = z
@@ -23,6 +25,48 @@ const RecordAssignmentSchema = z
     ...assignmentFactFields,
   })
   .strict();
+
+// A value of an amended dimension: its entry and its Legacy text, either or both of which may be left empty.
+const AmendedValueSchema = z
+  .object({
+    entry_id: z.string().nullable().optional(),
+    legacy_text: z.string().nullable().optional(),
+  })
+  .strict();
+
+// null removes the dimension from the fact; a side left out stays as it is.
+const AmendedDimensionSchema = z
+  .object({ prior: AmendedValueSchema.optional(), new: AmendedValueSchema.optional() })
+  .strict()
+  .nullable()
+  .optional();
+
+const correctionFields = {
+  expected_assignment_version: z.number().int().min(0),
+  reason: z.string().nullable().optional(),
+  retry_token: z.string().optional(),
+};
+
+const CorrectAssignmentSchema = z.discriminatedUnion('action', [
+  z.object({ action: z.literal('VOID'), ...correctionFields }).strict(),
+  z
+    .object({
+      action: z.literal('AMEND'),
+      ...correctionFields,
+      effective_date: z.string().nullable().optional(),
+      document_reference: z.string().nullable().optional(),
+      remark: z.string().nullable().optional(),
+      changes: z
+        .object({
+          location: AmendedDimensionSchema,
+          organization_unit: AmendedDimensionSchema,
+          responsible_person: AmendedDimensionSchema,
+        })
+        .strict()
+        .optional(),
+    })
+    .strict(),
+]);
 
 // Feature 002's deterministic error shape.
 const errorBody = (statusCode: number, code: string, message: string) => ({ statusCode, code, error: code, message });
@@ -61,8 +105,24 @@ const retryTokenOf = (
   return { token };
 };
 
+// A write request once validated, or the answer that refuses it.
+const parseWrite = <T extends { retry_token?: string }>(
+  schema: z.ZodType<T>,
+  request: FastifyRequest
+): { data: T; retryToken: string } | { refusal: ReturnType<typeof errorBody> } => {
+  const parsed = schema.safeParse(request.body ?? {});
+  if (!parsed.success) {
+    const issues = parsed.error.issues.map((issue) => `${issue.path.join('.')}: ${issue.message}`).join(', ');
+    return { refusal: errorBody(400, 'VALIDATION_FAILED', `Invalid request payload: ${issues}`) };
+  }
+  const retry = retryTokenOf(request.headers, parsed.data.retry_token);
+  return 'refusal' in retry
+    ? { refusal: errorBody(400, 'VALIDATION_FAILED', retry.refusal) }
+    : { data: parsed.data, retryToken: retry.token };
+};
+
 export const assignmentRoutes: FastifyPluginAsync<AssignmentRoutesOptions> = async (fastify, options) => {
-  const { assignmentRecordingService } = options;
+  const { assignmentRecordingService, assignmentCorrectionService } = options;
 
   /**
    * POST /:id/assignments
@@ -75,23 +135,17 @@ export const assignmentRoutes: FastifyPluginAsync<AssignmentRoutesOptions> = asy
       return reply.status(400).send(errorBody(400, 'INVALID_ID', 'Asset ID must be a valid UUID string'));
     }
 
-    const parsed = RecordAssignmentSchema.safeParse(request.body ?? {});
-    if (!parsed.success) {
-      const issues = parsed.error.issues.map((issue) => `${issue.path.join('.')}: ${issue.message}`).join(', ');
-      return reply.status(400).send(errorBody(400, 'VALIDATION_FAILED', `Invalid request payload: ${issues}`));
-    }
-
-    const retry = retryTokenOf(request.headers, parsed.data.retry_token);
-    if ('refusal' in retry) {
-      return reply.status(400).send(errorBody(400, 'VALIDATION_FAILED', retry.refusal));
+    const write = parseWrite(RecordAssignmentSchema, request);
+    if ('refusal' in write) {
+      return reply.status(400).send(write.refusal);
     }
 
     try {
       const result = await assignmentRecordingService.record(
         request.user!.id,
         id.trim().toLowerCase(),
-        parsed.data as RecordAssignmentInput,
-        { retryToken: retry.token }
+        write.data as RecordAssignmentInput,
+        { retryToken: write.retryToken }
       );
       return reply.status(201).send(result);
     } catch (err) {
@@ -102,4 +156,42 @@ export const assignmentRoutes: FastifyPluginAsync<AssignmentRoutesOptions> = asy
       return reply.status(refusal.statusCode).send(refusal);
     }
   });
+
+  /**
+   * POST /:id/assignments/:eventId/corrections
+   * Fixes one assignment fact that was recorded wrong (F003-T3).
+   * Protected: requires 'assignment:correct' capability (Asset Custodian, Administrator)
+   */
+  fastify.post(
+    '/:id/assignments/:eventId/corrections',
+    { preHandler: [requireCapability('assignment:correct')] },
+    async (request, reply) => {
+      const { id, eventId } = request.params as { id: string; eventId: string };
+      if (!isValidUuid(id) || !isValidUuid(eventId)) {
+        return reply.status(400).send(errorBody(400, 'INVALID_ID', 'Asset and event IDs must be valid UUID strings'));
+      }
+
+      const write = parseWrite(CorrectAssignmentSchema, request);
+      if ('refusal' in write) {
+        return reply.status(400).send(write.refusal);
+      }
+
+      try {
+        const result = await assignmentCorrectionService.correct(
+          request.user!.id,
+          id.trim().toLowerCase(),
+          eventId.trim().toLowerCase(),
+          write.data as CorrectAssignmentInput,
+          { retryToken: write.retryToken }
+        );
+        return reply.status(201).send(result);
+      } catch (err) {
+        const refusal = refusalOf(err);
+        if (!refusal) {
+          throw err;
+        }
+        return reply.status(refusal.statusCode).send(refusal);
+      }
+    }
+  );
 };
