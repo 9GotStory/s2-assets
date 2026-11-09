@@ -367,7 +367,7 @@ describe('Authorization Integration Tests (T023 - US2)', () => {
     }
 
     app = await setupTestApp({ databaseUrl });
-  });
+  }, 120_000);
 
   afterAll(async () => {
     if (app) {
