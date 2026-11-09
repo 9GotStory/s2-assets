@@ -27,6 +27,7 @@ import { AssetService } from './services/asset.service.ts';
 import { AssignmentRecordingService } from './services/assignment-recording.service.ts';
 import { BulkReassignmentService } from './services/bulk-reassignment.service.ts';
 import { AssignmentCorrectionService } from './services/assignment-correction.service.ts';
+import { LoanReturnService } from './services/loan-return.service.ts';
 import { LoanService } from './services/loan.service.ts';
 import { AcquisitionService } from './services/acquisition.service.ts';
 import { EvidenceService } from './services/evidence.service.ts';
@@ -189,6 +190,7 @@ export async function buildApp(options: AppOptions = {}): Promise<FastifyInstanc
 
     const assetService = new AssetService({ db: dbClient, clock: options.clock });
     const loanService = new LoanService({ db: dbClient, clock: options.clock });
+    const loanReturnService = new LoanReturnService({ db: dbClient, clock: options.clock });
     const acquisitionService = new AcquisitionService({ db: dbClient });
     const evidenceService = new EvidenceService({ db: dbClient, capabilityService });
 
@@ -260,7 +262,7 @@ export async function buildApp(options: AppOptions = {}): Promise<FastifyInstanc
       bulkReassignmentService: new BulkReassignmentService({ db: dbClient, clock: options.clock }),
     });
 
-    await app.register(loanRoutes, { loanService, capabilityService });
+    await app.register(loanRoutes, { loanService, loanReturnService, capabilityService });
 
     // Acquisition routes mounted under /acquisitions
     await app.register(acquisitionRoutes, {

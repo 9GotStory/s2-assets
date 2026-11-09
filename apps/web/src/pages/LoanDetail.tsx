@@ -1,9 +1,10 @@
 import React, { useEffect, useState } from 'react';
 import { Link, useNavigate, useParams } from 'react-router';
 import { QueryClient, QueryClientProvider, useQuery } from '@tanstack/react-query';
+import { LoanReturnForm } from '../components/LoanReturnForm';
 import { entryLabel } from '../components/ReferenceContextFields';
 import { thaiDate } from '../components/assignmentFacts';
-import { CONDITION_LABELS, borrowerText, type Loan } from '../components/loanFacts';
+import { CONDITION_LABELS, LOAN_STATUS_LABELS, OUTSTANDING_LABEL, borrowerText, isOutstanding, loanReturnText, type Loan } from '../components/loanFacts';
 
 const THAI_DATE_TIME = new Intl.DateTimeFormat('th-TH', { dateStyle: 'long', timeStyle: 'short', timeZone: 'Asia/Bangkok' });
 
@@ -39,6 +40,7 @@ const orNone = (value: string | null): React.ReactNode => value ?? <span style={
 const LoanDetailContent: React.FC = () => {
   const { id } = useParams<{ id: string }>();
   const navigate = useNavigate();
+  const [isReturnOpen, setIsReturnOpen] = useState(false);
 
   const loan = useQuery<Loan, Error & { status?: number }>({
     queryKey: ['loan', id],
@@ -51,6 +53,17 @@ const LoanDetailContent: React.FC = () => {
       }
       return res.json();
     },
+  });
+
+  // The write form needs this session's CSRF token.
+  const canRecordLoan = loan.data?.can_record_loan === true;
+  const session = useQuery<string | null>({
+    queryKey: ['loan-session', id],
+    queryFn: async ({ signal }) => {
+      const res = await fetch('/auth/session-check', { credentials: 'include', signal });
+      return res.ok ? ((await res.json()).csrfToken ?? null) : null;
+    },
+    enabled: canRecordLoan,
   });
 
   const isSignedOut = loan.error?.status === 401;
@@ -86,7 +99,10 @@ const LoanDetailContent: React.FC = () => {
     );
   }
 
-  const { borrower, loan_date: loanDate, authorizer, document_reference: documentReference, remark, recorded_by: recordedBy, recorded_by_username: recordedByUsername, recorded_at: recordedAt, items } = loan.data;
+  const { borrower, loan_date: loanDate, authorizer, document_reference: documentReference, remark, recorded_by: recordedBy, recorded_by_username: recordedByUsername, recorded_at: recordedAt, status, items } = loan.data;
+  const counted = items.filter(({ is_voided: isVoided }) => !isVoided);
+  const returnedCount = counted.filter(({ ending_kind: endingKind }) => endingKind === 'LOAN_RETURN').length;
+  const mayReturn = canRecordLoan && items.some(isOutstanding);
 
   return (
     <main style={pageStyle}>
@@ -99,6 +115,10 @@ const LoanDetailContent: React.FC = () => {
         </h1>
 
         <dl style={{ display: 'grid', gridTemplateColumns: 'max-content 1fr', gap: '0.75rem 1.5rem', margin: '0 0 2rem 0', fontSize: '0.9375rem', backgroundColor: '#f9fafb', padding: '1.25rem', borderRadius: '6px' }}>
+          <dt style={termStyle}>สถานะ:</dt>
+          <dd id="loan-status" style={valueStyle}>
+            {LOAN_STATUS_LABELS[status]} (คืนแล้ว {returnedCount} จาก {counted.length} รายการ)
+          </dd>
           <dt style={termStyle}>ผู้ยืม:</dt>
           <dd id="loan-borrower" style={valueStyle}>
             {borrowerText(borrower)}
@@ -137,6 +157,39 @@ const LoanDetailContent: React.FC = () => {
           </dd>
         </dl>
 
+        {mayReturn && isReturnOpen && (
+          <LoanReturnForm
+            loan={loan.data}
+            csrfToken={session.data ?? null}
+            onRecorded={async () => {
+              await loan.refetch();
+              setIsReturnOpen(false);
+            }}
+            onRefresh={async () => {
+              const result = await loan.refetch();
+              return result.isError ? null : (result.data?.version ?? null);
+            }}
+            onCancel={() => setIsReturnOpen(false)}
+            onPermissionRevoked={(statusCode) => {
+              if (statusCode === 401) {
+                navigate('/login', { replace: true });
+                return;
+              }
+              void loan.refetch();
+            }}
+          />
+        )}
+        {mayReturn && !isReturnOpen && (
+          <button
+            type="button"
+            id="loan-return-action"
+            onClick={() => setIsReturnOpen(true)}
+            style={{ padding: '0.5rem 1rem', backgroundColor: '#2563eb', color: '#ffffff', border: 'none', borderRadius: '6px', fontSize: '0.875rem', fontWeight: 500, cursor: 'pointer', marginBottom: '1rem' }}
+          >
+            คืน
+          </button>
+        )}
+
         <h2 style={{ fontSize: '1.125rem', fontWeight: 600, marginTop: 0, marginBottom: '1rem', color: '#374151' }}>รายการยืม</h2>
         <ol style={{ listStyle: 'none', margin: 0, padding: 0 }}>
           {items.map((item) => (
@@ -152,6 +205,18 @@ const LoanDetailContent: React.FC = () => {
                 สภาพ: {CONDITION_LABELS[item.condition]}
                 {item.condition_note ? ` (${item.condition_note})` : ''}
               </div>
+              {item.loan_return ? (
+                <div data-testid="loan-item-return">
+                  <div>
+                    คืนแล้ว: <time dateTime={item.loan_return.return_date}>{thaiDate(item.loan_return.return_date)}</time> · {loanReturnText(item.loan_return)}
+                  </div>
+                  {item.loan_return.document_reference && <div>เอกสารอ้างอิงการคืน: {item.loan_return.document_reference}</div>}
+                  {item.loan_return.remark && <div>หมายเหตุการคืน: {item.loan_return.remark}</div>}
+                  <div>ผู้บันทึกการคืน: {item.loan_return.recorded_by_username ?? item.loan_return.recorded_by}</div>
+                </div>
+              ) : (
+                isOutstanding(item) && <div data-testid="loan-item-outstanding">{OUTSTANDING_LABEL}</div>
+              )}
             </li>
           ))}
         </ol>

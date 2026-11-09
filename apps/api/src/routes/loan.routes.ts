@@ -2,12 +2,15 @@ import type { FastifyPluginAsync } from 'fastify';
 import { z } from 'zod';
 import { requireCapability } from '../middleware/authorization.ts';
 import { errorBody, parseWrite } from './write-request.ts';
-import { RetryTokenConflictError, ValidationError } from '../services/asset.service.ts';
+import { NotFoundError, RetryTokenConflictError, StaleBeforeConflictError, ValidationError } from '../services/asset.service.ts';
+import { isCalendarDate } from '../services/assignment.service.ts';
 import { CapabilityService, isValidUuid } from '../services/capability.service.ts';
+import { LoanItemsNotReturnableError, LoanReturnService, type RecordLoanReturnInput } from '../services/loan-return.service.ts';
 import { AssetsNotLendableError, LoanService, type StartLoanInput } from '../services/loan.service.ts';
 
 export interface LoanRoutesOptions {
   loanService: LoanService;
+  loanReturnService: LoanReturnService;
   capabilityService: CapabilityService;
 }
 
@@ -46,19 +49,49 @@ const StartLoanSchema = z
   })
   .strict();
 
+// #74 Q29: the recorder is the signed-in user, so nothing names who brought an item back.
+const RecordLoanReturnSchema = z
+  .object({
+    expected_version: z.number().int().min(1),
+    return_date: z.string(),
+    document_reference: z.string().nullable().optional(),
+    remark: z.string().nullable().optional(),
+    items: z.array(
+      z
+        .object({
+          loan_item_id: z.string(),
+          condition: z.enum(['NORMAL', 'DAMAGED']),
+          condition_note: z.string().nullable().optional(),
+        })
+        .strict()
+    ),
+    retry_token: z.string().optional(),
+  })
+  .strict();
+
 // The answer to a refused write, or null for an error that is not a refusal.
 const refusalOf = (err: unknown) => {
   if (err instanceof AssetsNotLendableError) {
     return { ...errorBody(err.statusCode, err.code, err.message), assets: err.assets };
   }
-  if (err instanceof RetryTokenConflictError || err instanceof ValidationError) {
+  if (err instanceof LoanItemsNotReturnableError) {
+    return { ...errorBody(err.statusCode, err.code, err.message), items: err.items };
+  }
+  if (err instanceof StaleBeforeConflictError) {
+    return {
+      ...errorBody(err.statusCode, err.code, err.message),
+      current_values: err.current_values,
+      expected_values: err.expected_values,
+    };
+  }
+  if (err instanceof RetryTokenConflictError || err instanceof NotFoundError || err instanceof ValidationError) {
     return errorBody(err.statusCode, err.code, err.message);
   }
   return null;
 };
 
 export const loanRoutes: FastifyPluginAsync<LoanRoutesOptions> = async (fastify, options) => {
-  const { loanService, capabilityService } = options;
+  const { loanService, loanReturnService, capabilityService } = options;
 
   /**
    * POST /loans
@@ -84,8 +117,40 @@ export const loanRoutes: FastifyPluginAsync<LoanRoutesOptions> = async (fastify,
   });
 
   /**
+   * POST /loans/:id/returns
+   * Records a Loan Return for one or more items of a Loan, all of it or none (F004-T2).
+   * Protected: requires 'loan:record' capability (Asset Custodian)
+   */
+  fastify.post('/loans/:id/returns', { preHandler: [requireCapability('loan:record')] }, async (request, reply) => {
+    const { id } = request.params as { id: string };
+    if (!isValidUuid(id)) {
+      return reply.status(400).send(errorBody(400, 'INVALID_ID', 'Loan ID must be a valid UUID string'));
+    }
+
+    const write = parseWrite(RecordLoanReturnSchema, request);
+    if ('refusal' in write) {
+      return reply.status(400).send(write.refusal);
+    }
+
+    try {
+      const { retry_token: _retryToken, ...input } = write.data;
+      const result = await loanReturnService.record(request.user!.id, id.trim().toLowerCase(), input as RecordLoanReturnInput, {
+        retryToken: write.retryToken,
+      });
+      return reply.status(201).send(result);
+    } catch (err) {
+      const refusal = refusalOf(err);
+      if (!refusal) {
+        throw err;
+      }
+      return reply.status(refusal.statusCode).send(refusal);
+    }
+  });
+
+  /**
    * GET /loans/:id
    * One Loan with its items (F004-T1). The phone number goes only to holders of 'loan:record' (LR-15).
+   * With ?return_date=YYYY-MM-DD, each Outstanding item also says where it goes back to on that date (F004-T2).
    * Protected: requires 'asset:view' capability, like the Assets it names
    */
   fastify.get('/loans/:id', { preHandler: [requireCapability('asset:view')] }, async (request, reply) => {
@@ -93,13 +158,17 @@ export const loanRoutes: FastifyPluginAsync<LoanRoutesOptions> = async (fastify,
     if (!isValidUuid(id)) {
       return reply.status(400).send(errorBody(400, 'INVALID_ID', 'Loan ID must be a valid UUID string'));
     }
+    const { return_date: returnDate } = request.query as { return_date?: unknown };
+    if (returnDate !== undefined && (typeof returnDate !== 'string' || !isCalendarDate(returnDate))) {
+      return reply.status(400).send(errorBody(400, 'VALIDATION_FAILED', 'return_date must be a date (YYYY-MM-DD)'));
+    }
 
-    const includePhone = await capabilityService.hasCapability(request.user!.id, 'loan:record');
-    const loan = await loanService.read(id.trim().toLowerCase(), { includePhone });
+    const canRecordLoan = await capabilityService.hasCapability(request.user!.id, 'loan:record');
+    const loan = await loanService.read(id.trim().toLowerCase(), { includePhone: canRecordLoan, returnDate });
     if (!loan) {
       return reply.status(404).send(errorBody(404, 'NOT_FOUND', 'Loan not found'));
     }
-    return reply.status(200).send(loan);
+    return reply.status(200).send({ ...loan, can_record_loan: canRecordLoan });
   });
 
   /**
