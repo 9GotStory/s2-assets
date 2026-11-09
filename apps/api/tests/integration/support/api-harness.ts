@@ -1,11 +1,11 @@
 import * as path from 'node:path';
-import * as fs from 'node:fs';
 import { fileURLToPath } from 'node:url';
 import { PostgreSqlContainer } from '@testcontainers/postgresql';
 import pg from 'pg';
 import type { FastifyInstance, LightMyRequestResponse } from 'fastify';
 import { runMigrator } from '../../../../../packages/db/src/migrator.ts';
 import { buildApp } from '../../../src/app.ts';
+import type { Role } from '../../../src/services/capability.service.ts';
 import { SessionService } from '../../../src/services/session.service.ts';
 import { UserService } from '../../../src/services/user.service.ts';
 
@@ -22,7 +22,7 @@ export interface ApiHarness {
   // A pool of its own on the application's database, for observers and lock holders.
   pool: pg.Pool;
   // Creates an active user holding `role`, with a real session and CSRF token.
-  actor: (username: string, role: string) => Promise<Actor>;
+  actor: (username: string, role: Role) => Promise<Actor>;
   post: (actor: Actor, url: string, payload: unknown, headers?: Record<string, string>) => Promise<LightMyRequestResponse>;
   get: (actor: Actor, url: string) => Promise<LightMyRequestResponse>;
   close: () => Promise<void>;
@@ -33,20 +33,12 @@ export interface ApiHarness {
  * in `beforeAll` with a 120-second timeout, and `close` it in `afterAll`.
  */
 export async function startApiHarness(options: { clock?: () => Date } = {}): Promise<ApiHarness> {
-  if (!process.env.TESTCONTAINERS_RYUK_DISABLED) {
-    process.env.TESTCONTAINERS_RYUK_DISABLED = 'true';
-  }
-  if (!process.env.DOCKER_HOST) {
-    const uid = typeof process.getuid === 'function' ? process.getuid() : 1001;
-    const podmanSocket = `/run/user/${uid}/podman/podman.sock`;
-    if (fs.existsSync(podmanSocket)) {
-      process.env.DOCKER_HOST = `unix://${podmanSocket}`;
-    }
-  }
-
   const container = await new PostgreSqlContainer('postgres:18.6-alpine').start();
   const databaseUrl = container.getConnectionUri();
-  await runMigrator({ command: 'latest', databaseUrl, migrationFolder });
+  const { error } = await runMigrator({ command: 'latest', databaseUrl, migrationFolder });
+  if (error) {
+    throw error;
+  }
 
   const pool = new Pool({ connectionString: databaseUrl });
   const sessionService = new SessionService({ db: pool });

@@ -440,6 +440,13 @@ test.describe.serial('Assignment journeys: Real SPA -> Composed API -> PostgreSQ
     await page.locator('#assignment-correction-reason').fill('กำหนดผิด');
     await page.locator('#assignment-submit').click();
     await expect(form).toHaveCount(0);
-    await expect(page.locator('#assignment-action')).toHaveText('กำหนดครั้งแรก');
+    const action = page.locator('#assignment-action');
+    await expect(action).toHaveText('กำหนดครั้งแรก');
+    await action.click();
+    await page.locator('#assignment-location_id').selectOption(roomB.id);
+    await page.locator('#assignment-submit').click();
+    await expect(form).toHaveCount(0);
+    await expect(page.locator('#detail-location')).toHaveText('ห้องแก้จากฟอร์ม ข E2E');
+    await expect(action).toHaveText('ย้าย / เปลี่ยนผู้รับผิดชอบ');
   });
 });

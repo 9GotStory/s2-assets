@@ -22,7 +22,7 @@ const MIGRATIONS = [
   '0005_reference_context',
   '0006_initial_assignment',
   '0007_assignment_correction',
-];
+] as const;
 
 describe('Database Migrations Integration', () => {
   let container: StartedPostgreSqlContainer;
@@ -50,14 +50,14 @@ describe('Database Migrations Integration', () => {
     }
   }, 30_000);
 
-  const expectApplied = (results: Awaited<ReturnType<typeof runMigrator>>['results'], names: string[]) => {
+  const expectApplied = (results: Awaited<ReturnType<typeof runMigrator>>['results'], names: readonly string[]) => {
     expect(results?.map(({ migrationName, direction, status }) => [migrationName, direction, status])).toEqual(
       names.map((name) => [name, 'Up', 'Success'])
     );
   };
 
   // Rolls back every migration after `name`, the newest first.
-  const rollBackTo = async (name: string) => {
+  const rollBackTo = async (name: (typeof MIGRATIONS)[number]) => {
     for (const migration of MIGRATIONS.slice(MIGRATIONS.indexOf(name) + 1).reverse()) {
       const result = await runMigrator({ command: 'down', databaseUrl, migrationFolder });
       expect(result.error).toBeUndefined();
