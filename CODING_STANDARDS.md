@@ -17,10 +17,9 @@ Only the isolating test showed it.
 
 ## A test of absence needs a state where the thing would be there
 
-An assertion that an action, a field or a row is absent proves something only when the same state
-shows it to someone allowed to see it. In F004-T1 (#75), a Read-only User's missing action was
-asserted on an Asset already On Loan, where nobody is offered it, and a 404 came from a URL no route
-serves. Neither test could fail.
+Assert that an action or a field is absent in a state where an allowed actor sees it. In F004-T1
+(#75), a Read-only User's missing action was asserted on an Asset already On Loan, where nobody is
+offered it, and a 404 came from a URL no route serves. Neither test could fail.
 
 ## Helpers decide, handlers reply
 
@@ -39,10 +38,10 @@ name for a new concept. In F003-T1, the first draft typed the Current Assignment
 ## A text field's kind decides its control characters
 
 A name, a phone number or a token is one line and refuses every control character
-(`hasStrictControlChars`). New code checks before it trims, so a line break at the end is refused,
-not dropped. Free text, such as a document reference, a remark, a note or a reason, keeps tab and
-line breaks and refuses the rest (`normalizeText`), as in Features 002 and 003. The first review of
-F004-T1 (#75) read a Condition note as one line, and the second undid the fix.
+(`hasStrictControlChars`). A new one is checked before it is trimmed, so a line break at its end is
+refused, not dropped. Free text, such as a document reference, a remark, a note or a reason, keeps
+tab and line breaks inside it and refuses the rest (`hasDisallowedControlChars`). The first review
+of F004-T1 (#75) read a Condition note as one line, and the second undid the fix.
 
 ## A feature's code gets its own files
 

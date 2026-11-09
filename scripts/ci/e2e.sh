@@ -90,7 +90,7 @@ remove_new_test_containers "$before"
 # Prints the last responses of 400 or more in each kept trace: an unexpected 401 or 403 is the usual
 # reason a later step timed out. The query string stays out of the log.
 print_failed_responses() {
-  local trace lines
+  local results=$1 trace lines
   while IFS= read -r -d '' trace; do
     lines=$(unzip -p "$trace" '*.network' | jq -r '
       select(.snapshot.response.status >= 400)
@@ -99,7 +99,7 @@ print_failed_responses() {
     [[ -n $lines ]] || continue
     note "last failed responses in $(basename "$(dirname "$trace")"):" >&2
     echo "$lines" >&2
-  done < <(find "$1" -name trace.zip -print0)
+  done < <(find "$results" -name trace.zip -print0)
 }
 
 # Copies a failed run's results out of the workspace. A run with no results takes no slot.

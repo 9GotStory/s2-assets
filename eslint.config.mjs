@@ -1,6 +1,10 @@
 import js from '@eslint/js';
 import tseslint from 'typescript-eslint';
 
+// An awaited call, such as pool.query, whose first argument is a string or template with this text.
+const awaitedCallWith = (text) =>
+  `ExpressionStatement:matches([expression.argument.arguments.0.value=/${text}/], [expression.argument.arguments.0.quasis.0.value.raw=/${text}/])`;
+
 export default tseslint.config(
   {
     ignores: [
@@ -64,8 +68,7 @@ export default tseslint.config(
         },
         {
           // #75: a read that lands between the two statements finds the user with no role.
-          selector:
-            'ExpressionStatement:matches([expression.argument.arguments.0.value=/DELETE FROM user_roles/], [expression.argument.arguments.0.quasis.0.value.raw=/DELETE FROM user_roles/]) + ExpressionStatement:matches([expression.argument.arguments.0.value=/INSERT INTO user_roles/], [expression.argument.arguments.0.quasis.0.value.raw=/INSERT INTO user_roles/])',
+          selector: `${awaitedCallWith('DELETE FROM user_roles')} + ${awaitedCallWith('INSERT INTO user_roles')}`,
           message: 'Change a role with one UPDATE, so that no read of an open page finds the user without one (#75).',
         },
       ],
