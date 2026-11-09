@@ -1,7 +1,7 @@
 import pg from 'pg';
 import { NotFoundError } from './asset.service.ts';
 import {
-  ASSIGNMENT_DIMENSIONS,
+  DIMENSION_ID_FIELDS,
   DOCUMENT_REFERENCE_MAX_LENGTH,
   LEGACY_TEXT_MAX_LENGTH,
   REMARK_MAX_LENGTH,
@@ -10,10 +10,10 @@ import {
   isDimensionField,
   normalizeEffectiveDate,
   normalizeText,
-  readStoredFact,
+  readStoredEvent,
   writeCorrectedChange,
   type AssignmentDimension,
-  type StoredAssignmentFact,
+  type StoredAssignmentEvent,
   type StoredChange,
   type StoredCorrectionField,
   type StoredValue,
@@ -85,7 +85,7 @@ function normalizeAmendment(input: Extract<CorrectAssignmentInput, { action: 'AM
   if (input.remark !== undefined) {
     amendment.remark = normalizeText(input.remark, 'remark', REMARK_MAX_LENGTH, '');
   }
-  for (const { key } of ASSIGNMENT_DIMENSIONS) {
+  for (const { key } of DIMENSION_ID_FIELDS) {
     const dimension = input.changes?.[key];
     if (dimension === null) {
       amendment.changes[key] = null;
@@ -107,7 +107,7 @@ const sameChange = (a: StoredChange | null, b: StoredChange | null): boolean =>
 const isEmpty = (value: StoredValue): boolean => value.entry_id === null && value.legacy_text === null;
 
 // What an amendment leaves of one dimension of an Initial Assignment, which has no prior values (#50
-// Q13): an entry or Legacy text, or nothing once the dimension is removed.
+// Q13): an entry or Legacy text. Removing the dimension is decided in amendedFields.
 function amendedInitialChange(key: AssignmentDimension, stored: StoredChange | null, amendment: NonNullable<AmendedDimension>): StoredChange {
   if (amendment.prior) {
     throw new ValidationError('An Initial Assignment has no prior values');
@@ -140,7 +140,7 @@ function amendedReassignmentChange(key: AssignmentDimension, stored: StoredChang
 }
 
 // The event an amendment leaves, as a before and after for every field that differs.
-function amendedFields(event: StoredAssignmentFact, amendment: AssignmentAmendment): StoredCorrectionField[] {
+function amendedFields(event: StoredAssignmentEvent, amendment: AssignmentAmendment): StoredCorrectionField[] {
   if (amendment.effective_date === null && event.kind !== 'INITIAL') {
     throw new ValidationError('A Reassignment has a real Effective Date, never unknown');
   }
@@ -154,7 +154,7 @@ function amendedFields(event: StoredAssignmentFact, amendment: AssignmentAmendme
   }
 
   let remaining = 0;
-  for (const { key } of ASSIGNMENT_DIMENSIONS) {
+  for (const { key } of DIMENSION_ID_FIELDS) {
     const before = event.changes[key] ?? null;
     const dimension = amendment.changes[key];
     let after = before;
@@ -185,7 +185,7 @@ function amendedFields(event: StoredAssignmentFact, amendment: AssignmentAmendme
 async function assertAmendedEntries(client: pg.PoolClient, amendment: AssignmentAmendment): Promise<void> {
   for (const side of ['prior', 'new'] as const) {
     const ids = Object.fromEntries(
-      ASSIGNMENT_DIMENSIONS.map(({ key, idField }) => [idField, amendment.changes[key]?.[side]?.entry_id ?? null])
+      DIMENSION_ID_FIELDS.map(({ key, idField }) => [idField, amendment.changes[key]?.[side]?.entry_id ?? null])
     );
     await assertAssignableEntries(client, ids, true, ` (${side} value)`);
   }
@@ -195,7 +195,7 @@ async function assertAmendedEntries(client: pg.PoolClient, amendment: Assignment
 async function applyAmendment(
   client: pg.PoolClient,
   eventId: string,
-  event: StoredAssignmentFact,
+  event: StoredAssignmentEvent,
   amendment: AssignmentAmendment
 ): Promise<StoredCorrectionField[]> {
   const fields = amendedFields(event, amendment);
@@ -252,7 +252,7 @@ export class AssignmentCorrectionService {
         payload: { version: 1, action: input.action, expected_assignment_version: input.expected_assignment_version, reason, amendment },
       },
       async (client) => {
-        const event = await readStoredFact(client, assetId, eventId);
+        const event = await readStoredEvent(client, assetId, eventId);
         if (!event) {
           throw new NotFoundError('Assignment fact not found');
         }

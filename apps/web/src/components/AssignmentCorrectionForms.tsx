@@ -191,7 +191,7 @@ export const AssignmentAmendForm: React.FC<AssignmentCorrectionFormProps> = ({ s
       [legacyField, draft[`${entryField}.new.legacy`]],
     ])
   ) as ReferenceContextValues;
-  const setInitialValue = (field: ReferenceContextField, value: string) => {
+  const setInitialAssignmentValue = (field: ReferenceContextField, value: string) => {
     const dimension = REFERENCE_DIMENSIONS.find(({ idField, legacyField }) => field === idField || field === legacyField)!;
     set(`${dimension.entryField}.new.${field === dimension.idField ? 'entry' : 'legacy'}`, value);
   };
@@ -246,7 +246,7 @@ export const AssignmentAmendForm: React.FC<AssignmentCorrectionFormProps> = ({ s
               idPrefix="assignment-amend"
               legend="ค่าที่กำหนดครั้งแรก"
               values={initialAssignmentValues}
-              onChange={setInitialValue}
+              onChange={setInitialAssignmentValue}
               lists={lists}
               listError={listError}
               offerInactive

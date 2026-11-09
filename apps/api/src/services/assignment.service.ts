@@ -155,7 +155,7 @@ const DIMENSIONS = [
 ] as const;
 
 // Each dimension's name in the API and its entry field, for code outside this module's tables.
-export const ASSIGNMENT_DIMENSIONS = DIMENSIONS.map(({ key, idField }) => ({ key, idField }));
+export const DIMENSION_ID_FIELDS = DIMENSIONS.map(({ key, idField }) => ({ key, idField }));
 
 // The entry field of each dimension (location_id, organization_unit_id, responsible_person_id).
 export const REFERENCE_ID_FIELDS = DIMENSIONS.map(({ idField }) => idField);
@@ -649,7 +649,7 @@ export async function readAssignmentTimeline(
 }
 
 // An assignment fact as it stands, under the Asset's lock, for a correction to compare against.
-export interface StoredAssignmentFact {
+export interface StoredAssignmentEvent {
   kind: 'INITIAL' | 'REASSIGNMENT';
   effective_date: string | null;
   document_reference: string | null;
@@ -659,11 +659,11 @@ export interface StoredAssignmentFact {
 }
 
 /** One fact of an Asset as it stands, or null when the Asset has no such fact. */
-export async function readStoredFact(
-  client: pg.PoolClient | pg.Pool,
+export async function readStoredEvent(
+  client: pg.PoolClient,
   assetId: string,
   eventId: string
-): Promise<StoredAssignmentFact | null> {
+): Promise<StoredAssignmentEvent | null> {
   const eventRes = await client.query(
     `SELECT kind, to_char(effective_date, 'YYYY-MM-DD') AS effective_date, document_reference, remark, is_voided
      FROM assignment_events WHERE id = $1 AND asset_id = $2`,
@@ -673,7 +673,7 @@ export async function readStoredFact(
     return null;
   }
   const changesRes = await client.query('SELECT * FROM assignment_changes WHERE event_id = $1', [eventId]);
-  const changes: StoredAssignmentFact['changes'] = {};
+  const changes: StoredAssignmentEvent['changes'] = {};
   for (const { key, dimension, column } of DIMENSIONS) {
     const row = changesRes.rows.find((change: any) => change.dimension === dimension);
     if (row) {
@@ -688,9 +688,9 @@ export async function readStoredFact(
 
 /** Leaves one dimension of a fact as a correction decided: changed, added, or, when `after` is null, removed. */
 export async function writeCorrectedChange(
-  client: pg.PoolClient | pg.Pool,
+  client: pg.PoolClient,
   eventId: string,
-  kind: StoredAssignmentFact['kind'],
+  kind: StoredAssignmentEvent['kind'],
   key: AssignmentDimension,
   after: StoredChange | null
 ): Promise<void> {

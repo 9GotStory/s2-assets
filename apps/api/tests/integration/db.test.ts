@@ -60,7 +60,7 @@ describe('Database Migrations Integration', () => {
 
     expect(result.error).toBeUndefined();
     expect(result.results).toBeDefined();
-    expect(result.results!.length).toBe(6);
+    expect(result.results!.length).toBe(7);
 
     expect(result.results![0].migrationName).toBe('0001_foundation');
     expect(result.results![0].direction).toBe('Up');
@@ -434,7 +434,7 @@ describe('Database Migrations Integration', () => {
 
     expect(reapplyResult.error).toBeUndefined();
     expect(reapplyResult.results).toBeDefined();
-    expect(reapplyResult.results!).toHaveLength(6);
+    expect(reapplyResult.results!).toHaveLength(7);
 
     expect(reapplyResult.results![0].migrationName).toBe('0001_foundation');
     expect(reapplyResult.results![0].direction).toBe('Up');

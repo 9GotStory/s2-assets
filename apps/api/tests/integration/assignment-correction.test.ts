@@ -375,7 +375,7 @@ describe('Correct or void an assignment fact (Seam A - F003-T3)', () => {
     });
 
     describe('Values of a Reassignment', () => {
-      // An Asset whose Reassignment moved its Location, OrganizationUnit and Responsible Person.
+      // An Asset whose Reassignment changed its Location, OrganizationUnit and Responsible Person.
       const reassignedInThreeDimensions = async (name: string) => {
         const [roomA, roomB] = await Promise.all(['ก', 'ข'].map((suffix) => entry('locations', `${name} ${suffix}`)));
         const [unitA, unitB] = await Promise.all(['ก', 'ข'].map((suffix) => entry('organization-units', `กลุ่มงาน${name} ${suffix}`)));
