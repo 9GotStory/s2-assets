@@ -47,6 +47,8 @@ export interface AssignmentEvent {
   document_reference: string | null;
   remark: string | null;
   is_voided: boolean;
+  // What the events of one Bulk Reassignment share (F003-T5).
+  bulk_reference: string | null;
   changes: AssignmentChange[];
   corrections: AssignmentCorrection[];
 }
@@ -63,6 +65,8 @@ export interface AssignmentConflict {
 }
 
 // Labels from GLOSSARY.md (#50 Q18).
+export const BULK_REASSIGNMENT_LABEL = 'ย้ายหลายรายการ';
+
 export const KIND_LABELS: Record<AssignmentEvent['kind'], string> = {
   INITIAL: 'กำหนดครั้งแรก',
   REASSIGNMENT: 'ย้าย / เปลี่ยนผู้รับผิดชอบ',

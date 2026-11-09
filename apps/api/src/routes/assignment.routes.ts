@@ -11,20 +11,31 @@ import {
 import { AssignmentConflictWarningError } from '../services/assignment-conflict.ts';
 import { AssignmentCorrectionService, type CorrectAssignmentInput } from '../services/assignment-correction.service.ts';
 import { AssignmentRecordingService, type RecordAssignmentInput } from '../services/assignment-recording.service.ts';
+import {
+  BulkReassignmentService,
+  InitialAssignmentRequiredError,
+  type BulkReassignmentInput,
+  type BulkReassignmentPreviewInput,
+} from '../services/bulk-reassignment.service.ts';
 import { isValidUuid } from '../services/capability.service.ts';
 
 export interface AssignmentRoutesOptions {
   assignmentRecordingService: AssignmentRecordingService;
   assignmentCorrectionService: AssignmentCorrectionService;
+  bulkReassignmentService: BulkReassignmentService;
 }
 
-// What every assignment write carries: the version it was made against, its retry token, and whether
-// it confirms the Assignment Conflicts it would create.
-const assignmentWriteFields = {
-  expected_assignment_version: z.number().int().min(0),
+const expectedVersionField = { expected_assignment_version: z.number().int().min(0) };
+
+// What every assignment write carries besides its facts: its retry token, and whether it confirms the
+// Assignment Conflicts it would create.
+const writeControlFields = {
   retry_token: z.string().optional(),
   explicit_continuation: z.boolean().optional(),
 };
+
+// A write of one Asset's facts also carries the version it was made against.
+const assignmentWriteFields = { ...expectedVersionField, ...writeControlFields };
 
 const RecordAssignmentSchema = z
   .object({
@@ -75,6 +86,18 @@ const CorrectAssignmentSchema = z.discriminatedUnion('action', [
     .strict(),
 ]);
 
+// F003-T5 (#55): one set of facts for many Assets. The preview reads each Asset's version, and the
+// write carries the versions it read.
+const BulkReassignmentPreviewSchema = z.object({ asset_ids: z.array(z.string()), ...assignmentFactFields }).strict();
+
+const BulkReassignmentSchema = z
+  .object({
+    assets: z.array(z.object({ asset_id: z.string(), ...expectedVersionField }).strict()),
+    ...assignmentFactFields,
+    ...writeControlFields,
+  })
+  .strict();
+
 // Feature 002's deterministic error shape.
 const errorBody = (statusCode: number, code: string, message: string) => ({ statusCode, code, error: code, message });
 
@@ -89,6 +112,9 @@ const refusalOf = (err: unknown) => {
   }
   if (err instanceof AssignmentConflictWarningError) {
     return { ...errorBody(err.statusCode, err.code, err.message), conflicts: err.conflicts };
+  }
+  if (err instanceof InitialAssignmentRequiredError) {
+    return { ...errorBody(err.statusCode, err.code, err.message), assets: err.assets };
   }
   if (err instanceof RetryTokenConflictError || err instanceof NotFoundError || err instanceof ValidationError) {
     return errorBody(err.statusCode, err.code, err.message);
@@ -115,15 +141,24 @@ const retryTokenOf = (
   return { token };
 };
 
-// A write request once validated, or the answer that refuses it.
-const parseWrite = <T extends { retry_token?: string }>(
-  schema: z.ZodType<T>,
-  request: FastifyRequest
-): { data: T; retryToken: string } | { refusal: ReturnType<typeof errorBody> } => {
+// A request body once validated, or the answer that refuses it.
+const parseBody = <T>(schema: z.ZodType<T>, request: FastifyRequest): { data: T } | { refusal: ReturnType<typeof errorBody> } => {
   const parsed = schema.safeParse(request.body ?? {});
   if (!parsed.success) {
     const issues = parsed.error.issues.map((issue) => `${issue.path.join('.')}: ${issue.message}`).join(', ');
     return { refusal: errorBody(400, 'VALIDATION_FAILED', `Invalid request payload: ${issues}`) };
+  }
+  return { data: parsed.data };
+};
+
+// A write request once validated, with its retry token, or the answer that refuses it.
+const parseWrite = <T extends { retry_token?: string }>(
+  schema: z.ZodType<T>,
+  request: FastifyRequest
+): { data: T; retryToken: string } | { refusal: ReturnType<typeof errorBody> } => {
+  const parsed = parseBody(schema, request);
+  if ('refusal' in parsed) {
+    return parsed;
   }
   const retry = retryTokenOf(request.headers, parsed.data.retry_token);
   return 'refusal' in retry
@@ -132,7 +167,7 @@ const parseWrite = <T extends { retry_token?: string }>(
 };
 
 export const assignmentRoutes: FastifyPluginAsync<AssignmentRoutesOptions> = async (fastify, options) => {
-  const { assignmentRecordingService, assignmentCorrectionService } = options;
+  const { assignmentRecordingService, assignmentCorrectionService, bulkReassignmentService } = options;
 
   /**
    * POST /:id/assignments
@@ -157,6 +192,53 @@ export const assignmentRoutes: FastifyPluginAsync<AssignmentRoutesOptions> = asy
         write.data as RecordAssignmentInput,
         { retryToken: write.retryToken }
       );
+      return reply.status(201).send(result);
+    } catch (err) {
+      const refusal = refusalOf(err);
+      if (!refusal) {
+        throw err;
+      }
+      return reply.status(refusal.statusCode).send(refusal);
+    }
+  });
+
+  /**
+   * POST /bulk-reassignments/preview
+   * What a Bulk Reassignment would do, saving nothing (F003-T5).
+   * Protected: requires 'assignment:reassign' capability (Asset Custodian)
+   */
+  fastify.post('/bulk-reassignments/preview', { preHandler: [requireCapability('assignment:reassign')] }, async (request, reply) => {
+    const body = parseBody(BulkReassignmentPreviewSchema, request);
+    if ('refusal' in body) {
+      return reply.status(400).send(body.refusal);
+    }
+
+    try {
+      return reply.status(200).send(await bulkReassignmentService.preview(request.user!.id, body.data as BulkReassignmentPreviewInput));
+    } catch (err) {
+      const refusal = refusalOf(err);
+      if (!refusal) {
+        throw err;
+      }
+      return reply.status(refusal.statusCode).send(refusal);
+    }
+  });
+
+  /**
+   * POST /bulk-reassignments
+   * Records one Reassignment for up to 100 Assets, all of it or none (F003-T5).
+   * Protected: requires 'assignment:reassign' capability (Asset Custodian)
+   */
+  fastify.post('/bulk-reassignments', { preHandler: [requireCapability('assignment:reassign')] }, async (request, reply) => {
+    const write = parseWrite(BulkReassignmentSchema, request);
+    if ('refusal' in write) {
+      return reply.status(400).send(write.refusal);
+    }
+
+    try {
+      const result = await bulkReassignmentService.record(request.user!.id, write.data as BulkReassignmentInput, {
+        retryToken: write.retryToken,
+      });
       return reply.status(201).send(result);
     } catch (err) {
       const refusal = refusalOf(err);

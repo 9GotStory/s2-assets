@@ -1,6 +1,13 @@
 import React, { useEffect, useState, useRef, useCallback } from 'react';
 import { useNavigate, Link } from 'react-router';
 import {
+  BULK_REASSIGNMENT_MAX_ASSETS,
+  BulkReassignmentBar,
+  BulkReassignmentPanel,
+  assetLabelOf,
+  type BulkSelectedAsset,
+} from '../components/BulkReassignmentPanel';
+import {
   REFERENCE_DIMENSIONS,
   entryLabel,
   useReferenceLists,
@@ -27,6 +34,8 @@ export interface SearchAssetResult {
   offset: number;
   total_count: number;
   has_more: boolean;
+  // Whether the viewer holds 'assignment:reassign' (F003-T5).
+  can_reassign: boolean;
 }
 
 // T4 (#25): each legacy reference text is its own field, keeping the dimensions distinct.
@@ -67,6 +76,12 @@ export const AssetSearch: React.FC = () => {
   const [errorMessage, setErrorMessage] = useState<string | null>(null);
   const [isForbidden, setIsForbidden] = useState<boolean>(false);
 
+  // F003-T5 (#55): the rows chosen for "ย้ายหลายรายการ", kept across pages and searches.
+  const [canReassign, setCanReassign] = useState<boolean>(false);
+  const [csrfToken, setCsrfToken] = useState<string | null>(null);
+  const [selection, setSelection] = useState<Map<string, BulkSelectedAsset>>(() => new Map());
+  const [isBulkPanelOpen, setIsBulkPanelOpen] = useState<boolean>(false);
+
   // Filter lists, loaded for the verified actor (inactive entries included: Assets may still name them)
   const [listActorId, setListActorId] = useState<string | null>(null);
   const referenceLists = useReferenceLists(true, listActorId);
@@ -98,6 +113,7 @@ export const AssetSearch: React.FC = () => {
     setErrorMessage(null);
     setIsForbidden(false);
     setIsLoading(false);
+    setCanReassign(false);
   }, []);
 
   // Verify authenticated session and bind actor with generation guarding
@@ -169,8 +185,11 @@ export const AssetSearch: React.FC = () => {
           activeValueRef.current = '';
           activeFiltersRef.current = NO_FILTERS;
           offsetRef.current = 0;
+          setSelection(new Map());
+          setIsBulkPanelOpen(false);
         }
         currentActorIdRef.current = actorId;
+        setCsrfToken(data?.csrfToken ?? null);
         return { valid: true, actorId, actorChanged };
       } catch (err: unknown) {
         if (
@@ -320,6 +339,7 @@ export const AssetSearch: React.FC = () => {
           setResults(data.items);
           setTotalCount(data.total_count);
           setHasMore(data.has_more);
+          setCanReassign(data.can_reassign === true);
           setOffset(data.offset);
           setActiveField(effectiveField);
           setActiveValue(effectiveValue);
@@ -426,6 +446,24 @@ export const AssetSearch: React.FC = () => {
       const nextOffset = offset + limit;
       executeSearch(activeField, activeValue, nextOffset, activeFilters);
     }
+  };
+
+  const toggleSelected = (item: SearchAssetItem) => {
+    setSelection((current) => {
+      const next = new Map(current);
+      if (next.has(item.id)) {
+        next.delete(item.id);
+      } else if (next.size < BULK_REASSIGNMENT_MAX_ASSETS) {
+        next.set(item.id, { id: item.id, name: item.name, asset_number: item.asset_number });
+      }
+      return next;
+    });
+  };
+
+  const handleBulkFinished = () => {
+    setSelection(new Map());
+    setIsBulkPanelOpen(false);
+    executeSearch(activeField, activeValue, offset, activeFilters);
   };
 
   return (
@@ -736,6 +774,18 @@ export const AssetSearch: React.FC = () => {
           </form>
         )}
 
+        {/* F003-T5 (#55): outside the results, so that reading the list again keeps what is being entered */}
+        {isBulkPanelOpen && (
+          <BulkReassignmentPanel
+            selected={[...selection.values()]}
+            actorId={listActorId}
+            csrfToken={csrfToken}
+            onCancel={() => setIsBulkPanelOpen(false)}
+            onFinished={handleBulkFinished}
+            onPermissionRevoked={() => setCanReassign(false)}
+          />
+        )}
+
         {/* Loading State */}
         {isLoading && (
           <div
@@ -781,6 +831,15 @@ export const AssetSearch: React.FC = () => {
               </span>
             </div>
 
+            {canReassign && (
+              <BulkReassignmentBar
+                selectedCount={selection.size}
+                isPanelOpen={isBulkPanelOpen}
+                onOpen={() => setIsBulkPanelOpen(true)}
+                onClear={() => setSelection(new Map())}
+              />
+            )}
+
             {results.length === 0 ? (
               <div
                 id="no-results-message"
@@ -810,6 +869,9 @@ export const AssetSearch: React.FC = () => {
                 >
                   <thead>
                     <tr style={{ backgroundColor: '#f9fafb', borderBottom: '2px solid #e5e7eb' }}>
+                      {canReassign && (
+                        <th style={{ padding: '0.75rem 1rem', fontWeight: 600, color: '#374151' }}>เลือก</th>
+                      )}
                       <th style={{ padding: '0.75rem 1rem', fontWeight: 600, color: '#374151' }}>
                         หมายเลขครุภัณฑ์
                       </th>
@@ -836,6 +898,18 @@ export const AssetSearch: React.FC = () => {
                           borderBottom: '1px solid #e5e7eb',
                         }}
                       >
+                        {canReassign && (
+                          <td style={{ padding: '0.75rem 1rem' }}>
+                            <input
+                              type="checkbox"
+                              data-testid={`asset-select-${item.id}`}
+                              aria-label={`เลือก ${assetLabelOf(item, item.id)}`}
+                              checked={selection.has(item.id)}
+                              disabled={isBulkPanelOpen || (!selection.has(item.id) && selection.size >= BULK_REASSIGNMENT_MAX_ASSETS)}
+                              onChange={() => toggleSelected(item)}
+                            />
+                          </td>
+                        )}
                         <td style={{ padding: '0.75rem 1rem', color: '#111827', fontWeight: 500 }}>
                           {item.asset_number || '-'}
                         </td>
