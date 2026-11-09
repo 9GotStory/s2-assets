@@ -10,7 +10,9 @@
 #
 # The run happens in a copy of the tree at E2E_WORKSPACE (default ~/.cache/s2-assets-e2e), because the
 # repository's node_modules hold the tooling image's Alpine builds and the browser runner is glibc.
-# The copy keeps its root node_modules between runs, so the install is quick.
+# The copy keeps its root node_modules between runs, so the install is quick. Each run empties the
+# rest of it, so the results of a failed run are copied to E2E_FAILURES (default
+# ~/.cache/s2-assets-e2e-failures/<commit>-<UTC>), which keeps the last three.
 set -euo pipefail
 cd "$(dirname "$0")/../.."
 # shellcheck source=scripts/ci/common.sh
@@ -18,6 +20,7 @@ cd "$(dirname "$0")/../.."
 
 IMAGE=s2-assets-browser:ci
 WORKSPACE=${E2E_WORKSPACE:-${XDG_CACHE_HOME:-$HOME/.cache}/s2-assets-e2e}
+FAILURES=${E2E_FAILURES:-${XDG_CACHE_HOME:-$HOME/.cache}/s2-assets-e2e-failures}
 
 auth=false
 if [[ ${1:-} == --auth ]]; then
@@ -84,7 +87,11 @@ failures=0
 remove_new_test_containers "$before"
 
 if ((status != 0)); then
-  note "journeys failed; results in $WORKSPACE/apps/web/test-results" >&2
+  kept="$FAILURES/$(git rev-parse --short HEAD)-$(LC_ALL=C date -u +%Y%m%dT%H%M%SZ)"
+  mkdir -p "$kept"
+  cp -r "$WORKSPACE/apps/web/test-results/." "$kept/" || note "could not copy the results to $kept" >&2
+  ls -1dt "$FAILURES"/*/ | tail -n +4 | xargs -r rm -rf --
+  note "journeys failed; results in $kept" >&2
   exit "$status"
 fi
 if ((failures > 0)); then

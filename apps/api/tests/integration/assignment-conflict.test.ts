@@ -1,8 +1,7 @@
 import * as crypto from 'node:crypto';
 import { describe, it, expect, beforeAll, afterAll } from 'vitest';
 import { startApiHarness, type Actor, type ApiHarness } from './support/api-harness.ts';
-
-const NO_VALUE = { entry: null, legacy_text: null };
+import { NO_VALUE, assignmentObservers, at, type Entry } from './support/assignment-observers.ts';
 
 // F003-T4 (#54): when assignment facts disagree, the system says so.
 describe('Assignment Conflicts (Seam A - F003-T4)', () => {
@@ -11,30 +10,13 @@ describe('Assignment Conflicts (Seam A - F003-T4)', () => {
   let custodian: Actor;
   let readonly: Actor;
 
-  type Entry = { id: string; name: string; is_active: boolean };
-
-  const entry = async (kind: string, name: string): Promise<Entry> => (await api.post(admin, `/references/${kind}`, { name })).json();
-
-  // `count` entries of one list, named after `prefix`.
-  const entries = (kind: string, prefix: string, count: number): Promise<Entry[]> =>
-    Promise.all(Array.from({ length: count }, (_, i) => entry(kind, `${prefix} ${i + 1}`)));
-
-  // A dimension value as the API answers it, naming the entry `e`.
-  const at = (e: Entry) => ({ entry: { id: e.id, name: e.name, is_active: true }, legacy_text: null });
+  const { entry, entries, detailOf, timelineOf, assignmentOf } = assignmentObservers(() => ({ api, admin, reader: readonly }));
 
   // An Asset whose Location starts at `location` on `effectiveDate`.
   const registered = async (location: Entry, effectiveDate: string | null = '2024-01-01'): Promise<string> => {
     const res = await api.post(custodian, '/assets', { name: `ของ ${crypto.randomUUID()}`, location_id: location.id, effective_date: effectiveDate });
     expect(res.statusCode).toBe(201);
     return res.json().asset.id;
-  };
-
-  const detailOf = async (assetId: string) => (await api.get(readonly, `/assets/${assetId}`)).json();
-
-  const timelineOf = async (assetId: string) => {
-    const res = await api.get(readonly, `/assets/${assetId}/assignments`);
-    expect(res.statusCode).toBe(200);
-    return res.json().items;
   };
 
   // Records a fact against the Asset's current version unless the payload names one.
@@ -73,12 +55,6 @@ describe('Assignment Conflicts (Seam A - F003-T4)', () => {
     const later = await reassigned(assetId, { effective_date: '2024-06-01', location_id: c.id });
     const backdated = await reassigned(assetId, { effective_date: '2024-03-01', location_id: b.id, explicit_continuation: true });
     return { assetId, later, backdated, b, c };
-  };
-
-  // What an observer reads of an Asset's assignment, to show that a refused write changed nothing.
-  const assignmentOf = async (assetId: string) => {
-    const detail = await detailOf(assetId);
-    return { current: detail.current_assignment, version: detail.assignment_version, timeline: await timelineOf(assetId) };
   };
 
   beforeAll(async () => {
