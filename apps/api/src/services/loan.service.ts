@@ -11,7 +11,7 @@ import {
   normalizeText,
   type ReferenceEntrySummary,
 } from './assignment.service.ts';
-import { isListedPerson } from './reference.service.ts';
+import { isSelectablePerson } from './reference.service.ts';
 import { commitOnce } from './retryable-write.ts';
 import { ValidationError } from './validation-error.ts';
 
@@ -187,7 +187,7 @@ const normalizeItems = (items: LoanItemInput[]): LoanFacts['items'] => {
     .map(({ asset_id, condition, condition_note }) => ({
       asset_id: asset_id.trim().toLowerCase(),
       condition,
-      condition_note: normalizeLine(condition_note, 'condition_note', CONDITION_NOTE_MAX_LENGTH),
+      condition_note: normalizeText(condition_note, 'condition_note', CONDITION_NOTE_MAX_LENGTH, ''),
     }))
     .sort((a, b) => (a.asset_id < b.asset_id ? -1 : 1));
   if (new Set(normalized.map(({ asset_id }) => asset_id)).size !== normalized.length) {
@@ -296,7 +296,7 @@ export class LoanService {
       { field: 'authorizer_person_id', id: facts.authorizer_person_id },
     ];
     for (const { field, id } of named) {
-      if (id && !(await isListedPerson(client, id, { allowInactive }))) {
+      if (id && !(await isSelectablePerson(client, id, { allowInactive }))) {
         throw new ValidationError(`${field} must name ${allowInactive ? 'an' : 'an active'} entry of the Person Reference List`);
       }
     }

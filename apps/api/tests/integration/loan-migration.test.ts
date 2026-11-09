@@ -144,7 +144,7 @@ describe('Loan Migration Integration (Seam C - F004-T1)', () => {
       const assetId = await insertAsset(client, 'เครื่องฉาย');
       const firstLoan = await insertLoan(client);
       const secondLoan = await insertLoan(client);
-      const refused = /loan_items_one_unlendable_per_asset/;
+      const refused = /loan_items_one_outstanding_or_not_returned_per_asset/;
 
       const first = await insertItem(client, firstLoan, assetId);
       await expect(insertItem(client, secondLoan, assetId)).rejects.toThrow(refused);

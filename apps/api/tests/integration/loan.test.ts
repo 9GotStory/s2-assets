@@ -552,27 +552,35 @@ describe('Starting a Loan (Seam A - F004-T1)', () => {
       expect(res.statusCode).toBe(201);
     });
 
-    it('refuses every control character in one-line text, even at its ends', async () => {
+    it('refuses every control character in a name or a phone number, even at its ends', async () => {
       const assetId = await registered();
 
       for (const text of ['ก\u0007ข', 'ก\nข', 'ก\tข', 'ก\r\nข', '\nก', 'ก\n']) {
         await refused(external({ contact_name: text }), [assetId]);
         await refused(external({ organization_name: text }), [assetId]);
-        await refused({ assets: [{ asset_id: assetId, condition: 'NORMAL', condition_note: text }] }, [assetId]);
       }
       await refused(external({ phone: '081-234-5678\n' }), [assetId]);
     });
 
-    it('keeps line breaks and tabs in a document reference and a remark, as an assignment does, and refuses other control characters', async () => {
+    it('keeps line breaks and tabs inside a document reference, a remark and a Condition note, as an assignment does, and refuses any other control character inside them', async () => {
       const assetId = await registered();
       const bell = 'ก\u0007ข';
 
       await refused({ document_reference: bell }, [assetId]);
       await refused({ remark: bell }, [assetId]);
+      await refused({ assets: [{ asset_id: assetId, condition: 'NORMAL', condition_note: bell }] }, [assetId]);
 
-      const res = await start(base([assetId], { document_reference: 'ก\nข', remark: 'ก\tข' }));
+      const res = await start(
+        base([], {
+          assets: [{ asset_id: assetId, condition: 'NORMAL', condition_note: 'ก\r\nข' }],
+          document_reference: 'ก\nข',
+          remark: 'ก\tข',
+        })
+      );
       expect(res.statusCode).toBe(201);
-      expect(await loanOf(res.json().loan_id)).toMatchObject({ document_reference: 'ก\nข', remark: 'ก\tข' });
+      const loan = await loanOf(res.json().loan_id);
+      expect(loan).toMatchObject({ document_reference: 'ก\nข', remark: 'ก\tข' });
+      expect(loan.items[0].condition_note).toBe('ก\r\nข');
     });
 
     it('takes a phone number of digits, spaces, plus and hyphen only', async () => {

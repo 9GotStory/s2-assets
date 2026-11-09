@@ -177,6 +177,14 @@ test.describe.serial('Asset Registry Real SPA -> Composed API -> PostgreSQL Jour
     await loginAs(page, context, userId);
   };
 
+  // An Asset page's sections read once its detail appears. A revocation while one is in flight answers
+  // that read 403, and the page starts re-verifying before the journey means it to.
+  const sectionsHaveRead = async (page: any) => {
+    await expect(page.locator('[data-testid^="assignment-timeline"]')).toBeVisible();
+    await expect(page.locator('[data-testid^="loan-history"]')).toBeVisible();
+    await expect(page.locator('[data-testid="evidence-table"], [data-testid="no-evidence-message"]')).toBeVisible();
+  };
+
   test('Journey 1: minimal ordinary registration -> linked detail/history view', async ({ page, context }) => {
     await loginAs(page, context, custodianUserId);
 
@@ -2364,9 +2372,8 @@ test.describe.serial('Asset Registry Real SPA -> Composed API -> PostgreSQL Jour
     await expect(page.locator('#asset-detail-heading')).toBeVisible();
     await expect(page.locator('#asset-correction-form')).toBeVisible();
 
-    // Now remove ALL roles in PostgreSQL so subsequent GET /assets/:id returns 403. The page's sections
-    // read after its form appears, and a 403 on one of them would start re-verifying before this journey does.
-    await page.waitForLoadState('networkidle');
+    // Now remove ALL roles in PostgreSQL so subsequent GET /assets/:id returns 403
+    await sectionsHaveRead(page);
     await pool.query('DELETE FROM user_roles WHERE user_id = $1', [deniedUserId]);
 
     const reauth1Started = createDeferred();
@@ -4216,8 +4223,8 @@ test.describe.serial('Asset Registry Real SPA -> Composed API -> PostgreSQL Jour
     await page.goto(`${targetBaseUrl}/assets/${assetId}`);
     await expect(page.locator('[data-testid="add-evidence-btn"]')).toBeVisible();
 
-    // Revoke role in DB, once the page's sections have read: a 403 on one of them would re-verify the page first
-    await page.waitForLoadState('networkidle');
+    // Revoke role in DB
+    await sectionsHaveRead(page);
     await pool.query(`DELETE FROM user_roles WHERE user_id = '${tempUserId}'`);
 
     // Click add evidence and attempt submit

@@ -50,7 +50,7 @@ export async function up(db: Kysely<any>): Promise<void> {
     .execute();
 
   // LR-11, and the guard on an Asset that ended Not Returned (#74 Q21): either item keeps the Asset from a new Loan.
-  await sql`CREATE UNIQUE INDEX loan_items_one_unlendable_per_asset
+  await sql`CREATE UNIQUE INDEX loan_items_one_outstanding_or_not_returned_per_asset
     ON loan_items (asset_id) WHERE NOT is_voided AND ending_kind IN ('NONE', 'NOT_RETURNED')`.execute(db);
   await sql`CREATE INDEX idx_loan_items_asset ON loan_items (asset_id)`.execute(db);
 }
