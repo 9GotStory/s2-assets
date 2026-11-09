@@ -1,4 +1,4 @@
-import { entryLabel, type REFERENCE_DIMENSIONS, type ReferenceEntry } from './ReferenceContextFields';
+import { REFERENCE_DIMENSIONS, entryLabel, type ReferenceEntry } from './ReferenceContextFields';
 
 // One fact of an Asset's assignment timeline (GET /assets/:id/assignments, F003-T1).
 export interface AssignmentValue {
@@ -12,6 +12,8 @@ export interface AssignmentChange {
   dimension: AssignmentDimension;
   prior: AssignmentValue;
   new: AssignmentValue;
+  // The value just before this change, when its recorded prior value differs from it (F003-T4).
+  conflict: { value_just_before: AssignmentValue } | null;
 }
 
 // The before and after of one field an Assignment Correction changed. A dimension is null where the
@@ -49,6 +51,17 @@ export interface AssignmentEvent {
   corrections: AssignmentCorrection[];
 }
 
+// One Assignment Conflict a write would create (F003-T4). A null event_id is the fact being saved.
+export interface AssignmentConflict {
+  asset_id: string;
+  event_id: string | null;
+  kind: AssignmentEvent['kind'];
+  effective_date: string | null;
+  dimension: AssignmentDimension;
+  recorded_prior: AssignmentValue;
+  value_just_before: AssignmentValue;
+}
+
 // Labels from GLOSSARY.md (#50 Q18).
 export const KIND_LABELS: Record<AssignmentEvent['kind'], string> = {
   INITIAL: 'กำหนดครั้งแรก',
@@ -61,6 +74,14 @@ export const CORRECTION_LABELS: Record<AssignmentCorrection['action'], string> =
 };
 
 const NO_VALUE: AssignmentValue = { entry: null, legacy_text: null };
+
+const THAI_DATE = new Intl.DateTimeFormat('th-TH', { dateStyle: 'long', timeZone: 'UTC' });
+
+// A calendar date (YYYY-MM-DD) in Thai.
+export const thaiDate = (date: string): string => THAI_DATE.format(new Date(`${date}T00:00:00Z`));
+
+export const dimensionLabel = (dimension: AssignmentDimension): string =>
+  REFERENCE_DIMENSIONS.find(({ entryField }) => entryField === dimension)!.label;
 
 const BANGKOK_DATE = new Intl.DateTimeFormat('en-CA', {
   timeZone: 'Asia/Bangkok',
@@ -94,6 +115,10 @@ export const valueText = (value: AssignmentValue): string => {
 // One dimension of a fact: an Initial Assignment shows its new value alone, having no prior value.
 export const changeText = (kind: AssignmentEvent['kind'], change: Pick<AssignmentChange, 'prior' | 'new'>): string =>
   kind === 'INITIAL' ? valueText(change.new) : `${valueText(change.prior)} → ${valueText(change.new)}`;
+
+// One Assignment Conflict: the prior value a fact recorded, against the value just before it.
+export const conflictText = (recordedPrior: AssignmentValue, valueJustBefore: AssignmentValue): string =>
+  `บันทึกค่าเดิมไว้ว่า ${valueText(recordedPrior)} แต่ค่าก่อนหน้าคือ ${valueText(valueJustBefore)}`;
 
 /**
  * The value of each dimension in effect on a date, read from a timeline in the order of facts: a

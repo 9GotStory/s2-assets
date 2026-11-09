@@ -9,10 +9,10 @@ import {
   type InitialAssignmentInput,
   type ReassignmentInput,
 } from './assignment.service.ts';
-import { writeAssignmentOnce, type RecordedAssignment } from './assignment-write.ts';
+import { writeAssignmentOnce, type AssignmentWriteInput, type RecordedAssignment } from './assignment-write.ts';
 import { ValidationError } from './validation-error.ts';
 
-export type RecordAssignmentInput = { expected_assignment_version: number } & (
+export type RecordAssignmentInput = AssignmentWriteInput & (
   | ({ kind: 'INITIAL' } & InitialAssignmentInput)
   | ({ kind: 'REASSIGNMENT' } & ReassignmentInput)
 );
@@ -72,6 +72,8 @@ export class AssignmentRecordingService {
         retryToken,
         expectedVersion: input.expected_assignment_version,
         payload: { version: 1, kind: input.kind, expected_assignment_version: input.expected_assignment_version, facts },
+        explicitContinuation: input.explicit_continuation === true,
+        recordsNewFact: true,
       },
       async (client) => {
         const initialRes = await client.query(

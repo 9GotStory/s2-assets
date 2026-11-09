@@ -8,6 +8,7 @@ import {
   assertInitialAssignmentEntries,
   assignmentSearch,
   bangkokDate,
+  hasAssignmentConflict,
   normalizeInitialAssignment,
   readAssignmentTimeline,
   readCurrentAssignment,
@@ -275,6 +276,8 @@ export interface SearchAssetInput {
   location_id?: string;
   organization_unit_id?: string;
   responsible_person_id?: string;
+  // F003-T4 (#54): only Assets with at least one Assignment Conflict.
+  has_assignment_conflict?: boolean;
   limit?: number | string;
   offset?: number | string;
 }
@@ -1663,6 +1666,7 @@ export class AssetService {
     history: AssetHistoryRecord[];
     current_assignment: CurrentAssignment;
     assignment_version: number;
+    has_assignment_conflict: boolean;
   } | null> {
     if (!isValidUuid(id)) {
       return null;
@@ -1690,6 +1694,7 @@ export class AssetService {
       }
 
       const assignment = await readCurrentAssignment(client, id.trim());
+      const hasConflict = await hasAssignmentConflict(client, id.trim());
 
       const historyRes = await client.query(
         `SELECT h.id, h.asset_id, h.action, h.actor_id, u.username as actor_username,
@@ -1730,6 +1735,7 @@ export class AssetService {
         })),
         current_assignment: assignment.current,
         assignment_version: assignment.version,
+        has_assignment_conflict: hasConflict,
       };
     } catch (err) {
       try {
@@ -1899,6 +1905,9 @@ export class AssetService {
       }
       params.push(id.toLowerCase());
       conditions.push(assignmentSearch.entryFilter(filter, `$${params.length}`));
+    }
+    if (input.has_assignment_conflict) {
+      conditions.push(assignmentSearch.conflictFilter);
     }
     const whereClause = conditions.length > 0 ? `WHERE ${conditions.join(' AND ')}` : '';
 

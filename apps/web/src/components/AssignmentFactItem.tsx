@@ -4,6 +4,9 @@ import {
   CORRECTION_LABELS,
   KIND_LABELS,
   changeText,
+  conflictText,
+  dimensionLabel,
+  thaiDate,
   type AssignmentCorrection,
   type AssignmentChange,
   type AssignmentCorrectionField,
@@ -11,18 +14,12 @@ import {
   type AssignmentEvent,
 } from './assignmentFacts';
 
-const THAI_DATE = new Intl.DateTimeFormat('th-TH', { dateStyle: 'long', timeZone: 'UTC' });
 const THAI_DATE_TIME = new Intl.DateTimeFormat('th-TH', {
   dateStyle: 'long',
   timeStyle: 'short',
   timeZone: 'Asia/Bangkok',
 });
 const THAI_RECORDED_DATE = new Intl.DateTimeFormat('th-TH', { dateStyle: 'long', timeZone: 'Asia/Bangkok' });
-
-// A calendar date (YYYY-MM-DD) in Thai.
-const thaiDate = (date: string) => THAI_DATE.format(new Date(`${date}T00:00:00Z`));
-
-const dimensionLabel = (dimension: string) => REFERENCE_DIMENSIONS.find(({ entryField }) => entryField === dimension)!.label;
 
 const FIELD_LABELS: Record<string, string> = {
   effective_date: 'วันที่มีผล',
@@ -113,6 +110,14 @@ export const AssignmentFactItem: React.FC<AssignmentFactItemProps> = ({ event, a
         {event.changes.map((change) => (
           <li key={change.dimension}>
             {dimensionLabel(change.dimension)}: {changeText(event.kind, change)}
+            {change.conflict && (
+              <div
+                data-testid={`assignment-conflict-${event.id}-${change.dimension}`}
+                style={{ marginTop: '0.125rem', fontSize: '0.8125rem', fontWeight: 600, color: '#92400e' }}
+              >
+                ขัดแย้ง: {conflictText(change.prior, change.conflict.value_just_before)}
+              </div>
+            )}
           </li>
         ))}
       </ul>

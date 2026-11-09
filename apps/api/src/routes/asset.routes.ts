@@ -565,7 +565,7 @@ export const assetRoutes: FastifyPluginAsync<AssetRoutesOptions> = async (
       const query = (request.query || {}) as Record<string, unknown>;
 
       // Check for unknown parameters
-      const allowedParams = new Set<string>(['field', 'value', 'limit', 'offset', ...REFERENCE_ID_FIELDS]);
+      const allowedParams = new Set<string>(['field', 'value', 'limit', 'offset', 'has_assignment_conflict', ...REFERENCE_ID_FIELDS]);
       for (const key of Object.keys(query)) {
         if (!allowedParams.has(key)) {
           return sendValidationError({ query: 'Unknown query parameter' });
@@ -631,6 +631,11 @@ export const assetRoutes: FastifyPluginAsync<AssetRoutesOptions> = async (
         }
       }
 
+      // F003-T4 (#54): "มีประวัติขัดแย้งค้างตรวจ" takes one value; leaving it out lists every Asset.
+      if (query.has_assignment_conflict !== undefined && query.has_assignment_conflict !== 'true') {
+        return sendValidationError({ has_assignment_conflict: "has_assignment_conflict must be 'true' when given" });
+      }
+
       // Limit validation
       if (limit !== undefined) {
         if (typeof limit !== 'string' && typeof limit !== 'number') {
@@ -668,6 +673,7 @@ export const assetRoutes: FastifyPluginAsync<AssetRoutesOptions> = async (
           location_id: query.location_id as string | undefined,
           organization_unit_id: query.organization_unit_id as string | undefined,
           responsible_person_id: query.responsible_person_id as string | undefined,
+          has_assignment_conflict: query.has_assignment_conflict === 'true',
           limit: limit as any,
           offset: offset as any,
         });
