@@ -164,7 +164,7 @@ export const BulkReassignmentPanel: React.FC<BulkReassignmentPanelProps> = ({
   const uncertainRef = useRef<SaveRequest | null>(null);
 
   const assetById = new Map(selected.map((asset) => [asset.id, asset]));
-  const assetLabel = (assetId: string): string => {
+  const selectedAssetLabel = (assetId: string): string => {
     const asset = assetById.get(assetId);
     return asset ? assetLabelOf(asset, assetId) : assetId;
   };
@@ -348,7 +348,7 @@ export const BulkReassignmentPanel: React.FC<BulkReassignmentPanelProps> = ({
               <ul style={{ margin: '0 0 1rem 0', paddingLeft: '1.25rem', fontSize: '0.875rem', color: '#374151' }}>
                 {stage.preview.changed.map(({ asset_id, changes }) => (
                   <li key={asset_id} data-testid={`bulk-preview-changed-${asset_id}`}>
-                    <div style={{ fontWeight: 600, color: '#111827' }}>{assetLabel(asset_id)}</div>
+                    <div style={{ fontWeight: 600, color: '#111827' }}>{selectedAssetLabel(asset_id)}</div>
                     {changes.map((change) => (
                       <div key={change.dimension}>
                         {dimensionLabel(change.dimension)}: {valueText(change.prior)} → {valueText(change.new)}
@@ -368,7 +368,7 @@ export const BulkReassignmentPanel: React.FC<BulkReassignmentPanelProps> = ({
               <ul style={{ margin: '0 0 1rem 0', paddingLeft: '1.25rem', fontSize: '0.875rem', color: '#374151' }}>
                 {stage.preview.unchanged.map(({ asset_id }) => (
                   <li key={asset_id} data-testid={`bulk-preview-unchanged-${asset_id}`}>
-                    {assetLabel(asset_id)}
+                    {selectedAssetLabel(asset_id)}
                   </li>
                 ))}
               </ul>
@@ -384,7 +384,7 @@ export const BulkReassignmentPanel: React.FC<BulkReassignmentPanelProps> = ({
           {stage.preview.conflicts.length > 0 && !isBusy && !isSaveUncertain ? (
             <AssignmentConflictWarning
               conflicts={stage.preview.conflicts}
-              assetLabel={assetLabel}
+              assetLabel={selectedAssetLabel}
               onConfirm={() => handleConfirm(stage.preview)}
               onBack={backToForm}
             />
@@ -419,7 +419,7 @@ export const BulkReassignmentPanel: React.FC<BulkReassignmentPanelProps> = ({
             {stage.result.changed.map(({ asset_id }) => (
               <li key={asset_id}>
                 <Link to={`/assets/${asset_id}`} data-testid={`bulk-done-link-${asset_id}`}>
-                  {assetLabel(asset_id)}
+                  {selectedAssetLabel(asset_id)}
                 </Link>
               </li>
             ))}

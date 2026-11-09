@@ -41,16 +41,22 @@ export interface BulkReassignmentPreviewInput extends ReassignmentInput {
   asset_ids: string[];
 }
 
+// An Asset of a batch and an assignment version: the one a preview read, or the one a save left.
+interface AssetAtVersion {
+  asset_id: string;
+  assignment_version: number;
+}
+
 export interface BulkReassignmentResult {
   bulk_reference: string;
-  changed: { asset_id: string; event: AssignmentEvent; assignment_version: number }[];
-  unchanged: { asset_id: string; assignment_version: number }[];
+  changed: (AssetAtVersion & { event: AssignmentEvent })[];
+  unchanged: AssetAtVersion[];
 }
 
 // What a batch would do, before anything is saved, at the assignment versions the save must then expect.
 export interface BulkReassignmentPreview {
-  changed: { asset_id: string; assignment_version: number; changes: Pick<AssignmentChange, 'dimension' | 'prior' | 'new'>[] }[];
-  unchanged: { asset_id: string; assignment_version: number }[];
+  changed: (AssetAtVersion & { changes: Pick<AssignmentChange, 'dimension' | 'prior' | 'new'>[] })[];
+  unchanged: AssetAtVersion[];
   conflicts: AssignmentConflict[];
 }
 
@@ -67,7 +73,7 @@ interface AppliedBatch {
   conflicts: AssignmentConflict[];
 }
 
-const unchangedOf = (assets: AppliedAsset[]): BulkReassignmentResult['unchanged'] =>
+const unchangedOf = (assets: AppliedAsset[]): AssetAtVersion[] =>
   assets.flatMap(({ asset_id, version_read, event }) => (event ? [] : [{ asset_id, assignment_version: version_read }]));
 
 interface BatchWrite {

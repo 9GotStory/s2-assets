@@ -128,7 +128,8 @@ describe('Bulk Reassignment (Seam A - F003-T5)', () => {
       const res = await bulk([assetId], { effective_date: TODAY, location_id: target.id });
 
       expect(res.statusCode).toBe(201);
-      expect(res.json().changed[0].event.changes).toEqual([
+      const [, event] = await timelineOf(assetId);
+      expect(event.changes).toEqual([
         { dimension: 'location', prior: { entry: null, legacy_text: 'ห้องตามทะเบียนเก่า' }, new: at(target), conflict: null },
       ]);
       const { current_assignment: current } = await detailOf(assetId);
@@ -204,16 +205,20 @@ describe('Bulk Reassignment (Seam A - F003-T5)', () => {
 
     it('refuses an Asset with no expected assignment version', async () => {
       const [roomA, target] = await entries('locations', 'ห้องไม่มีรุ่น', 2);
-      const assetId = await registered(roomA);
-      const res = await api.post(
-        custodian,
-        '/assets/bulk-reassignments',
-        { assets: [{ asset_id: assetId }], effective_date: TODAY, location_id: target.id },
-        { 'x-retry-token': crypto.randomUUID() }
-      );
+      const withVersion = await registered(roomA);
+      const withoutVersion = await registered(roomA);
+      const before = await assignmentOf(withVersion);
+
+      const res = await bulk([], {
+        assets: [...(await selectionOf([withVersion])), { asset_id: withoutVersion }],
+        effective_date: TODAY,
+        location_id: target.id,
+      });
+
       expect(res.statusCode).toBe(400);
       expect(res.json().code).toBe('VALIDATION_FAILED');
-      expect(await timelineOf(assetId)).toHaveLength(1);
+      expect(res.json().message).toContain('assets.1.expected_assignment_version');
+      expect(await assignmentOf(withVersion)).toEqual(before);
     });
 
     it('refuses an Asset named twice, and an id that is not a UUID', async () => {
