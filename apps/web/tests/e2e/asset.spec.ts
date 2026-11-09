@@ -1684,8 +1684,9 @@ test.describe.serial('Asset Registry Real SPA -> Composed API -> PostgreSQL Jour
     await page.goto(`${targetBaseUrl}/assets/${firstCreatedAssetId}`);
     await expect(page.locator('#asset-detail-heading')).toHaveText('MacBook Pro 16');
 
-    // 2. Revoke session by clearing cookies
-    await context.clearCookies();
+    // 2. Revoke the session at the server: a response still in flight can renew the browser's cookie,
+    // but it cannot bring back a revoked session.
+    await sessionService.revokeAllUserSessions(readonlyUserId);
 
     // 3. Simulate focus return
     await page.evaluate(() => {
@@ -1704,7 +1705,7 @@ test.describe.serial('Asset Registry Real SPA -> Composed API -> PostgreSQL Jour
     await expect(page.locator('#asset-search-table')).toBeVisible();
 
     // Revoke session and trigger focus return
-    await context.clearCookies();
+    await sessionService.revokeAllUserSessions(readonlyUserId);
     await page.evaluate(() => {
       window.dispatchEvent(new Event('blur'));
       window.dispatchEvent(new Event('focus'));

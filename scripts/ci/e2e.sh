@@ -68,7 +68,7 @@ if $auth; then
   note "running tests/e2e/auth.spec.ts against the Compose stack"
   podman run --rm --network=host --ipc=host --security-opt label=disable \
     -v "$WORKSPACE:/work" -w /work \
-    -e E2E_BASE_URL -e E2E_USERNAME -e E2E_PASSWORD -e CI=true \
+    -e E2E_BASE_URL -e E2E_USERNAME -e E2E_PASSWORD -e CI=true -e NO_COLOR=1 \
     "$IMAGE" pnpm --filter web exec playwright test tests/e2e/auth.spec.ts --output test-results/auth \
     || status=1
 fi
@@ -80,6 +80,7 @@ podman run --rm --network=host --ipc=host --security-opt label=disable \
   -e TESTCONTAINERS_RYUK_DISABLED=true \
   -e TESTCONTAINERS_HOST_OVERRIDE=127.0.0.1 \
   -e CI=true \
+  -e NO_COLOR=1 \
   "$IMAGE" pnpm --filter web exec playwright test "$@" --output test-results/journeys \
   || status=1
 

@@ -54,8 +54,8 @@ with `/code-review` → `/pr` → `/retro`.
   scope or the baseline is materially unclear, ask them; report a failed checkout, runtime or
   skill invocation exactly as it happened.
 - **Review:** report self-review as self-review; a Claude Code session or subagent is never an
-  independent reviewer. When a review's fixes change more than 200 lines, run `/code-review` over
-  those fixes too.
+  independent reviewer. When a review's fixes change more than 200 lines (insertions plus deletions
+  in `git diff --shortstat`), run `/code-review` over those fixes too.
 - **Acceptance:** evidence-based (passing checks, runtime evidence where the change needs it),
   then the Product Owner's acceptance. Claude Code's own review verdict is never acceptance.
 - **Merges:** GitHub `9GotStory/s2-assets` is the source of truth. Each feature has one

@@ -54,6 +54,7 @@ podman run --rm --name "s2-assets-integration-$$" \
   -e TESTCONTAINERS_RYUK_DISABLED=true \
   -e TESTCONTAINERS_HOST_OVERRIDE=127.0.0.1 \
   -e CI=true \
+  -e NO_COLOR=1 \
   "$RUNNER_IMAGE" pnpm --filter api exec vitest run --maxWorkers="$MAX_WORKERS" "$@" || status=$?
 
 failures=0
