@@ -7,6 +7,7 @@
   },
   "scripts": {
     "lint": "eslint . --max-warnings 0",
+    "typecheck": "pnpm -r run typecheck",
     "db:migrate": "pnpm --filter db migrate:latest",
     "db:migrate:down": "pnpm --filter db migrate:down"
   },
