@@ -3154,8 +3154,8 @@ test.describe.serial('Asset Registry Real SPA -> Composed API -> PostgreSQL Jour
       await expect(page.locator('#acquisition-error-alert')).toBeVisible();
       await expect(page.locator('#acquisition-error-alert')).toContainText('403 Forbidden');
     } finally {
-      await page.unrouteAll({ behavior: 'ignoreErrors' });
       await pool.query("INSERT INTO user_roles(user_id, role_id) VALUES($1, 'READ_ONLY')", [readonlyUserId]);
+      await page.unrouteAll({ behavior: 'ignoreErrors' });
     }
   });
 

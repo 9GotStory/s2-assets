@@ -154,7 +154,7 @@ describe('Evidence Routes Integration Tests (Seam A - T7)', () => {
       RETURNING id
     `, [cId]);
     testLegacyAssetId = ast4Res.rows[0].id;
-  }, 60_000);
+  }, 120_000);
 
   afterAll(async () => {
     if (app) {

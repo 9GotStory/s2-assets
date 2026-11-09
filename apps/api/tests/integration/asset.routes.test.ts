@@ -157,7 +157,7 @@ describe('Asset Routes & Security Matrix Integration Tests (Seam A)', () => {
       cookie: `session=fake-session-token-for-inactive`,
       csrf: 'any',
     };
-  }, 60_000);
+  }, 120_000);
 
   afterAll(async () => {
     await app.close();

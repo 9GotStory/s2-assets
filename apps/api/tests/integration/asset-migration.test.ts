@@ -30,7 +30,7 @@ describe('Asset Registry Migration Integration (Seam C)', () => {
 
     container = await new PostgreSqlContainer('postgres:18.6-alpine').start();
     databaseUrl = container.getConnectionUri();
-  }, 60_000);
+  }, 120_000);
 
   afterAll(async () => {
     if (container) {

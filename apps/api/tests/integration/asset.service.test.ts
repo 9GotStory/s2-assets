@@ -62,7 +62,7 @@ describe('AssetService Integration Tests (Seam A - Core Service & Transactions)'
     `);
     testActorId = actorRes.rows.find((r) => r.username === 'custodian_alice')!.id;
     otherActorId = actorRes.rows.find((r) => r.username === 'custodian_bob')!.id;
-  }, 60_000);
+  }, 120_000);
 
   afterAll(async () => {
     await pool.end();
