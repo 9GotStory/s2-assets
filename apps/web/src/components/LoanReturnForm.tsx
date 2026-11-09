@@ -195,7 +195,7 @@ export const LoanReturnForm: React.FC<LoanReturnFormProps> = ({ loan, csrfToken,
                 <LoanConditionFields
                   idPrefix="loan-return"
                   itemId={item.id}
-                  assetName={assetLabel(item.asset)}
+                  assetLabel={assetLabel(item.asset)}
                   condition={condition}
                   note={note}
                   offerNone

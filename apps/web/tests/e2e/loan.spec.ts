@@ -245,7 +245,7 @@ test.describe.serial('Loan journeys: Real SPA -> Composed API -> PostgreSQL (Sea
   // F004-T2 (#76): a partial Loan Return with Condition, after which the returned Asset can be lent again.
   test('Journey F004-T2.1: a Custodian records a partial Loan Return, and the returned Asset can be lent again at once', async ({ page, context }) => {
     const room = await referenceService.create('locations', adminUserId, 'ห้องเก็บของ E2E คืน');
-    const movedTo = await referenceService.create('locations', adminUserId, 'ห้องใหม่ E2E คืน');
+    const reassignedTo = await referenceService.create('locations', adminUserId, 'ห้องใหม่ E2E คืน');
     const place = { location_id: room.id, effective_date: '2024-01-01' };
     const { asset: damaged } = await assetService.registerAsset(custodianUserId, { name: 'เครื่องฉาย E2E คืนชำรุด', ...place } as any);
     const { asset: stillOut } = await assetService.registerAsset(custodianUserId, { name: 'กล้อง E2E ยังไม่คืน', ...place } as any);
@@ -263,7 +263,7 @@ test.describe.serial('Loan journeys: Real SPA -> Composed API -> PostgreSQL (Sea
     await new AssignmentRecordingService({ db: pool }).record(
       custodianUserId,
       damaged.id,
-      { kind: 'REASSIGNMENT', expected_assignment_version: assignmentVersion, location_id: movedTo.id, effective_date: yesterday() },
+      { kind: 'REASSIGNMENT', expected_assignment_version: assignmentVersion, location_id: reassignedTo.id, effective_date: yesterday() },
       { retryToken: crypto.randomUUID() }
     );
     const loan = await loanService.read(loanId, { includePhone: false });
@@ -277,8 +277,8 @@ test.describe.serial('Loan journeys: Real SPA -> Composed API -> PostgreSQL (Sea
 
     // The form says where each item goes back to on the Return Date, as the server derives it: the
     // Reassignment made during the Loan stands, and the values from the Loan's start do not come back.
-    const goesBackTo = page.locator(`[data-testid="loan-return-assignment-${damagedItem}"]`);
-    await expect(goesBackTo).toContainText('ห้องใหม่ E2E คืน');
+    const assignmentOnReturnDate = page.locator(`[data-testid="loan-return-assignment-${damagedItem}"]`);
+    await expect(assignmentOnReturnDate).toContainText('ห้องใหม่ E2E คืน');
     await expect(page.locator(`[data-testid="loan-return-assignment-${stillOutItem}"]`)).toContainText('ห้องเก็บของ E2E คืน');
 
     // While the values of another Return Date are being read, those of the last date are not shown under it.
@@ -289,11 +289,11 @@ test.describe.serial('Loan journeys: Real SPA -> Composed API -> PostgreSQL (Sea
       await route.continue();
     });
     await page.locator('#loan-return-return_date').fill(daysAgo(2));
-    await expect(goesBackTo).toHaveCount(0);
+    await expect(assignmentOnReturnDate).toHaveCount(0);
     answerRead();
-    await expect(goesBackTo).toContainText('ห้องเก็บของ E2E คืน');
+    await expect(assignmentOnReturnDate).toContainText('ห้องเก็บของ E2E คืน');
     await page.locator('#loan-return-return_date').fill(daysAgo(0));
-    await expect(goesBackTo).toContainText('ห้องใหม่ E2E คืน');
+    await expect(assignmentOnReturnDate).toContainText('ห้องใหม่ E2E คืน');
 
     // The Condition has no default, and the form says what it needs before asking.
     await expect(page.locator(`#loan-return-condition-${damagedItem}`)).toHaveValue('');

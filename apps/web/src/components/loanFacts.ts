@@ -114,7 +114,7 @@ export const loanReturnText = ({ condition, condition_note: note }: Pick<LoanRet
 export const ON_LOAN_LABEL = 'กำลังถูกยืม';
 
 // An Asset by its name, or by what else identifies it.
-export const assetLabel = ({ id, name, asset_number: assetNumber }: { id: string; name: string | null; asset_number: string | null }): string =>
+export const assetLabel = ({ id, name, asset_number: assetNumber }: LoanItem['asset']): string =>
   name ?? assetNumber ?? id;
 
 export const borrowerText = (borrower: Borrower): string => {

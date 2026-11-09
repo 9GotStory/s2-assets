@@ -111,8 +111,8 @@ const normalizeFacts = (input: RecordLoanReturnInput, today: string): LoanReturn
   };
 };
 
-// The item refused, in a list of one, or an empty list when it can take this Loan Return.
-const refusedItem = (loanItemId: string, item: LoanItemOfLockedLoan | undefined): RefusedLoanItem[] => {
+// One item's refusal, as a list that is empty when the item can take this Loan Return.
+const refusalsOfItem = (loanItemId: string, item: LoanItemOfLockedLoan | undefined): RefusedLoanItem[] => {
   if (!item) {
     return [{ loan_item_id: loanItemId, asset_id: null, name: null, asset_number: null, reason: 'NOT_FOUND' }];
   }
@@ -153,7 +153,7 @@ export class LoanReturnService {
         }
 
         const itemById = new Map(loanItems.map((item) => [item.id, item]));
-        const refused = facts.items.flatMap(({ loan_item_id }) => refusedItem(loan_item_id, itemById.get(loan_item_id)));
+        const refused = facts.items.flatMap(({ loan_item_id }) => refusalsOfItem(loan_item_id, itemById.get(loan_item_id)));
         if (refused.length > 0) {
           throw new LoanItemsNotReturnableError(refused);
         }

@@ -24,7 +24,7 @@ export interface LoanStartFormProps {
   onPermissionRevoked?: (statusCode?: number) => void;
 }
 
-type ItemDraft = { condition: LoanCondition | ''; note: string };
+type ItemDraft = { condition: LoanCondition; note: string };
 
 const fieldStyle: React.CSSProperties = { marginBottom: '0.75rem' };
 
@@ -217,7 +217,7 @@ export const LoanStartForm: React.FC<LoanStartFormProps> = ({ assets, actorId, c
                 key={asset.id}
                 idPrefix="loan"
                 itemId={asset.id}
-                assetName={assetLabel(asset)}
+                assetLabel={assetLabel(asset)}
                 condition={condition}
                 note={note}
                 onChange={(change) => setItemDraft(asset.id, change)}
