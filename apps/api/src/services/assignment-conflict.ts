@@ -16,9 +16,9 @@ export class AssignmentConflictWarningError extends Error {
   }
 }
 
-// One contradiction: the fact, the dimension, and the two values that disagree. A different value on
-// either side is a contradiction the user has not seen.
-const contradiction = ({ event_id, dimension, recorded_prior, value_just_before }: AssignmentConflict): string =>
+// What identifies a conflict: the fact, the dimension, and the two values that disagree. A different
+// value on either side is a conflict the user has not seen.
+const conflictKey = ({ event_id, dimension, recorded_prior, value_just_before }: AssignmentConflict): string =>
   JSON.stringify([
     event_id,
     dimension,
@@ -30,6 +30,6 @@ const contradiction = ({ event_id, dimension, recorded_prior, value_just_before 
 
 /** The conflicts of `after` that `before` does not hold. */
 export function newAssignmentConflicts(before: AssignmentConflict[], after: AssignmentConflict[]): AssignmentConflict[] {
-  const known = new Set(before.map(contradiction));
-  return after.filter((conflict) => !known.has(contradiction(conflict)));
+  const known = new Set(before.map(conflictKey));
+  return after.filter((conflict) => !known.has(conflictKey(conflict)));
 }

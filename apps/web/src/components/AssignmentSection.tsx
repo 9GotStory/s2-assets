@@ -1,5 +1,6 @@
 import React, { useState } from 'react';
 import { useQuery } from '@tanstack/react-query';
+import { conflictBoxStyle } from './AssignmentConflictWarning';
 import { AssignmentAmendForm, AssignmentVoidForm } from './AssignmentCorrectionForms';
 import { AssignmentFactItem } from './AssignmentFactItem';
 import type { AssignmentSaveProps } from './AssignmentSaveForm';
@@ -160,19 +161,7 @@ export const AssignmentSection: React.FC<AssignmentSectionProps> = ({
       </dl>
 
       {hasAssignmentConflict && (
-        <div
-          role="status"
-          data-testid="assignment-conflict-notice"
-          style={{
-            padding: '0.75rem 1rem',
-            backgroundColor: '#fef3c7',
-            border: '1px solid #f59e0b',
-            borderRadius: '6px',
-            color: '#92400e',
-            fontSize: '0.875rem',
-            marginBottom: '1rem',
-          }}
-        >
+        <div role="status" data-testid="assignment-conflict-notice" style={conflictBoxStyle}>
           มีประวัติขัดแย้งค้างตรวจ: ค่าเดิมที่บันทึกไว้ในบางรายการไม่ตรงกับค่าก่อนหน้า ดูรายการที่มีเครื่องหมายในประวัติด้านล่าง
         </div>
       )}

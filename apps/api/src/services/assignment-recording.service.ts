@@ -9,10 +9,10 @@ import {
   type InitialAssignmentInput,
   type ReassignmentInput,
 } from './assignment.service.ts';
-import { writeAssignmentOnce, type RecordedAssignment } from './assignment-write.ts';
+import { writeAssignmentOnce, type AssignmentWriteInput, type RecordedAssignment } from './assignment-write.ts';
 import { ValidationError } from './validation-error.ts';
 
-export type RecordAssignmentInput = { expected_assignment_version: number; explicit_continuation?: boolean } & (
+export type RecordAssignmentInput = AssignmentWriteInput & (
   | ({ kind: 'INITIAL' } & InitialAssignmentInput)
   | ({ kind: 'REASSIGNMENT' } & ReassignmentInput)
 );

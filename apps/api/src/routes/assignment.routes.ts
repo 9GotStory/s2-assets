@@ -18,12 +18,18 @@ export interface AssignmentRoutesOptions {
   assignmentCorrectionService: AssignmentCorrectionService;
 }
 
+// What every assignment write carries: the version it was made against, its retry token, and whether
+// it confirms the Assignment Conflicts it would create.
+const assignmentWriteFields = {
+  expected_assignment_version: z.number().int().min(0),
+  retry_token: z.string().optional(),
+  explicit_continuation: z.boolean().optional(),
+};
+
 const RecordAssignmentSchema = z
   .object({
     kind: z.enum(['INITIAL', 'REASSIGNMENT']),
-    expected_assignment_version: z.number().int().min(0),
-    retry_token: z.string().optional(),
-    explicit_continuation: z.boolean().optional(),
+    ...assignmentWriteFields,
     ...assignmentFactFields,
   })
   .strict();
@@ -44,10 +50,8 @@ const AmendedDimensionSchema = z
   .optional();
 
 const correctionFields = {
-  expected_assignment_version: z.number().int().min(0),
+  ...assignmentWriteFields,
   reason: z.string().nullable().optional(),
-  retry_token: z.string().optional(),
-  explicit_continuation: z.boolean().optional(),
 };
 
 const CorrectAssignmentSchema = z.discriminatedUnion('action', [

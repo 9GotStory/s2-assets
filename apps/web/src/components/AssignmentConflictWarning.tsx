@@ -7,6 +7,17 @@ export interface AssignmentConflictWarningProps {
   onBack: () => void;
 }
 
+// The amber box of an Assignment Conflict: the warning before a save, and the notice on the Asset page.
+export const conflictBoxStyle: React.CSSProperties = {
+  padding: '0.75rem 1rem',
+  backgroundColor: '#fef3c7',
+  border: '1px solid #f59e0b',
+  borderRadius: '6px',
+  color: '#92400e',
+  fontSize: '0.875rem',
+  marginBottom: '1rem',
+};
+
 const actionStyle: React.CSSProperties = {
   padding: '0.375rem 0.75rem',
   borderRadius: '4px',
@@ -20,19 +31,7 @@ const actionStyle: React.CSSProperties = {
  * confirms, and both facts are then kept (MR-05, #50 Q12).
  */
 export const AssignmentConflictWarning: React.FC<AssignmentConflictWarningProps> = ({ conflicts, onConfirm, onBack }) => (
-  <div
-    role="alert"
-    data-testid="assignment-conflict-warning"
-    style={{
-      padding: '0.75rem 1rem',
-      backgroundColor: '#fef3c7',
-      border: '1px solid #f59e0b',
-      borderRadius: '6px',
-      color: '#92400e',
-      fontSize: '0.875rem',
-      marginBottom: '1rem',
-    }}
-  >
+  <div role="alert" data-testid="assignment-conflict-warning" style={conflictBoxStyle}>
     <div style={{ fontWeight: 600 }}>การบันทึกนี้จะทำให้ประวัติขัดแย้งกัน {conflicts.length} รายการ</div>
     <div style={{ marginTop: '0.25rem' }}>ระบบจะเก็บทุกรายการไว้และแสดงเครื่องหมายขัดแย้ง จนกว่าจะแก้ไขรายการที่บันทึกผิด</div>
     <ul style={{ margin: '0.5rem 0', paddingLeft: '1.25rem' }}>

@@ -16,6 +16,12 @@ export interface RecordedAssignment {
   assignment_version: number;
 }
 
+// What every assignment write's request carries besides its facts.
+export interface AssignmentWriteInput {
+  expected_assignment_version: number;
+  explicit_continuation?: boolean;
+}
+
 export interface AssignmentWriteRequest {
   actorId: string;
   assetId: string;
@@ -45,7 +51,8 @@ export async function writeAssignmentOnce(
   { actorId, assetId, operation, retryToken, expectedVersion, payload, explicitContinuation, recordsNewFact }: AssignmentWriteRequest,
   write: (client: pg.PoolClient) => Promise<string>
 ): Promise<RecordedAssignment> {
-  const fingerprint = crypto.createHash('sha256').update(canonicalJson({ payload, explicit_continuation: explicitContinuation })).digest('hex');
+  // An unconfirmed request keeps the fingerprint it had before confirmation existed, so its replay still matches.
+  const fingerprint = crypto.createHash('sha256').update(canonicalJson(explicitContinuation ? { payload, explicit_continuation: true } : payload)).digest('hex');
   const client: pg.PoolClient = await db.connect();
   try {
     await client.query('BEGIN');

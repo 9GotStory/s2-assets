@@ -18,7 +18,7 @@ import {
   type StoredCorrectionField,
   type StoredValue,
 } from './assignment.service.ts';
-import { writeAssignmentOnce, type RecordedAssignment } from './assignment-write.ts';
+import { writeAssignmentOnce, type AssignmentWriteInput, type RecordedAssignment } from './assignment-write.ts';
 import { isValidUuid } from './capability.service.ts';
 import { ValidationError } from './validation-error.ts';
 
@@ -34,7 +34,7 @@ interface AmendedValueInput {
 // What an amendment says of one dimension: a side it leaves out stays as it is, and null removes the dimension.
 type AmendedDimensionInput = { prior?: AmendedValueInput; new?: AmendedValueInput } | null;
 
-export type CorrectAssignmentInput = { expected_assignment_version: number; reason?: string | null; explicit_continuation?: boolean } & (
+export type CorrectAssignmentInput = AssignmentWriteInput & { reason?: string | null } & (
   | { action: 'VOID' }
   | {
       action: 'AMEND';

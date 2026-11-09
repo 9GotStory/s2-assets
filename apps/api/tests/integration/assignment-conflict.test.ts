@@ -15,6 +15,10 @@ describe('Assignment Conflicts (Seam A - F003-T4)', () => {
 
   const entry = async (kind: string, name: string): Promise<Entry> => (await api.post(admin, `/references/${kind}`, { name })).json();
 
+  // `count` entries of one list, named after `prefix`.
+  const entries = (kind: string, prefix: string, count: number): Promise<Entry[]> =>
+    Promise.all(Array.from({ length: count }, (_, i) => entry(kind, `${prefix} ${i + 1}`)));
+
   // A dimension value as the API answers it, naming the entry `e`.
   const at = (e: Entry) => ({ entry: { id: e.id, name: e.name, is_active: true }, legacy_text: null });
 
@@ -61,6 +65,16 @@ describe('Assignment Conflicts (Seam A - F003-T4)', () => {
       { 'x-retry-token': token }
     );
 
+  // An Asset whose later fact contradicts a confirmed backdated one: 1 → 3 on 2024-06-01, with 1 → 2
+  // backdated to 2024-03-01.
+  const assetInConflict = async (label: string) => {
+    const [a, b, c] = await entries('locations', `ห้องขัดแย้ง ${label}`, 3);
+    const assetId = await registered(a);
+    const later = await reassigned(assetId, { effective_date: '2024-06-01', location_id: c.id });
+    const backdated = await reassigned(assetId, { effective_date: '2024-03-01', location_id: b.id, explicit_continuation: true });
+    return { assetId, later, backdated, b, c };
+  };
+
   // What an observer reads of an Asset's assignment, to show that a refused write changed nothing.
   const assignmentOf = async (assetId: string) => {
     const detail = await detailOf(assetId);
@@ -80,7 +94,7 @@ describe('Assignment Conflicts (Seam A - F003-T4)', () => {
 
   describe('warning and confirmation', () => {
     it('refuses a backdated Reassignment that would contradict a later fact, lists each new conflict, and saves nothing', async () => {
-      const [a, b, c] = await Promise.all(['ก', 'ข', 'ค'].map((name) => entry('locations', `ห้องเตือน ${name}`)));
+      const [a, b, c] = await entries('locations', 'ห้องเตือน', 3);
       const assetId = await registered(a);
       const later = await reassigned(assetId, { effective_date: '2024-06-01', location_id: c.id });
       const before = await assignmentOf(assetId);
@@ -104,7 +118,7 @@ describe('Assignment Conflicts (Seam A - F003-T4)', () => {
     });
 
     it('saves the same write once it carries explicit confirmation, and marks the conflict in the timeline and the Asset detail', async () => {
-      const [a, b, c] = await Promise.all(['ก', 'ข', 'ค'].map((name) => entry('locations', `ห้องยืนยัน ${name}`)));
+      const [a, b, c] = await entries('locations', 'ห้องยืนยัน', 3);
       const assetId = await registered(a);
       const later = await reassigned(assetId, { effective_date: '2024-06-01', location_id: c.id });
       expect((await detailOf(assetId)).has_assignment_conflict).toBe(false);
@@ -131,8 +145,8 @@ describe('Assignment Conflicts (Seam A - F003-T4)', () => {
     });
 
     it('lists every new conflict in the order of facts, each fact in dimension order', async () => {
-      const [roomA, roomB, roomC] = await Promise.all(['ก', 'ข', 'ค'].map((name) => entry('locations', `ห้องหลายมิติ ${name}`)));
-      const [unitA, unitB, unitC] = await Promise.all(['ก', 'ข', 'ค'].map((name) => entry('organization-units', `หน่วยหลายมิติ ${name}`)));
+      const [roomA, roomB, roomC] = await entries('locations', 'ห้องหลายมิติ', 3);
+      const [unitA, unitB, unitC] = await entries('organization-units', 'หน่วยหลายมิติ', 3);
       const res = await api.post(custodian, '/assets', { name: 'ของหลายมิติ', location_id: roomA.id, organization_unit_id: unitA.id, effective_date: '2024-01-01' });
       const assetId = res.json().asset.id;
       const unitMove = await reassigned(assetId, { effective_date: '2024-05-01', organization_unit_id: unitC.id });
@@ -148,7 +162,7 @@ describe('Assignment Conflicts (Seam A - F003-T4)', () => {
     });
 
     it('ties the confirmation to the timeline the user saw: a confirmation against an older version is refused as stale', async () => {
-      const [a, b, c, d] = await Promise.all(['ก', 'ข', 'ค', 'ง'].map((name) => entry('locations', `ห้องรุ่น ${name}`)));
+      const [a, b, c, d] = await entries('locations', 'ห้องรุ่น', 4);
       const assetId = await registered(a);
       await reassigned(assetId, { effective_date: '2024-06-01', location_id: c.id });
       const { assignment_version: seen } = await detailOf(assetId);
@@ -167,7 +181,7 @@ describe('Assignment Conflicts (Seam A - F003-T4)', () => {
     });
 
     it('saves a confirmed write that creates no conflict as any other', async () => {
-      const [a, b] = await Promise.all(['ก', 'ข'].map((name) => entry('locations', `ห้องไม่ต้องยืนยัน ${name}`)));
+      const [a, b] = await entries('locations', 'ห้องไม่ต้องยืนยัน', 2);
       const assetId = await registered(a);
 
       expect((await reassign(assetId, { effective_date: '2024-06-01', location_id: b.id, explicit_continuation: true })).statusCode).toBe(201);
@@ -175,7 +189,7 @@ describe('Assignment Conflicts (Seam A - F003-T4)', () => {
     });
 
     it('refuses a confirmation that is not a boolean', async () => {
-      const [a, b] = await Promise.all(['ก', 'ข'].map((name) => entry('locations', `ห้องชนิดผิด ${name}`)));
+      const [a, b] = await entries('locations', 'ห้องชนิดผิด', 2);
       const assetId = await registered(a);
 
       const res = await reassign(assetId, { effective_date: '2024-06-01', location_id: b.id, explicit_continuation: 'yes' });
@@ -184,7 +198,7 @@ describe('Assignment Conflicts (Seam A - F003-T4)', () => {
     });
 
     it('does not warn again about a contradiction that already stands, and warns when its value just before changes', async () => {
-      const [a, b, c, d] = await Promise.all(['ก', 'ข', 'ค', 'ง'].map((name) => entry('locations', `ห้องเดิมอยู่แล้ว ${name}`)));
+      const [a, b, c, d] = await entries('locations', 'ห้องเดิมอยู่แล้ว', 4);
       const assetId = await registered(a);
       const later = await reassigned(assetId, { effective_date: '2024-06-01', location_id: c.id });
       await reassigned(assetId, { effective_date: '2024-03-01', location_id: b.id, explicit_continuation: true });
@@ -200,7 +214,7 @@ describe('Assignment Conflicts (Seam A - F003-T4)', () => {
     });
 
     it('stores no retry result for a warning, so the same token can confirm; the replay returns the committed fact', async () => {
-      const [a, b, c] = await Promise.all(['ก', 'ข', 'ค'].map((name) => entry('locations', `ห้องโทเคน ${name}`)));
+      const [a, b, c] = await entries('locations', 'ห้องโทเคน', 3);
       const assetId = await registered(a);
       await reassigned(assetId, { effective_date: '2024-06-01', location_id: c.id });
       const { assignment_version: seen } = await detailOf(assetId);
@@ -231,7 +245,7 @@ describe('Assignment Conflicts (Seam A - F003-T4)', () => {
 
   describe('corrections', () => {
     it('warns before an amendment that would create a conflict, and saves it with its correction record once confirmed', async () => {
-      const [a, b, c] = await Promise.all(['ก', 'ข', 'ค'].map((name) => entry('locations', `ห้องแก้ขัดแย้ง ${name}`)));
+      const [a, b, c] = await entries('locations', 'ห้องแก้ขัดแย้ง', 3);
       const assetId = await registered(a);
       const first = await reassigned(assetId, { effective_date: '2024-03-01', location_id: b.id });
       const second = await reassigned(assetId, { effective_date: '2024-06-01', location_id: c.id });
@@ -252,7 +266,7 @@ describe('Assignment Conflicts (Seam A - F003-T4)', () => {
     });
 
     it('warns an Administrator as it warns a Custodian', async () => {
-      const [a, b, c] = await Promise.all(['ก', 'ข', 'ค'].map((name) => entry('locations', `ห้องผู้ดูแล ${name}`)));
+      const [a, b, c] = await entries('locations', 'ห้องผู้ดูแล', 3);
       const assetId = await registered(a);
       const first = await reassigned(assetId, { effective_date: '2024-03-01', location_id: b.id });
       await reassigned(assetId, { effective_date: '2024-06-01', location_id: c.id });
@@ -275,14 +289,10 @@ describe('Assignment Conflicts (Seam A - F003-T4)', () => {
     const listed = async (assetId: string): Promise<boolean> =>
       (await api.get(readonly, IN_CONFLICT)).json().items.some((item: any) => item.id === assetId);
 
-    // A backdated fact that leaves a later fact contradicting it.
     const conflicted = async (label: string) => {
-      const [a, b, c] = await Promise.all(['ก', 'ข', 'ค'].map((name) => entry('locations', `ห้องแก้จนหาย ${label} ${name}`)));
-      const assetId = await registered(a);
-      const later = await reassigned(assetId, { effective_date: '2024-06-01', location_id: c.id });
-      const backdated = await reassigned(assetId, { effective_date: '2024-03-01', location_id: b.id, explicit_continuation: true });
-      expect(await listed(assetId)).toBe(true);
-      return { assetId, later, backdated, b };
+      const fixture = await assetInConflict(label);
+      expect(await listed(fixture.assetId)).toBe(true);
+      return fixture;
     };
 
     const expectResolved = async (assetId: string) => {
@@ -308,11 +318,37 @@ describe('Assignment Conflicts (Seam A - F003-T4)', () => {
       expect(res.statusCode).toBe(201);
       await expectResolved(assetId);
     });
+
+    it('disappears when the conflicting fact itself is voided', async () => {
+      const { assetId, later } = await conflicted('ยกเลิกตัวเอง');
+
+      expect((await correct(assetId, later.id, { action: 'VOID', reason: 'ไม่เคยย้าย' })).statusCode).toBe(201);
+
+      await expectResolved(assetId);
+    });
+
+    it('disappears when the dimension is removed from a fact whose prior value cannot be amended to match (MR-01)', async () => {
+      const [a, b] = await entries('locations', 'ห้องเอามิติออก', 2);
+      const [unitA, unitB] = await entries('organization-units', 'หน่วยเอามิติออก', 2);
+      const created = await api.post(custodian, '/assets', { name: 'ของเอามิติออก', location_id: a.id, organization_unit_id: unitA.id, effective_date: '2024-01-01' });
+      const assetId = created.json().asset.id;
+      const later = await reassigned(assetId, { effective_date: '2024-06-01', location_id: b.id, organization_unit_id: unitB.id });
+      await reassigned(assetId, { effective_date: '2024-03-01', location_id: b.id, explicit_continuation: true });
+      expect((await detailOf(assetId)).has_assignment_conflict).toBe(true);
+
+      // Amending the prior value to the value just before it would leave a change that changes nothing.
+      const refused = await correct(assetId, later.id, { action: 'AMEND', reason: 'ค่าเดิมผิด', changes: { location: { prior: { entry_id: b.id } } } });
+      expect(refused.statusCode).toBe(400);
+      expect(refused.json().code).toBe('VALIDATION_FAILED');
+
+      expect((await correct(assetId, later.id, { action: 'AMEND', reason: 'ไม่ได้ย้ายห้องในรายการนี้', changes: { location: null } })).statusCode).toBe(201);
+      await expectResolved(assetId);
+    });
   });
 
   describe('what makes a conflict', () => {
     it('follows the order of facts: unknown first, then Effective Date, then Recorded At', async () => {
-      const [a, b, c] = await Promise.all(['ก', 'ข', 'ค'].map((name) => entry('locations', `ห้องลำดับ ${name}`)));
+      const [a, b, c] = await entries('locations', 'ห้องลำดับ', 3);
       const assetId = await registered(a, null);
       await reassigned(assetId, { effective_date: '2024-06-01', location_id: b.id });
       await reassigned(assetId, { effective_date: '2024-06-01', location_id: c.id });
@@ -323,7 +359,7 @@ describe('Assignment Conflicts (Seam A - F003-T4)', () => {
 
     it('sees a dimension that was cleared as empty', async () => {
       const room = await entry('locations', 'ห้องล้างค่า');
-      const [unitA, unitB] = await Promise.all(['ก', 'ข'].map((name) => entry('organization-units', `หน่วยล้างค่า ${name}`)));
+      const [unitA, unitB] = await entries('organization-units', 'หน่วยล้างค่า', 2);
       const assetId = await registered(room);
       await reassigned(assetId, { effective_date: '2024-02-01', organization_unit_id: unitA.id });
       await reassigned(assetId, { effective_date: '2024-03-01', organization_unit_id: null });
@@ -361,7 +397,7 @@ describe('Assignment Conflicts (Seam A - F003-T4)', () => {
     });
 
     it('leaves voided facts out, and a voided fact has no marker', async () => {
-      const [a, b, c] = await Promise.all(['ก', 'ข', 'ค'].map((name) => entry('locations', `ห้องยกเลิก ${name}`)));
+      const [a, b, c] = await entries('locations', 'ห้องยกเลิก', 3);
       const assetId = await registered(a);
       const first = await reassigned(assetId, { effective_date: '2024-03-01', location_id: b.id });
       const second = await reassigned(assetId, { effective_date: '2024-06-01', location_id: c.id });
@@ -380,7 +416,7 @@ describe('Assignment Conflicts (Seam A - F003-T4)', () => {
     });
 
     it('appears for conflicts recorded before this ticket landed, which do not hold up a later write', async () => {
-      const [a, b, c, d] = await Promise.all(['ก', 'ข', 'ค', 'ง'].map((name) => entry('locations', `ห้องก่อนหน้า ${name}`)));
+      const [a, b, c, d] = await entries('locations', 'ห้องก่อนหน้า', 4);
       const assetId = await registered(a);
       const later = await reassigned(assetId, { effective_date: '2024-06-01', location_id: c.id });
       // Facts written before this ticket went unchecked, so one is laid down here beneath the API.
@@ -410,7 +446,7 @@ describe('Assignment Conflicts (Seam A - F003-T4)', () => {
 
   describe('a dated Initial Assignment', () => {
     it('warns about the fact it would record, which has no id until it is saved, and saves once confirmed', async () => {
-      const [a, b, c] = await Promise.all(['ก', 'ข', 'ค'].map((name) => entry('locations', `ห้องกำหนดใหม่ ${name}`)));
+      const [a, b, c] = await entries('locations', 'ห้องกำหนดใหม่', 3);
       const assetId = await registered(a);
       await reassigned(assetId, { effective_date: '2024-06-01', location_id: b.id });
       const [initial] = await timelineOf(assetId);
@@ -450,20 +486,11 @@ describe('Assignment Conflicts (Seam A - F003-T4)', () => {
       return res.json();
     };
 
-    // An Asset with one confirmed conflict, whose Current Location is the entry returned.
-    const assetInConflict = async (label: string): Promise<{ assetId: string; current: Entry }> => {
-      const [a, b, c] = await Promise.all(['ก', 'ข', 'ค'].map((name) => entry('locations', `ห้องกรอง ${label} ${name}`)));
-      const assetId = await registered(a);
-      await reassigned(assetId, { effective_date: '2024-06-01', location_id: c.id });
-      await reassigned(assetId, { effective_date: '2024-03-01', location_id: b.id, explicit_continuation: true });
-      return { assetId, current: c };
-    };
-
     it('returns the Assets with at least one conflict, with the existing pagination, and combines with the other filters', async () => {
       const { total_count: already } = await search();
       const first = await assetInConflict('หนึ่ง');
       const second = await assetInConflict('สอง');
-      const [a, b] = await Promise.all(['ก', 'ข'].map((name) => entry('locations', `ห้องกรองไม่ขัดแย้ง ${name}`)));
+      const [a, b] = await entries('locations', 'ห้องกรองไม่ขัดแย้ง', 2);
       const consistent = await registered(a);
       await reassigned(consistent, { effective_date: '2024-06-01', location_id: b.id });
 
@@ -482,7 +509,7 @@ describe('Assignment Conflicts (Seam A - F003-T4)', () => {
       const last = await search(`${FILTER}&limit=1&offset=${already + 1}`);
       expect(last).toMatchObject({ total_count: already + 2, has_more: false });
 
-      const narrowed = await search(`${FILTER}&location_id=${second.current.id}`);
+      const narrowed = await search(`${FILTER}&location_id=${second.c.id}`);
       expect(narrowed.items.map((item: any) => item.id)).toEqual([second.assetId]);
       expect((await search(`${FILTER}&location_id=${b.id}`)).total_count).toBe(0);
     });
