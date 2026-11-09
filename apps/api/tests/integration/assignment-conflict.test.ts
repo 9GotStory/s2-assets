@@ -1,7 +1,7 @@
 import * as crypto from 'node:crypto';
 import { describe, it, expect, beforeAll, afterAll } from 'vitest';
 import { startApiHarness, type Actor, type ApiHarness } from './support/api-harness.ts';
-import { NO_VALUE, assignmentObservers, at, type Entry } from './support/assignment-observers.ts';
+import { NO_VALUE, assignmentHelpers, at, type Entry } from './support/assignment-helpers.ts';
 
 // F003-T4 (#54): when assignment facts disagree, the system says so.
 describe('Assignment Conflicts (Seam A - F003-T4)', () => {
@@ -10,7 +10,7 @@ describe('Assignment Conflicts (Seam A - F003-T4)', () => {
   let custodian: Actor;
   let readonly: Actor;
 
-  const { entry, entries, detailOf, timelineOf, assignmentOf } = assignmentObservers(() => ({ api, admin, reader: readonly }));
+  const { entry, entries, detailOf, timelineOf, assignmentOf } = assignmentHelpers(() => ({ api, admin, reader: readonly }));
 
   // An Asset whose Location starts at `location` on `effectiveDate`.
   const registered = async (location: Entry, effectiveDate: string | null = '2024-01-01'): Promise<string> => {

@@ -14,7 +14,7 @@ export const at = (e: Entry) => ({ entry: { id: e.id, name: e.name, is_active: t
  * of assignment writes. `context` is read on every call, so a test file can build these while its
  * `describe` runs, over the harness and actors it assigns in `beforeAll`.
  */
-export function assignmentObservers(context: () => { api: ApiHarness; admin: Actor; reader: Actor }) {
+export function assignmentHelpers(context: () => { api: ApiHarness; admin: Actor; reader: Actor }) {
   const entry = async (kind: string, name: string): Promise<Entry> => {
     const { api, admin } = context();
     return (await api.post(admin, `/references/${kind}`, { name })).json();
