@@ -10,7 +10,9 @@
 #
 # The run happens in a copy of the tree at E2E_WORKSPACE (default ~/.cache/s2-assets-e2e), because the
 # repository's node_modules hold the tooling image's Alpine builds and the browser runner is glibc.
-# The copy keeps its root node_modules between runs, so the install is quick.
+# The copy keeps its root node_modules between runs, so the install is quick. Each run empties the
+# rest of it, so the results of a failed run are copied to
+# ~/.cache/s2-assets-e2e-failures/<commit>-<UTC>, which keeps the last three.
 set -euo pipefail
 cd "$(dirname "$0")/../.."
 # shellcheck source=scripts/ci/common.sh
@@ -18,6 +20,7 @@ cd "$(dirname "$0")/../.."
 
 IMAGE=s2-assets-browser:ci
 WORKSPACE=${E2E_WORKSPACE:-${XDG_CACHE_HOME:-$HOME/.cache}/s2-assets-e2e}
+FAILED_RUNS=${XDG_CACHE_HOME:-$HOME/.cache}/s2-assets-e2e-failures
 
 auth=false
 if [[ ${1:-} == --auth ]]; then
@@ -83,8 +86,17 @@ podman run --rm --network=host --ipc=host --security-opt label=disable \
 failures=0
 remove_new_test_containers "$before"
 
+# Copies a failed run's results out of the workspace. A run with no results takes no slot.
+keep_failed_results() {
+  local results="$WORKSPACE/apps/web/test-results" kept
+  kept="$FAILED_RUNS/$(git rev-parse --short HEAD)-$(LC_ALL=C date -u +%Y%m%dT%H%M%SZ)"
+  [[ -n $(ls -A "$results" 2>/dev/null) ]] && mkdir -p "$kept" && cp -r "$results/." "$kept/" || return 1
+  ls -1dt "$FAILED_RUNS"/*/ | tail -n +4 | xargs -r -d '\n' rm -rf --
+  note "journeys failed; results in $kept" >&2
+}
+
 if ((status != 0)); then
-  note "journeys failed; results in $WORKSPACE/apps/web/test-results" >&2
+  keep_failed_results || note "journeys failed; no results were kept" >&2
   exit "$status"
 fi
 if ((failures > 0)); then

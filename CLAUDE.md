@@ -77,6 +77,9 @@ with `/code-review` → `/pr` → `/retro`.
 pass. On a pull request, CI also runs `git diff --check` and `scripts/check-glossary.sh` against
 the base. Locally, run each job through its script in `scripts/ci/`, `security-scan.sh` included,
 before pushing, so that a finding reaches the Product Owner with the ticket's other decisions.
+To run one test file or a typecheck, use the same scripts:
+`scripts/ci/integration.sh tests/integration/<file>`, `scripts/ci/e2e.sh tests/e2e/<spec>`,
+`scripts/ci/quality.sh --quick`.
 When CI does not run on a pull request, run each job locally and record each job's exact result
 in the pull request: that record is the pull request's check. A change
 that touches only documentation needs only `git diff --check <base>...HEAD`, where `<base>` is the

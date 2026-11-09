@@ -38,8 +38,9 @@ podman build --quiet -f deploy/podman/integration.Containerfile -t "$RUNNER_IMAG
 ensure_postgres_image
 
 lockfile=$(sha256sum pnpm-lock.yaml)
+# The runner image is USER root, which keep-id maps to a subuid: node_modules would stop being the host user's.
 podman run --rm --userns=keep-id --security-opt label=disable -v "$PWD:/work" -w /work \
-  "$RUNNER_IMAGE" pnpm install --frozen-lockfile
+  "$DEV_IMAGE" pnpm install --frozen-lockfile
 [[ $(sha256sum pnpm-lock.yaml) == "$lockfile" ]] || { note "pnpm install changed pnpm-lock.yaml" >&2; exit 1; }
 
 before=$(test_containers)
