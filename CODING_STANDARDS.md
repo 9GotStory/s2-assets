@@ -35,3 +35,7 @@ Put a feature's new routes, services, integration tests and browser journeys in 
 its domain concept, as with Feature 003's `assignment.service.ts`. The Feature 002 files
 (`asset.service.ts`, `asset.routes.ts`, `asset.routes.test.ts`, `asset.spec.ts`) already run to
 thousands of lines, and every change that touches one of them reads it whole.
+
+SQL on an existing table stays in the module that owns the table, as `assignment.service.ts` owns
+`assignment_changes`; the feature's own file holds its rules and calls that module. A new API
+integration test file starts from `apps/api/tests/integration/support/api-harness.ts`.

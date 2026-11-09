@@ -14,6 +14,9 @@ fi
 
 note() { echo "${0##*/}: $*"; }
 
+# A job's results are evidence for one commit only, so its log names that commit first.
+note "testing $(git rev-parse --short HEAD), tree $([[ -z $(git status --porcelain) ]] && echo clean || echo dirty)"
+
 # Sets `socket` to the rootless Podman socket that DOCKER_HOST names. When it names no unix socket,
 # starts a private Podman service for this job and stops it when the job exits.
 podman_service_pid=
