@@ -22,116 +22,11 @@ jobs:
     steps:
       - name: Checkout repository
         uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+        with:
+          fetch-depth: 2
 
-      - name: Build development container tooling image
-        run: |
-          echo "Building pinned development container tooling from deploy/podman/dev.Containerfile..."
-          podman build -f deploy/podman/dev.Containerfile -t s2-assets-dev:ci .
-
-      - name: Assert container tooling versions
-        run: |
-          echo "Asserting Node.js and pnpm versions inside container tooling..."
-          NODE_VER=$(podman run --rm s2-assets-dev:ci node --version)
-          echo "Container Node version: $NODE_VER"
-          echo "$NODE_VER" | grep -Eq "^v24\.21\.0$"
-
-          PNPM_VER=$(podman run --rm s2-assets-dev:ci pnpm --version)
-          echo "Container pnpm version: $PNPM_VER"
-          echo "$PNPM_VER" | grep -Eq "^12\.9\.1$"
-
-      - name: Frozen dependency installation
-        run: |
-          echo "Executing frozen dependency installation inside container tooling..."
-          LOCK_BEFORE=$(sha256sum pnpm-lock.yaml | awk '{print $1}')
-          podman run --rm --userns=keep-id -v "$PWD:/work:z" -w /work s2-assets-dev:ci pnpm install --frozen-lockfile
-          LOCK_AFTER=$(sha256sum pnpm-lock.yaml | awk '{print $1}')
-          if [ "$LOCK_BEFORE" != "$LOCK_AFTER" ]; then
-            echo "ERROR: Frozen lockfile integrity check failed ($LOCK_BEFORE != $LOCK_AFTER)" >&2
-            exit 1
-          fi
-          echo "Frozen lockfile integrity verified: $LOCK_AFTER"
-
-      - name: Workspace linting
-        run: |
-          echo "Executing workspace linting inside container tooling..."
-          podman run --rm --userns=keep-id -v "$PWD:/work:z" -w /work s2-assets-dev:ci pnpm run lint
-
-      - name: All-workspace typecheck
-        run: |
-          echo "Executing all-workspace typecheck inside container tooling..."
-          podman run --rm --userns=keep-id -v "$PWD:/work:z" -w /work s2-assets-dev:ci pnpm -r run typecheck
-
-      - name: API unit tests
-        id: unit-tests
-        run: |
-          echo "Executing API unit tests inside container tooling..."
-          podman run --rm --userns=keep-id -v "$PWD:/work:z" -w /work s2-assets-dev:ci pnpm --filter api exec vitest run tests/unit
-
-      - name: API production build
-        run: |
-          echo "Executing API production build inside container tooling..."
-          podman run --rm --userns=keep-id -v "$PWD:/work:z" -w /work s2-assets-dev:ci pnpm --filter api run build
-
-      - name: Web production build
-        run: |
-          echo "Executing Web production build inside container tooling..."
-          podman run --rm --userns=keep-id -v "$PWD:/work:z" -w /work s2-assets-dev:ci pnpm --filter web run build
-
-      - name: Build API OCI container image
-        run: |
-          echo "Building production API OCI image..."
-          podman build -f deploy/podman/api.Containerfile -t s2-assets-api:ci .
-
-      - name: Build migration container image
-        run: |
-          echo "Building migration container image..."
-          podman build -f deploy/podman/migration.Containerfile -t s2-assets-migration:ci .
-
-      - name: Cleanup quality and build artifacts
-        if: always()
-        run: |
-          CLEANUP_ERRORS=0
-          TEST_FAILED=0
-          if [ "${{ steps.unit-tests.outcome }}" != "success" ]; then
-            TEST_FAILED=1
-          fi
-
-          for img in s2-assets-dev:ci s2-assets-api:ci s2-assets-migration:ci; do
-            st=0
-            podman image exists "$img" 2>/dev/null || st=$?
-            if [ "$st" -eq 0 ]; then
-              echo "Removing build image $img..."
-              if ! podman rmi -f "$img"; then
-                echo "ERROR: Failed to remove $img" >&2
-                CLEANUP_ERRORS=$((CLEANUP_ERRORS + 1))
-              fi
-            fi
-          done
-
-          # Verify absence distinguishing confirmed absence (exit 1) from inspection errors (>1) and presence (0)
-          for img in s2-assets-dev:ci s2-assets-api:ci s2-assets-migration:ci; do
-            st=0
-            podman image exists "$img" 2>/dev/null || st=$?
-            if [ "$st" -eq 1 ]; then
-              echo "Confirmed absent: $img"
-            elif [ "$st" -eq 0 ]; then
-              echo "ERROR: Verified absence failed: image $img still exists!" >&2
-              CLEANUP_ERRORS=$((CLEANUP_ERRORS + 1))
-            else
-              echo "ERROR: Inspection failed for image $img (exit code $st)!" >&2
-              CLEANUP_ERRORS=$((CLEANUP_ERRORS + 1))
-            fi
-          done
-
-          if [ "$CLEANUP_ERRORS" -gt 0 ]; then
-            echo "ERROR: Quality & Build cleanup encountered $CLEANUP_ERRORS failure(s)." >&2
-            exit 1
-          fi
-          if [ "$TEST_FAILED" -ne 0 ]; then
-            echo "Unit tests failed; preserving failure status." >&2
-            exit 1
-          fi
-          echo "Quality & Build cleanup completed and verified."
+      - name: Run the quality checks and builds
+        run: scripts/ci/quality.sh --remove-images ${{ github.event_name == 'pull_request' && '--base HEAD^1' || '' }}
 
   integration:
     name: PostgreSQL Integration Tests
@@ -162,164 +57,15 @@ jobs:
           echo "XDG_RUNTIME_DIR=${XDG_RUNTIME_DIR}" >> $GITHUB_ENV
           echo "DOCKER_HOST=unix://${XDG_RUNTIME_DIR}/podman/podman.sock" >> $GITHUB_ENV
 
-      - name: Pre-pull PostgreSQL test image
-        run: |
-          podman pull docker.io/library/postgres:18.6-alpine
-          podman tag docker.io/library/postgres:18.6-alpine postgres:18.6-alpine
-
-      - name: Build containerized integration runner
-        run: |
-          echo "Building base development tooling image..."
-          podman build -f deploy/podman/dev.Containerfile -t s2-assets-dev:ci .
-          echo "Building containerized integration runner with remote podman CLI..."
-          cat << 'EOF' | podman build -t s2-assets-integration:ci -f - .
-          FROM s2-assets-dev:ci
-          USER root
-          RUN apk add --no-cache podman curl bash
-          RUN printf '#!/bin/sh\nexec /usr/bin/podman --remote --url "${CONTAINER_HOST:-unix:///run/user/1001/podman/podman.sock}" "$@"\n' > /usr/local/bin/podman && chmod +x /usr/local/bin/podman
-          EOF
-
-      - name: Record baseline container inventory
-        run: |
-          podman ps -aq --no-trunc > /tmp/integration_baseline_containers.txt
-          echo "Baseline containers count: $(wc -l < /tmp/integration_baseline_containers.txt)"
-
-      - name: Frozen dependency installation
-        run: |
-          echo "Executing frozen dependency installation inside containerized runner..."
-          LOCK_BEFORE=$(sha256sum pnpm-lock.yaml | awk '{print $1}')
-          podman run --rm --userns=keep-id -v "$PWD:/work:z" -w /work s2-assets-integration:ci pnpm install --frozen-lockfile
-          LOCK_AFTER=$(sha256sum pnpm-lock.yaml | awk '{print $1}')
-          if [ "$LOCK_BEFORE" != "$LOCK_AFTER" ]; then
-            echo "ERROR: Frozen lockfile integrity check failed ($LOCK_BEFORE != $LOCK_AFTER)" >&2
-            exit 1
-          fi
-          echo "Frozen lockfile integrity verified: $LOCK_AFTER"
-
       - name: Run PostgreSQL integration tests
-        id: run-integration
-        run: |
-          echo "Executing PostgreSQL integration tests inside containerized runner with host network and socket control..."
-          podman run --name s2_integration_runner --rm \
-            --network=host \
-            --userns=keep-id \
-            -v "$PWD:/work:z" \
-            -v "${XDG_RUNTIME_DIR}/podman/podman.sock:${XDG_RUNTIME_DIR}/podman/podman.sock:z" \
-            -w /work \
-            -e DOCKER_HOST="unix://${XDG_RUNTIME_DIR}/podman/podman.sock" \
-            -e CONTAINER_HOST="unix://${XDG_RUNTIME_DIR}/podman/podman.sock" \
-            -e TESTCONTAINERS_RYUK_DISABLED="true" \
-            -e TESTCONTAINERS_HOST_OVERRIDE="127.0.0.1" \
-            -e CI="true" \
-            s2-assets-integration:ci \
-            pnpm --filter api exec vitest run tests/integration
+        run: scripts/ci/integration.sh --remove-images
 
-      - name: Cleanup Podman resources
+      - name: Stop Rootless Podman service
         if: always()
         run: |
-          CLEANUP_ERRORS=0
-          TEST_FAILED=0
-          if [ "${{ steps.run-integration.outcome }}" != "success" ]; then
-            TEST_FAILED=1
+          if [ -n "${PODMAN_PID:-}" ] && kill -0 "$PODMAN_PID" 2>/dev/null; then
+            kill "$PODMAN_PID"
           fi
-
-          # 1. Identify and remove exact test-created containers
-          touch /tmp/integration_baseline_containers.txt
-          if ! podman ps -aq --no-trunc > /tmp/integration_current_containers.txt; then
-            echo "ERROR: Failed to inspect current containers for integration cleanup!" >&2
-            CLEANUP_ERRORS=$((CLEANUP_ERRORS + 1))
-          else
-            NEW_CONTAINERS=$(grep -v -F -f /tmp/integration_baseline_containers.txt /tmp/integration_current_containers.txt || true)
-            if [ -n "$NEW_CONTAINERS" ]; then
-              echo "Removing exact test-owned containers:"
-              echo "$NEW_CONTAINERS"
-              for CID in $NEW_CONTAINERS; do
-                if ! podman rm -f "$CID"; then
-                  echo "ERROR: Failed to remove test container $CID" >&2
-                  CLEANUP_ERRORS=$((CLEANUP_ERRORS + 1))
-                fi
-              done
-            else
-              echo "No test-owned containers detected for removal."
-            fi
-          fi
-
-          # Verified absence check for containers
-          if ! podman ps -aq --no-trunc > /tmp/integration_final_containers.txt; then
-            echo "ERROR: Failed to inspect final containers for verified absence!" >&2
-            CLEANUP_ERRORS=$((CLEANUP_ERRORS + 1))
-          else
-            LEAKED=$(grep -v -F -f /tmp/integration_baseline_containers.txt /tmp/integration_final_containers.txt || true)
-            if [ -n "$LEAKED" ]; then
-              echo "ERROR: Verified absence failed! Leaked containers remaining:" >&2
-              echo "$LEAKED" >&2
-              CLEANUP_ERRORS=$((CLEANUP_ERRORS + 1))
-            else
-              echo "Verified absence: zero test-owned containers remaining."
-            fi
-          fi
-
-          # 2. Remove integration runner images
-          for img in s2-assets-integration:ci s2-assets-dev:ci; do
-            st=0
-            podman image exists "$img" 2>/dev/null || st=$?
-            if [ "$st" -eq 0 ]; then
-              echo "Removing integration image $img..."
-              if ! podman rmi -f "$img"; then
-                echo "ERROR: Failed to remove $img" >&2
-                CLEANUP_ERRORS=$((CLEANUP_ERRORS + 1))
-              fi
-            fi
-          done
-
-          # Verified absence check for images distinguishing confirmed absence (exit 1) from inspection errors (>1) and presence (0)
-          for img in s2-assets-integration:ci s2-assets-dev:ci; do
-            st=0
-            podman image exists "$img" 2>/dev/null || st=$?
-            if [ "$st" -eq 1 ]; then
-              echo "Confirmed absent: $img"
-            elif [ "$st" -eq 0 ]; then
-              echo "ERROR: Verified absence failed: image $img still exists!" >&2
-              CLEANUP_ERRORS=$((CLEANUP_ERRORS + 1))
-            else
-              echo "ERROR: Inspection failed for image $img (exit code $st)!" >&2
-              CLEANUP_ERRORS=$((CLEANUP_ERRORS + 1))
-            fi
-          done
-
-          # 3. Terminate Podman service PID cleanly
-          if [ -n "${PODMAN_PID:-}" ]; then
-            if kill -0 "$PODMAN_PID" 2>/dev/null; then
-              echo "Stopping Rootless Podman service PID $PODMAN_PID..."
-              kill "$PODMAN_PID"
-              for i in {1..10}; do
-                if ! kill -0 "$PODMAN_PID" 2>/dev/null; then
-                  break
-                fi
-                sleep 0.5
-              done
-              if kill -0 "$PODMAN_PID" 2>/dev/null; then
-                kill -9 "$PODMAN_PID"
-                sleep 0.5
-                if kill -0 "$PODMAN_PID" 2>/dev/null; then
-                  echo "ERROR: Rootless Podman service PID $PODMAN_PID could not be stopped!" >&2
-                  CLEANUP_ERRORS=$((CLEANUP_ERRORS + 1))
-                fi
-              fi
-            fi
-          fi
-
-          rm -f /tmp/integration_baseline_containers.txt /tmp/integration_current_containers.txt /tmp/integration_final_containers.txt
-
-          if [ "$CLEANUP_ERRORS" -gt 0 ]; then
-            echo "ERROR: Integration cleanup encountered $CLEANUP_ERRORS failure(s)." >&2
-            exit 1
-          fi
-          if [ "$TEST_FAILED" -ne 0 ]; then
-            echo "Integration tests failed; preserving failure status." >&2
-            exit 1
-          fi
-          echo "Integration cleanup completed and verified."
 
   browser-e2e:
     name: Playwright E2E Tests
@@ -354,15 +100,6 @@ jobs:
         run: |
           podman pull docker.io/library/postgres:18.6-alpine
           podman pull mcr.microsoft.com/playwright:v1.63.0-noble
-
-      - name: Build browser test runner image
-        run: |
-          echo "Building pinned browser test runner image with Node v24.21.0 and pnpm 12.9.1..."
-          cat << 'EOF' | podman build -t s2-assets-browser:ci -f - .
-          FROM mcr.microsoft.com/playwright:v1.63.0-noble
-          RUN curl -fsSL https://nodejs.org/dist/v24.21.0/node-v24.21.0-linux-x64.tar.gz | tar -xz --strip-components=1 -C /usr/local && \
-              corepack enable && corepack prepare pnpm@12.9.1 --activate
-          EOF
 
       - name: Install podman-compose 1.6.0
         run: |
@@ -593,102 +330,12 @@ jobs:
             exit 1
           fi
 
-      - name: Prepare isolated browser workspace and execute Playwright E2E
+      - name: Execute Playwright E2E
         id: browser-tests
-        run: |
-          RUNNER_WORKSPACE="/tmp/s2_e2e_runner"
-          rm -rf "$RUNNER_WORKSPACE"
-          mkdir -p "$RUNNER_WORKSPACE"
-
-          echo "Copying clean manifests, source, and configuration (excluding .git, agent dirs, node_modules)..."
-          tar -cf - \
-            --exclude='.git' \
-            --exclude='node_modules' \
-            --exclude='*/node_modules' \
-            --exclude='*/*/node_modules' \
-            --exclude='.lead-review' \
-            --exclude='.multica' \
-            --exclude='.agents' \
-            --exclude='.gemini' \
-            . | tar -xf - -C "$RUNNER_WORKSPACE"
-
-          # Assert workspace cleanliness
-          test ! -d "$RUNNER_WORKSPACE/.git"
-          test ! -d "$RUNNER_WORKSPACE/node_modules"
-          test ! -d "$RUNNER_WORKSPACE/apps/web/node_modules"
-          echo "Clean workspace verified (zero inherited node_modules or .git)."
-
-          # Every spec must be wired into one of the two runs below.
-          SPECS=$(cd "$RUNNER_WORKSPACE/apps/web/tests/e2e" && ls -- *.spec.ts | sort | tr '\n' ' ')
-          if [ "$SPECS" != "asset.spec.ts auth.spec.ts " ]; then
-            echo "ERROR: the E2E specs changed (${SPECS}): wire each one into a run in ci.yml" >&2
-            exit 1
-          fi
-
-          # The install runs in the browser runner (glibc), so native bindings such as rolldown's
-          # and argon2's match the container that runs the specs.
-          echo "Asserting Node 24.21.0, pnpm 12.9.1 and Playwright 1.63.0, and executing frozen install in the browser runner..."
-          podman run --rm \
-            -v "${RUNNER_WORKSPACE}:/work:z" \
-            -w /work \
-            s2-assets-browser:ci \
-            bash -c '
-              set -euo pipefail
-              NODE_VER=$(node -v)
-              echo "Browser runner Node version: $NODE_VER"
-              test "$NODE_VER" = "v24.21.0"
-
-              PNPM_VER=$(pnpm -v)
-              echo "Browser runner pnpm version: $PNPM_VER"
-              test "$PNPM_VER" = "12.9.1"
-
-              LOCK_BEFORE=$(sha256sum pnpm-lock.yaml | awk "{print \$1}")
-              pnpm install --frozen-lockfile
-              LOCK_AFTER=$(sha256sum pnpm-lock.yaml | awk "{print \$1}")
-              test "$LOCK_BEFORE" = "$LOCK_AFTER"
-              echo "Frozen lockfile integrity verified: $LOCK_AFTER"
-
-              PW_VER=$(pnpm --filter web exec playwright --version)
-              echo "Playwright version: $PW_VER"
-              echo "$PW_VER" | grep -Eq "1\.63\.0"
-            '
-
-          # Run both specs, then fail once with both results.
-          E2E_STATUS=0
-          # The browser reaches the Web through its loopback port, as the readiness probes do:
-          # joining the Compose network made the Web container's DNS lose `api` (EAI_AGAIN).
-          echo "Executing auth.spec.ts against the Compose stack..."
-          podman run --name s2_browser_runner --rm \
-            --network=host \
-            --ipc=host \
-            -v "${RUNNER_WORKSPACE}:/work:z" \
-            -w /work \
-            -e E2E_BASE_URL="http://127.0.0.1:5173" \
-            -e E2E_USERNAME="$E2E_USERNAME" \
-            -e E2E_PASSWORD="$E2E_PASSWORD" \
-            -e CI=true \
-            s2-assets-browser:ci \
-            pnpm --filter web exec playwright test tests/e2e/auth.spec.ts --output test-results/auth \
-            || E2E_STATUS=1
-
-          # asset.spec.ts starts its own Testcontainers PostgreSQL, API and Vite server, so it runs
-          # like the integration job: host network and the rootless Podman socket.
-          echo "Executing asset.spec.ts with host network and socket control..."
-          podman run --name s2_browser_runner --rm \
-            --network=host \
-            --ipc=host \
-            -v "${RUNNER_WORKSPACE}:/work:z" \
-            -v "${XDG_RUNTIME_DIR}/podman/podman.sock:${XDG_RUNTIME_DIR}/podman/podman.sock:z" \
-            -w /work \
-            -e DOCKER_HOST="unix://${XDG_RUNTIME_DIR}/podman/podman.sock" \
-            -e TESTCONTAINERS_RYUK_DISABLED="true" \
-            -e TESTCONTAINERS_HOST_OVERRIDE="127.0.0.1" \
-            -e CI=true \
-            s2-assets-browser:ci \
-            pnpm --filter web exec playwright test tests/e2e/asset.spec.ts --output test-results/asset \
-            || E2E_STATUS=1
-
-          exit "$E2E_STATUS"
+        env:
+          E2E_BASE_URL: http://127.0.0.1:5173
+          E2E_WORKSPACE: /tmp/s2_e2e_runner
+        run: scripts/ci/e2e.sh --auth
 
       - name: Copy test diagnostics on failure
         if: failure()
@@ -844,80 +491,8 @@ jobs:
       - name: Checkout repository
         uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
 
-      - name: Build production API image and export archive
-        run: |
-          podman build -f deploy/podman/api.Containerfile -t s2-assets-api:ci .
-          mkdir -p /tmp/trivy-scan
-          podman save s2-assets-api:ci -o /tmp/trivy-scan/api-image.tar
-
-      - name: Scan dependencies with Trivy 0.76.0
-        id: trivy-deps
-        run: |
-          podman run --rm \
-            -v "$(pwd):/work:ro,z" \
-            docker.io/aquasec/trivy:0.76.0 \
-            fs \
-            --scanners vuln \
-            --include-dev-deps \
-            --severity HIGH,CRITICAL \
-            --exit-code 1 \
-            /work/pnpm-lock.yaml
-
-      - name: Scan production API image with Trivy 0.76.0
-        id: trivy-image
-        run: |
-          podman run --rm \
-            -v "/tmp/trivy-scan/api-image.tar:/api-image.tar:ro,z" \
-            docker.io/aquasec/trivy:0.76.0 \
-            image \
-            --scanners vuln \
-            --severity HIGH,CRITICAL \
-            --exit-code 1 \
-            --input /api-image.tar
-
-      - name: Cleanup security scan artifacts
-        if: always()
-        run: |
-          CLEANUP_ERRORS=0
-          TEST_FAILED=0
-          if [ "${{ steps.trivy-deps.outcome }}" != "success" ] || [ "${{ steps.trivy-image.outcome }}" != "success" ]; then
-            TEST_FAILED=1
-          fi
-
-          rm -rf /tmp/trivy-scan
-
-          st=0
-          podman image exists s2-assets-api:ci 2>/dev/null || st=$?
-          if [ "$st" -eq 0 ]; then
-            echo "Removing production API image s2-assets-api:ci..."
-            if ! podman rmi -f s2-assets-api:ci; then
-              echo "ERROR: Failed to remove s2-assets-api:ci" >&2
-              CLEANUP_ERRORS=$((CLEANUP_ERRORS + 1))
-            fi
-          fi
-
-          # Verify absence distinguishing confirmed absence (exit 1) from inspection errors (>1) and presence (0)
-          st=0
-          podman image exists s2-assets-api:ci 2>/dev/null || st=$?
-          if [ "$st" -eq 1 ]; then
-            echo "Confirmed absent: s2-assets-api:ci"
-          elif [ "$st" -eq 0 ]; then
-            echo "ERROR: Verified absence failed: image s2-assets-api:ci still exists!" >&2
-            CLEANUP_ERRORS=$((CLEANUP_ERRORS + 1))
-          else
-            echo "ERROR: Inspection failed for image s2-assets-api:ci (exit code $st)!" >&2
-            CLEANUP_ERRORS=$((CLEANUP_ERRORS + 1))
-          fi
-
-          if [ "$CLEANUP_ERRORS" -gt 0 ]; then
-            echo "ERROR: Security scan cleanup encountered $CLEANUP_ERRORS failure(s)." >&2
-            exit 1
-          fi
-          if [ "$TEST_FAILED" -ne 0 ]; then
-            echo "Security scan steps failed; preserving failure status." >&2
-            exit 1
-          fi
-          echo "Security scan cleanup completed and verified."
+      - name: Scan the lockfile and the production images with Trivy 0.76.0
+        run: scripts/ci/security-scan.sh --remove-images
 
   ci-gate:
     name: CI Gate

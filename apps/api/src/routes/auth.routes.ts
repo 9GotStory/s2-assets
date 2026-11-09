@@ -5,14 +5,8 @@ import type {
   FastifyRequest,
 } from 'fastify';
 import pg from 'pg';
-import {
-  UserService,
-  type SafeUser,
-} from '../services/user.service.ts';
-import {
-  SessionService,
-  type Session,
-} from '../services/session.service.ts';
+import { UserService } from '../services/user.service.ts';
+import { SessionService } from '../services/session.service.ts';
 import { AuthenticationError } from '../plugins/auth.ts';
 
 export interface AuthRoutesOptions {

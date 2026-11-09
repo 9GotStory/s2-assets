@@ -149,6 +149,14 @@ test.describe.serial('Asset Registry Real SPA -> Composed API -> PostgreSQL Jour
     }
   });
 
+  // #66: keep request interception on for the whole journey. A request that starts while Playwright
+  // removes a page's last route can stay paused with no response, because
+  // `_updateProtocolRequestInterception` (Playwright 1.63.0) flips its flag before `Fetch.disable`
+  // arrives. So a journey removes its own routes by name until it ends.
+  test.beforeEach(async ({ page }) => {
+    await page.route('**/*', (route: any) => route.fallback());
+  });
+
   const loginAs = async (page: any, context: any, userId: string) => {
     const session = await sessionService.createSession(userId);
     await context.addCookies([
@@ -158,6 +166,15 @@ test.describe.serial('Asset Registry Real SPA -> Composed API -> PostgreSQL Jour
         url: targetBaseUrl,
       },
     ]);
+  };
+
+  // Switches the actor for a fresh page load. The API renews the session cookie on every response,
+  // so a request still in flight from the previous actor's page can restore that actor's cookie
+  // after addCookies; Journey 12 flaked that way. Leaving the page first settles those requests.
+  // A switch under a mounted page, which the actor-switch journeys test, keeps using loginAs.
+  const switchActor = async (page: any, context: any, userId: string) => {
+    await page.goto('about:blank');
+    await loginAs(page, context, userId);
   };
 
   test('Journey 1: minimal ordinary registration -> linked detail/history view', async ({ page, context }) => {
@@ -1675,8 +1692,9 @@ test.describe.serial('Asset Registry Real SPA -> Composed API -> PostgreSQL Jour
     await page.goto(`${targetBaseUrl}/assets/${firstCreatedAssetId}`);
     await expect(page.locator('#asset-detail-heading')).toHaveText('MacBook Pro 16');
 
-    // 2. Revoke session by clearing cookies
-    await context.clearCookies();
+    // 2. Revoke the session at the server: a response still in flight can renew the browser's cookie,
+    // but it cannot bring back a revoked session.
+    await sessionService.revokeAllUserSessions(readonlyUserId);
 
     // 3. Simulate focus return
     await page.evaluate(() => {
@@ -1690,12 +1708,12 @@ test.describe.serial('Asset Registry Real SPA -> Composed API -> PostgreSQL Jour
     await expect(page.locator('#asset-detail-heading')).not.toBeVisible();
 
     // 5. Test search page session revocation on focus
-    await loginAs(page, context, readonlyUserId);
+    await switchActor(page, context, readonlyUserId);
     await page.goto(`${targetBaseUrl}/assets/search`);
     await expect(page.locator('#asset-search-table')).toBeVisible();
 
     // Revoke session and trigger focus return
-    await context.clearCookies();
+    await sessionService.revokeAllUserSessions(readonlyUserId);
     await page.evaluate(() => {
       window.dispatchEvent(new Event('blur'));
       window.dispatchEvent(new Event('focus'));
@@ -2258,7 +2276,7 @@ test.describe.serial('Asset Registry Real SPA -> Composed API -> PostgreSQL Jour
     await expect(page.getByRole('heading', { level: 1, name: 'เข้าสู่ระบบ' })).toBeVisible();
 
     // Part B: Duplicate preview 403 suppresses form and triggers reauthorization
-    await loginAs(page, context, adminUserId);
+    await switchActor(page, context, adminUserId);
     await page.goto(`${targetBaseUrl}/assets/${testAssetId}`);
     await expect(page.locator('#asset-detail-heading')).toBeVisible();
 
@@ -2277,7 +2295,7 @@ test.describe.serial('Asset Registry Real SPA -> Composed API -> PostgreSQL Jour
     await expect(page.locator('[data-testid="read-only-notice"]')).toBeVisible();
 
     // Part C: Mutation 401 immediately redirects without entering uncertain retry
-    await loginAs(page, context, adminUserId);
+    await switchActor(page, context, adminUserId);
     await page.goto(`${targetBaseUrl}/assets/${testAssetId}`);
     await expect(page.locator('#asset-detail-heading')).toBeVisible();
 
@@ -2299,7 +2317,7 @@ test.describe.serial('Asset Registry Real SPA -> Composed API -> PostgreSQL Jour
     await expect(page.locator('button#retry-uncertain-btn')).not.toBeVisible();
 
     // Part D: Mutation 403 immediately suppresses form without entering uncertain retry
-    await loginAs(page, context, adminUserId);
+    await switchActor(page, context, adminUserId);
     await page.goto(`${targetBaseUrl}/assets/${testAssetId}`);
     await expect(page.locator('#asset-detail-heading')).toBeVisible();
 
@@ -2341,7 +2359,7 @@ test.describe.serial('Asset Registry Real SPA -> Composed API -> PostgreSQL Jour
       [crypto.randomUUID(), deniedAssetId, deniedUserId, JSON.stringify({ name: 'เครื่องแม่ข่ายทดสอบ Denied' })]
     );
 
-    await loginAs(page, context, deniedUserId);
+    await switchActor(page, context, deniedUserId);
     await page.goto(`${targetBaseUrl}/assets/${deniedAssetId}`);
     await expect(page.locator('#asset-detail-heading')).toBeVisible();
     await expect(page.locator('#asset-correction-form')).toBeVisible();
@@ -2431,7 +2449,7 @@ test.describe.serial('Asset Registry Real SPA -> Composed API -> PostgreSQL Jour
       [crypto.randomUUID(), permAssetId, permUserId, JSON.stringify({ name: 'เครื่องแม่ข่ายทดสอบ Permitted' })]
     );
 
-    await loginAs(page, context, permUserId);
+    await switchActor(page, context, permUserId);
     await page.goto(`${targetBaseUrl}/assets/${permAssetId}`);
     await expect(page.locator('#asset-detail-heading')).toBeVisible();
     await expect(page.locator('#asset-correction-form')).toBeVisible();
@@ -2502,7 +2520,7 @@ test.describe.serial('Asset Registry Real SPA -> Composed API -> PostgreSQL Jour
 
     // Part G: Mounted AssetDetailContent held session-check released after navigation does not redirect to /login
     // Uses explicit request-start/release/completion coordination instead of arbitrary sleep
-    await loginAs(page, context, adminUserId);
+    await switchActor(page, context, adminUserId);
     await page.goto(`${targetBaseUrl}/assets/${testAssetId}`);
     await expect(page.locator('#asset-detail-heading')).toBeVisible();
 
@@ -2575,9 +2593,9 @@ test.describe.serial('Asset Registry Real SPA -> Composed API -> PostgreSQL Jour
     // 2. Seed a test asset in the database with long Thai name and missing serial_number (NULL)
     const insertRes = await pool.query(
       `INSERT INTO assets (
-        name, asset_number, serial_number, registered_by, category, legacy_organization_unit_text
+        name, asset_number, serial_number, registered_by, category
       ) VALUES (
-        'จอมอนิเตอร์ Dell 27 นิ้ว UltraSharp (พัสดุและงานเทคนิคกลาง)', 'MON-DELL-QR-888', NULL, $1, NULL, NULL
+        'จอมอนิเตอร์ Dell 27 นิ้ว UltraSharp (พัสดุและงานเทคนิคกลาง)', 'MON-DELL-QR-888', NULL, $1, NULL
       ) RETURNING id;`,
       [custodianUserId]
     );
@@ -3012,14 +3030,14 @@ test.describe.serial('Asset Registry Real SPA -> Composed API -> PostgreSQL Jour
     await expect(page.locator('#fact-amount')).toContainText('120000.00 THB');
 
     // 9. Read-only user access: can view acquisition facts and linked assets
-    await loginAs(page, context, readonlyUserId);
+    await switchActor(page, context, readonlyUserId);
     await page.goto(`${targetBaseUrl}/acquisitions/${createdAcqId}`);
     await expect(page.locator('#acquisition-detail-heading')).toBeVisible();
     await expect(page.locator('#fact-amount')).toContainText('120000.00 THB');
     await expect(page.locator('#linked-assets-table')).toContainText('E2E-ACQ-AST-01');
 
     // 10. Maintainer user access: denied with 403 Forbidden
-    await loginAs(page, context, maintainerUserId);
+    await switchActor(page, context, maintainerUserId);
     await page.goto(`${targetBaseUrl}/acquisitions/${createdAcqId}`);
     await expect(page.locator('#acquisition-error-alert')).toBeVisible();
     await expect(page.locator('#acquisition-error-alert')).toContainText('403 Forbidden');
@@ -3099,7 +3117,7 @@ test.describe.serial('Asset Registry Real SPA -> Composed API -> PostgreSQL Jour
     const a = await res.json();
 
     await context.clearCookies();
-    await loginAs(page, context, readonlyUserId);
+    await switchActor(page, context, readonlyUserId);
     await page.goto(`${targetBaseUrl}/acquisitions/${a.id}`);
     await expect(page.locator('#fact-amount')).toContainText('9876.54');
 
@@ -3136,8 +3154,8 @@ test.describe.serial('Asset Registry Real SPA -> Composed API -> PostgreSQL Jour
       await expect(page.locator('#acquisition-error-alert')).toBeVisible();
       await expect(page.locator('#acquisition-error-alert')).toContainText('403 Forbidden');
     } finally {
-      await page.unrouteAll({ behavior: 'ignoreErrors' });
       await pool.query("INSERT INTO user_roles(user_id, role_id) VALUES($1, 'READ_ONLY')", [readonlyUserId]);
+      await page.unrouteAll({ behavior: 'ignoreErrors' });
     }
   });
 
@@ -3770,7 +3788,7 @@ test.describe.serial('Asset Registry Real SPA -> Composed API -> PostgreSQL Jour
     await expect(page.locator('#forbidden-alert')).toBeVisible();
     await expect(page.locator('#duplicate-warnings-banner')).not.toBeVisible();
 
-    await page.unrouteAll({ behavior: 'ignoreErrors' });
+    await page.unroute('**/auth/session-check');
 
     // Part B: Unmocked regression: genuine same-actor DB role revocation (ASSET_CUSTODIAN -> READ_ONLY)
     // with exact whitespace-only duplicate candidate (F1)
@@ -4192,7 +4210,7 @@ test.describe.serial('Asset Registry Real SPA -> Composed API -> PostgreSQL Jour
       `INSERT INTO user_roles (user_id, role_id) VALUES ('${tempUserId}', 'ASSET_CUSTODIAN')`
     );
 
-    await loginAs(page, context, tempUserId);
+    await switchActor(page, context, tempUserId);
     await page.goto(`${targetBaseUrl}/assets/${assetId}`);
     await expect(page.locator('[data-testid="add-evidence-btn"]')).toBeVisible();
 
@@ -4270,7 +4288,7 @@ test.describe.serial('Asset Registry Real SPA -> Composed API -> PostgreSQL Jour
     await page.locator('[data-testid="create-evidence-submit-btn"]').click();
     await abortDone;
     await expect(page.locator('[data-testid="uncertain-mutation-alert"]')).toBeVisible();
-    await page.unrouteAll({ behavior: 'wait' });
+    await page.unroute('**/evidence');
 
     // Trigger focus revalidation: alert must remain visible
     const refetched = page.waitForResponse((r) => new URL(r.url()).pathname === `/acquisitions/${acqId}`);
@@ -5616,6 +5634,48 @@ test.describe.serial('Asset Registry Real SPA -> Composed API -> PostgreSQL Jour
     await page.unrouteAll({ behavior: 'wait' });
   });
 
+  test('Journey T7.17 (#66): while the page re-verifies after a focus return, Retry is disabled', async ({
+    page,
+    context,
+  }) => {
+    const actorA = await seedCustodianActor('a2_reverify');
+    const acqId = await seedAcquisitionFor(actorA, 'PO-T7-A2-REVERIFY');
+    const ref = `A2 reverify ${Date.now()}`;
+    const alert = page.locator('[data-testid="uncertain-mutation-alert"]');
+    const retry = page.locator('[data-testid="retry-mutation-btn"]');
+
+    await loginAs(page, context, actorA);
+    await page.goto(`${targetBaseUrl}/acquisitions/${acqId}`);
+    await page.locator('[data-testid="add-evidence-btn"]').click();
+    await page.locator('[data-testid="create-ref-text-input"]').fill(ref);
+    const lost = await loseNextCreateDelivery(page);
+    await page.locator('[data-testid="create-evidence-submit-btn"]').click();
+    expect((await lost.committed).status).toBe(201);
+    await lost.unroute();
+    await expect(alert).toBeVisible();
+    await expect(retry).toBeEnabled();
+
+    // The page re-verifies until its read of the Acquisition answers; hold that read.
+    const answerRead = deferred<void>();
+    const acquisitionMatcher = (url: URL) => url.pathname === `/acquisitions/${acqId}`;
+    await page.route(acquisitionMatcher, async (route: any) => {
+      await answerRead.promise;
+      await route.fallback().catch(() => {});
+    });
+    await page.evaluate(() => window.dispatchEvent(new Event('focus')));
+    await expect(retry).toBeDisabled();
+    await expect(alert).toBeVisible();
+
+    answerRead.resolve();
+    await expect(retry).toBeEnabled();
+    await page.unroute(acquisitionMatcher);
+    const replay = page.waitForResponse((r: any) => isEvidenceMutation(r.request()));
+    await retry.click();
+    expect((await replay).ok()).toBe(true);
+    await expect(alert).toHaveCount(0);
+    expect(await countEvidence(ref)).toBe(1);
+  });
+
   // T4 (#25, D7-A / D3): reference lists and Asset reference context through the real SPA.
   test('Journey T4.1: an Administrator maintains the flat reference lists; other viewers read them without controls', async ({ page, context }) => {
     await loginAs(page, context, adminUserId);
@@ -5680,7 +5740,7 @@ test.describe.serial('Asset Registry Real SPA -> Composed API -> PostgreSQL Jour
     expect(counts.rows[0]).toEqual({ l: 2, o: 1, p: 1 });
 
     // A Read-only User sees the lists, without maintenance controls.
-    await loginAs(page, context, readonlyUserId);
+    await switchActor(page, context, readonlyUserId);
     await page.goto(`${targetBaseUrl}/admin/references`);
     await expect(page.getByTestId('reference-read-only-notice')).toBeVisible();
     await expect(page.locator('#reference-table')).toContainText('Store Room E2E North');
@@ -5690,6 +5750,16 @@ test.describe.serial('Asset Registry Real SPA -> Composed API -> PostgreSQL Jour
     await expect(page.getByTestId(`reference-history-panel-${storeRoomId}`)).toContainText('“Store Room E2E North”');
   });
 
+  // Today's Asia/Bangkok date, the default Effective Date of an ordinary registration (F003 Q11).
+  const bangkokToday = () => {
+    const parts = Object.fromEntries(
+      new Intl.DateTimeFormat('en-CA', { timeZone: 'Asia/Bangkok', year: 'numeric', month: '2-digit', day: '2-digit' })
+        .formatToParts(new Date())
+        .map(({ type, value }) => [type, value])
+    );
+    return `${parts.year}-${parts.month}-${parts.day}`;
+  };
+
   test('Journey T4.2: a Custodian registers with optional context, sees it on detail, and finds it by each dimension and by legacy text', async ({ page, context }) => {
     await loginAs(page, context, custodianUserId);
     await page.goto(`${targetBaseUrl}/assets/register`);
@@ -5698,26 +5768,35 @@ test.describe.serial('Asset Registry Real SPA -> Composed API -> PostgreSQL Jour
     // Only active entries can be chosen at registration.
     const locationSelect = page.locator('#register-location_id');
     await expect(locationSelect.locator('option')).toHaveText(['— ไม่ระบุ —', 'Store Room E2E North']);
+    // The Initial Assignment's Effective Date appears once a dimension is filled (F003 Q17).
+    await expect(page.locator('#register-effective_date')).toHaveCount(0);
     await locationSelect.selectOption({ label: 'Store Room E2E North' });
     await page.locator('#register-organization_unit_id').selectOption({ label: 'Finance Unit E2E' });
     // A shared Asset needs no Responsible Person; the old record's text is kept as recorded.
     await page.locator('#register-legacy_responsible_person_text').fill('คุณสมชาย (ทะเบียนเดิม)');
+    // An ordinary registration starts from today's date.
+    await expect(page.locator('#register-effective_date')).toHaveValue(bangkokToday());
+    await expect(page.locator('#register-effective_date_unknown')).not.toBeChecked();
     await page.locator('button#submit-register-btn').click();
 
     await page.waitForURL(new RegExp(`${targetBaseUrl}/assets/[0-9a-f-]{36}`));
     const assetId = page.url().split('/assets/')[1];
+    await expect(page.locator('#assignment-heading')).toHaveText('สถานที่ หน่วยงาน และผู้รับผิดชอบ');
     await expect(page.locator('#detail-location')).toHaveText('Store Room E2E North');
     await expect(page.locator('#detail-organization_unit')).toHaveText('Finance Unit E2E');
     await expect(page.locator('#detail-responsible_person')).toHaveText('ข้อความเดิม: คุณสมชาย (ทะเบียนเดิม)');
+    await expect(page.getByTestId('assignment-timeline')).toContainText('กำหนดครั้งแรก');
 
     const stored = await pool.query(
-      `SELECT a.location_id, a.organization_unit_id, a.responsible_person_id, a.legacy_responsible_person_text,
+      `SELECT e.effective_date::text AS effective_date, c.new_person_id, c.new_legacy_text,
               (SELECT count(*)::int FROM persons) AS persons
-       FROM assets a WHERE a.id = $1`,
+       FROM assignment_events e JOIN assignment_changes c ON c.event_id = e.id
+       WHERE e.asset_id = $1 AND c.dimension = 'RESPONSIBLE_PERSON'`,
       [assetId]
     );
-    expect(stored.rows[0].responsible_person_id).toBeNull();
-    expect(stored.rows[0].legacy_responsible_person_text).toBe('คุณสมชาย (ทะเบียนเดิม)');
+    expect(stored.rows[0].effective_date).toBe(bangkokToday());
+    expect(stored.rows[0].new_person_id).toBeNull();
+    expect(stored.rows[0].new_legacy_text).toBe('คุณสมชาย (ทะเบียนเดิม)');
     expect(stored.rows[0].persons).toBe(1); // no person invented from the legacy text
 
     // Search: each dimension filters on its own; together they combine with AND.
@@ -5745,49 +5824,99 @@ test.describe.serial('Asset Registry Real SPA -> Composed API -> PostgreSQL Jour
     await expect(page.locator('#no-results-message')).toBeVisible();
   });
 
-  test('Journey T4.3: bulk registration shares one context; a reasoned correction changes it with history; a deactivated entry stays shown', async ({ page, context }) => {
+  // #25 D3 as amended by F003 Q1 (ADR 0001): the registry correction no longer changes the context.
+  test('Journey T4.3: bulk registration shares one Initial Assignment; the correction form leaves it to its own section; a deactivated entry stays shown', async ({ page, context }) => {
     await loginAs(page, context, custodianUserId);
     await page.goto(`${targetBaseUrl}/assets/bulk-register`);
     await page.locator('#item-name-0').fill('Chair T4 A');
     await page.locator('#add-row-btn').click();
     await page.locator('#item-name-1').fill('Chair T4 B');
     await page.locator('#bulk-location_id').selectOption({ label: 'Store Room E2E North' });
+    await page.locator('#bulk-organization_unit_id').selectOption({ label: 'Finance Unit E2E' });
+    await expect(page.locator('#bulk-effective_date')).toHaveValue(bangkokToday());
+    await page.locator('#bulk-document_reference').fill('ใบส่งของ E2E-77');
     await page.locator('#submit-bulk-register-btn').click();
     await expect(page.locator('#total-registered-count')).toHaveText('2');
 
     const chairs = await pool.query(
-      `SELECT a.id, a.name, l.name AS location FROM assets a JOIN locations l ON l.id = a.location_id
+      `SELECT a.id, a.name, l.name AS location, e.effective_date::text AS effective_date, e.document_reference
+       FROM assets a
+       JOIN assignment_events e ON e.asset_id = a.id
+       JOIN assignment_changes c ON c.event_id = e.id AND c.dimension = 'LOCATION'
+       JOIN locations l ON l.id = c.new_location_id
        WHERE a.name IN ('Chair T4 A', 'Chair T4 B') ORDER BY a.name`
     );
-    expect(chairs.rows.map((row) => row.location)).toEqual(['Store Room E2E North', 'Store Room E2E North']);
+    expect(chairs.rows.map((row) => [row.location, row.effective_date, row.document_reference])).toEqual([
+      ['Store Room E2E North', bangkokToday(), 'ใบส่งของ E2E-77'],
+      ['Store Room E2E North', bangkokToday(), 'ใบส่งของ E2E-77'],
+    ]);
     const chairId = chairs.rows[0].id;
 
-    // Correct the context on the detail page, with a reason.
+    // The registry correction offers no dimension field and points to the assignment section.
     await page.goto(`${targetBaseUrl}/assets/${chairId}`);
     await expect(page.locator('#detail-location')).toHaveText('Store Room E2E North');
-    await page.locator('#correction-responsible_person_id').selectOption({ label: 'Somchai E2E' });
-    await page.locator('#correction-organization_unit_id').selectOption({ label: 'Finance Unit E2E' });
-    await page.locator('#reason').fill('ระบุผู้รับผิดชอบและหน่วยงานตามจริง');
+    await expect(page.locator('#asset-correction-form')).toBeVisible();
+    for (const field of ['location_id', 'organization_unit_id', 'responsible_person_id', 'legacy_location_text']) {
+      await expect(page.locator(`#correction-${field}`)).toHaveCount(0);
+    }
+    await expect(page.getByTestId('correction-assignment-note')).toContainText('สถานที่ หน่วยงาน และผู้รับผิดชอบ');
+    await expect(page.getByTestId('correction-assignment-note').locator('a')).toHaveAttribute('href', '#assignment-heading');
+
+    // A name correction leaves the Initial Assignment as recorded.
+    await page.locator('#asset-correction-form input#name').fill('Chair T4 A (แก้ชื่อ)');
+    await page.locator('#reason').fill('ชื่อตามป้ายจริง');
     await page.locator('#submit-correct-btn').click();
     await expect(page.getByTestId('correction-success-message')).toBeVisible();
-    await expect(page.locator('#detail-responsible_person')).toHaveText('Somchai E2E');
-    await expect(page.locator('table')).toContainText('CORRECTED');
-    await expect(page.locator('table')).toContainText('responsible_person_id');
+    await expect(page.locator('#detail-location')).toHaveText('Store Room E2E North');
+    const history = await pool.query(`SELECT payload FROM asset_history WHERE asset_id = $1 AND action = 'CORRECTED'`, [chairId]);
+    expect(history.rows.map((row) => Object.keys(row.payload.changes))).toEqual([['name']]);
 
-    const history = await pool.query(
-      `SELECT payload FROM asset_history WHERE asset_id = $1 AND action = 'CORRECTED'`,
-      [chairId]
-    );
-    expect(history.rows).toHaveLength(1);
-    expect(history.rows[0].payload.reason).toBe('ระบุผู้รับผิดชอบและหน่วยงานตามจริง');
-    expect(Object.keys(history.rows[0].payload.changes).sort()).toEqual(['organization_unit_id', 'responsible_person_id']);
-
-    // An entry deactivated after assignment stays on the Asset, shown as inactive.
+    // An entry deactivated after assignment stays the Current Assignment, shown as inactive.
     await pool.query(`UPDATE organization_units SET is_active = false, version = version + 1 WHERE name = 'Finance Unit E2E'`);
     await page.reload();
     await expect(page.locator('#detail-organization_unit')).toHaveText('Finance Unit E2E (ปิดใช้งาน)');
-    await expect(page.locator('#correction-organization_unit_id')).toHaveValue(
-      (await pool.query(`SELECT id FROM organization_units WHERE name = 'Finance Unit E2E'`)).rows[0].id
+    await expect(page.getByTestId('assignment-timeline')).toContainText('Finance Unit E2E (ปิดใช้งาน)');
+  });
+
+  // F003-T1 (#51, Q11): a legacy registration starts its Initial Assignment at "ไม่ทราบ".
+  test('Journey F003-T1: a legacy Asset is registered with an Initial Assignment whose Effective Date is unknown, and every viewer sees it', async ({ page, context }) => {
+    await loginAs(page, context, custodianUserId);
+    await page.goto(`${targetBaseUrl}/assets/register`);
+    await page.locator('#register-location_id').selectOption({ label: 'Store Room E2E North' });
+
+    // The default follows the legacy choice until a date is chosen: today for an ordinary item ...
+    await expect(page.locator('#register-effective_date')).toHaveValue(bangkokToday());
+    await page.locator('#is_legacy').check();
+    // ... and "ไม่ทราบ" for a legacy item, so no date is invented.
+    await expect(page.locator('#register-effective_date_unknown')).toBeChecked();
+    await expect(page.locator('#register-effective_date')).toBeDisabled();
+    await page.locator('#register-legacy_organization_unit_text').fill('กองพัสดุ (ทะเบียนปี 2540)');
+    await page.locator('#register-document_reference').fill('สมุดทะเบียนครุภัณฑ์ เล่ม 3');
+    await page.locator('button#submit-register-btn').click();
+
+    await page.waitForURL(new RegExp(`${targetBaseUrl}/assets/[0-9a-f-]{36}`));
+    const assetId = page.url().split('/assets/')[1];
+    const stored = await pool.query(
+      `SELECT kind, effective_date, provenance, document_reference FROM assignment_events WHERE asset_id = $1`,
+      [assetId]
     );
+    expect(stored.rows).toEqual([
+      { kind: 'INITIAL', effective_date: null, provenance: 'RECORDED', document_reference: 'สมุดทะเบียนครุภัณฑ์ เล่ม 3' },
+    ]);
+
+    for (const viewer of [custodianUserId, readonlyUserId]) {
+      await switchActor(page, context, viewer);
+      await page.goto(`${targetBaseUrl}/assets/${assetId}`);
+      await expect(page.locator('#detail-location')).toHaveText('Store Room E2E North');
+      await expect(page.locator('#detail-organization_unit')).toHaveText('ข้อความเดิม: กองพัสดุ (ทะเบียนปี 2540)');
+      await expect(page.locator('#detail-responsible_person')).toHaveText('ไม่ระบุ');
+      const timeline = page.getByTestId('assignment-timeline');
+      await expect(timeline).toContainText('กำหนดครั้งแรก');
+      await expect(timeline).toContainText('ไม่ทราบวันที่ (บันทึกเมื่อ');
+      await expect(timeline).toContainText('custodian_e2e');
+      await expect(timeline).toContainText('เอกสารอ้างอิง: สมุดทะเบียนครุภัณฑ์ เล่ม 3');
+    }
+    // The Read-only User sees no correction form.
+    await expect(page.locator('#asset-correction-form')).toHaveCount(0);
   });
 });

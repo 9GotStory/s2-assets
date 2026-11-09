@@ -396,7 +396,7 @@ describe('Evidence Migration Integration (Seam C - T7)', () => {
     } finally {
       await freshContainer.stop().catch(() => {});
     }
-  });
+  }, 120_000);
 
   it('enforces foreign key ON DELETE RESTRICT on evidence parents, links, and history', async () => {
     const client = new Client({ connectionString: databaseUrl });

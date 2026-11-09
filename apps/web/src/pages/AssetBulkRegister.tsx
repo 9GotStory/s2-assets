@@ -3,11 +3,18 @@ import { useNavigate, Link, useSearchParams } from 'react-router';
 import {
   EMPTY_REFERENCE_CONTEXT,
   ReferenceContextFields,
-  referenceContextPayload,
+  hasReferenceValues,
   useReferenceLists,
   type ReferenceContextField,
   type ReferenceContextValues,
 } from '../components/ReferenceContextFields';
+import {
+  EMPTY_INITIAL_ASSIGNMENT,
+  InitialAssignmentFields,
+  initialAssignmentError,
+  initialAssignmentPayload,
+  type InitialAssignmentDraft,
+} from '../components/InitialAssignmentFields';
 
 export interface BulkItemFormState {
   item_key: string;
@@ -61,6 +68,8 @@ export const AssetBulkRegister: React.FC = () => {
   const [sharedAcquisitionId, setSharedAcquisitionId] = useState(initialAcquisitionId);
   // T4 (#25): one reference context shared by every item in the batch.
   const [sharedReferenceContext, setSharedReferenceContext] = useState<ReferenceContextValues>(EMPTY_REFERENCE_CONTEXT);
+  // F003-T1: the shared Initial Assignment's Effective Date, document reference and remark.
+  const [sharedInitialAssignment, setSharedInitialAssignment] = useState<InitialAssignmentDraft>(EMPTY_INITIAL_ASSIGNMENT);
   const [listActorId, setListActorId] = useState<string | null>(null);
   const referenceLists = useReferenceLists(false, listActorId);
   const [items, setItems] = useState<BulkItemFormState[]>([
@@ -214,6 +223,7 @@ export const AssetBulkRegister: React.FC = () => {
         ]);
         setSharedAcquisitionId('');
         setSharedReferenceContext(EMPTY_REFERENCE_CONTEXT);
+        setSharedInitialAssignment(EMPTY_INITIAL_ASSIGNMENT);
         setSuccessResult(null);
         setWarnings([]);
         setErrorMessage(null);
@@ -469,6 +479,15 @@ export const AssetBulkRegister: React.FC = () => {
     setErrorMessage(null);
   };
 
+  const handleSharedInitialAssignmentChange = (draft: InitialAssignmentDraft) => {
+    if (uncertainSnapshot) return;
+    setSharedInitialAssignment(draft);
+    setErrorMessage(null);
+  };
+
+  // The shared Effective Date starts at "ไม่ทราบ" when any item is legacy, so no date is invented (#50 Q11).
+  const batchHasLegacyItem = items.some((itm) => itm.is_legacy);
+
   // Submit handler: validates input, builds verbatim payload, sends request
   const handleSubmit = async (e: React.FormEvent<HTMLFormElement>) => {
     e.preventDefault();
@@ -505,6 +524,12 @@ export const AssetBulkRegister: React.FC = () => {
       return;
     }
 
+    const assignmentError = initialAssignmentError(sharedReferenceContext, sharedInitialAssignment, batchHasLegacyItem);
+    if (assignmentError) {
+      setErrorMessage(assignmentError);
+      return;
+    }
+
     setIsSubmitting(true);
     setErrorMessage(null);
 
@@ -538,7 +563,7 @@ export const AssetBulkRegister: React.FC = () => {
         source_notes: itm.source_notes.trim() || null,
         is_legacy: itm.is_legacy,
       })),
-      ...referenceContextPayload(sharedReferenceContext),
+      ...initialAssignmentPayload(sharedReferenceContext, sharedInitialAssignment, batchHasLegacyItem),
     };
 
     const intentSnapshot: UncertainSnapshot = {
@@ -1352,16 +1377,25 @@ export const AssetBulkRegister: React.FC = () => {
               />
             </div>
 
-            {/* Shared reference context (T4, D7-A) */}
+            {/* Shared Initial Assignment (T4 #25 decision 1, #50 Q17) */}
             <ReferenceContextFields
               idPrefix="bulk"
-              legend="ข้อมูลอ้างอิงร่วมของทุกรายการในชุดนี้ (ไม่บังคับ)"
+              legend="สถานที่ หน่วยงาน และผู้รับผิดชอบของทุกรายการในชุดนี้ (ไม่บังคับ)"
               values={sharedReferenceContext}
               onChange={handleSharedReferenceChange}
               lists={referenceLists.lists}
               listError={referenceLists.error}
               disabled={Boolean(uncertainSnapshot) || isSubmitting || isVerifyingSession || Boolean(forbiddenError)}
-            />
+            >
+              {hasReferenceValues(sharedReferenceContext) && (
+                <InitialAssignmentFields
+                  idPrefix="bulk"
+                  draft={sharedInitialAssignment}
+                  isLegacy={batchHasLegacyItem}
+                  onChange={handleSharedInitialAssignmentChange}
+                />
+              )}
+            </ReferenceContextFields>
 
             {/* Row-Correlated Candidate Warnings Alert (F1, F4) */}
             {!isVerifyingSession && !forbiddenError && warnings.length > 0 && (

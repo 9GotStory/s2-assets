@@ -15,6 +15,7 @@ import { authRoutes } from './routes/auth.routes.ts';
 import { systemRoutes } from './routes/system.routes.ts';
 import { healthRoutes } from './routes/health.routes.ts';
 import { assetRoutes } from './routes/asset.routes.ts';
+import { assignmentRoutes } from './routes/assignment.routes.ts';
 import { acquisitionRoutes } from './routes/acquisition.routes.ts';
 import { evidenceRoutes } from './routes/evidence.routes.ts';
 import { referenceRoutes } from './routes/reference.routes.ts';
@@ -22,6 +23,9 @@ import { UserService, type DatabaseClient } from './services/user.service.ts';
 import { SessionService } from './services/session.service.ts';
 import { CapabilityService } from './services/capability.service.ts';
 import { AssetService } from './services/asset.service.ts';
+import { AssignmentRecordingService } from './services/assignment-recording.service.ts';
+import { BulkReassignmentService } from './services/bulk-reassignment.service.ts';
+import { AssignmentCorrectionService } from './services/assignment-correction.service.ts';
 import { AcquisitionService } from './services/acquisition.service.ts';
 import { EvidenceService } from './services/evidence.service.ts';
 
@@ -35,6 +39,8 @@ export interface AppOptions {
   sessionTtlMs?: number;
   plugin?: (app: FastifyInstance) => Promise<void> | void;
   publicAppOrigin?: string;
+  // The current time for business-date rules (F003: an Effective Date is no later than today).
+  clock?: () => Date;
 }
 
 export function redactSecrets(message: string): string {
@@ -179,7 +185,7 @@ export async function buildApp(options: AppOptions = {}): Promise<FastifyInstanc
     });
     const capabilityService = new CapabilityService({ db: dbClient });
 
-    const assetService = new AssetService({ db: dbClient });
+    const assetService = new AssetService({ db: dbClient, clock: options.clock });
     const acquisitionService = new AcquisitionService({ db: dbClient });
     const evidenceService = new EvidenceService({ db: dbClient, capabilityService });
 
@@ -241,6 +247,13 @@ export async function buildApp(options: AppOptions = {}): Promise<FastifyInstanc
       capabilityService,
       db: dbClient,
       publicAppOrigin,
+    });
+
+    await app.register(assignmentRoutes, {
+      prefix: '/assets',
+      assignmentRecordingService: new AssignmentRecordingService({ db: dbClient, clock: options.clock }),
+      assignmentCorrectionService: new AssignmentCorrectionService({ db: dbClient, clock: options.clock }),
+      bulkReassignmentService: new BulkReassignmentService({ db: dbClient, clock: options.clock }),
     });
 
     // Acquisition routes mounted under /acquisitions

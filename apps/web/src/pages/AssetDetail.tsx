@@ -3,15 +3,11 @@ import { useParams, useNavigate, Link } from 'react-router';
 import { QueryClient, QueryClientProvider, useQuery, useQueryClient } from '@tanstack/react-query';
 import { AssetCorrectionForm } from '../components/AssetCorrectionForm';
 import { AssetQrLabel } from '../components/AssetQrLabel';
+import { AssignmentSection } from '../components/AssignmentSection';
 import { EvidencePanel } from '../components/EvidencePanel';
-import {
-  REFERENCE_DIMENSIONS,
-  entryLabel,
-  type AssetReferenceColumns,
-  type AssetReferenceContext,
-} from '../components/ReferenceContextFields';
+import { type CurrentAssignment } from '../components/ReferenceContextFields';
 
-export interface AssetRecord extends Partial<AssetReferenceColumns> {
+export interface AssetRecord {
   id: string;
   asset_number: string | null;
   serial_number: string | null;
@@ -40,8 +36,14 @@ export interface HistoryRecord {
 export interface AssetDetailResponse {
   asset: AssetRecord;
   history: HistoryRecord[];
-  reference_context?: AssetReferenceContext;
+  // F003-T1: the Permanent Assignment in effect, derived from the assignment facts.
+  current_assignment?: CurrentAssignment;
+  assignment_version?: number;
+  // F003-T4: whether any Assignment Conflict stands.
+  has_assignment_conflict?: boolean;
   can_correct?: boolean;
+  can_reassign?: boolean;
+  can_correct_assignment?: boolean;
 }
 
 export const AssetDetail: React.FC = () => {
@@ -79,7 +81,7 @@ const AssetDetailContent: React.FC = () => {
   const [currentUser, setCurrentUser] = useState<{ id: string; role?: string } | null>(null);
   const [sessionLoading, setSessionLoading] = useState(true);
   const [refreshError, setRefreshError] = useState<string | null>(null);
-  const [isCorrectionRevoked, setIsCorrectionRevoked] = useState(false);
+  const [isPermissionRevoked, setIsPermissionRevoked] = useState(false);
   const [terminalError, setTerminalError] = useState<string | null>(null);
   const [isReauthorizing, setIsReauthorizing] = useState(false);
 
@@ -348,7 +350,7 @@ const AssetDetailContent: React.FC = () => {
 
   const handlePermissionRevoked = useCallback(
     async (statusCode?: number) => {
-      setIsCorrectionRevoked(true);
+      setIsPermissionRevoked(true);
 
       if (statusCode === 401) {
         if (!isMountedRef.current) return;
@@ -485,8 +487,8 @@ const AssetDetailContent: React.FC = () => {
     );
   }
 
-  const { asset, history = [], reference_context: referenceContext } = assetData;
-  const can_correct = Boolean(assetData.can_correct && !isCorrectionRevoked);
+  const { asset, history = [], current_assignment: currentAssignment } = assetData;
+  const can_correct = Boolean(assetData.can_correct && !isPermissionRevoked);
   const registrationFact = history.find((h) => h.action === 'REGISTERED');
   const isLegacy = Boolean(
     registrationFact?.payload &&
@@ -706,25 +708,6 @@ const AssetDetailContent: React.FC = () => {
               🏷️ ยังไม่ระบุหมวดหมู่ (Uncategorized)
             </dd>
 
-            {/* Reference context (T4, D7-A): each dimension and its legacy text, kept apart */}
-            {REFERENCE_DIMENSIONS.map(({ entryField, legacyField, label }) => {
-              const entry = referenceContext?.[entryField] ?? null;
-              const legacyText = referenceContext?.[legacyField] ?? null;
-              return (
-                <React.Fragment key={entryField}>
-                  <dt style={{ fontWeight: 500, color: '#4b5563' }}>{label}:</dt>
-                  <dd id={`detail-${entryField}`} style={{ margin: 0, color: '#111827' }}>
-                    {entry
-                      ? entryLabel(entry)
-                      : !legacyText && <span style={{ color: '#9ca3af' }}>ไม่ระบุ</span>}
-                    {legacyText && (
-                      <div style={{ fontSize: '0.8125rem', color: '#6b7280' }}>ข้อความเดิม: {legacyText}</div>
-                    )}
-                  </dd>
-                </React.Fragment>
-              );
-            })}
-
             <dt style={{ fontWeight: 500, color: '#4b5563' }}>
               เอกสาร / บันทึกที่มา:
             </dt>
@@ -774,6 +757,32 @@ const AssetDetailContent: React.FC = () => {
             )}
           </dl>
         </section>
+
+        {/* Permanent Assignment (F003-T1, ADR 0001): Current Assignment and timeline */}
+        <AssignmentSection
+          assetId={asset.id}
+          currentAssignment={currentAssignment}
+          actorId={currentUser?.id ?? null}
+          dataUpdatedAt={dataUpdatedAt}
+          onPermissionRevoked={handlePermissionRevoked}
+          canReassign={Boolean(assetData.can_reassign && !isPermissionRevoked)}
+          canCorrectAssignment={Boolean(assetData.can_correct_assignment && !isPermissionRevoked)}
+          assignmentVersion={assetData.assignment_version ?? 0}
+          hasAssignmentConflict={Boolean(assetData.has_assignment_conflict)}
+          isLegacy={isLegacy}
+          csrfToken={csrfToken}
+          onRecorded={async () => {
+            setRefreshError(null);
+            const refetchResult = await refetch();
+            if (refetchResult.isError) {
+              setRefreshError('บันทึกรายการสำเร็จ แต่การดึงข้อมูลล่าสุดล้มเหลว กรุณากดปุ่มเพื่อโหลดข้อมูลใหม่');
+            }
+          }}
+          onRefresh={async () => {
+            const refetchResult = await refetch();
+            return refetchResult.isError ? null : (refetchResult.data?.assignment_version ?? null);
+          }}
+        />
 
         {/* QR Code and Minimal Printing Panel (T8) */}
         <AssetQrLabel
@@ -990,7 +999,6 @@ const AssetDetailContent: React.FC = () => {
           <section aria-labelledby="correction-heading">
             <AssetCorrectionForm
               asset={asset}
-              actorId={currentUser?.id ?? null}
               isLegacy={isLegacy}
               csrfToken={csrfToken}
               dataUpdatedAt={dataUpdatedAt}

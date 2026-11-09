@@ -1,8 +1,27 @@
 import * as crypto from 'node:crypto';
 import pg from 'pg';
 import { isValidUuid } from './capability.service.ts';
-import { hasDisallowedControlChars } from './control-characters.ts';
-import { findUnassignableEntry, REFERENCE_LISTS } from './reference.service.ts';
+import {
+  ASSIGNMENT_FIELDS,
+  LEGACY_TEXT_FIELDS,
+  REFERENCE_ID_FIELDS,
+  assertInitialAssignmentEntries,
+  assignmentSearch,
+  bangkokDate,
+  hasAssignmentConflict,
+  normalizeInitialAssignment,
+  readAssignmentTimeline,
+  readCurrentAssignment,
+  recordInitialAssignment,
+  type AssignmentEvent,
+  type AssignmentInput,
+  type CurrentAssignment,
+  type InitialAssignmentFacts,
+  type InitialAssignmentInput,
+} from './assignment.service.ts';
+import { ValidationError } from './validation-error.ts';
+
+export { ValidationError };
 
 export interface AssetRecord {
   id: string;
@@ -10,12 +29,6 @@ export interface AssetRecord {
   serial_number: string | null;
   name: string | null;
   category: string | null;
-  location_id?: string | null;
-  organization_unit_id?: string | null;
-  responsible_person_id?: string | null;
-  legacy_location_text?: string | null;
-  legacy_organization_unit_text?: string | null;
-  legacy_responsible_person_text?: string | null;
   source_reference: string | null;
   source_notes: string | null;
   registered_by: string;
@@ -36,54 +49,7 @@ export interface AssetHistoryRecord {
   created_at?: string | Date;
 }
 
-/**
- * T4 (#25, D7-A): optional reference context. Each id names an active entry of its list; each
- * legacy text keeps what an old record said when it matches no entry (AR-06, AR-10).
- */
-export interface ReferenceContextInput {
-  location_id?: string | null;
-  organization_unit_id?: string | null;
-  responsible_person_id?: string | null;
-  legacy_location_text?: string | null;
-  legacy_organization_unit_text?: string | null;
-  legacy_responsible_person_text?: string | null;
-}
-
-export type NormalizedReferenceContext = { [K in keyof ReferenceContextInput]-?: string | null };
-
-export interface ReferenceEntrySummary {
-  id: string;
-  name: string;
-  is_active: boolean;
-}
-
-export interface AssetReferenceContext {
-  location: ReferenceEntrySummary | null;
-  organization_unit: ReferenceEntrySummary | null;
-  responsible_person: ReferenceEntrySummary | null;
-  legacy_location_text: string | null;
-  legacy_organization_unit_text: string | null;
-  legacy_responsible_person_text: string | null;
-}
-
-// The Asset column of each reference list (location_id, organization_unit_id, responsible_person_id).
-export const REFERENCE_ID_FIELDS = Object.values(REFERENCE_LISTS).map(({ assetColumn }) => assetColumn);
-
-export const LEGACY_TEXT_FIELDS = [
-  'legacy_location_text',
-  'legacy_organization_unit_text',
-  'legacy_responsible_person_text',
-] as const;
-
-export const LEGACY_TEXT_MAX_LENGTH = 500;
-
-type ReferenceContextField = keyof ReferenceContextInput;
-
-const REFERENCE_CONTEXT_FIELDS: readonly ReferenceContextField[] = [...REFERENCE_ID_FIELDS, ...LEGACY_TEXT_FIELDS];
-
-const expectedKey = (field: ReferenceContextField) => `expected_${field}` as keyof ExpectedReferenceContextInput;
-
-export interface RegisterAssetInput extends ReferenceContextInput {
+export interface RegisterAssetInput extends InitialAssignmentInput {
   name?: string | null;
   asset_number?: string | null;
   serial_number?: string | null;
@@ -106,7 +72,7 @@ export interface BulkRegisterItemInput {
   category?: null;
 }
 
-export interface BulkRegisterAssetInput extends ReferenceContextInput {
+export interface BulkRegisterAssetInput extends InitialAssignmentInput {
   acquisition_id?: string | null;
   explicit_continuation?: boolean;
   items: BulkRegisterItemInput[];
@@ -116,6 +82,7 @@ export interface BulkRegisterResultItem {
   item_key: string;
   asset_id: string;
   history_id: string;
+  initial_assignment_id: string | null;
 }
 
 export interface BulkRegisterAssetResult {
@@ -124,12 +91,12 @@ export interface BulkRegisterAssetResult {
   shared_acquisition_id: string | null;
 }
 
-// T4 (#25): the expected-before value of each reference field a correction names.
-export type ExpectedReferenceContextInput = {
-  [K in keyof ReferenceContextInput as `expected_${K}`]?: string | null;
+// The dimension fields and expected-before values a Feature 002 correction named; refused since #50 Q1.
+export type ExpectedAssignmentInput = {
+  [K in keyof AssignmentInput as `expected_${K}`]?: string | null;
 };
 
-export interface CorrectAssetInput extends ReferenceContextInput, ExpectedReferenceContextInput {
+export interface CorrectAssetInput extends AssignmentInput, ExpectedAssignmentInput {
   name?: string | null;
   asset_number?: string | null;
   serial_number?: string | null;
@@ -143,6 +110,8 @@ export interface CorrectAssetInput extends ReferenceContextInput, ExpectedRefere
 export interface AssetRegistrationResult {
   asset: AssetRecord;
   history: AssetHistoryRecord;
+  // F003-T1: the separate fact that records the registration's dimension values, if any.
+  initial_assignment: AssignmentEvent | null;
 }
 
 export interface AssetCorrectionResult {
@@ -153,18 +122,8 @@ export interface AssetCorrectionResult {
 
 export interface AssetServiceOptions {
   db: pg.Pool | any;
-}
-
-export class ValidationError extends Error {
-  statusCode: number;
-  code: string;
-
-  constructor(message: string) {
-    super(message);
-    this.name = 'ValidationError';
-    this.statusCode = 400;
-    this.code = 'VALIDATION_FAILED';
-  }
+  // The current time; "today" for an Effective Date is its Asia/Bangkok date.
+  clock?: () => Date;
 }
 
 export class NotFoundError extends Error {
@@ -182,13 +141,13 @@ export class NotFoundError extends Error {
 export class StaleBeforeConflictError extends Error {
   statusCode: number;
   code: string;
-  current_values?: Record<string, string | null>;
-  expected_values?: Record<string, string | null>;
+  current_values?: Record<string, string | number | null>;
+  expected_values?: Record<string, string | number | null>;
 
   constructor(
     message: string = 'Current asset state differs from expected before values',
-    currentValues?: Record<string, string | null>,
-    expectedValues?: Record<string, string | null>
+    currentValues?: Record<string, string | number | null>,
+    expectedValues?: Record<string, string | number | null>
   ) {
     super(message);
     this.name = 'StaleBeforeConflictError';
@@ -303,7 +262,7 @@ export type SearchAssetField =
   | 'name'
   | (typeof LEGACY_TEXT_FIELDS)[number];
 
-export interface SearchAssetItem extends AssetReferenceContext {
+export interface SearchAssetItem extends CurrentAssignment {
   id: string;
   name: string | null;
   asset_number: string | null;
@@ -317,6 +276,8 @@ export interface SearchAssetInput {
   location_id?: string;
   organization_unit_id?: string;
   responsible_person_id?: string;
+  // F003-T4 (#54): only Assets with at least one Assignment Conflict.
+  has_assignment_conflict?: boolean;
   limit?: number | string;
   offset?: number | string;
 }
@@ -337,105 +298,20 @@ function isValidExactUuid(val: unknown): val is string {
 }
 
 /**
- * T4 (#25): validates and normalizes optional reference context. Ids must be UUIDs; legacy text is
- * trimmed, blank becomes null, and it is kept as recorded otherwise.
+ * #50 Q1 (#25 D3 as amended, ADR 0001): the registry correction edits name, Asset Number and
+ * Serial Number only. Location, OrganizationUnit and Responsible Person change only through an
+ * assignment action, so a correction naming any of them, or its expected-before value, is refused.
  */
-export function normalizeReferenceContext(
-  input: ReferenceContextInput,
-  label: string = ''
-): NormalizedReferenceContext {
-  const context = {} as NormalizedReferenceContext;
-  for (const field of REFERENCE_ID_FIELDS) {
-    const value = input[field];
-    if (value === undefined || value === null) {
-      context[field] = null;
-    } else if (!isValidUuid(value)) {
-      throw new ValidationError(`${field} must be a valid UUID${label}`);
-    } else {
-      context[field] = value.trim().toLowerCase();
-    }
+function refuseAssignmentFields(input: CorrectAssetInput): void {
+  const named = ASSIGNMENT_FIELDS.flatMap((field) => [field, `expected_${field}` as const]).filter(
+    (field) => input[field] !== undefined
+  );
+  if (named.length > 0) {
+    throw new ValidationError(
+      `The registry correction does not change Location, OrganizationUnit or Responsible Person; record an assignment action instead (${named.join(', ')})`
+    );
   }
-  for (const field of LEGACY_TEXT_FIELDS) {
-    const value = input[field];
-    if (value === undefined || value === null) {
-      context[field] = null;
-      continue;
-    }
-    if (typeof value !== 'string') {
-      throw new ValidationError(`${field} must be a string or null${label}`);
-    }
-    const text = value.trim();
-    if (text.length > LEGACY_TEXT_MAX_LENGTH) {
-      throw new ValidationError(`${field} must be at most ${LEGACY_TEXT_MAX_LENGTH} characters${label}`);
-    }
-    // Line breaks and tabs are allowed in legacy text; other control characters are not.
-    if (hasDisallowedControlChars(text)) {
-      throw new ValidationError(`${field} must not contain control characters${label}`);
-    }
-    context[field] = text.length > 0 ? text : null;
-  }
-  return context;
 }
-
-const hasReferenceContext = (context: NormalizedReferenceContext): boolean =>
-  Object.values(context).some((value) => value !== null);
-
-// The reference-context columns of an `assets` row, as AssetRecord fields.
-const referenceColumns = (row: any): NormalizedReferenceContext => ({
-  location_id: row.location_id ?? null,
-  organization_unit_id: row.organization_unit_id ?? null,
-  responsible_person_id: row.responsible_person_id ?? null,
-  legacy_location_text: row.legacy_location_text ?? null,
-  legacy_organization_unit_text: row.legacy_organization_unit_text ?? null,
-  legacy_responsible_person_text: row.legacy_responsible_person_text ?? null,
-});
-
-/**
- * T4 (#25): the reference fields a correction names, normalized like registration. Each corrected
- * field needs its expected-before value; an expected value given alone is still checked.
- */
-function normalizeReferenceCorrection(input: CorrectAssetInput): {
-  changes: Partial<NormalizedReferenceContext>;
-  expected: Partial<NormalizedReferenceContext>;
-} {
-  for (const field of REFERENCE_CONTEXT_FIELDS) {
-    if (input[field] !== undefined && input[expectedKey(field)] === undefined) {
-      throw new ValidationError(`${expectedKey(field)} is required when ${field} is corrected`);
-    }
-  }
-  const pickNamedFields = (source: ReferenceContextInput, context: NormalizedReferenceContext) =>
-    Object.fromEntries(
-      REFERENCE_CONTEXT_FIELDS.filter((field) => source[field] !== undefined).map((field) => [field, context[field]])
-    ) as Partial<NormalizedReferenceContext>;
-  const expectedInput = Object.fromEntries(
-    REFERENCE_CONTEXT_FIELDS.map((field) => [field, input[expectedKey(field)]])
-  ) as ReferenceContextInput;
-  return {
-    changes: pickNamedFields(input, normalizeReferenceContext(input)),
-    expected: pickNamedFields(expectedInput, normalizeReferenceContext(expectedInput, ' (expected before value)')),
-  };
-}
-
-const ASSET_REFERENCE_SELECT = `location_id, organization_unit_id, responsible_person_id,
-             legacy_location_text, legacy_organization_unit_text, legacy_responsible_person_text`;
-
-// The list entries an `assets` row aliased `a` names, for display in detail and search.
-const REFERENCE_ENTRY_SELECT = `l.name AS location_name, l.is_active AS location_active,
-                o.name AS organization_unit_name, o.is_active AS organization_unit_active,
-                p.name AS responsible_person_name, p.is_active AS responsible_person_active`;
-const REFERENCE_ENTRY_JOINS = `LEFT JOIN locations l ON l.id = a.location_id
-         LEFT JOIN organization_units o ON o.id = a.organization_unit_id
-         LEFT JOIN persons p ON p.id = a.responsible_person_id`;
-
-const referenceEntries = (row: any): Pick<AssetReferenceContext, 'location' | 'organization_unit' | 'responsible_person'> => {
-  const entry = (prefix: string): ReferenceEntrySummary | null =>
-    row[`${prefix}_id`] ? { id: row[`${prefix}_id`], name: row[`${prefix}_name`], is_active: row[`${prefix}_active`] } : null;
-  return {
-    location: entry('location'),
-    organization_unit: entry('organization_unit'),
-    responsible_person: entry('responsible_person'),
-  };
-};
 
 // A case-insensitive literal substring pattern for ILIKE ... ESCAPE '\'.
 const containsPattern = (value: string): string =>
@@ -443,6 +319,7 @@ const containsPattern = (value: string): string =>
 
 export class AssetService {
   private db: any;
+  private clock: () => Date = () => new Date();
 
   constructor(options: AssetServiceOptions | any) {
     if (options && typeof options === 'object') {
@@ -450,8 +327,16 @@ export class AssetService {
         this.db = options;
       } else if ('db' in options && options.db) {
         this.db = options.db;
+        if (typeof options.clock === 'function') {
+          this.clock = options.clock;
+        }
       }
     }
+  }
+
+  // Today's Asia/Bangkok date, the latest Effective Date a fact may have.
+  private today(): string {
+    return bangkokDate(this.clock());
   }
 
   /**
@@ -471,11 +356,11 @@ export class AssetService {
     if (input.acquisition_id !== undefined && input.acquisition_id !== null) {
       normalized.acquisition_id = input.acquisition_id;
     }
-    // T4 context joins the fingerprint only when supplied, so pre-T4 receipts still replay. It joins
-    // as a string: the key list given to JSON.stringify below also filters nested objects' keys.
-    const context = normalizeReferenceContext(input);
-    if (hasReferenceContext(context)) {
-      normalized.reference_context = canonicalJson(context);
+    // The Initial Assignment joins the fingerprint only when supplied, so receipts without one still
+    // replay. It joins as a string: the key list given to JSON.stringify below also filters nested keys.
+    const initial = normalizeInitialAssignment(input, this.today());
+    if (initial) {
+      normalized.initial_assignment = canonicalJson(initial);
     }
     const jsonStr = JSON.stringify(normalized, Object.keys(normalized).sort());
     return crypto.createHash('sha256').update(jsonStr).digest('hex');
@@ -502,9 +387,9 @@ export class AssetService {
         is_legacy: item.is_legacy === true,
       })),
     };
-    // T4 shared context joins the fingerprint only when supplied, so pre-T4 receipts still replay.
-    const context = normalizeReferenceContext(input);
-    const fingerprinted = hasReferenceContext(context) ? { ...normalized, reference_context: context } : normalized;
+    // The shared Initial Assignment joins the fingerprint only when supplied, so receipts without one still replay.
+    const initial = normalizeInitialAssignment(input, this.today());
+    const fingerprinted = initial ? { ...normalized, initial_assignment: initial } : normalized;
     return crypto.createHash('sha256').update(canonicalJson(fingerprinted)).digest('hex');
   }
 
@@ -529,15 +414,6 @@ export class AssetService {
       },
       reason: (input.reason || '').trim(),
       explicit_continuation: input.explicit_continuation === true,
-      // T4 (#25): present only when the correction names reference context, so earlier receipts still match.
-      reference_context: REFERENCE_CONTEXT_FIELDS.some(
-        (field) => input[field] !== undefined || input[expectedKey(field)] !== undefined
-      )
-        ? {
-            changes: Object.fromEntries(REFERENCE_CONTEXT_FIELDS.map((field) => [field, input[field]])),
-            expected_before: Object.fromEntries(REFERENCE_CONTEXT_FIELDS.map((field) => [field, input[expectedKey(field)]])),
-          }
-        : undefined,
     };
     return crypto.createHash('sha256').update(canonicalJson(normalized)).digest('hex');
   }
@@ -582,7 +458,7 @@ export class AssetService {
     const excludeId = isValidUuid(excludeAssetId) ? excludeAssetId.trim() : null;
 
     const queryText = `
-      SELECT id, asset_number, serial_number, name, category, ${ASSET_REFERENCE_SELECT},
+      SELECT id, asset_number, serial_number, name, category,
              source_reference, source_notes, registered_by, recorded_at, created_at, updated_at,
              count(*) OVER()::int AS total_count
       FROM assets
@@ -738,18 +614,6 @@ export class AssetService {
     };
   }
 
-  /** T4: every reference id must name an entry that is active now (see findUnassignableEntry). */
-  private async assertActiveReferences(
-    client: pg.PoolClient | pg.Pool,
-    context: Partial<NormalizedReferenceContext>,
-    label: string = ''
-  ): Promise<void> {
-    const field = await findUnassignableEntry(client, context);
-    if (field) {
-      throw new ValidationError(`${field} must name an active entry${label}`);
-    }
-  }
-
   /**
    * Internal helper: inserts a single asset row and corresponding starting 'REGISTERED' history row
    * within an existing caller-owned database transaction client.
@@ -770,29 +634,26 @@ export class AssetService {
     {
       assetId = crypto.randomUUID(),
       historyId = crypto.randomUUID(),
-      referenceContext = normalizeReferenceContext({}),
-    }: { assetId?: string; historyId?: string; referenceContext?: NormalizedReferenceContext } = {}
+      initial = null,
+    }: { assetId?: string; historyId?: string; initial?: InitialAssignmentFacts | null } = {}
   ): Promise<{
     assetRow: AssetRecord;
     historyRow: AssetHistoryRecord;
     assetId: string;
     historyId: string;
+    initialAssignmentId: string | null;
   }> {
     const insertAssetQuery = `
       INSERT INTO assets (
         id, asset_number, serial_number, name, category,
         source_reference, source_notes,
         registered_by, recorded_at, created_at, updated_at,
-        acquisition_id,
-        location_id, organization_unit_id, responsible_person_id,
-        legacy_location_text, legacy_organization_unit_text, legacy_responsible_person_text
+        acquisition_id
       ) VALUES (
         $1, $2, $3, $4, NULL,
         $5, $6,
         $7, now(), now(), now(),
-        $8,
-        $9, $10, $11,
-        $12, $13, $14
+        $8
       )
       RETURNING *;
     `;
@@ -805,12 +666,6 @@ export class AssetService {
       item.source_notes,
       actorId,
       acquisitionId,
-      referenceContext.location_id,
-      referenceContext.organization_unit_id,
-      referenceContext.responsible_person_id,
-      referenceContext.legacy_location_text,
-      referenceContext.legacy_organization_unit_text,
-      referenceContext.legacy_responsible_person_text,
     ]);
     const assetRow: AssetRecord = assetRes.rows[0];
 
@@ -821,7 +676,6 @@ export class AssetService {
       serial_number: item.serial_number,
       source_reference: item.source_reference,
       source_notes: item.source_notes,
-      ...(hasReferenceContext(referenceContext) ? referenceContext : {}),
     };
     if (acquisitionId) {
       historyPayload.acquisition_id = acquisitionId;
@@ -844,11 +698,15 @@ export class AssetService {
     ]);
     const historyRow: AssetHistoryRecord = historyRes.rows[0];
 
+    // The Initial Assignment is a fact of its own, committed with the registration (docs/04 §2.3, #50 Q17).
+    const initialAssignmentId = initial ? await recordInitialAssignment(client, { assetId, actorId, facts: initial }) : null;
+
     return {
       assetRow,
       historyRow,
       assetId,
       historyId,
+      initialAssignmentId,
     };
   }
 
@@ -874,7 +732,8 @@ export class AssetService {
 
     const normalized = this.normalizeAndValidateRegistrationItem(input);
     const { asset_number: assetNumber, serial_number: serialNumber } = normalized;
-    const referenceContext = normalizeReferenceContext(input);
+    const today = this.today();
+    const initial = normalizeInitialAssignment(input, today);
 
     let acquisitionId: string | null = null;
     if (input.acquisition_id !== undefined && input.acquisition_id !== null) {
@@ -962,16 +821,20 @@ export class AssetService {
         }
       }
 
-      await this.assertActiveReferences(client, referenceContext);
+      if (initial) {
+        await assertInitialAssignmentEntries(client, initial, today);
+      }
 
       // 3 & 4. Insert asset record and starting history fact via shared helper
       const assetId = crypto.randomUUID();
       const historyId = crypto.randomUUID();
-      const { assetRow, historyRow } = await this.insertRegisteredAssetRecord(client, actorId, normalized, acquisitionId, {
-        assetId,
-        historyId,
-        referenceContext,
-      });
+      const { assetRow, historyRow, initialAssignmentId } = await this.insertRegisteredAssetRecord(
+        client,
+        actorId,
+        normalized,
+        acquisitionId,
+        { assetId, historyId, initial }
+      );
 
       const result: AssetRegistrationResult = {
         asset: {
@@ -980,7 +843,6 @@ export class AssetService {
           serial_number: assetRow.serial_number,
           name: assetRow.name,
           category: assetRow.category,
-          ...referenceColumns(assetRow),
           source_reference: assetRow.source_reference,
           source_notes: assetRow.source_notes,
           registered_by: assetRow.registered_by,
@@ -998,6 +860,9 @@ export class AssetService {
           payload: historyRow.payload,
           created_at: new Date(historyRow.created_at!).toISOString(),
         },
+        initial_assignment: initialAssignmentId
+          ? ((await readAssignmentTimeline(client, assetId)).find((event) => event.id === initialAssignmentId) ?? null)
+          : null,
       };
 
       // 5. Store retry token result in same transaction (D4)
@@ -1133,7 +998,8 @@ export class AssetService {
     }
 
     const explicitContinuation = input.explicit_continuation === true;
-    const referenceContext = normalizeReferenceContext(input, ' (shared reference context)');
+    const today = this.today();
+    const initial = normalizeInitialAssignment(input, today, ' (shared Initial Assignment)');
     const fingerprint = this.computeBulkPayloadFingerprint(input);
 
     const pool = this.db;
@@ -1179,7 +1045,9 @@ export class AssetService {
         }
       }
 
-      await this.assertActiveReferences(client, referenceContext, ' (shared reference context)');
+      if (initial) {
+        await assertInitialAssignmentEntries(client, initial, today, ' (shared Initial Assignment)');
+      }
 
       // 3. Duplicate candidate check if explicit continuation is false
       if (!explicitContinuation) {
@@ -1314,14 +1182,19 @@ export class AssetService {
       const results: BulkRegisterResultItem[] = [];
 
       for (const item of normalizedItems) {
-        const { assetId, historyId } = await this.insertRegisteredAssetRecord(client, actorId, item, acquisitionId, {
-          referenceContext,
-        });
+        const { assetId, historyId, initialAssignmentId } = await this.insertRegisteredAssetRecord(
+          client,
+          actorId,
+          item,
+          acquisitionId,
+          { initial }
+        );
 
         results.push({
           item_key: item.item_key,
           asset_id: assetId,
           history_id: historyId,
+          initial_assignment_id: initialAssignmentId,
         });
       }
 
@@ -1448,7 +1321,7 @@ export class AssetService {
     }
 
     const explicitContinuation = input.explicit_continuation === true;
-    const referenceCorrection = normalizeReferenceCorrection(input);
+    refuseAssignmentFields(input);
 
     const rawRetryToken = options?.retryToken;
     if (
@@ -1500,7 +1373,7 @@ export class AssetService {
 
       // 2. Lock Asset row for fresh intent
       const assetLockRes = await client.query(
-        `SELECT id, asset_number, serial_number, name, category, ${ASSET_REFERENCE_SELECT},
+        `SELECT id, asset_number, serial_number, name, category,
                 source_reference, source_notes, registered_by, recorded_at, created_at, updated_at
          FROM assets
          WHERE id = $1
@@ -1536,14 +1409,11 @@ export class AssetService {
       const currentDbName = current.name ?? null;
       const currentDbAssetNumber = current.asset_number ?? null;
       const currentDbSerialNumber = current.serial_number ?? null;
-      const currentReference = referenceColumns(current);
-      const expectedReferenceFields = Object.keys(referenceCorrection.expected) as ReferenceContextField[];
 
       if (
         currentDbName !== expectedName ||
         currentDbAssetNumber !== expectedAssetNumber ||
-        currentDbSerialNumber !== expectedSerialNumber ||
-        expectedReferenceFields.some((field) => currentReference[field] !== referenceCorrection.expected[field])
+        currentDbSerialNumber !== expectedSerialNumber
       ) {
         await client.query('ROLLBACK');
         throw new StaleBeforeConflictError(
@@ -1552,13 +1422,11 @@ export class AssetService {
             name: currentDbName,
             asset_number: currentDbAssetNumber,
             serial_number: currentDbSerialNumber,
-            ...Object.fromEntries(expectedReferenceFields.map((field) => [field, currentReference[field]])),
           },
           {
             name: expectedName,
             asset_number: expectedAssetNumber,
             serial_number: expectedSerialNumber,
-            ...referenceCorrection.expected,
           }
         );
       }
@@ -1589,10 +1457,6 @@ export class AssetService {
       const assetNumberChanged = newAssetNumber !== currentDbAssetNumber;
       const serialNumberChanged = newSerialNumber !== currentDbSerialNumber;
 
-      const newReference: NormalizedReferenceContext = { ...currentReference, ...referenceCorrection.changes };
-      const changedReferenceFields = REFERENCE_CONTEXT_FIELDS.filter(
-        (field) => newReference[field] !== currentReference[field]
-      );
 
       const currentAssetFormatted: AssetRecord = {
         id: current.id,
@@ -1600,7 +1464,6 @@ export class AssetService {
         serial_number: current.serial_number,
         name: current.name,
         category: current.category,
-        ...referenceColumns(current),
         source_reference: current.source_reference,
         source_notes: current.source_notes,
         registered_by: current.registered_by,
@@ -1609,7 +1472,7 @@ export class AssetService {
         updated_at: new Date(current.updated_at).toISOString(),
       };
 
-      if (!nameChanged && !assetNumberChanged && !serialNumberChanged && changedReferenceFields.length === 0) {
+      if (!nameChanged && !assetNumberChanged && !serialNumberChanged) {
         // No-op: no fields changed. Commit without writes to asset_history or tokens.
         await client.query('COMMIT');
         return {
@@ -1645,12 +1508,6 @@ export class AssetService {
         );
       }
 
-      // A newly named entry must be active; an entry the Asset already names may stay after deactivation.
-      await this.assertActiveReferences(
-        client,
-        Object.fromEntries(changedReferenceFields.map((field) => [field, newReference[field]]))
-      );
-
       // 6. Duplicate candidate review with self-exclusion
       if (!explicitContinuation && (assetNumberChanged || serialNumberChanged)) {
         const dupResult = await this.getDuplicateCandidates(
@@ -1681,12 +1538,6 @@ export class AssetService {
         SET asset_number = $1,
             serial_number = $2,
             name = $3,
-            location_id = $5,
-            organization_unit_id = $6,
-            responsible_person_id = $7,
-            legacy_location_text = $8,
-            legacy_organization_unit_text = $9,
-            legacy_responsible_person_text = $10,
             updated_at = now()
         WHERE id = $4
         RETURNING *;
@@ -1696,12 +1547,6 @@ export class AssetService {
         newSerialNumber,
         newName,
         assetId.trim(),
-        newReference.location_id,
-        newReference.organization_unit_id,
-        newReference.responsible_person_id,
-        newReference.legacy_location_text,
-        newReference.legacy_organization_unit_text,
-        newReference.legacy_responsible_person_text,
       ]);
       const updatedRow = updateRes.rows[0];
 
@@ -1715,9 +1560,6 @@ export class AssetService {
       }
       if (nameChanged) {
         changes.name = { before: currentDbName, after: newName };
-      }
-      for (const field of changedReferenceFields) {
-        changes[field] = { before: currentReference[field], after: newReference[field] };
       }
 
       const historyId = crypto.randomUUID();
@@ -1749,7 +1591,6 @@ export class AssetService {
           serial_number: updatedRow.serial_number,
           name: updatedRow.name,
           category: updatedRow.category,
-          ...referenceColumns(updatedRow),
           source_reference: updatedRow.source_reference,
           source_notes: updatedRow.source_notes,
           registered_by: updatedRow.registered_by,
@@ -1820,7 +1661,13 @@ export class AssetService {
    */
   async getAssetById(
     id: string
-  ): Promise<{ asset: AssetRecord; history: AssetHistoryRecord[]; reference_context: AssetReferenceContext } | null> {
+  ): Promise<{
+    asset: AssetRecord;
+    history: AssetHistoryRecord[];
+    current_assignment: CurrentAssignment;
+    assignment_version: number;
+    has_assignment_conflict: boolean;
+  } | null> {
     if (!isValidUuid(id)) {
       return null;
     }
@@ -1834,13 +1681,9 @@ export class AssetService {
 
       const assetRes = await client.query(
         `SELECT a.id, a.asset_number, a.serial_number, a.name, a.category,
-                a.location_id, a.organization_unit_id, a.responsible_person_id,
-                a.legacy_location_text, a.legacy_organization_unit_text, a.legacy_responsible_person_text,
                 a.source_reference, a.source_notes, a.registered_by, a.recorded_at, a.created_at, a.updated_at,
-                a.acquisition_id,
-                ${REFERENCE_ENTRY_SELECT}
+                a.acquisition_id
          FROM assets a
-         ${REFERENCE_ENTRY_JOINS}
          WHERE a.id = $1`,
         [id.trim()]
       );
@@ -1849,6 +1692,9 @@ export class AssetService {
         await client.query('COMMIT');
         return null;
       }
+
+      const assignment = await readCurrentAssignment(client, id.trim());
+      const hasConflict = await hasAssignmentConflict(client, id.trim());
 
       const historyRes = await client.query(
         `SELECT h.id, h.asset_id, h.action, h.actor_id, u.username as actor_username,
@@ -1862,8 +1708,6 @@ export class AssetService {
 
       await client.query('COMMIT');
 
-      const assetRow = assetRes.rows[0];
-
       return {
         asset: {
           id: assetRes.rows[0].id,
@@ -1871,7 +1715,6 @@ export class AssetService {
           serial_number: assetRes.rows[0].serial_number,
           name: assetRes.rows[0].name,
           category: assetRes.rows[0].category,
-          ...referenceColumns(assetRow),
           source_reference: assetRes.rows[0].source_reference,
           source_notes: assetRes.rows[0].source_notes,
           registered_by: assetRes.rows[0].registered_by,
@@ -1890,13 +1733,43 @@ export class AssetService {
           payload: row.payload,
           created_at: new Date(row.created_at).toISOString(),
         })),
-        reference_context: {
-          ...referenceEntries(assetRow),
-          legacy_location_text: assetRow.legacy_location_text ?? null,
-          legacy_organization_unit_text: assetRow.legacy_organization_unit_text ?? null,
-          legacy_responsible_person_text: assetRow.legacy_responsible_person_text ?? null,
-        },
+        current_assignment: assignment.current,
+        assignment_version: assignment.version,
+        has_assignment_conflict: hasConflict,
       };
+    } catch (err) {
+      try {
+        await client.query('ROLLBACK');
+      } catch {
+        // ignore rollback error on closed connection
+      }
+      throw err;
+    } finally {
+      if (shouldRelease) {
+        client.release();
+      }
+    }
+  }
+
+  /**
+   * An Asset's assignment facts in the order of facts (F003-T1), or null when the Asset does not exist.
+   * Office-wide visibility, like the Asset itself.
+   */
+  async getAssignmentTimeline(id: string): Promise<AssignmentEvent[] | null> {
+    if (!isValidUuid(id)) {
+      return null;
+    }
+
+    const pool = this.db;
+    const client = typeof pool.connect === 'function' ? await pool.connect() : pool;
+    const shouldRelease = typeof pool.connect === 'function';
+
+    try {
+      await client.query('BEGIN TRANSACTION ISOLATION LEVEL REPEATABLE READ READ ONLY');
+      const assetRes = await client.query('SELECT 1 FROM assets WHERE id = $1', [id.trim()]);
+      const timeline = assetRes.rows.length > 0 ? await readAssignmentTimeline(client, id.trim()) : null;
+      await client.query('COMMIT');
+      return timeline;
     } catch (err) {
       try {
         await client.query('ROLLBACK');
@@ -2002,20 +1875,23 @@ export class AssetService {
           throw new ValidationError('Search value for stable_id must be a valid UUID');
         }
         params.push(value);
-        conditions.push(`id = $${params.length}`);
+        conditions.push(`a.id = $${params.length}`);
       } else if (field === 'asset_number') {
         params.push(value);
-        conditions.push(`asset_number = $${params.length}`);
+        conditions.push(`a.asset_number = $${params.length}`);
       } else if (field === 'serial_number') {
         params.push(value);
-        conditions.push(`serial_number = $${params.length}`);
+        conditions.push(`a.serial_number = $${params.length}`);
       } else if (field === 'name' || (LEGACY_TEXT_FIELDS as readonly string[]).includes(field)) {
         if (value.trim() === '') {
           throw new ValidationError(`Search value for ${field} must not be whitespace-only`);
         }
         params.push(containsPattern(value));
-        // field is one of the allowed column names checked above.
-        conditions.push(`${field} ILIKE $${params.length} ESCAPE '\\'`);
+        conditions.push(
+          field === 'name'
+            ? `a.name ILIKE $${params.length} ESCAPE '\\'`
+            : assignmentSearch.legacyTextFilter(field as (typeof LEGACY_TEXT_FIELDS)[number], `$${params.length}`)
+        );
       }
     }
 
@@ -2028,7 +1904,10 @@ export class AssetService {
         throw new ValidationError(`${filter} must be a valid UUID`);
       }
       params.push(id.toLowerCase());
-      conditions.push(`${filter} = $${params.length}`);
+      conditions.push(assignmentSearch.entryFilter(filter, `$${params.length}`));
+    }
+    if (input.has_assignment_conflict) {
+      conditions.push(assignmentSearch.conflictFilter);
     }
     const whereClause = conditions.length > 0 ? `WHERE ${conditions.join(' AND ')}` : '';
 
@@ -2039,18 +1918,18 @@ export class AssetService {
 
     const query = `
       WITH filtered AS (
-        SELECT id, name, asset_number, serial_number, recorded_at, ${ASSET_REFERENCE_SELECT}
-        FROM assets
+        SELECT a.id, a.name, a.asset_number, a.serial_number, a.recorded_at
+        FROM assets a
         ${whereClause}
       ),
       counted AS (
         SELECT COUNT(*)::bigint AS total_count FROM filtered
       ),
       paged AS (
-        SELECT a.*, ${REFERENCE_ENTRY_SELECT}
-        FROM filtered a
-        ${REFERENCE_ENTRY_JOINS}
-        ORDER BY a.recorded_at DESC, a.id ASC
+        SELECT f.*, ${assignmentSearch.columns}
+        FROM filtered f
+        ${assignmentSearch.joins('f')}
+        ORDER BY f.recorded_at DESC, f.id ASC
         LIMIT $${limitParamIndex} OFFSET $${offsetParamIndex}
       )
       SELECT r.*, c.total_count
@@ -2069,10 +1948,7 @@ export class AssetService {
         name: row.name ?? null,
         asset_number: row.asset_number ?? null,
         serial_number: row.serial_number ?? null,
-        ...referenceEntries(row),
-        legacy_location_text: row.legacy_location_text ?? null,
-        legacy_organization_unit_text: row.legacy_organization_unit_text ?? null,
-        legacy_responsible_person_text: row.legacy_responsible_person_text ?? null,
+        ...assignmentSearch.current(row),
       }));
 
     const hasMore = parsedOffset + items.length < totalCount;

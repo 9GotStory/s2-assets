@@ -9,12 +9,15 @@ import {
   RetryTokenConflictError,
   StaleBeforeConflictError,
   ValidationError,
-  REFERENCE_ID_FIELDS,
-  LEGACY_TEXT_FIELDS,
   type CorrectAssetInput,
   type RegisterAssetInput,
   type BulkRegisterAssetInput,
 } from '../services/asset.service.ts';
+import {
+  LEGACY_TEXT_FIELDS,
+  REFERENCE_ID_FIELDS,
+  namesAssignmentValues,
+} from '../services/assignment.service.ts';
 import { isValidUuid, CapabilityService } from '../services/capability.service.ts';
 
 export interface AssetRoutesOptions {
@@ -34,7 +37,17 @@ const referenceContextFields = {
   legacy_responsible_person_text: z.string().nullable().optional(),
 };
 
-// T4 (#25): a correction names the expected-before value of each reference field it changes.
+// F003-T1 (#51): those values with the facts an assignment action carries besides them. A null
+// effective_date is "ไม่ทราบ" (unknown).
+export const assignmentFactFields = {
+  ...referenceContextFields,
+  effective_date: z.string().nullable().optional(),
+  document_reference: z.string().nullable().optional(),
+  remark: z.string().nullable().optional(),
+};
+
+// Feature 002 correction fields (#25 D3). Accepted here only for AssetService to refuse them with a
+// domain message: the registry correction no longer changes the Permanent Assignment (#50 Q1).
 const expectedReferenceContextFields = {
   expected_location_id: z.string().nullable().optional(),
   expected_organization_unit_id: z.string().nullable().optional(),
@@ -56,7 +69,7 @@ const RegisterAssetSchema = z
     retry_token: z.string().optional(),
     category: z.null().optional(),
     acquisition_id: z.string().nullable().optional(),
-    ...referenceContextFields,
+    ...assignmentFactFields,
   })
   .strict();
 
@@ -79,7 +92,7 @@ const BulkRegisterAssetSchema = z
     explicit_continuation: z.boolean().optional(),
     items: z.array(BulkRegisterItemSchema).min(1).max(100),
     retry_token: z.string().optional(),
-    ...referenceContextFields,
+    ...assignmentFactFields,
   })
   .strict();
 
@@ -125,6 +138,18 @@ export const assetRoutes: FastifyPluginAsync<AssetRoutesOptions> = async (
   const assetService =
     options.assetService ??
     new AssetService({ db: options.db });
+
+  // Whether the user holds 'assignment:reassign'. Fails closed without a capability service.
+  const mayReassign = async (userId: string): Promise<boolean> =>
+    capabilityService ? capabilityService.hasCapability(userId, 'assignment:reassign') : false;
+
+  // #50 Q3: dimension values at registration record an Initial Assignment, which needs
+  // 'assignment:reassign' besides the registration capability.
+  const mayRecordInitialAssignment = async (
+    userId: string,
+    body: RegisterAssetInput | BulkRegisterAssetInput
+  ): Promise<boolean> =>
+    !namesAssignmentValues(body) || (await mayReassign(userId));
 
   const getPublicAppOrigin = (): string | undefined => {
     return (fastify as any).publicAppOrigin ?? options.publicAppOrigin;
@@ -288,6 +313,15 @@ export const assetRoutes: FastifyPluginAsync<AssetRoutesOptions> = async (
         }
       }
 
+      if (!(await mayRecordInitialAssignment(user.id, body))) {
+        return reply.status(403).send({
+          statusCode: 403,
+          code: 'FORBIDDEN',
+          error: 'FORBIDDEN',
+          message: "Forbidden: requires 'assignment:reassign' capability to record an Initial Assignment",
+        });
+      }
+
       try {
         const result = await assetService.registerAsset(user.id, body, {
           retryToken,
@@ -423,6 +457,15 @@ export const assetRoutes: FastifyPluginAsync<AssetRoutesOptions> = async (
         }
       }
 
+      if (!(await mayRecordInitialAssignment(user.id, body))) {
+        return reply.status(403).send({
+          statusCode: 403,
+          code: 'FORBIDDEN',
+          error: 'FORBIDDEN',
+          message: "Forbidden: requires 'assignment:reassign' capability to record an Initial Assignment",
+        });
+      }
+
       try {
         const result = await assetService.bulkRegisterAssets(user.id, body, {
           retryToken,
@@ -525,7 +568,7 @@ export const assetRoutes: FastifyPluginAsync<AssetRoutesOptions> = async (
       const query = (request.query || {}) as Record<string, unknown>;
 
       // Check for unknown parameters
-      const allowedParams = new Set<string>(['field', 'value', 'limit', 'offset', ...REFERENCE_ID_FIELDS]);
+      const allowedParams = new Set<string>(['field', 'value', 'limit', 'offset', 'has_assignment_conflict', ...REFERENCE_ID_FIELDS]);
       for (const key of Object.keys(query)) {
         if (!allowedParams.has(key)) {
           return sendValidationError({ query: 'Unknown query parameter' });
@@ -591,6 +634,11 @@ export const assetRoutes: FastifyPluginAsync<AssetRoutesOptions> = async (
         }
       }
 
+      // F003-T4 (#54): "มีประวัติขัดแย้งค้างตรวจ" takes one value; leaving it out lists every Asset.
+      if (query.has_assignment_conflict !== undefined && query.has_assignment_conflict !== 'true') {
+        return sendValidationError({ has_assignment_conflict: "has_assignment_conflict must be 'true' when given" });
+      }
+
       // Limit validation
       if (limit !== undefined) {
         if (typeof limit !== 'string' && typeof limit !== 'number') {
@@ -628,11 +676,15 @@ export const assetRoutes: FastifyPluginAsync<AssetRoutesOptions> = async (
           location_id: query.location_id as string | undefined,
           organization_unit_id: query.organization_unit_id as string | undefined,
           responsible_person_id: query.responsible_person_id as string | undefined,
+          has_assignment_conflict: query.has_assignment_conflict === 'true',
           limit: limit as any,
           offset: offset as any,
         });
 
-        return reply.status(200).send(result);
+        // F003-T5 (#55): whether the list offers selecting rows for "ย้ายหลายรายการ". The server decides again.
+        const canReassign = request.user ? await mayReassign(request.user.id) : false;
+
+        return reply.status(200).send({ ...result, can_reassign: canReassign });
       } catch (err: any) {
         if (err instanceof ValidationError) {
           return sendValidationError({ query: err.message });
@@ -676,9 +728,13 @@ export const assetRoutes: FastifyPluginAsync<AssetRoutesOptions> = async (
       }
 
       let canCorrect = false;
+      let canReassign = false;
+      let canCorrectAssignment = false;
       let canViewAcquisition = false;
       if (request.user && capabilityService) {
         canCorrect = await capabilityService.hasCapability(request.user.id, 'asset:correct');
+        canReassign = await capabilityService.hasCapability(request.user.id, 'assignment:reassign');
+        canCorrectAssignment = await capabilityService.hasCapability(request.user.id, 'assignment:correct');
         canViewAcquisition = await capabilityService.hasCapability(request.user.id, 'acquisition:view');
       }
 
@@ -699,7 +755,47 @@ export const assetRoutes: FastifyPluginAsync<AssetRoutesOptions> = async (
       return reply.status(200).send({
         ...result,
         can_correct: canCorrect,
+        can_reassign: canReassign,
+        can_correct_assignment: canCorrectAssignment,
       });
+    }
+  );
+
+  /**
+   * GET /:id/assignments
+   * The Asset's assignment timeline (F003-T1, AS-06, MR-04): every assignment fact in the order of
+   * facts, each with its kind, Effective Date or unknown, Recorded At, recorder, provenance, changes,
+   * document reference and remark.
+   * Protected: requires 'asset:view' capability, like the Asset itself
+   */
+  fastify.get(
+    '/:id/assignments',
+    {
+      preHandler: [requireCapability('asset:view')],
+    },
+    async (request: FastifyRequest, reply: FastifyReply) => {
+      const { id } = (request.params || {}) as { id: string };
+
+      if (!isValidUuid(id)) {
+        return reply.status(400).send({
+          statusCode: 400,
+          code: 'INVALID_ID',
+          error: 'INVALID_ID',
+          message: 'Asset ID must be a valid UUID string',
+        });
+      }
+
+      const items = await assetService.getAssignmentTimeline(id);
+      if (!items) {
+        return reply.status(404).send({
+          statusCode: 404,
+          code: 'NOT_FOUND',
+          error: 'NOT_FOUND',
+          message: 'Asset not found',
+        });
+      }
+
+      return reply.status(200).send({ items });
     }
   );
 

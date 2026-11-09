@@ -1,6 +1,13 @@
 import React, { useEffect, useState, useRef, useCallback } from 'react';
 import { useNavigate, Link } from 'react-router';
 import {
+  BULK_REASSIGNMENT_MAX_ASSETS,
+  BulkReassignmentBar,
+  BulkReassignmentPanel,
+  assetLabelOf,
+  type BulkSelectedAsset,
+} from '../components/BulkReassignmentPanel';
+import {
   REFERENCE_DIMENSIONS,
   entryLabel,
   useReferenceLists,
@@ -27,6 +34,8 @@ export interface SearchAssetResult {
   offset: number;
   total_count: number;
   has_more: boolean;
+  // Whether the viewer holds 'assignment:reassign' (F003-T5).
+  can_reassign: boolean;
 }
 
 // T4 (#25): each legacy reference text is its own field, keeping the dimensions distinct.
@@ -38,10 +47,11 @@ export type SearchFieldType =
   | 'stable_id'
   | (typeof REFERENCE_DIMENSIONS)[number]['legacyField'];
 
-// T4 (#25): one exact entry per dimension, '' for any; the server combines them with AND.
-export type ReferenceFilters = Record<ReferenceIdField, string>;
+// T4 (#25): one exact entry per dimension, '' for any; the server combines them with AND. F003-T4
+// (#54): has_assignment_conflict is 'true' to list only Assets with an Assignment Conflict, '' for any.
+export type AssetListFilters = Record<ReferenceIdField | 'has_assignment_conflict', string>;
 
-const NO_REFERENCE_FILTERS: ReferenceFilters = { location_id: '', organization_unit_id: '', responsible_person_id: '' };
+const NO_FILTERS: AssetListFilters = { location_id: '', organization_unit_id: '', responsible_person_id: '', has_assignment_conflict: '' };
 
 export const AssetSearch: React.FC = () => {
   const navigate = useNavigate();
@@ -49,12 +59,12 @@ export const AssetSearch: React.FC = () => {
   // Form input state
   const [selectedField, setSelectedField] = useState<SearchFieldType>('all');
   const [searchValue, setSearchValue] = useState<string>('');
-  const [selectedFilters, setSelectedFilters] = useState<ReferenceFilters>(NO_REFERENCE_FILTERS);
+  const [selectedFilters, setSelectedFilters] = useState<AssetListFilters>(NO_FILTERS);
 
   // Active query state (what the current results reflect)
   const [activeField, setActiveField] = useState<SearchFieldType>('all');
   const [activeValue, setActiveValue] = useState<string>('');
-  const [activeFilters, setActiveFilters] = useState<ReferenceFilters>(NO_REFERENCE_FILTERS);
+  const [activeFilters, setActiveFilters] = useState<AssetListFilters>(NO_FILTERS);
   const [offset, setOffset] = useState<number>(0);
   const limit = 25;
 
@@ -65,6 +75,12 @@ export const AssetSearch: React.FC = () => {
   const [isLoading, setIsLoading] = useState<boolean>(false);
   const [errorMessage, setErrorMessage] = useState<string | null>(null);
   const [isForbidden, setIsForbidden] = useState<boolean>(false);
+
+  // F003-T5 (#55): the rows chosen for "ย้ายหลายรายการ", kept across pages and searches.
+  const [canReassign, setCanReassign] = useState<boolean>(false);
+  const [csrfToken, setCsrfToken] = useState<string | null>(null);
+  const [selection, setSelection] = useState<Map<string, BulkSelectedAsset>>(() => new Map());
+  const [isBulkPanelOpen, setIsBulkPanelOpen] = useState<boolean>(false);
 
   // Filter lists, loaded for the verified actor (inactive entries included: Assets may still name them)
   const [listActorId, setListActorId] = useState<string | null>(null);
@@ -79,7 +95,7 @@ export const AssetSearch: React.FC = () => {
   // Active query refs for revalidation re-fetch
   const activeFieldRef = useRef<SearchFieldType>(activeField);
   const activeValueRef = useRef<string>(activeValue);
-  const activeFiltersRef = useRef<ReferenceFilters>(activeFilters);
+  const activeFiltersRef = useRef<AssetListFilters>(activeFilters);
   const offsetRef = useRef<number>(offset);
 
   useEffect(() => {
@@ -97,6 +113,7 @@ export const AssetSearch: React.FC = () => {
     setErrorMessage(null);
     setIsForbidden(false);
     setIsLoading(false);
+    setCanReassign(false);
   }, []);
 
   // Verify authenticated session and bind actor with generation guarding
@@ -163,13 +180,16 @@ export const AssetSearch: React.FC = () => {
           clearSearchState();
           setSelectedField('all');
           setSearchValue('');
-          setSelectedFilters(NO_REFERENCE_FILTERS);
+          setSelectedFilters(NO_FILTERS);
           activeFieldRef.current = 'all';
           activeValueRef.current = '';
-          activeFiltersRef.current = NO_REFERENCE_FILTERS;
+          activeFiltersRef.current = NO_FILTERS;
           offsetRef.current = 0;
+          setSelection(new Map());
+          setIsBulkPanelOpen(false);
         }
         currentActorIdRef.current = actorId;
+        setCsrfToken(data?.csrfToken ?? null);
         return { valid: true, actorId, actorChanged };
       } catch (err: unknown) {
         if (
@@ -193,7 +213,7 @@ export const AssetSearch: React.FC = () => {
 
   // Execute search with generation tracking and actor epoch binding
   const executeSearch = useCallback(
-    async (field: SearchFieldType, value: string, targetOffset: number, filters: ReferenceFilters) => {
+    async (field: SearchFieldType, value: string, targetOffset: number, filters: AssetListFilters) => {
       // 1. Invalidate/abort obsolete requests before awaiting
       if (abortControllerRef.current) {
         abortControllerRef.current.abort();
@@ -225,7 +245,7 @@ export const AssetSearch: React.FC = () => {
       const capturedActorId = session.actorId;
       const effectiveField = session.actorChanged ? 'all' : field;
       const effectiveValue = session.actorChanged ? '' : value;
-      const effectiveFilters = session.actorChanged ? NO_REFERENCE_FILTERS : filters;
+      const effectiveFilters = session.actorChanged ? NO_FILTERS : filters;
       const effectiveOffset = session.actorChanged ? 0 : targetOffset;
       setListActorId(capturedActorId ?? null);
 
@@ -236,9 +256,9 @@ export const AssetSearch: React.FC = () => {
           queryParams.set('field', effectiveField);
           queryParams.set('value', effectiveValue);
         }
-        for (const [filter, entryId] of Object.entries(effectiveFilters)) {
-          if (entryId) {
-            queryParams.set(filter, entryId);
+        for (const [filter, filterValue] of Object.entries(effectiveFilters)) {
+          if (filterValue) {
+            queryParams.set(filter, filterValue);
           }
         }
         queryParams.set('limit', String(limit));
@@ -319,6 +339,7 @@ export const AssetSearch: React.FC = () => {
           setResults(data.items);
           setTotalCount(data.total_count);
           setHasMore(data.has_more);
+          setCanReassign(data.can_reassign === true);
           setOffset(data.offset);
           setActiveField(effectiveField);
           setActiveValue(effectiveValue);
@@ -395,7 +416,7 @@ export const AssetSearch: React.FC = () => {
   // Initial browse on mount
   useEffect(() => {
     isMountedRef.current = true;
-    executeSearch('all', '', 0, NO_REFERENCE_FILTERS);
+    executeSearch('all', '', 0, NO_FILTERS);
     return () => {
       isMountedRef.current = false;
       ++searchGenRef.current;
@@ -411,8 +432,8 @@ export const AssetSearch: React.FC = () => {
   const handleReset = () => {
     setSelectedField('all');
     setSearchValue('');
-    setSelectedFilters(NO_REFERENCE_FILTERS);
-    executeSearch('all', '', 0, NO_REFERENCE_FILTERS);
+    setSelectedFilters(NO_FILTERS);
+    executeSearch('all', '', 0, NO_FILTERS);
   };
 
   const handlePrevPage = () => {
@@ -425,6 +446,24 @@ export const AssetSearch: React.FC = () => {
       const nextOffset = offset + limit;
       executeSearch(activeField, activeValue, nextOffset, activeFilters);
     }
+  };
+
+  const toggleSelected = (item: SearchAssetItem) => {
+    setSelection((current) => {
+      const next = new Map(current);
+      if (next.has(item.id)) {
+        next.delete(item.id);
+      } else if (next.size < BULK_REASSIGNMENT_MAX_ASSETS) {
+        next.set(item.id, { id: item.id, name: item.name, asset_number: item.asset_number });
+      }
+      return next;
+    });
+  };
+
+  const handleBulkFinished = () => {
+    setSelection(new Map());
+    setIsBulkPanelOpen(false);
+    executeSearch(activeField, activeValue, offset, activeFilters);
   };
 
   return (
@@ -659,7 +698,7 @@ export const AssetSearch: React.FC = () => {
               </div>
             </div>
 
-            {/* Reference filters (T4, D7-A): each dimension narrows the results on its own */}
+            {/* Current Assignment filters (T4 D7-A, F003-T1): each dimension narrows the results on its own */}
             <div
               style={{
                 display: 'grid',
@@ -705,12 +744,46 @@ export const AssetSearch: React.FC = () => {
                 </div>
               ))}
             </div>
+            <label
+              htmlFor="search-filter-has_assignment_conflict"
+              style={{
+                display: 'flex',
+                alignItems: 'center',
+                gap: '0.375rem',
+                marginTop: '0.75rem',
+                fontSize: '0.875rem',
+                fontWeight: 500,
+                color: '#374151',
+              }}
+            >
+              <input
+                id="search-filter-has_assignment_conflict"
+                type="checkbox"
+                checked={selectedFilters.has_assignment_conflict === 'true'}
+                onChange={(e) =>
+                  setSelectedFilters((current) => ({ ...current, has_assignment_conflict: e.target.checked ? 'true' : '' }))
+                }
+              />
+              มีประวัติขัดแย้งค้างตรวจ
+            </label>
             {referenceLists.error && (
               <div role="alert" style={{ marginTop: '0.5rem', fontSize: '0.8125rem', color: '#b91c1c' }}>
                 {referenceLists.error}
               </div>
             )}
           </form>
+        )}
+
+        {/* F003-T5 (#55): outside the results, so that reading the list again keeps what is being entered */}
+        {isBulkPanelOpen && (
+          <BulkReassignmentPanel
+            selected={[...selection.values()]}
+            actorId={listActorId}
+            csrfToken={csrfToken}
+            onCancel={() => setIsBulkPanelOpen(false)}
+            onFinished={handleBulkFinished}
+            onPermissionRevoked={() => setCanReassign(false)}
+          />
         )}
 
         {/* Loading State */}
@@ -758,6 +831,15 @@ export const AssetSearch: React.FC = () => {
               </span>
             </div>
 
+            {canReassign && (
+              <BulkReassignmentBar
+                selectedCount={selection.size}
+                isPanelOpen={isBulkPanelOpen}
+                onOpen={() => setIsBulkPanelOpen(true)}
+                onClear={() => setSelection(new Map())}
+              />
+            )}
+
             {results.length === 0 ? (
               <div
                 id="no-results-message"
@@ -787,6 +869,9 @@ export const AssetSearch: React.FC = () => {
                 >
                   <thead>
                     <tr style={{ backgroundColor: '#f9fafb', borderBottom: '2px solid #e5e7eb' }}>
+                      {canReassign && (
+                        <th style={{ padding: '0.75rem 1rem', fontWeight: 600, color: '#374151' }}>เลือก</th>
+                      )}
                       <th style={{ padding: '0.75rem 1rem', fontWeight: 600, color: '#374151' }}>
                         หมายเลขครุภัณฑ์
                       </th>
@@ -797,7 +882,7 @@ export const AssetSearch: React.FC = () => {
                         หมายเลขเครื่อง
                       </th>
                       <th style={{ padding: '0.75rem 1rem', fontWeight: 600, color: '#374151' }}>
-                        ข้อมูลอ้างอิง
+                        สถานที่ หน่วยงาน และผู้รับผิดชอบ
                       </th>
                       <th style={{ padding: '0.75rem 1rem', fontWeight: 600, color: '#374151' }}>
                         รหัสอ้างอิงถาวร (Stable ID)
@@ -813,6 +898,18 @@ export const AssetSearch: React.FC = () => {
                           borderBottom: '1px solid #e5e7eb',
                         }}
                       >
+                        {canReassign && (
+                          <td style={{ padding: '0.75rem 1rem' }}>
+                            <input
+                              type="checkbox"
+                              data-testid={`asset-select-${item.id}`}
+                              aria-label={`เลือก ${assetLabelOf(item, item.id)}`}
+                              checked={selection.has(item.id)}
+                              disabled={isBulkPanelOpen || (!selection.has(item.id) && selection.size >= BULK_REASSIGNMENT_MAX_ASSETS)}
+                              onChange={() => toggleSelected(item)}
+                            />
+                          </td>
+                        )}
                         <td style={{ padding: '0.75rem 1rem', color: '#111827', fontWeight: 500 }}>
                           {item.asset_number || '-'}
                         </td>

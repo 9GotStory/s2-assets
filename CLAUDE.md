@@ -31,10 +31,6 @@ for provenance or forensics.
   `BLUEPRINT.md`, `TECHNOLOGY.md`, `docs/`, `features/` and the Feature 001 artifacts describe
   earlier delivery: they select no tool, role or workflow for new work, and the business and
   technical content around them still binds.
-- Until 2026-11-03, Feature 002 work ran through Multica, AGY, Codex and ChatGPT. Its Multica
-  runs, `agent/agy-developer/*` branches and `multica-agent` trailers are provenance; a
-  Multica-era approval becomes current authority only when the Product Owner confirms it on the
-  GitHub Issue or in the session.
 
 ## Workflow
 
@@ -58,7 +54,8 @@ with `/code-review` → `/pr` → `/retro`.
   scope or the baseline is materially unclear, ask them; report a failed checkout, runtime or
   skill invocation exactly as it happened.
 - **Review:** report self-review as self-review; a Claude Code session or subagent is never an
-  independent reviewer.
+  independent reviewer. When a review's fixes change more than 200 lines (insertions plus deletions
+  in `git diff --shortstat`), run `/code-review` over those fixes too.
 - **Acceptance:** evidence-based (passing checks, runtime evidence where the change needs it),
   then the Product Owner's acceptance. Claude Code's own review verdict is never acceptance.
 - **Merges:** GitHub `9GotStory/s2-assets` is the source of truth. Each feature has one
@@ -76,12 +73,17 @@ with `/code-review` → `/pr` → `/retro`.
 
 ## Checks
 
-Every change passes `git diff --check <base>...HEAD`, where `<base>` is the integration-branch
-commit the task started from; a change that touches only documentation needs nothing more.
-`.github/workflows/ci.yml` defines the other checks, and its `ci-gate` job names the jobs that
-must pass. When CI does not run on a pull request, run each of those jobs locally the way
-`ci.yml` runs it and record each job's exact result in the pull request: that record is the
-pull request's check.
+`.github/workflows/ci.yml` defines the checks, and its `ci-gate` job names the jobs that must
+pass. On a pull request, CI also runs `git diff --check` and `scripts/check-glossary.sh` against
+the base. Locally, run each job through its script in `scripts/ci/`, `security-scan.sh` included,
+before pushing, so that a finding reaches the Product Owner with the ticket's other decisions.
+To run one test file or a typecheck, use the same scripts:
+`scripts/ci/integration.sh tests/integration/<file>`, `scripts/ci/e2e.sh tests/e2e/<spec>`,
+`scripts/ci/quality.sh --quick`.
+When CI does not run on a pull request, run each job locally and record each job's exact result
+in the pull request: that record is the pull request's check. A change
+that touches only documentation needs only `git diff --check <base>...HEAD`, where `<base>` is the
+integration-branch commit the task started from.
 
 ## Agent skills
 
