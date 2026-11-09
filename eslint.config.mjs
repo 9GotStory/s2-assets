@@ -47,6 +47,20 @@ export default tseslint.config(
     },
   },
   {
+    // #66: a request that starts while a page's last route is removed can stay paused with no
+    // response, so a journey removes every route only as its last step.
+    files: ['apps/web/tests/e2e/**/*.ts'],
+    rules: {
+      'no-restricted-syntax': [
+        'error',
+        {
+          selector: "ExpressionStatement:not(:last-child) > AwaitExpression > CallExpression[callee.property.name='unrouteAll']",
+          message: 'Remove routes by name until the journey ends: unrouteAll takes the catch-all route with it (#66).',
+        },
+      ],
+    },
+  },
+  {
     files: ['**/tests/**', '**/tests/**/*', '**/*.test.ts', '**/*.spec.ts'],
     rules: {
       'prefer-const': 'off',

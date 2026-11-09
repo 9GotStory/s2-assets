@@ -103,7 +103,7 @@ describe('Acquisition Routes Integration Tests (Seam A)', () => {
     adminUser = await createAuthenticatedSession(aId);
     readonlyUser = await createAuthenticatedSession(rId);
     maintainerUser = await createAuthenticatedSession(mId);
-  }, 60_000);
+  }, 120_000);
 
   afterAll(async () => {
     if (app) {

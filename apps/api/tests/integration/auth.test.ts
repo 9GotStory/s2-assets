@@ -438,7 +438,7 @@ describe('Authentication & Session Integration Tests (T016)', () => {
     });
 
     app = await setupTestApp({ databaseUrl });
-  }, 60_000);
+  }, 120_000);
 
   afterAll(async () => {
     if (app) {

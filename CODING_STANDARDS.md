@@ -35,7 +35,8 @@ Put a feature's new routes, services, integration tests and browser journeys in 
 its domain concept, as with Feature 003's `assignment.service.ts`. The Feature 002 files
 (`asset.service.ts`, `asset.routes.ts`, `asset.routes.test.ts`, `asset.spec.ts`, and the pages
 `AssetSearch`, `AssetRegister`, `AssetDetail` and `AssetBulkRegister`) already run past a thousand
-lines, and every change that touches one of them reads it whole.
+lines, and every change that touches one of them reads it whole. A regression journey of an
+existing feature stays beside that feature's journeys, as Journey T7.17 does in `asset.spec.ts`.
 
 In application code, SQL on an existing table stays in the module that owns the table, as
 `assignment.service.ts` owns `assignment_changes`; the feature's own file holds its rules and calls
