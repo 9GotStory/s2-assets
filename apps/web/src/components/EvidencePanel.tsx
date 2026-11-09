@@ -1658,7 +1658,8 @@ export const EvidencePanel: React.FC<EvidencePanelProps> = ({
           <button
             data-testid="retry-mutation-btn"
             onClick={handleRetryMutation}
-            disabled={isSubmittingRetry}
+            // handleRetryMutation does nothing while the page re-verifies, so a click then would be lost (#66).
+            disabled={isSubmittingRetry || isReauthorizing}
             style={{
               padding: '0.5rem 1rem',
               backgroundColor: '#d97706',
@@ -1666,7 +1667,7 @@ export const EvidencePanel: React.FC<EvidencePanelProps> = ({
               border: 'none',
               borderRadius: '4px',
               fontWeight: 600,
-              cursor: isSubmittingRetry ? 'not-allowed' : 'pointer',
+              cursor: isSubmittingRetry || isReauthorizing ? 'not-allowed' : 'pointer',
             }}
           >
             {isSubmittingRetry ? 'กำลังส่งข้อมูลซ้ำ...' : '🔄 ส่งข้อมูลซ้ำ (Retry Mutation)'}
