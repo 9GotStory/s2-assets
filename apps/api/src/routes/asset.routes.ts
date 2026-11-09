@@ -19,9 +19,11 @@ import {
   namesAssignmentValues,
 } from '../services/assignment.service.ts';
 import { isValidUuid, CapabilityService } from '../services/capability.service.ts';
+import type { LoanService } from '../services/loan.service.ts';
 
 export interface AssetRoutesOptions {
   assetService?: AssetService;
+  loanService: LoanService;
   capabilityService?: CapabilityService;
   db?: any;
   publicAppOrigin?: string;
@@ -730,11 +732,13 @@ export const assetRoutes: FastifyPluginAsync<AssetRoutesOptions> = async (
       let canCorrect = false;
       let canReassign = false;
       let canCorrectAssignment = false;
+      let canRecordLoan = false;
       let canViewAcquisition = false;
       if (request.user && capabilityService) {
         canCorrect = await capabilityService.hasCapability(request.user.id, 'asset:correct');
         canReassign = await capabilityService.hasCapability(request.user.id, 'assignment:reassign');
         canCorrectAssignment = await capabilityService.hasCapability(request.user.id, 'assignment:correct');
+        canRecordLoan = await capabilityService.hasCapability(request.user.id, 'loan:record');
         canViewAcquisition = await capabilityService.hasCapability(request.user.id, 'acquisition:view');
       }
 
@@ -757,6 +761,8 @@ export const assetRoutes: FastifyPluginAsync<AssetRoutesOptions> = async (
         can_correct: canCorrect,
         can_reassign: canReassign,
         can_correct_assignment: canCorrectAssignment,
+        on_loan: await options.loanService.onLoanOf(id.trim().toLowerCase()),
+        can_record_loan: canRecordLoan,
       });
     }
   );

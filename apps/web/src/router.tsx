@@ -10,6 +10,7 @@ import { AcquisitionCreate } from './pages/AcquisitionCreate';
 import { AcquisitionDetail } from './pages/AcquisitionDetail';
 import { AssetBulkRegister } from './pages/AssetBulkRegister';
 import { ReferenceAdmin } from './pages/ReferenceAdmin';
+import { LoanDetail } from './pages/LoanDetail';
 
 export const ProtectedDetailBoundary: React.FC = () => {
   const navigate = useNavigate();
@@ -327,6 +328,10 @@ export const routes: RouteObject[] = [
   {
     path: '/acquisitions/:id',
     element: <AcquisitionDetail />,
+  },
+  {
+    path: '/loans/:id',
+    element: <LoanDetail />,
   },
   {
     path: '/admin/references',

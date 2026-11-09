@@ -5,6 +5,7 @@ import pg from 'pg';
 import type { FastifyInstance, LightMyRequestResponse } from 'fastify';
 import { runMigrator } from '../../../../../packages/db/src/migrator.ts';
 import { buildApp } from '../../../src/app.ts';
+import type { AppLoggerOptions } from '../../../src/plugins/logger.ts';
 import type { Role } from '../../../src/services/capability.service.ts';
 import { SessionService } from '../../../src/services/session.service.ts';
 import { UserService } from '../../../src/services/user.service.ts';
@@ -32,7 +33,7 @@ export interface ApiHarness {
  * Seam A's composed application over a disposable PostgreSQL, migrated to the latest schema. Call it
  * in `beforeAll` with a 120-second timeout, and `close` it in `afterAll`.
  */
-export async function startApiHarness(options: { clock?: () => Date } = {}): Promise<ApiHarness> {
+export async function startApiHarness(options: { clock?: () => Date; logger?: AppLoggerOptions } = {}): Promise<ApiHarness> {
   const container = await new PostgreSqlContainer('postgres:18.6-alpine').start();
   const databaseUrl = container.getConnectionUri();
   const { error } = await runMigrator({ command: 'latest', databaseUrl, migrationFolder });
@@ -45,7 +46,7 @@ export async function startApiHarness(options: { clock?: () => Date } = {}): Pro
   const app = await buildApp({
     db: pool,
     cookieSecret: 'test-secret-at-least-32-chars-long-api-harness',
-    logger: false,
+    logger: options.logger ?? false,
     clock: options.clock,
   });
   const passwordHash = await UserService.hashPassword('Password123!');
