@@ -78,27 +78,25 @@ export interface AssignmentChange {
   new: AssignmentValue;
 }
 
-// A value as a correction record keeps it. An entry is named by id, so it reads by its current name (#50 Q20).
-export interface CorrectedValue {
+// A value as the store holds it. A correction record names an entry by id, so it reads by its current name (#50 Q20).
+export interface StoredValue {
   entry_id: string | null;
   legacy_text: string | null;
 }
 
-// A dimension of an event as a correction record keeps it; null is a dimension the event does not have.
-export type CorrectedChange = { prior: CorrectedValue; new: CorrectedValue } | null;
+export interface StoredChange {
+  prior: StoredValue;
+  new: StoredValue;
+}
 
-// The before and after of one changed field, as the correction record stores it.
-export type StoredCorrectionField =
+// The before and after of one field a correction changed. A dimension is null where the fact does not have it.
+type CorrectionField<Change> =
   | { field: 'effective_date' | 'document_reference' | 'remark'; before: string | null; after: string | null }
-  | { field: AssignmentDimension; before: CorrectedChange; after: CorrectedChange };
+  | { field: AssignmentDimension; before: Change | null; after: Change | null };
 
-export type AssignmentCorrectionField =
-  | { field: 'effective_date' | 'document_reference' | 'remark'; before: string | null; after: string | null }
-  | {
-      field: AssignmentDimension;
-      before: Pick<AssignmentChange, 'prior' | 'new'> | null;
-      after: Pick<AssignmentChange, 'prior' | 'new'> | null;
-    };
+export type StoredCorrectionField = CorrectionField<StoredChange>;
+
+export type AssignmentCorrectionField = CorrectionField<Pick<AssignmentChange, 'prior' | 'new'>>;
 
 // One Assignment Correction of a fact (MR-06): who, when, why, and the before and after.
 export interface AssignmentCorrection {
@@ -129,7 +127,7 @@ export interface AssignmentEvent {
 
 // Each dimension's name in the API and in the database, its input fields, and its entry column in
 // assignment_changes with the Reference List table that column names.
-export const DIMENSIONS = [
+const DIMENSIONS = [
   {
     key: 'location',
     dimension: 'LOCATION',
@@ -155,6 +153,9 @@ export const DIMENSIONS = [
     table: 'persons',
   },
 ] as const;
+
+// Each dimension's name in the API and its entry field, for code outside this module's tables.
+export const ASSIGNMENT_DIMENSIONS = DIMENSIONS.map(({ key, idField }) => ({ key, idField }));
 
 // The entry field of each dimension (location_id, organization_unit_id, responsible_person_id).
 export const REFERENCE_ID_FIELDS = DIMENSIONS.map(({ idField }) => idField);
@@ -553,11 +554,11 @@ const correctionFieldOf = (stored: StoredCorrectionField, entries: Map<string, R
   if (!isDimensionField(stored)) {
     return stored;
   }
-  const valueOf = ({ entry_id, legacy_text }: CorrectedValue): AssignmentValue => ({
+  const valueOf = ({ entry_id, legacy_text }: StoredValue): AssignmentValue => ({
     entry: entry_id ? (entries.get(entry_id) ?? null) : null,
     legacy_text,
   });
-  const changeOf = (change: CorrectedChange) => change && { prior: valueOf(change.prior), new: valueOf(change.new) };
+  const changeOf = (change: StoredChange | null) => change && { prior: valueOf(change.prior), new: valueOf(change.new) };
   return { field: stored.field, before: changeOf(stored.before), after: changeOf(stored.after) };
 };
 
@@ -645,6 +646,70 @@ export async function readAssignmentTimeline(
         changes: correction.changes.map((field: StoredCorrectionField) => correctionFieldOf(field, correctionEntries)),
       })),
   }));
+}
+
+// An assignment fact as it stands, under the Asset's lock, for a correction to compare against.
+export interface StoredAssignmentFact {
+  kind: 'INITIAL' | 'REASSIGNMENT';
+  effective_date: string | null;
+  document_reference: string | null;
+  remark: string | null;
+  is_voided: boolean;
+  changes: Partial<Record<AssignmentDimension, StoredChange>>;
+}
+
+/** One fact of an Asset as it stands, or null when the Asset has no such fact. */
+export async function readStoredFact(
+  client: pg.PoolClient | pg.Pool,
+  assetId: string,
+  eventId: string
+): Promise<StoredAssignmentFact | null> {
+  const eventRes = await client.query(
+    `SELECT kind, to_char(effective_date, 'YYYY-MM-DD') AS effective_date, document_reference, remark, is_voided
+     FROM assignment_events WHERE id = $1 AND asset_id = $2`,
+    [eventId, assetId]
+  );
+  if (eventRes.rows.length === 0) {
+    return null;
+  }
+  const changesRes = await client.query('SELECT * FROM assignment_changes WHERE event_id = $1', [eventId]);
+  const changes: StoredAssignmentFact['changes'] = {};
+  for (const { key, dimension, column } of DIMENSIONS) {
+    const row = changesRes.rows.find((change: any) => change.dimension === dimension);
+    if (row) {
+      changes[key] = {
+        prior: { entry_id: row[`prior_${column}`], legacy_text: row.prior_legacy_text },
+        new: { entry_id: row[`new_${column}`], legacy_text: row.new_legacy_text },
+      };
+    }
+  }
+  return { ...eventRes.rows[0], changes };
+}
+
+/** Leaves one dimension of a fact as a correction decided: changed, added, or, when `after` is null, removed. */
+export async function writeCorrectedChange(
+  client: pg.PoolClient | pg.Pool,
+  eventId: string,
+  kind: StoredAssignmentFact['kind'],
+  key: AssignmentDimension,
+  after: StoredChange | null
+): Promise<void> {
+  const { dimension, column } = DIMENSIONS.find((candidate) => candidate.key === key)!;
+  if (!after) {
+    await client.query('DELETE FROM assignment_changes WHERE event_id = $1 AND dimension = $2', [eventId, dimension]);
+    return;
+  }
+  await client.query(
+    `INSERT INTO assignment_changes
+       (event_id, event_kind, dimension, prior_${column}, prior_legacy_text, new_${column}, new_legacy_text)
+     VALUES ($1, $2, $3, $4, $5, $6, $7)
+     ON CONFLICT (event_id, dimension) DO UPDATE SET
+       prior_${column} = EXCLUDED.prior_${column},
+       prior_legacy_text = EXCLUDED.prior_legacy_text,
+       new_${column} = EXCLUDED.new_${column},
+       new_legacy_text = EXCLUDED.new_legacy_text`,
+    [eventId, kind, dimension, after.prior.entry_id, after.prior.legacy_text, after.new.entry_id, after.new.legacy_text]
+  );
 }
 
 /**

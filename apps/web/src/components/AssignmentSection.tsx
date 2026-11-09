@@ -11,6 +11,11 @@ import { CORRECTION_LABELS, KIND_LABELS, type AssignmentEvent } from './assignme
 // The one form open in the section: recording a new fact, or correcting a fact of the timeline.
 type OpenForm = { type: 'RECORD'; kind: AssignmentEvent['kind'] } | { type: 'AMEND' | 'VOID'; eventId: string };
 
+const CORRECTION_ACTIONS = [
+  { type: 'AMEND', testId: 'assignment-amend', label: CORRECTION_LABELS.AMENDED },
+  { type: 'VOID', testId: 'assignment-void', label: CORRECTION_LABELS.VOIDED },
+] as const;
+
 const correctionActionStyle: React.CSSProperties = {
   padding: '0.25rem 0.625rem',
   backgroundColor: '#ffffff',
@@ -31,7 +36,7 @@ export interface AssignmentSectionProps {
   // Whether the viewer holds 'assignment:reassign', and what recording a fact needs (F003-T2).
   canReassign: boolean;
   // Whether the viewer holds 'assignment:correct' (F003-T3).
-  canCorrect: boolean;
+  canCorrectAssignment: boolean;
   assignmentVersion: number;
   isLegacy: boolean;
   csrfToken: string | null;
@@ -50,7 +55,7 @@ export const AssignmentSection: React.FC<AssignmentSectionProps> = ({
   dataUpdatedAt,
   onPermissionRevoked,
   canReassign,
-  canCorrect,
+  canCorrectAssignment,
   assignmentVersion,
   isLegacy,
   csrfToken,
@@ -94,7 +99,7 @@ export const AssignmentSection: React.FC<AssignmentSectionProps> = ({
     openForm &&
     (openForm.type === 'RECORD'
       ? canReassign
-      : canCorrect && timeline.data?.some(({ id, is_voided }) => id === openForm.eventId && !is_voided))
+      : canCorrectAssignment && timeline.data?.some(({ id, is_voided }) => id === openForm.eventId && !is_voided))
       ? openForm
       : null;
 
@@ -209,32 +214,24 @@ export const AssignmentSection: React.FC<AssignmentSectionProps> = ({
                 key={event.id}
                 event={event}
                 actions={
-                  canCorrect &&
+                  canCorrectAssignment &&
                   !activeForm &&
                   !event.is_voided && (
                     <div style={{ display: 'flex', gap: '0.5rem', marginTop: '0.5rem' }}>
-                      <button
-                        type="button"
-                        data-testid={`assignment-amend-${event.id}`}
-                        onClick={() => {
-                          setWasRecorded(false);
-                          setOpenForm({ type: 'AMEND', eventId: event.id });
-                        }}
-                        style={correctionActionStyle}
-                      >
-                        {CORRECTION_LABELS.AMENDED}
-                      </button>
-                      <button
-                        type="button"
-                        data-testid={`assignment-void-${event.id}`}
-                        onClick={() => {
-                          setWasRecorded(false);
-                          setOpenForm({ type: 'VOID', eventId: event.id });
-                        }}
-                        style={correctionActionStyle}
-                      >
-                        {CORRECTION_LABELS.VOIDED}
-                      </button>
+                      {CORRECTION_ACTIONS.map(({ type, testId, label }) => (
+                        <button
+                          key={type}
+                          type="button"
+                          data-testid={`${testId}-${event.id}`}
+                          onClick={() => {
+                            setWasRecorded(false);
+                            setOpenForm({ type, eventId: event.id });
+                          }}
+                          style={correctionActionStyle}
+                        >
+                          {label}
+                        </button>
+                      ))}
                     </div>
                   )
                 }

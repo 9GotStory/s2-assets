@@ -1,7 +1,7 @@
 import pg from 'pg';
 import { NotFoundError } from './asset.service.ts';
 import {
-  DIMENSIONS,
+  ASSIGNMENT_DIMENSIONS,
   DOCUMENT_REFERENCE_MAX_LENGTH,
   LEGACY_TEXT_MAX_LENGTH,
   REMARK_MAX_LENGTH,
@@ -10,10 +10,13 @@ import {
   isDimensionField,
   normalizeEffectiveDate,
   normalizeText,
+  readStoredFact,
+  writeCorrectedChange,
   type AssignmentDimension,
-  type CorrectedChange,
-  type CorrectedValue,
+  type StoredAssignmentFact,
+  type StoredChange,
   type StoredCorrectionField,
+  type StoredValue,
 } from './assignment.service.ts';
 import { writeAssignmentOnce, type RecordedAssignment } from './assignment-write.ts';
 import { isValidUuid } from './capability.service.ts';
@@ -21,7 +24,7 @@ import { ValidationError } from './validation-error.ts';
 
 const REASON_MAX_LENGTH = REMARK_MAX_LENGTH;
 
-const NO_VALUE: CorrectedValue = { entry_id: null, legacy_text: null };
+const NO_VALUE: StoredValue = { entry_id: null, legacy_text: null };
 
 interface AmendedValueInput {
   entry_id?: string | null;
@@ -42,7 +45,7 @@ export type CorrectAssignmentInput = { expected_assignment_version: number; reas
     }
 );
 
-type AmendedDimension = { prior?: CorrectedValue; new?: CorrectedValue } | null;
+type AmendedDimension = { prior?: StoredValue; new?: StoredValue } | null;
 
 // An amendment once validated: a field it does not name is undefined and stays as it is.
 interface AssignmentAmendment {
@@ -50,16 +53,6 @@ interface AssignmentAmendment {
   document_reference?: string | null;
   remark?: string | null;
   changes: Partial<Record<AssignmentDimension, AmendedDimension>>;
-}
-
-// An assignment fact as it stands, under the Asset's lock.
-interface StoredEvent {
-  kind: 'INITIAL' | 'REASSIGNMENT';
-  effective_date: string | null;
-  document_reference: string | null;
-  remark: string | null;
-  is_voided: boolean;
-  changes: Partial<Record<AssignmentDimension, NonNullable<CorrectedChange>>>;
 }
 
 // The reason every correction needs: nonblank, bounded, and free of control characters (MR-06).
@@ -71,7 +64,7 @@ function normalizeReason(value: unknown): string {
   return reason;
 }
 
-function normalizeValue(value: AmendedValueInput, field: string): CorrectedValue {
+function normalizeValue(value: AmendedValueInput, field: string): StoredValue {
   if (value.entry_id !== undefined && value.entry_id !== null && !isValidUuid(value.entry_id)) {
     throw new ValidationError(`${field}.entry_id must be a valid UUID`);
   }
@@ -92,7 +85,7 @@ function normalizeAmendment(input: Extract<CorrectAssignmentInput, { action: 'AM
   if (input.remark !== undefined) {
     amendment.remark = normalizeText(input.remark, 'remark', REMARK_MAX_LENGTH, '');
   }
-  for (const { key } of DIMENSIONS) {
+  for (const { key } of ASSIGNMENT_DIMENSIONS) {
     const dimension = input.changes?.[key];
     if (dimension === null) {
       amendment.changes[key] = null;
@@ -106,16 +99,16 @@ function normalizeAmendment(input: Extract<CorrectAssignmentInput, { action: 'AM
   return amendment;
 }
 
-const sameValue = (a: CorrectedValue, b: CorrectedValue): boolean => a.entry_id === b.entry_id && a.legacy_text === b.legacy_text;
+const sameValue = (a: StoredValue, b: StoredValue): boolean => a.entry_id === b.entry_id && a.legacy_text === b.legacy_text;
 
-const sameChange = (a: CorrectedChange, b: CorrectedChange): boolean =>
+const sameChange = (a: StoredChange | null, b: StoredChange | null): boolean =>
   a === null || b === null ? a === b : sameValue(a.prior, b.prior) && sameValue(a.new, b.new);
 
-const isEmpty = (value: CorrectedValue): boolean => value.entry_id === null && value.legacy_text === null;
+const isEmpty = (value: StoredValue): boolean => value.entry_id === null && value.legacy_text === null;
 
 // What an amendment leaves of one dimension of an Initial Assignment, which has no prior values (#50
 // Q13): an entry or Legacy text, or nothing once the dimension is removed.
-function amendedInitialChange(key: AssignmentDimension, stored: CorrectedChange, amendment: NonNullable<AmendedDimension>): CorrectedChange {
+function amendedInitialChange(key: AssignmentDimension, stored: StoredChange | null, amendment: NonNullable<AmendedDimension>): StoredChange {
   if (amendment.prior) {
     throw new ValidationError('An Initial Assignment has no prior values');
   }
@@ -129,7 +122,7 @@ function amendedInitialChange(key: AssignmentDimension, stored: CorrectedChange,
 // What an amendment leaves of one dimension of a Reassignment. Its new value is an entry or, for the
 // OrganizationUnit and the Responsible Person, empty (#50 Q15), never Legacy text (Q14). A dimension it
 // never changed is recorded as its own Reassignment, and the change stays a real one (MR-01).
-function amendedReassignmentChange(key: AssignmentDimension, stored: CorrectedChange, amendment: NonNullable<AmendedDimension>): CorrectedChange {
+function amendedReassignmentChange(key: AssignmentDimension, stored: StoredChange | null, amendment: NonNullable<AmendedDimension>): StoredChange {
   if (!stored) {
     throw new ValidationError(`This Reassignment did not change the ${key}; record that change as a Reassignment`);
   }
@@ -147,7 +140,7 @@ function amendedReassignmentChange(key: AssignmentDimension, stored: CorrectedCh
 }
 
 // The event an amendment leaves, as a before and after for every field that differs.
-function amendedFields(event: StoredEvent, amendment: AssignmentAmendment): StoredCorrectionField[] {
+function amendedFields(event: StoredAssignmentFact, amendment: AssignmentAmendment): StoredCorrectionField[] {
   if (amendment.effective_date === null && event.kind !== 'INITIAL') {
     throw new ValidationError('A Reassignment has a real Effective Date, never unknown');
   }
@@ -161,8 +154,8 @@ function amendedFields(event: StoredEvent, amendment: AssignmentAmendment): Stor
   }
 
   let remaining = 0;
-  for (const { key } of DIMENSIONS) {
-    const before: CorrectedChange = event.changes[key] ?? null;
+  for (const { key } of ASSIGNMENT_DIMENSIONS) {
+    const before = event.changes[key] ?? null;
     const dimension = amendment.changes[key];
     let after = before;
     if (dimension === null) {
@@ -187,63 +180,41 @@ function amendedFields(event: StoredEvent, amendment: AssignmentAmendment): Stor
   return fields;
 }
 
-async function readStoredEvent(client: pg.PoolClient, assetId: string, eventId: string): Promise<StoredEvent> {
-  const eventRes = await client.query(
-    `SELECT kind, to_char(effective_date, 'YYYY-MM-DD') AS effective_date, document_reference, remark, is_voided
-     FROM assignment_events WHERE id = $1 AND asset_id = $2`,
-    [eventId, assetId]
-  );
-  if (eventRes.rows.length === 0) {
-    throw new NotFoundError('Assignment fact not found');
-  }
-  const changesRes = await client.query('SELECT * FROM assignment_changes WHERE event_id = $1', [eventId]);
-  const changes: StoredEvent['changes'] = {};
-  for (const { key, dimension, column } of DIMENSIONS) {
-    const row = changesRes.rows.find((change: any) => change.dimension === dimension);
-    if (row) {
-      changes[key] = {
-        prior: { entry_id: row[`prior_${column}`], legacy_text: row.prior_legacy_text },
-        new: { entry_id: row[`new_${column}`], legacy_text: row.new_legacy_text },
-      };
-    }
-  }
-  return { ...eventRes.rows[0], changes };
-}
-
 // The entries an amendment names must each be in their own dimension's list; deactivated ones are
 // allowed (#50 Q16).
 async function assertAmendedEntries(client: pg.PoolClient, amendment: AssignmentAmendment): Promise<void> {
   for (const side of ['prior', 'new'] as const) {
     const ids = Object.fromEntries(
-      DIMENSIONS.map(({ key, idField }) => [idField, amendment.changes[key]?.[side]?.entry_id ?? null])
+      ASSIGNMENT_DIMENSIONS.map(({ key, idField }) => [idField, amendment.changes[key]?.[side]?.entry_id ?? null])
     );
     await assertAssignableEntries(client, ids, true, ` (${side} value)`);
   }
 }
 
-async function writeChange(
+// Leaves the corrected values on the fact and its changes, and returns what changed.
+async function applyAmendment(
   client: pg.PoolClient,
   eventId: string,
-  kind: StoredEvent['kind'],
-  key: AssignmentDimension,
-  after: CorrectedChange
-): Promise<void> {
-  const { dimension, column } = DIMENSIONS.find((candidate) => candidate.key === key)!;
-  if (!after) {
-    await client.query('DELETE FROM assignment_changes WHERE event_id = $1 AND dimension = $2', [eventId, dimension]);
-    return;
+  event: StoredAssignmentFact,
+  amendment: AssignmentAmendment
+): Promise<StoredCorrectionField[]> {
+  const fields = amendedFields(event, amendment);
+  await assertAmendedEntries(client, amendment);
+  const corrected = { ...event };
+  for (const field of fields) {
+    if (isDimensionField(field)) {
+      await writeCorrectedChange(client, eventId, event.kind, field.field, field.after);
+    } else {
+      corrected[field.field] = field.after;
+    }
   }
-  await client.query(
-    `INSERT INTO assignment_changes
-       (event_id, event_kind, dimension, prior_${column}, prior_legacy_text, new_${column}, new_legacy_text)
-     VALUES ($1, $2, $3, $4, $5, $6, $7)
-     ON CONFLICT (event_id, dimension) DO UPDATE SET
-       prior_${column} = EXCLUDED.prior_${column},
-       prior_legacy_text = EXCLUDED.prior_legacy_text,
-       new_${column} = EXCLUDED.new_${column},
-       new_legacy_text = EXCLUDED.new_legacy_text`,
-    [eventId, kind, dimension, after.prior.entry_id, after.prior.legacy_text, after.new.entry_id, after.new.legacy_text]
-  );
+  await client.query('UPDATE assignment_events SET effective_date = $2, document_reference = $3, remark = $4 WHERE id = $1', [
+    eventId,
+    corrected.effective_date,
+    corrected.document_reference,
+    corrected.remark,
+  ]);
+  return fields;
 }
 
 /**
@@ -281,61 +252,27 @@ export class AssignmentCorrectionService {
         payload: { version: 1, action: input.action, expected_assignment_version: input.expected_assignment_version, reason, amendment },
       },
       async (client) => {
-        const event = await readStoredEvent(client, assetId, eventId);
+        const event = await readStoredFact(client, assetId, eventId);
+        if (!event) {
+          throw new NotFoundError('Assignment fact not found');
+        }
         if (event.is_voided) {
           throw new ValidationError('This fact is voided: it can no longer be corrected');
         }
+        let fields: StoredCorrectionField[] = [];
         if (amendment) {
-          await this.amend(client, eventId, event, amendment, reason, actorId);
+          fields = await applyAmendment(client, eventId, event, amendment);
         } else {
           await client.query('UPDATE assignment_events SET is_voided = true WHERE id = $1', [eventId]);
-          await this.keepCorrection(client, eventId, 'VOIDED', reason, [], actorId);
         }
+        await client.query(
+          `INSERT INTO assignment_corrections (event_id, action, reason, changes, recorded_by)
+           VALUES ($1, $2, $3, $4::jsonb, $5)`,
+          [eventId, amendment ? 'AMENDED' : 'VOIDED', reason, JSON.stringify(fields), actorId]
+        );
         await client.query('UPDATE assets SET assignment_version = assignment_version + 1 WHERE id = $1', [assetId]);
         return eventId;
       }
-    );
-  }
-
-  private async amend(
-    client: pg.PoolClient,
-    eventId: string,
-    event: StoredEvent,
-    amendment: AssignmentAmendment,
-    reason: string,
-    actorId: string
-  ): Promise<void> {
-    const fields = amendedFields(event, amendment);
-    await assertAmendedEntries(client, amendment);
-    const corrected = { ...event };
-    for (const field of fields) {
-      if (isDimensionField(field)) {
-        await writeChange(client, eventId, event.kind, field.field, field.after);
-      } else {
-        corrected[field.field] = field.after;
-      }
-    }
-    await client.query('UPDATE assignment_events SET effective_date = $2, document_reference = $3, remark = $4 WHERE id = $1', [
-      eventId,
-      corrected.effective_date,
-      corrected.document_reference,
-      corrected.remark,
-    ]);
-    await this.keepCorrection(client, eventId, 'AMENDED', reason, fields, actorId);
-  }
-
-  private async keepCorrection(
-    client: pg.PoolClient,
-    eventId: string,
-    action: 'AMENDED' | 'VOIDED',
-    reason: string,
-    fields: StoredCorrectionField[],
-    actorId: string
-  ): Promise<void> {
-    await client.query(
-      `INSERT INTO assignment_corrections (event_id, action, reason, changes, recorded_by)
-       VALUES ($1, $2, $3, $4::jsonb, $5)`,
-      [eventId, action, reason, JSON.stringify(fields), actorId]
     );
   }
 }

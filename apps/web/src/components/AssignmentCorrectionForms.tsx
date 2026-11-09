@@ -62,14 +62,25 @@ export const AssignmentVoidForm: React.FC<Omit<AssignmentCorrectionFormProps, 'a
   );
 };
 
-// The form's fields as text ('' is none), named by dimension and side.
-const fieldsOf = (event: AssignmentEvent): Record<string, string> => {
-  const fields: Record<string, string> = {
+// The form's fields, named by dimension and side. Each holds text ('' is none, and a ticked box 'yes'),
+// so that the fields the user changed can lie over the fact field by field (see amendmentOf).
+type DraftField =
+  | 'effective_date'
+  | 'effective_date_unknown'
+  | 'document_reference'
+  | 'remark'
+  | `${AssignmentDimension}.present`
+  | `${AssignmentDimension}.${'prior' | 'new'}.${'entry' | 'legacy'}`;
+
+type AmendmentDraft = Record<DraftField, string>;
+
+const fieldsOf = (event: AssignmentEvent): AmendmentDraft => {
+  const fields = {
     effective_date: event.effective_date ?? '',
     effective_date_unknown: event.effective_date === null ? 'yes' : '',
     document_reference: event.document_reference ?? '',
     remark: event.remark ?? '',
-  };
+  } as AmendmentDraft;
   for (const { entryField } of REFERENCE_DIMENSIONS) {
     const change = event.changes.find(({ dimension }) => dimension === entryField);
     fields[`${entryField}.present`] = change ? 'yes' : '';
@@ -82,14 +93,14 @@ const fieldsOf = (event: AssignmentEvent): Record<string, string> => {
 };
 
 // One side of a dimension in the draft, as the API names it.
-const draftValue = (draft: Record<string, string>, entryField: AssignmentDimension, side: 'prior' | 'new') => ({
+const draftValue = (draft: AmendmentDraft, entryField: AssignmentDimension, side: 'prior' | 'new') => ({
   entry_id: draft[`${entryField}.${side}.entry`] || null,
   legacy_text: draft[`${entryField}.${side}.legacy`].trim() || null,
 });
 
 // Whether the amended fact keeps a dimension: an Initial Assignment while it has a value, a
 // Reassignment while its box stays ticked.
-const keepsDimension = (event: AssignmentEvent, draft: Record<string, string>, entryField: AssignmentDimension): boolean => {
+const keepsDimension = (event: AssignmentEvent, draft: AmendmentDraft, entryField: AssignmentDimension): boolean => {
   if (event.kind === 'INITIAL') {
     const value = draftValue(draft, entryField, 'new');
     return Boolean(value.entry_id || value.legacy_text);
@@ -99,14 +110,14 @@ const keepsDimension = (event: AssignmentEvent, draft: Record<string, string>, e
 
 // What an amendment names: only the fields that differ from the fact as it stands, so that a read of
 // the latest facts leaves a field the user did not touch at its latest value.
-const amendmentOf = (event: AssignmentEvent, draft: Record<string, string>): Record<string, unknown> => {
+const amendmentOf = (event: AssignmentEvent, draft: AmendmentDraft): Record<string, unknown> => {
   const stored = fieldsOf(event);
-  const differs = (field: string) => draft[field].trim() !== stored[field];
+  const differs = (field: DraftField) => draft[field].trim() !== stored[field];
   const amendment: Record<string, unknown> = {};
   if (differs('effective_date') || differs('effective_date_unknown')) {
     amendment.effective_date = draft.effective_date_unknown ? null : draft.effective_date;
   }
-  for (const field of ['document_reference', 'remark']) {
+  for (const field of ['document_reference', 'remark'] as const) {
     if (differs(field)) {
       amendment[field] = draft[field].trim() || null;
     }
@@ -138,12 +149,12 @@ const amendmentOf = (event: AssignmentEvent, draft: Record<string, string>): Rec
 /** "แก้ไขรายการที่บันทึกผิด": corrects any field of one fact, with a reason (MR-06). The server decides every rule. */
 export const AssignmentAmendForm: React.FC<AssignmentCorrectionFormProps> = ({ save, event, actorId }) => {
   // The fields the user changed, over the fact as it stands (see amendmentOf).
-  const [edits, setEdits] = useState<Record<string, string>>({});
+  const [changedFields, setChangedFields] = useState<Partial<AmendmentDraft>>({});
   const [reason, setReason] = useState('');
   const { lists, error: listError } = useReferenceLists(true, actorId);
 
-  const draft = { ...fieldsOf(event), ...edits };
-  const set = (field: string, value: string) => setEdits((current) => ({ ...current, [field]: value }));
+  const draft: AmendmentDraft = { ...fieldsOf(event), ...changedFields };
+  const set = (field: DraftField, value: string) => setChangedFields((current) => ({ ...current, [field]: value }));
   const isInitial = event.kind === 'INITIAL';
 
   const requestError = (): string | null => {
@@ -174,7 +185,7 @@ export const AssignmentAmendForm: React.FC<AssignmentCorrectionFormProps> = ({ s
   };
 
   // ReferenceContextFields names entry and Legacy-text fields; the draft names dimensions.
-  const initialValues = Object.fromEntries(
+  const initialAssignmentValues = Object.fromEntries(
     REFERENCE_DIMENSIONS.flatMap(({ idField, legacyField, entryField }) => [
       [idField, draft[`${entryField}.new.entry`]],
       [legacyField, draft[`${entryField}.new.legacy`]],
@@ -234,7 +245,7 @@ export const AssignmentAmendForm: React.FC<AssignmentCorrectionFormProps> = ({ s
             <ReferenceContextFields
               idPrefix="assignment-amend"
               legend="ค่าที่กำหนดครั้งแรก"
-              values={initialValues}
+              values={initialAssignmentValues}
               onChange={setInitialValue}
               lists={lists}
               listError={listError}

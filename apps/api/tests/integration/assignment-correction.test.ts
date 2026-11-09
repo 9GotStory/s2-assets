@@ -106,7 +106,7 @@ describe('Correct or void an assignment fact (Seam A - F003-T3)', () => {
   };
 
   // An Asset whose Location went from Room A (Initial Assignment) to Room B (Reassignment).
-  const moved = async (name: string) => {
+  const reassigned = async (name: string) => {
     const roomA = await entry('locations', `${name} ก`);
     const roomB = await entry('locations', `${name} ข`);
     const assetId = await registered({ name, location_id: roomA.id, effective_date: '2026-01-01' });
@@ -227,7 +227,7 @@ describe('Correct or void an assignment fact (Seam A - F003-T3)', () => {
     });
 
     it('leaves a field the request does not name as it stands', async () => {
-      const { assetId, reassignment } = await moved('ห้องไม่แตะช่อง');
+      const { assetId, reassignment } = await reassigned('ห้องไม่แตะช่อง');
       expect((await amend(assetId, reassignment.id, 2, { remark: 'เติมหมายเหตุ' })).statusCode).toBe(201);
       const [, event] = await timelineOf(assetId);
       expect(event.effective_date).toBe('2026-06-01');
@@ -236,7 +236,7 @@ describe('Correct or void an assignment fact (Seam A - F003-T3)', () => {
     });
 
     it('keeps each correction, in the order made', async () => {
-      const { assetId, reassignment } = await moved('ห้องแก้หลายครั้ง');
+      const { assetId, reassignment } = await reassigned('ห้องแก้หลายครั้ง');
       expect((await amend(assetId, reassignment.id, 2, { remark: 'ครั้งแรก', reason: 'เหตุผลแรก' })).statusCode).toBe(201);
       expect((await amend(assetId, reassignment.id, 3, { remark: 'ครั้งที่สอง', reason: 'เหตุผลสอง' })).statusCode).toBe(201);
       const [, event] = await timelineOf(assetId);
@@ -246,7 +246,7 @@ describe('Correct or void an assignment fact (Seam A - F003-T3)', () => {
 
     describe('Effective Date', () => {
       it('may be unknown on an Initial Assignment, and only there', async () => {
-        const { assetId, initial, reassignment } = await moved('ห้องวันไม่ทราบ');
+        const { assetId, initial, reassignment } = await reassigned('ห้องวันไม่ทราบ');
         expect((await amend(assetId, initial.id, 2, { effective_date: null })).statusCode).toBe(201);
         const [event] = await timelineOf(assetId);
         expect(event.effective_date).toBeNull();
@@ -259,7 +259,7 @@ describe('Correct or void an assignment fact (Seam A - F003-T3)', () => {
       });
 
       it('is never after today, at the Bangkok date boundary', async () => {
-        const { assetId, reassignment } = await moved('ห้องขอบวัน');
+        const { assetId, reassignment } = await reassigned('ห้องขอบวัน');
         const saved = now;
         try {
           // 23:59 on 5 November in Bangkok.
@@ -275,7 +275,7 @@ describe('Correct or void an assignment fact (Seam A - F003-T3)', () => {
       });
 
       it('must be a real date', async () => {
-        const { assetId, reassignment } = await moved('ห้องวันผิดรูป');
+        const { assetId, reassignment } = await reassigned('ห้องวันผิดรูป');
         for (const effective_date of ['2026-02-30', 'วันนี้', 20260101]) {
           const res = await amend(assetId, reassignment.id, 2, { effective_date });
           expect(res.statusCode, String(effective_date)).toBe(400);
@@ -376,7 +376,7 @@ describe('Correct or void an assignment fact (Seam A - F003-T3)', () => {
 
     describe('Values of a Reassignment', () => {
       // An Asset whose Reassignment moved its Location, OrganizationUnit and Responsible Person.
-      const movedInThreeDimensions = async (name: string) => {
+      const reassignedInThreeDimensions = async (name: string) => {
         const [roomA, roomB] = await Promise.all(['ก', 'ข'].map((suffix) => entry('locations', `${name} ${suffix}`)));
         const [unitA, unitB] = await Promise.all(['ก', 'ข'].map((suffix) => entry('organization-units', `กลุ่มงาน${name} ${suffix}`)));
         const [personA, personB] = await Promise.all(['ก', 'ข'].map((suffix) => entry('persons', `คุณ${name} ${suffix}`)));
@@ -400,7 +400,7 @@ describe('Correct or void an assignment fact (Seam A - F003-T3)', () => {
       };
 
       it('amends new values to entries, and empties the OrganizationUnit or the Responsible Person', async () => {
-        const { assetId, roomA, roomB, unitA, unitB, personA, personB, event } = await movedInThreeDimensions('แก้ค่าใหม่');
+        const { assetId, roomA, roomB, unitA, unitB, personA, personB, event } = await reassignedInThreeDimensions('แก้ค่าใหม่');
         const roomC = await entry('locations', 'แก้ค่าใหม่ ค');
 
         const res = await amend(assetId, event.id, 2, {
@@ -432,7 +432,7 @@ describe('Correct or void an assignment fact (Seam A - F003-T3)', () => {
       });
 
       it('amends prior values to an entry, Legacy text, or empty', async () => {
-        const { assetId, event } = await movedInThreeDimensions('แก้ค่าก่อนหน้า');
+        const { assetId, event } = await reassignedInThreeDimensions('แก้ค่าก่อนหน้า');
         const roomC = await entry('locations', 'แก้ค่าก่อนหน้า ค');
         const unitBefore = await entry('organization-units', 'กลุ่มงานก่อนแก้ค่าก่อนหน้า');
 
@@ -458,7 +458,7 @@ describe('Correct or void an assignment fact (Seam A - F003-T3)', () => {
       });
 
       it('removes a dimension while at least one remains, and refuses to remove the last one', async () => {
-        const { assetId, roomB, unitA, event } = await movedInThreeDimensions('เอาออกจากการย้าย');
+        const { assetId, roomB, unitA, event } = await reassignedInThreeDimensions('เอาออกจากการย้าย');
         const res = await amend(assetId, event.id, 2, { changes: { organization_unit: null, responsible_person: null } });
         expect(res.statusCode).toBe(201);
 
@@ -478,13 +478,13 @@ describe('Correct or void an assignment fact (Seam A - F003-T3)', () => {
       });
 
       it('may remove the Location while another dimension remains, which leaves the earlier Location current', async () => {
-        const { assetId, roomA, event } = await movedInThreeDimensions('เอาสถานที่ออก');
+        const { assetId, roomA, event } = await reassignedInThreeDimensions('เอาสถานที่ออก');
         expect((await amend(assetId, event.id, 2, { changes: { location: null } })).statusCode).toBe(201);
         expect((await detailOf(assetId)).current_assignment.location.id).toBe(roomA.id);
       });
 
       it('never empties the Location, never takes Legacy text as a new value, and never adds a dimension', async () => {
-        const { assetId, roomB } = await movedInThreeDimensions('กติกาการย้าย');
+        const { assetId, roomB } = await reassignedInThreeDimensions('กติกาการย้าย');
         const unit = await entry('organization-units', 'กลุ่มงานเติมไม่ได้');
         const single = await record(assetId, { kind: 'REASSIGNMENT', expected_assignment_version: 2, effective_date: '2026-07-01', location_id: roomB.id, responsible_person_id: null });
         expect(single.statusCode).toBe(201);
@@ -492,7 +492,7 @@ describe('Correct or void an assignment fact (Seam A - F003-T3)', () => {
         expect(event.changes.map((change: any) => change.dimension)).toEqual(['responsible_person']);
         const before = await assignmentOf(assetId);
 
-        const other = await movedInThreeDimensions('กติกาการย้าย 2');
+        const other = await reassignedInThreeDimensions('กติกาการย้าย 2');
         const otherBefore = await assignmentOf(other.assetId);
         for (const [target, version, changes] of [
           [other, 2, { location: { new: valueOf(null) } }],
@@ -510,7 +510,7 @@ describe('Correct or void an assignment fact (Seam A - F003-T3)', () => {
       });
 
       it('refuses a change whose new value would equal its prior value: that fact changes nothing (MR-01)', async () => {
-        const { assetId, roomA, event } = await movedInThreeDimensions('ค่าเท่ากัน');
+        const { assetId, roomA, event } = await reassignedInThreeDimensions('ค่าเท่ากัน');
         const before = await assignmentOf(assetId);
         for (const changes of [{ location: { new: valueOf(roomA) } }, { organization_unit: { new: valueOf(null), prior: valueOf(null) } }]) {
           const res = await amend(assetId, event.id, 2, { changes });
@@ -522,7 +522,7 @@ describe('Correct or void an assignment fact (Seam A - F003-T3)', () => {
 
     describe('Entries', () => {
       it('allows deactivated entries, on any date, labelled by their current state', async () => {
-        const { assetId, reassignment } = await moved('ห้องปิดแล้วแก้ได้');
+        const { assetId, reassignment } = await reassigned('ห้องปิดแล้วแก้ได้');
         const closed = await entry('locations', 'ห้องปิดแล้ว ก');
         const closing = await post(admin, `/references/locations/${closed.id}`, { expected_version: closed.version, is_active: false });
         expect(closing.statusCode).toBe(200);
@@ -533,7 +533,7 @@ describe('Correct or void an assignment fact (Seam A - F003-T3)', () => {
       });
 
       it('refuses an entry of another list, an unknown entry and a malformed id', async () => {
-        const { assetId, reassignment } = await moved('ห้องรายการผิด');
+        const { assetId, reassignment } = await reassigned('ห้องรายการผิด');
         const unit = await entry('organization-units', 'กลุ่มงานคนละรายการ');
         const before = await assignmentOf(assetId);
 
@@ -549,7 +549,7 @@ describe('Correct or void an assignment fact (Seam A - F003-T3)', () => {
 
     describe('Rules of every amendment', () => {
       it('refuses an amendment that changes nothing, and writes nothing', async () => {
-        const { assetId, roomA, roomB, reassignment } = await moved('ห้องไม่เปลี่ยน');
+        const { assetId, roomA, roomB, reassignment } = await reassigned('ห้องไม่เปลี่ยน');
         const before = await assignmentOf(assetId);
 
         for (const fields of [
@@ -568,7 +568,7 @@ describe('Correct or void an assignment fact (Seam A - F003-T3)', () => {
       });
 
       it('requires a reason: nonblank, bounded, with control characters refused', async () => {
-        const { assetId, reassignment } = await moved('ห้องเหตุผล');
+        const { assetId, reassignment } = await reassigned('ห้องเหตุผล');
         const before = await assignmentOf(assetId);
 
         for (const reason of [undefined, null, '', '   ', 'ก'.repeat(2001), 'มี\u0007อักขระควบคุม']) {
@@ -585,7 +585,7 @@ describe('Correct or void an assignment fact (Seam A - F003-T3)', () => {
       });
 
       it('bounds the document reference and remark, with control characters refused', async () => {
-        const { assetId, reassignment } = await moved('ห้องข้อความ');
+        const { assetId, reassignment } = await reassigned('ห้องข้อความ');
         const before = await assignmentOf(assetId);
         for (const fields of [
           { document_reference: 'ก'.repeat(501) },
@@ -601,7 +601,7 @@ describe('Correct or void an assignment fact (Seam A - F003-T3)', () => {
       });
 
       it('refuses to amend a voided fact, and writes nothing', async () => {
-        const { assetId, reassignment } = await moved('ห้องแก้ที่ยกเลิก');
+        const { assetId, reassignment } = await reassigned('ห้องแก้ที่ยกเลิก');
         expect((await voidFact(assetId, reassignment.id, 2)).statusCode).toBe(201);
         const before = await assignmentOf(assetId);
         const res = await amend(assetId, reassignment.id, 3, { remark: 'ขอแก้' });
@@ -613,7 +613,7 @@ describe('Correct or void an assignment fact (Seam A - F003-T3)', () => {
 
   describe('Void (MR-07)', () => {
     it('voids a Reassignment: it stays in the timeline with its reason, and the Current Assignment recomputes', async () => {
-      const { assetId, roomA, reassignment } = await moved('ห้องยกเลิก');
+      const { assetId, roomA, reassignment } = await reassigned('ห้องยกเลิก');
 
       const res = await correct(assetId, reassignment.id, {
         action: 'VOID',
@@ -652,7 +652,7 @@ describe('Correct or void an assignment fact (Seam A - F003-T3)', () => {
     });
 
     it('takes a voided fact out of the prior values a later fact derives', async () => {
-      const { assetId, roomA, reassignment } = await moved('ห้องค่าก่อนหน้า');
+      const { assetId, roomA, reassignment } = await reassigned('ห้องค่าก่อนหน้า');
       const roomC = await entry('locations', 'ห้องค่าก่อนหน้า ค');
       expect((await voidFact(assetId, reassignment.id, 2)).statusCode).toBe(201);
 
@@ -667,7 +667,7 @@ describe('Correct or void an assignment fact (Seam A - F003-T3)', () => {
     });
 
     it('takes a voided fact out of the asset search: the entry filter and the legacy-text search', async () => {
-      const { assetId, roomA, roomB, reassignment } = await moved('ห้องค้นหา');
+      const { assetId, roomA, roomB, reassignment } = await reassigned('ห้องค้นหา');
       const search = async (query: string) =>
         (await get(readonly, `/assets/search?${query}`)).json().items.map((item: any) => item.id);
 
@@ -688,7 +688,7 @@ describe('Correct or void an assignment fact (Seam A - F003-T3)', () => {
     });
 
     it('refuses to void a voided fact, and writes nothing', async () => {
-      const { assetId, reassignment } = await moved('ห้องยกเลิกซ้ำ');
+      const { assetId, reassignment } = await reassigned('ห้องยกเลิกซ้ำ');
       expect((await voidFact(assetId, reassignment.id, 2)).statusCode).toBe(201);
       const before = await assignmentOf(assetId);
 
@@ -699,7 +699,7 @@ describe('Correct or void an assignment fact (Seam A - F003-T3)', () => {
     });
 
     it('lets a new Initial Assignment be recorded after the Initial Assignment is voided, and refuses a Reassignment until then', async () => {
-      const { assetId, roomB, initial } = await moved('ห้องกำหนดใหม่');
+      const { assetId, roomB, initial } = await reassigned('ห้องกำหนดใหม่');
       const roomC = await entry('locations', 'ห้องกำหนดใหม่ ค');
 
       // While one stands, a second is refused.
@@ -723,7 +723,7 @@ describe('Correct or void an assignment fact (Seam A - F003-T3)', () => {
     });
 
     it('holds one non-voided Initial Assignment per Asset, and one void per event, in the database', async () => {
-      const { assetId, reassignment, initial } = await moved('ห้องข้อจำกัด');
+      const { assetId, reassignment, initial } = await reassigned('ห้องข้อจำกัด');
       const insertInitial = () =>
         pool.query(
           `INSERT INTO assignment_events (asset_id, kind, effective_date, recorded_by, provenance)
@@ -749,8 +749,8 @@ describe('Correct or void an assignment fact (Seam A - F003-T3)', () => {
 
   describe('Integrity', () => {
     it('never changes an event\'s kind or Asset: a request naming them is refused', async () => {
-      const { assetId, reassignment } = await moved('ห้องชนิดรายการ');
-      const other = await moved('ห้องชนิดรายการ อื่น');
+      const { assetId, reassignment } = await reassigned('ห้องชนิดรายการ');
+      const other = await reassigned('ห้องชนิดรายการ อื่น');
       const before = await assignmentOf(assetId);
 
       for (const extra of [{ kind: 'INITIAL' }, { asset_id: other.assetId }, { recorded_by: admin.id }, { is_voided: true }]) {
@@ -763,7 +763,7 @@ describe('Correct or void an assignment fact (Seam A - F003-T3)', () => {
     });
 
     it('takes no amendment fields on a void, and no unknown dimension on an amendment', async () => {
-      const { assetId, roomA, reassignment } = await moved('ห้องคำขอแปลก');
+      const { assetId, roomA, reassignment } = await reassigned('ห้องคำขอแปลก');
       const before = await assignmentOf(assetId);
       const voided = await correct(assetId, reassignment.id, { action: 'VOID', expected_assignment_version: 2, reason: 'ผิด', remark: 'แก้' });
       expect(voided.statusCode).toBe(400);
@@ -775,8 +775,8 @@ describe('Correct or void an assignment fact (Seam A - F003-T3)', () => {
     });
 
     it('finds a fact only under its own Asset', async () => {
-      const { assetId, reassignment } = await moved('ห้องของตัวเอง');
-      const other = await moved('ห้องของคนอื่น');
+      const { assetId, reassignment } = await reassigned('ห้องของตัวเอง');
+      const other = await reassigned('ห้องของคนอื่น');
       const before = await assignmentOf(assetId);
       const otherBefore = await assignmentOf(other.assetId);
 
@@ -815,7 +815,7 @@ describe('Correct or void an assignment fact (Seam A - F003-T3)', () => {
     });
 
     it('reads every entry of a correction by its current name and active flag (#50 Q20)', async () => {
-      const { assetId, roomB, reassignment } = await moved('ห้องเปลี่ยนชื่อ');
+      const { assetId, roomB, reassignment } = await reassigned('ห้องเปลี่ยนชื่อ');
       const roomC = await entry('locations', 'ห้องเปลี่ยนชื่อ ค');
       expect((await amend(assetId, reassignment.id, 2, { changes: { location: { new: valueOf(roomC) } } })).statusCode).toBe(201);
 
@@ -833,7 +833,7 @@ describe('Correct or void an assignment fact (Seam A - F003-T3)', () => {
 
   describe('Expected assignment version', () => {
     it('refuses a stale amendment or void with the stale-before conflict, and writes nothing', async () => {
-      const { assetId, reassignment } = await moved('ห้องรุ่นเก่า');
+      const { assetId, reassignment } = await reassigned('ห้องรุ่นเก่า');
       const before = await assignmentOf(assetId);
       for (const res of [await amend(assetId, reassignment.id, 1, { remark: 'แก้' }), await voidFact(assetId, reassignment.id, 1)]) {
         expect(res.statusCode).toBe(409);
@@ -847,7 +847,7 @@ describe('Correct or void an assignment fact (Seam A - F003-T3)', () => {
     });
 
     it('serializes concurrent corrections of one Asset behind its row lock: one commits, the other sees the new version', async () => {
-      const { assetId, initial, reassignment } = await moved('ห้องแก้พร้อมกัน');
+      const { assetId, initial, reassignment } = await reassigned('ห้องแก้พร้อมกัน');
       const corrections = async () =>
         (
           await pool.query(
@@ -886,7 +886,7 @@ describe('Correct or void an assignment fact (Seam A - F003-T3)', () => {
 
   describe('Retry token (US 28)', () => {
     it('replays the committed result for an identical retry, with one correction, even after the version has moved on', async () => {
-      const { assetId, reassignment } = await moved('ห้องส่งซ้ำแก้');
+      const { assetId, reassignment } = await reassigned('ห้องส่งซ้ำแก้');
       const first = await amend(assetId, reassignment.id, 2, { remark: 'ส่งซ้ำ' }, { token: 'amend-replay' });
       expect(first.statusCode).toBe(201);
 
@@ -903,7 +903,7 @@ describe('Correct or void an assignment fact (Seam A - F003-T3)', () => {
     });
 
     it('treats text that normalizes the same as the same payload', async () => {
-      const { assetId, reassignment } = await moved('ห้องส่งซ้ำช่องว่างแก้');
+      const { assetId, reassignment } = await reassigned('ห้องส่งซ้ำช่องว่างแก้');
       const first = await amend(assetId, reassignment.id, 2, { remark: 'แก้', reason: 'เหตุผล' }, { token: 'amend-normalized' });
       expect(first.statusCode).toBe(201);
       const replay = await amend(assetId, reassignment.id, 2, { remark: ' แก้ ', reason: ' เหตุผล ' }, { token: 'amend-normalized' });
@@ -912,7 +912,7 @@ describe('Correct or void an assignment fact (Seam A - F003-T3)', () => {
     });
 
     it('refuses a changed payload under the same token without writing', async () => {
-      const { assetId, roomA, reassignment } = await moved('ห้องเปลี่ยนคำขอแก้');
+      const { assetId, roomA, reassignment } = await reassigned('ห้องเปลี่ยนคำขอแก้');
       const payload = { remark: 'แก้', reason: 'เหตุผล' };
       expect((await amend(assetId, reassignment.id, 2, payload, { token: 'amend-mismatch' })).statusCode).toBe(201);
       const before = await assignmentOf(assetId);
@@ -935,7 +935,7 @@ describe('Correct or void an assignment fact (Seam A - F003-T3)', () => {
     });
 
     it('writes once for concurrent identical submissions, each answered with the committed result', async () => {
-      const { assetId, reassignment } = await moved('ห้องส่งพร้อมกันแก้');
+      const { assetId, reassignment } = await reassigned('ห้องส่งพร้อมกันแก้');
       const responses = await Promise.all(Array.from({ length: 8 }, () => voidFact(assetId, reassignment.id, 2, { token: 'void-concurrent' })));
       for (const res of responses) {
         expect(res.statusCode).toBe(201);
@@ -946,7 +946,7 @@ describe('Correct or void an assignment fact (Seam A - F003-T3)', () => {
     });
 
     it('scopes a token to its fact, and stores nothing for a refused write', async () => {
-      const { assetId, initial, reassignment } = await moved('ห้องขอบเขตโทเค็นแก้');
+      const { assetId, initial, reassignment } = await reassigned('ห้องขอบเขตโทเค็นแก้');
       expect((await amend(assetId, reassignment.id, 2, { remark: 'แก้' }, { token: 'correction-scope' })).statusCode).toBe(201);
       expect((await amend(assetId, initial.id, 3, { remark: 'แก้' }, { token: 'correction-scope' })).statusCode).toBe(201);
 
@@ -956,7 +956,7 @@ describe('Correct or void an assignment fact (Seam A - F003-T3)', () => {
     });
 
     it('requires one nonblank token of at most 128 characters, from the header or the body', async () => {
-      const { assetId, reassignment } = await moved('ห้องตรวจโทเค็นแก้');
+      const { assetId, reassignment } = await reassigned('ห้องตรวจโทเค็นแก้');
       const url = `/assets/${assetId}/assignments/${reassignment.id}/corrections`;
       const body = { action: 'VOID', expected_assignment_version: 2, reason: 'ผิด' };
       const before = await assignmentOf(assetId);
@@ -975,7 +975,7 @@ describe('Correct or void an assignment fact (Seam A - F003-T3)', () => {
     });
 
     it('commits the correction, the event, the version and the token together, or none of them', async () => {
-      const { assetId, reassignment } = await moved('ห้องล้มกลางทางแก้');
+      const { assetId, reassignment } = await reassigned('ห้องล้มกลางทางแก้');
       const before = await assignmentOf(assetId);
       await pool.query(`
         CREATE FUNCTION fail_correction_token() RETURNS trigger AS $$
@@ -1020,7 +1020,7 @@ describe('Correct or void an assignment fact (Seam A - F003-T3)', () => {
     };
 
     it('lets an Asset Custodian and an Administrator correct, recording who did', async () => {
-      const { assetId, initial, reassignment } = await moved('ห้องสิทธิ์แก้');
+      const { assetId, initial, reassignment } = await reassigned('ห้องสิทธิ์แก้');
       expect((await amend(assetId, initial.id, 2, { remark: 'โดยผู้ดูแล' }, { actor: custodian })).statusCode).toBe(201);
       expect((await voidFact(assetId, reassignment.id, 3, { actor: admin })).statusCode).toBe(201);
       const timeline = await timelineOf(assetId);
@@ -1030,7 +1030,7 @@ describe('Correct or void an assignment fact (Seam A - F003-T3)', () => {
     });
 
     it('forbids a Read-only User and a System Maintainer, and writes nothing', async () => {
-      const { assetId, reassignment } = await moved('ห้องสิทธิ์ห้าม');
+      const { assetId, reassignment } = await reassigned('ห้องสิทธิ์ห้าม');
       const before = await assignmentOf(assetId);
       for (const actor of [readonly, maintainer]) {
         expect((await amend(assetId, reassignment.id, 2, { remark: 'แก้' }, { actor })).statusCode).toBe(403);
@@ -1040,7 +1040,7 @@ describe('Correct or void an assignment fact (Seam A - F003-T3)', () => {
     });
 
     it('needs a session and the CSRF token', async () => {
-      const { assetId, reassignment } = await moved('ห้องเซสชันแก้');
+      const { assetId, reassignment } = await reassigned('ห้องเซสชันแก้');
       const before = await assignmentOf(assetId);
       const url = `/assets/${assetId}/assignments/${reassignment.id}/corrections`;
       const payload = { action: 'VOID', expected_assignment_version: 2, reason: 'ผิด' };
@@ -1053,7 +1053,7 @@ describe('Correct or void an assignment fact (Seam A - F003-T3)', () => {
     });
 
     it("refuses a Custodian whose 'assignment:correct' alone is denied, and writes nothing", async () => {
-      const { assetId, reassignment } = await moved('ห้องถอนสิทธิ์แก้');
+      const { assetId, reassignment } = await reassigned('ห้องถอนสิทธิ์แก้');
       const before = await assignmentOf(assetId);
       const res = await withCorrectCapability(async () => false, () => amend(assetId, reassignment.id, 2, { remark: 'แก้' }));
       expect(res.statusCode).toBe(403);
@@ -1061,7 +1061,7 @@ describe('Correct or void an assignment fact (Seam A - F003-T3)', () => {
     });
 
     it('fails closed when the capability lookup fails, and writes nothing', async () => {
-      const { assetId, reassignment } = await moved('ห้องค้นสิทธิ์ล้มแก้');
+      const { assetId, reassignment } = await reassigned('ห้องค้นสิทธิ์ล้มแก้');
       const before = await assignmentOf(assetId);
       const res = await withCorrectCapability(
         async () => {
@@ -1075,7 +1075,7 @@ describe('Correct or void an assignment fact (Seam A - F003-T3)', () => {
     });
 
     it('takes a revoked grant away at once', async () => {
-      const { assetId, reassignment } = await moved('ห้องถอนบทบาทแก้');
+      const { assetId, reassignment } = await reassigned('ห้องถอนบทบาทแก้');
       const before = await assignmentOf(assetId);
       await pool.query(`DELETE FROM user_roles WHERE user_id = $1 AND role_id = 'ADMINISTRATOR'`, [admin.id]);
       try {
@@ -1087,7 +1087,7 @@ describe('Correct or void an assignment fact (Seam A - F003-T3)', () => {
     });
 
     it('tells the Asset page whether the viewer may correct', async () => {
-      const { assetId } = await moved('ห้องธงสิทธิ์แก้');
+      const { assetId } = await reassigned('ห้องธงสิทธิ์แก้');
       for (const [actor, expected] of [
         [custodian, true],
         [admin, true],
