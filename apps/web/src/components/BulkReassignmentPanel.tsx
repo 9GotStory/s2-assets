@@ -14,17 +14,17 @@ import {
 // #50 Q4: as many as the server takes in one Bulk Reassignment.
 export const BULK_REASSIGNMENT_MAX_ASSETS = 100;
 
-// A row chosen in the asset list, with the assignment version it was read at.
+// A row chosen in the asset list.
 export interface BulkSelectedAsset {
   id: string;
   name: string | null;
   asset_number: string | null;
-  assignment_version: number;
 }
 
+// What the batch would do, at the assignment versions it was read at.
 interface BulkReassignmentPreview {
-  changed: { asset_id: string; changes: Pick<AssignmentChange, 'dimension' | 'prior' | 'new'>[] }[];
-  unchanged: { asset_id: string }[];
+  changed: { asset_id: string; assignment_version: number; changes: Pick<AssignmentChange, 'dimension' | 'prior' | 'new'>[] }[];
+  unchanged: { asset_id: string; assignment_version: number }[];
   conflicts: AssignmentConflict[];
 }
 
@@ -37,14 +37,12 @@ interface BulkReassignmentResult {
 type Stage = { name: 'FORM' } | { name: 'PREVIEW'; preview: BulkReassignmentPreview } | { name: 'DONE'; result: BulkReassignmentResult };
 
 // A refused or failed request, and what the panel offers next: the same save again when its outcome
-// is unknown, or a read of the latest versions when the batch was refused as stale.
+// is unknown, or a new preview of the latest facts when the batch was refused as stale.
 interface Failure {
   message: string;
   next?: 'retry' | 'reload';
   // The Assets that need "กำหนดครั้งแรก" first.
   needingInitial?: { asset_id: string; name: string | null; asset_number: string | null }[];
-  // The versions a stale refusal reported.
-  latestVersions?: Record<string, number>;
 }
 
 type SaveRequest = Record<string, unknown> & { retry_token: string };
@@ -89,8 +87,8 @@ export interface BulkReassignmentPanelProps {
 /**
  * F003-T5 (#55), "ย้ายหลายรายการ": one Effective Date and the same new values for the selected Assets,
  * then a preview of what each would become, then one confirmation. The server derives the prior
- * values and decides every rule; a retry after an unknown outcome resends the same request under the
- * same token, so one action records one batch.
+ * values and decides every rule, and the save expects the versions the preview read (US 27). A retry
+ * after an unknown outcome resends the same request under the same token, so one action records one batch.
  */
 export const BulkReassignmentPanel: React.FC<BulkReassignmentPanelProps> = ({
   selected,
@@ -104,8 +102,6 @@ export const BulkReassignmentPanel: React.FC<BulkReassignmentPanelProps> = ({
   const [stage, setStage] = useState<Stage>({ name: 'FORM' });
   const [isBusy, setIsBusy] = useState(false);
   const [failure, setFailure] = useState<Failure | null>(null);
-  // The versions this batch was read at: a later read never rebases them silently (US 27).
-  const [versions, setVersions] = useState(() => new Map(selected.map(({ id, assignment_version }) => [id, assignment_version])));
   // The save whose outcome is unknown.
   const uncertainRef = useRef<SaveRequest | null>(null);
 
@@ -114,11 +110,6 @@ export const BulkReassignmentPanel: React.FC<BulkReassignmentPanelProps> = ({
     const asset = assetById.get(assetId);
     return asset ? labelOf(asset, assetId) : assetId;
   };
-
-  const requestBody = (readVersions: Map<string, number>) => ({
-    assets: selected.map(({ id }) => ({ asset_id: id, expected_assignment_version: readVersions.get(id) })),
-    ...draft.requestFields,
-  });
 
   const post = (url: string, body: Record<string, unknown>, retryToken?: string): Promise<Response> =>
     fetch(url, {
@@ -143,11 +134,7 @@ export const BulkReassignmentPanel: React.FC<BulkReassignmentPanelProps> = ({
     }
     const body = await res.json().catch(() => null);
     if (body?.code === 'STALE_BEFORE_CONFLICT') {
-      return {
-        message: 'มีการบันทึกรายการอื่นของครุภัณฑ์ที่เลือกไว้หลังจากอ่านรายการ กรุณาโหลดข้อมูลล่าสุดแล้วตรวจสอบอีกครั้ง',
-        next: 'reload',
-        latestVersions: body.current_values,
-      };
+      return { message: 'มีการบันทึกรายการอื่นของครุภัณฑ์ที่เลือกไว้หลังจากตรวจสอบ กรุณาโหลดข้อมูลล่าสุดแล้วตรวจสอบอีกครั้ง', next: 'reload' };
     }
     if (body?.code === 'INITIAL_ASSIGNMENT_REQUIRED') {
       return { message: 'ครุภัณฑ์ต่อไปนี้ยังไม่มีการกำหนดครั้งแรก จึงยังไม่ได้บันทึกรายการใด กรุณา "กำหนดครั้งแรก" จากหน้าครุภัณฑ์ก่อน', needingInitial: body.assets };
@@ -155,11 +142,11 @@ export const BulkReassignmentPanel: React.FC<BulkReassignmentPanelProps> = ({
     return { message: body?.message || 'ไม่สามารถดำเนินการได้' };
   };
 
-  const runPreview = async (readVersions: Map<string, number>) => {
+  const runPreview = async () => {
     setIsBusy(true);
     setFailure(null);
     try {
-      const res = await post('/assets/bulk-reassignments/preview', requestBody(readVersions));
+      const res = await post('/assets/bulk-reassignments/preview', { asset_ids: selected.map(({ id }) => id), ...draft.requestFields });
       if (res.ok) {
         setStage({ name: 'PREVIEW', preview: await res.json() });
       } else {
@@ -180,7 +167,7 @@ export const BulkReassignmentPanel: React.FC<BulkReassignmentPanelProps> = ({
       setFailure({ message: problem });
       return;
     }
-    void runPreview(versions);
+    void runPreview();
   };
 
   const save = async (request: SaveRequest) => {
@@ -212,22 +199,14 @@ export const BulkReassignmentPanel: React.FC<BulkReassignmentPanelProps> = ({
     setFailure({ message: 'เกิดข้อผิดพลาดในการบันทึก กดส่งซ้ำเพื่อดำเนินการต่อได้อย่างปลอดภัย', next: 'retry' });
   };
 
-  const handleConfirm = (conflicts: AssignmentConflict[]) =>
+  const handleConfirm = ({ changed, unchanged, conflicts }: BulkReassignmentPreview) =>
     void save({
-      ...requestBody(versions),
-      // The expected versions tie this confirmation to the facts the preview showed.
+      // The versions the preview read tie this confirmation to the facts it showed.
+      assets: [...changed, ...unchanged].map(({ asset_id, assignment_version }) => ({ asset_id, expected_assignment_version: assignment_version })),
+      ...draft.requestFields,
       ...(conflicts.length > 0 ? { explicit_continuation: true } : {}),
       retry_token: crypto.randomUUID(),
     });
-
-  const handleReload = () => {
-    const latest = new Map(versions);
-    for (const [assetId, version] of Object.entries(failure?.latestVersions ?? {})) {
-      latest.set(assetId, version);
-    }
-    setVersions(latest);
-    void runPreview(latest);
-  };
 
   const backToForm = () => {
     setFailure(null);
@@ -270,7 +249,7 @@ export const BulkReassignmentPanel: React.FC<BulkReassignmentPanelProps> = ({
               </button>
             )}
             {failure.next === 'reload' && (
-              <button type="button" id="bulk-reassign-reload" disabled={isBusy} style={recoveryButtonStyle} onClick={handleReload}>
+              <button type="button" id="bulk-reassign-reload" disabled={isBusy} style={recoveryButtonStyle} onClick={() => void runPreview()}>
                 โหลดข้อมูลล่าสุด
               </button>
             )}
@@ -348,7 +327,7 @@ export const BulkReassignmentPanel: React.FC<BulkReassignmentPanelProps> = ({
             <AssignmentConflictWarning
               conflicts={stage.preview.conflicts}
               assetLabel={assetLabel}
-              onConfirm={() => handleConfirm(stage.preview.conflicts)}
+              onConfirm={() => handleConfirm(stage.preview)}
               onBack={backToForm}
             />
           ) : (
@@ -358,7 +337,7 @@ export const BulkReassignmentPanel: React.FC<BulkReassignmentPanelProps> = ({
                   type="button"
                   id="bulk-reassign-confirm"
                   disabled={isBusy || isSaveUncertain}
-                  onClick={() => handleConfirm(stage.preview.conflicts)}
+                  onClick={() => handleConfirm(stage.preview)}
                   style={buttonStyle(true, isBusy || isSaveUncertain)}
                 >
                   {isBusy ? 'กำลังบันทึก...' : 'ยืนยันบันทึก'}

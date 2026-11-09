@@ -19,7 +19,6 @@ export interface SearchAssetItem {
   name: string | null;
   asset_number: string | null;
   serial_number: string | null;
-  assignment_version: number;
   location?: ReferenceEntry | null;
   organization_unit?: ReferenceEntry | null;
   responsible_person?: ReferenceEntry | null;
@@ -454,12 +453,7 @@ export const AssetSearch: React.FC = () => {
       if (next.has(item.id)) {
         next.delete(item.id);
       } else if (next.size < BULK_REASSIGNMENT_MAX_ASSETS) {
-        next.set(item.id, {
-          id: item.id,
-          name: item.name,
-          asset_number: item.asset_number,
-          assignment_version: item.assignment_version,
-        });
+        next.set(item.id, { id: item.id, name: item.name, asset_number: item.asset_number });
       }
       return next;
     });

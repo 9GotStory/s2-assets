@@ -267,7 +267,6 @@ export interface SearchAssetItem extends CurrentAssignment {
   name: string | null;
   asset_number: string | null;
   serial_number: string | null;
-  assignment_version: number;
 }
 
 export interface SearchAssetInput {
@@ -1919,7 +1918,7 @@ export class AssetService {
 
     const query = `
       WITH filtered AS (
-        SELECT a.id, a.name, a.asset_number, a.serial_number, a.recorded_at, a.assignment_version
+        SELECT a.id, a.name, a.asset_number, a.serial_number, a.recorded_at
         FROM assets a
         ${whereClause}
       ),
@@ -1949,7 +1948,6 @@ export class AssetService {
         name: row.name ?? null,
         asset_number: row.asset_number ?? null,
         serial_number: row.serial_number ?? null,
-        assignment_version: row.assignment_version,
         ...assignmentSearch.current(row),
       }));
 

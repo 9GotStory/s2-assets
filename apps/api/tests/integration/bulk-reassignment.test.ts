@@ -438,7 +438,7 @@ describe('Bulk Reassignment (Seam A - F003-T5)', () => {
 
   describe('preview', () => {
     const preview = async (assetIds: string[], payload: Record<string, unknown>, actor: Actor = custodian) =>
-      api.post(actor, '/assets/bulk-reassignments/preview', { assets: await selectionOf(assetIds), ...payload });
+      api.post(actor, '/assets/bulk-reassignments/preview', { asset_ids: assetIds, ...payload });
 
     it('shows prior and new values for each Asset, the unchanged Assets and the conflicts, and saves nothing', async () => {
       const [start, later, target] = await entries('locations', 'ห้องดูก่อน', 3);
@@ -468,10 +468,13 @@ describe('Bulk Reassignment (Seam A - F003-T5)', () => {
       expect(body.changed).toHaveLength(2);
       expect(body.changed).toEqual(
         expect.arrayContaining(
-          [contradicted, plain].map((asset_id) => ({ asset_id, changes: [{ dimension: 'location', prior: at(start), new: at(target) }] }))
+          [
+            { asset_id: contradicted, assignment_version: 2, changes: [{ dimension: 'location', prior: at(start), new: at(target) }] },
+            { asset_id: plain, assignment_version: 1, changes: [{ dimension: 'location', prior: at(start), new: at(target) }] },
+          ]
         )
       );
-      expect(body.unchanged).toEqual([{ asset_id: holder }]);
+      expect(body.unchanged).toEqual([{ asset_id: holder, assignment_version: 2 }]);
       expect(body.conflicts).toEqual([
         {
           asset_id: contradicted,
@@ -486,15 +489,42 @@ describe('Bulk Reassignment (Seam A - F003-T5)', () => {
       expect(await Promise.all(ids.map(assignmentOf))).toEqual(before);
     });
 
-    it('leaves the Assets free for the write that follows it, under the same versions', async () => {
+    it('reads the versions the write then expects, and leaves the Assets free for it', async () => {
       const [roomA, target] = await entries('locations', 'ห้องดูแล้วบันทึก', 2);
       const assetId = await registered(roomA);
-      const assets = await selectionOf([assetId]);
-      const payload = { assets, effective_date: TODAY, location_id: target.id };
+      const facts = { effective_date: TODAY, location_id: target.id };
 
-      expect((await api.post(custodian, '/assets/bulk-reassignments/preview', payload)).statusCode).toBe(200);
+      const seen = await preview([assetId], facts);
+      expect(seen.statusCode).toBe(200);
+      const assets = seen.json().changed.map(({ asset_id, assignment_version }: any) => ({ asset_id, expected_assignment_version: assignment_version }));
 
-      expect((await api.post(custodian, '/assets/bulk-reassignments', payload, { 'x-retry-token': crypto.randomUUID() })).statusCode).toBe(201);
+      const saved = await api.post(custodian, '/assets/bulk-reassignments', { assets, ...facts }, { 'x-retry-token': crypto.randomUUID() });
+      expect(saved.statusCode).toBe(201);
+      expect(saved.json().changed[0].assignment_version).toBe(2);
+    });
+
+    it('ties the save to what it showed: a fact recorded after the preview makes the save stale', async () => {
+      const [roomA, roomB, target] = await entries('locations', 'ห้องหลังดู', 3);
+      const assetId = await registered(roomA);
+      const facts = { effective_date: TODAY, location_id: target.id };
+      const seen = (await preview([assetId], facts)).json();
+      const moved = await api.post(
+        custodian,
+        `/assets/${assetId}/assignments`,
+        { kind: 'REASSIGNMENT', expected_assignment_version: 1, effective_date: TODAY, location_id: roomB.id },
+        { 'x-retry-token': crypto.randomUUID() }
+      );
+      expect(moved.statusCode).toBe(201);
+
+      const saved = await api.post(
+        custodian,
+        '/assets/bulk-reassignments',
+        { assets: [{ asset_id: assetId, expected_assignment_version: seen.changed[0].assignment_version }], ...facts },
+        { 'x-retry-token': crypto.randomUUID() }
+      );
+
+      expect(saved.statusCode).toBe(409);
+      expect(saved.json()).toMatchObject({ code: 'STALE_BEFORE_CONFLICT', current_values: { [assetId]: 2 }, expected_values: { [assetId]: 1 } });
     });
 
     it('previews a batch in which no Asset would change, with nothing to save', async () => {
@@ -502,10 +532,10 @@ describe('Bulk Reassignment (Seam A - F003-T5)', () => {
       const assetId = await registered(target);
       const res = await preview([assetId], { effective_date: TODAY, location_id: target.id });
       expect(res.statusCode).toBe(200);
-      expect(res.json()).toEqual({ changed: [], unchanged: [{ asset_id: assetId }], conflicts: [] });
+      expect(res.json()).toEqual({ changed: [], unchanged: [{ asset_id: assetId, assignment_version: 1 }], conflicts: [] });
     });
 
-    it('refuses what the write refuses: no Initial Assignment by name, a stale version, a broken rule', async () => {
+    it('refuses what the write refuses: no Initial Assignment by name, too many Assets, a broken rule', async () => {
       const [roomA, target] = await entries('locations', 'ห้องดูแล้วติด', 2);
       const unplaced = (await api.post(custodian, '/assets', { name: 'ดูแล้วยังไม่กำหนด' })).json().asset.id;
       const noInitial = await preview([unplaced], { effective_date: TODAY, location_id: target.id });
@@ -513,13 +543,9 @@ describe('Bulk Reassignment (Seam A - F003-T5)', () => {
       expect(noInitial.json()).toMatchObject({ code: 'INITIAL_ASSIGNMENT_REQUIRED', assets: [{ asset_id: unplaced }] });
 
       const assetId = await registered(roomA);
-      const stale = await api.post(custodian, '/assets/bulk-reassignments/preview', {
-        assets: [{ asset_id: assetId, expected_assignment_version: 0 }],
-        effective_date: TODAY,
-        location_id: target.id,
-      });
-      expect(stale.statusCode).toBe(409);
-      expect(stale.json()).toMatchObject({ code: 'STALE_BEFORE_CONFLICT', current_values: { [assetId]: 1 } });
+      const tooMany = await preview(Array.from({ length: 101 }, () => crypto.randomUUID()), { effective_date: TODAY, location_id: target.id });
+      expect(tooMany.statusCode).toBe(400);
+      expect(tooMany.json().message).toContain('1 to 100');
 
       const broken = await preview([assetId], { effective_date: TODAY, location_id: null });
       expect(broken.statusCode).toBe(400);
@@ -550,23 +576,6 @@ describe('Bulk Reassignment (Seam A - F003-T5)', () => {
 
   describe('asset list', () => {
     const rowsNamed = async (actor: Actor, name: string) => api.get(actor, `/assets/search?field=name&value=${encodeURIComponent(name)}`);
-
-    it('gives each row the assignment version it was read at', async () => {
-      const [roomA, roomB] = await entries('locations', 'ห้องรายการ', 2);
-      const assetId = await registered(roomA, 'ของในรายการรุ่น');
-      const moved = await api.post(
-        custodian,
-        `/assets/${assetId}/assignments`,
-        { kind: 'REASSIGNMENT', expected_assignment_version: 1, effective_date: TODAY, location_id: roomB.id },
-        { 'x-retry-token': crypto.randomUUID() }
-      );
-      expect(moved.statusCode).toBe(201);
-
-      const res = await rowsNamed(readonly, 'ของในรายการรุ่น');
-
-      expect(res.statusCode).toBe(200);
-      expect(res.json().items).toMatchObject([{ id: assetId, assignment_version: 2 }]);
-    });
 
     it('offers the bulk action only to holders of assignment:reassign', async () => {
       const [roomA] = await entries('locations', 'ห้องรายการสิทธิ์', 1);

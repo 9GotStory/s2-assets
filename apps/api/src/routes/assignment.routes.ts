@@ -11,7 +11,12 @@ import {
 import { AssignmentConflictWarningError } from '../services/assignment-conflict.ts';
 import { AssignmentCorrectionService, type CorrectAssignmentInput } from '../services/assignment-correction.service.ts';
 import { AssignmentRecordingService, type RecordAssignmentInput } from '../services/assignment-recording.service.ts';
-import { BulkReassignmentService, InitialAssignmentRequiredError, type BulkReassignmentInput } from '../services/bulk-reassignment.service.ts';
+import {
+  BulkReassignmentService,
+  InitialAssignmentRequiredError,
+  type BulkReassignmentInput,
+  type BulkReassignmentPreviewInput,
+} from '../services/bulk-reassignment.service.ts';
 import { isValidUuid } from '../services/capability.service.ts';
 
 export interface AssignmentRoutesOptions {
@@ -81,15 +86,17 @@ const CorrectAssignmentSchema = z.discriminatedUnion('action', [
     .strict(),
 ]);
 
-// F003-T5 (#55): one set of facts for many Assets, each with the version it was selected at.
-const BulkReassignmentFields = {
-  assets: z.array(z.object({ asset_id: z.string(), ...expectedVersionField }).strict()),
-  ...assignmentFactFields,
-};
+// F003-T5 (#55): one set of facts for many Assets. The preview reads each Asset's version, and the
+// write carries the versions it read.
+const BulkReassignmentPreviewSchema = z.object({ asset_ids: z.array(z.string()), ...assignmentFactFields }).strict();
 
-const BulkReassignmentSchema = z.object({ ...BulkReassignmentFields, ...writeControlFields }).strict();
-
-const BulkReassignmentPreviewSchema = z.object(BulkReassignmentFields).strict();
+const BulkReassignmentSchema = z
+  .object({
+    assets: z.array(z.object({ asset_id: z.string(), ...expectedVersionField }).strict()),
+    ...assignmentFactFields,
+    ...writeControlFields,
+  })
+  .strict();
 
 // Feature 002's deterministic error shape.
 const errorBody = (statusCode: number, code: string, message: string) => ({ statusCode, code, error: code, message });
@@ -207,7 +214,7 @@ export const assignmentRoutes: FastifyPluginAsync<AssignmentRoutesOptions> = asy
     }
 
     try {
-      return reply.status(200).send(await bulkReassignmentService.preview(request.user!.id, body.data as BulkReassignmentInput));
+      return reply.status(200).send(await bulkReassignmentService.preview(request.user!.id, body.data as BulkReassignmentPreviewInput));
     } catch (err) {
       const refusal = refusalOf(err);
       if (!refusal) {
