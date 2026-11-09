@@ -251,7 +251,7 @@ export function bangkokDate(instant: Date): string {
 const DATE_PATTERN = /^(\d{4})-(\d{2})-(\d{2})$/;
 
 // A YYYY-MM-DD date of the Gregorian calendar from year 1, which PostgreSQL stores as given.
-const isCalendarDate = (value: string): boolean => {
+export const isCalendarDate = (value: string): boolean => {
   const match = DATE_PATTERN.exec(value);
   if (!match) {
     return false;

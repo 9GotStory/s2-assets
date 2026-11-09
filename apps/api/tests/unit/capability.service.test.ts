@@ -73,7 +73,7 @@ describe('CapabilityService Unit Tests (T024 - US2)', () => {
       expect(ROLE_CAPABILITY_MAP.READ_ONLY).not.toContain('evidence:correct');
     });
 
-    it('maps ASSET_CUSTODIAN to asset:view, asset:duplicate-check, asset:register, asset:bulk-register, asset:correct, asset:search, acquisition:create, acquisition:view, evidence:view, evidence:create, evidence:correct, assignment:reassign, and assignment:correct', () => {
+    it('maps ASSET_CUSTODIAN to asset:view, asset:duplicate-check, asset:register, asset:bulk-register, asset:correct, asset:search, acquisition:create, acquisition:view, evidence:view, evidence:create, evidence:correct, assignment:reassign, assignment:correct, and loan:record', () => {
       expect(ROLE_CAPABILITY_MAP.ASSET_CUSTODIAN).toEqual([
         'asset:view',
         'asset:duplicate-check',
@@ -88,7 +88,12 @@ describe('CapabilityService Unit Tests (T024 - US2)', () => {
         'evidence:correct',
         'assignment:reassign',
         'assignment:correct',
+        'loan:record',
       ]);
+      // #74 Q12: only an Asset Custodian starts a Loan.
+      for (const role of ['SYSTEM_MAINTAINER', 'ADMINISTRATOR', 'READ_ONLY']) {
+        expect(ROLE_CAPABILITY_MAP[role]).not.toContain('loan:record');
+      }
       // #50 Q3: only an Asset Custodian records Initial Assignments and Reassignments.
       for (const role of ['SYSTEM_MAINTAINER', 'ADMINISTRATOR', 'READ_ONLY']) {
         expect(ROLE_CAPABILITY_MAP[role]).not.toContain('assignment:reassign');
@@ -124,6 +129,7 @@ describe('CapabilityService Unit Tests (T024 - US2)', () => {
       expect(isKnownCapability('evidence:correct')).toBe(true);
       expect(isKnownCapability('assignment:reassign')).toBe(true);
       expect(isKnownCapability('assignment:correct')).toBe(true);
+      expect(isKnownCapability('loan:record')).toBe(true);
       expect(isKnownCapability('unknown:capability')).toBe(false);
       expect(isKnownCapability('*')).toBe(false);
       expect(isKnownCapability('')).toBe(false);

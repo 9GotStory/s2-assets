@@ -36,6 +36,15 @@ export const repositoryProxyConfig: Record<string, ProxyOptions> = {
       }
     },
   },
+  '/loans': {
+    target: 'http://api:3000',
+    changeOrigin: true,
+    bypass: (req) => {
+      if (req.headers.accept?.includes('text/html')) {
+        return '/index.html';
+      }
+    },
+  },
   // T4 (#25): reference lists; the maintenance page is the SPA route /admin/references.
   '/references': {
     target: 'http://api:3000',

@@ -5,7 +5,9 @@ import { AssetCorrectionForm } from '../components/AssetCorrectionForm';
 import { AssetQrLabel } from '../components/AssetQrLabel';
 import { AssignmentSection } from '../components/AssignmentSection';
 import { EvidencePanel } from '../components/EvidencePanel';
+import { LoanSection } from '../components/LoanSection';
 import { type CurrentAssignment } from '../components/ReferenceContextFields';
+import { type OnLoan } from '../components/loanFacts';
 
 export interface AssetRecord {
   id: string;
@@ -44,6 +46,9 @@ export interface AssetDetailResponse {
   can_correct?: boolean;
   can_reassign?: boolean;
   can_correct_assignment?: boolean;
+  // F004-T1: who holds the Asset, and whether the viewer holds 'loan:record'.
+  on_loan?: OnLoan | null;
+  can_record_loan?: boolean;
 }
 
 export const AssetDetail: React.FC = () => {
@@ -782,6 +787,24 @@ const AssetDetailContent: React.FC = () => {
             const refetchResult = await refetch();
             return refetchResult.isError ? null : (refetchResult.data?.assignment_version ?? null);
           }}
+        />
+
+        {/* Loans (F004-T1), apart from the assignment timeline */}
+        <LoanSection
+          asset={asset}
+          onLoan={assetData.on_loan ?? null}
+          canRecordLoan={Boolean(assetData.can_record_loan && !isPermissionRevoked)}
+          actorId={currentUser?.id ?? null}
+          dataUpdatedAt={dataUpdatedAt}
+          csrfToken={csrfToken}
+          onStarted={async () => {
+            setRefreshError(null);
+            const refetchResult = await refetch();
+            if (refetchResult.isError) {
+              setRefreshError('บันทึกการยืมสำเร็จ แต่การดึงข้อมูลล่าสุดล้มเหลว กรุณากดปุ่มเพื่อโหลดข้อมูลใหม่');
+            }
+          }}
+          onPermissionRevoked={handlePermissionRevoked}
         />
 
         {/* QR Code and Minimal Printing Panel (T8) */}

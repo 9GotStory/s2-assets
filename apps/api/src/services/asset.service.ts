@@ -317,6 +317,12 @@ function refuseAssignmentFields(input: CorrectAssetInput): void {
 const containsPattern = (value: string): string =>
   `%${value.replace(/\\/g, '\\\\').replace(/%/g, '\\%').replace(/_/g, '\\_')}%`;
 
+/** Whether an Asset is registered. */
+export async function assetExists(db: pg.Pool | any, assetId: string): Promise<boolean> {
+  const res = await db.query('SELECT 1 FROM assets WHERE id = $1', [assetId]);
+  return res.rows.length > 0;
+}
+
 export class AssetService {
   private db: any;
   private clock: () => Date = () => new Date();

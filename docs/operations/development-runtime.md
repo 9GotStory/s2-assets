@@ -17,7 +17,7 @@ Authority: `TECHNOLOGY.md` v1.2.0 §9 (Development environment, Development orch
 
 | Resource | Value |
 | --- | --- |
-| Web | `http://127.0.0.1:5180/` — Vite dev server (`pnpm --filter web run dev`), loopback only; its dev proxy forwards `/auth`, `/system`, `/assets`, `/acquisitions`, `/evidence` and `/references` to `http://api:3000` |
+| Web | `http://127.0.0.1:5180/` — Vite dev server (`pnpm --filter web run dev`), loopback only; its dev proxy forwards `/auth`, `/system`, `/assets`, `/acquisitions`, `/evidence`, `/loans` and `/references` to `http://api:3000` |
 | API | `http://127.0.0.1:3010/` — Fastify dev server (`pnpm --filter api run dev`), loopback only (`/health`, `/ready`); `PUBLIC_APP_ORIGIN=http://127.0.0.1:5180`, so QR label links open the Web |
 | Units (`~/.config/containers/systemd/`) | `s2-assets-dev.network`, `s2-assets-dev-db-data.volume`, `s2-assets-dev-db.container`, `s2-assets-dev-api.container`, `s2-assets-dev-web.container` (sources in `deploy/dev-quadlet/`) |
 | Services | `s2-assets-dev-db.service`, `s2-assets-dev-api.service`, `s2-assets-dev-web.service` (user manager; started with the user session) |
