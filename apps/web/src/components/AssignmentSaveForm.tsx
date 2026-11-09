@@ -1,5 +1,4 @@
 import React, { useRef, useState } from 'react';
-import { KIND_LABELS, type AssignmentEvent } from './assignmentFacts';
 
 // What saving an assignment fact needs from the Asset page.
 export interface AssignmentSaveProps {
@@ -14,7 +13,10 @@ export interface AssignmentSaveProps {
 }
 
 export interface AssignmentSaveFormProps extends AssignmentSaveProps {
-  kind: AssignmentEvent['kind'];
+  heading: string;
+  saveUrl: string;
+  submitLabel?: string;
+  cancelLabel?: string;
   // Why this request cannot be sent, or null when it can. The server decides again.
   requestError: () => string | null;
   requestBody: () => Record<string, unknown>;
@@ -49,14 +51,16 @@ const recoveryButtonStyle = (isSubmitting: boolean): React.CSSProperties => ({
  * records one event (US 28). A stale save is refused until the latest facts are read (US 27).
  */
 export const AssignmentSaveForm: React.FC<AssignmentSaveFormProps> = ({
-  assetId,
   assignmentVersion,
   csrfToken,
   onRecorded,
   onRefresh,
   onCancel,
   onPermissionRevoked,
-  kind,
+  heading,
+  saveUrl,
+  submitLabel = 'บันทึก',
+  cancelLabel = 'ยกเลิก',
   requestError,
   requestBody,
   children,
@@ -77,7 +81,7 @@ export const AssignmentSaveForm: React.FC<AssignmentSaveFormProps> = ({
 
     let res: Response;
     try {
-      res = await fetch(`/assets/${assetId}/assignments`, {
+      res = await fetch(saveUrl, {
         method: 'POST',
         headers: {
           'Content-Type': 'application/json',
@@ -127,7 +131,7 @@ export const AssignmentSaveForm: React.FC<AssignmentSaveFormProps> = ({
       setFailure({ message: problem });
       return;
     }
-    void send({ kind, expected_assignment_version: expectedVersion, ...requestBody(), retry_token: crypto.randomUUID() });
+    void send({ expected_assignment_version: expectedVersion, ...requestBody(), retry_token: crypto.randomUUID() });
   };
 
   const handleReload = async () => {
@@ -148,7 +152,7 @@ export const AssignmentSaveForm: React.FC<AssignmentSaveFormProps> = ({
       style={{ border: '1px solid #e5e7eb', borderRadius: '6px', padding: '1rem', marginBottom: '1rem' }}
     >
       <h3 style={{ marginTop: 0, marginBottom: '0.75rem', fontSize: '1rem', fontWeight: 600, color: '#111827' }}>
-        {KIND_LABELS[kind]}
+        {heading}
       </h3>
 
       {failure && (
@@ -215,7 +219,7 @@ export const AssignmentSaveForm: React.FC<AssignmentSaveFormProps> = ({
             cursor: isLocked ? 'not-allowed' : 'pointer',
           }}
         >
-          {isSubmitting ? 'กำลังบันทึก...' : 'บันทึก'}
+          {isSubmitting ? 'กำลังบันทึก...' : submitLabel}
         </button>
         <button
           type="button"
@@ -232,7 +236,7 @@ export const AssignmentSaveForm: React.FC<AssignmentSaveFormProps> = ({
             cursor: isLocked ? 'not-allowed' : 'pointer',
           }}
         >
-          ยกเลิก
+          {cancelLabel}
         </button>
       </div>
     </form>

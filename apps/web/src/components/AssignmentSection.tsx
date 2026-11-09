@@ -1,21 +1,30 @@
 import React, { useState } from 'react';
 import { useQuery } from '@tanstack/react-query';
+import { AssignmentAmendForm, AssignmentVoidForm } from './AssignmentCorrectionForms';
+import { AssignmentFactItem } from './AssignmentFactItem';
 import type { AssignmentSaveProps } from './AssignmentSaveForm';
 import { InitialAssignmentForm } from './InitialAssignmentForm';
 import { ReassignmentForm } from './ReassignmentForm';
 import { REFERENCE_DIMENSIONS, entryLabel, type CurrentAssignment } from './ReferenceContextFields';
-import { KIND_LABELS, valueText, type AssignmentEvent } from './assignmentFacts';
+import { CORRECTION_LABELS, KIND_LABELS, type AssignmentEvent } from './assignmentFacts';
 
-const THAI_DATE = new Intl.DateTimeFormat('th-TH', { dateStyle: 'long', timeZone: 'UTC' });
-const THAI_DATE_TIME = new Intl.DateTimeFormat('th-TH', {
-  dateStyle: 'long',
-  timeStyle: 'short',
-  timeZone: 'Asia/Bangkok',
-});
-const THAI_RECORDED_DATE = new Intl.DateTimeFormat('th-TH', { dateStyle: 'long', timeZone: 'Asia/Bangkok' });
+// The one form open in the section: recording a new fact, or correcting a fact of the timeline.
+type OpenForm = { type: 'RECORD'; kind: AssignmentEvent['kind'] } | { type: 'AMEND' | 'VOID'; eventId: string };
 
-// A calendar date (YYYY-MM-DD) in Thai.
-const thaiDate = (date: string) => THAI_DATE.format(new Date(`${date}T00:00:00Z`));
+const CORRECTION_ACTIONS = [
+  { type: 'AMEND', testId: 'assignment-amend', label: CORRECTION_LABELS.AMENDED },
+  { type: 'VOID', testId: 'assignment-void', label: CORRECTION_LABELS.VOIDED },
+] as const;
+
+const correctionActionStyle: React.CSSProperties = {
+  padding: '0.25rem 0.625rem',
+  backgroundColor: '#ffffff',
+  color: '#374151',
+  border: '1px solid #d1d5db',
+  borderRadius: '4px',
+  fontSize: '0.8125rem',
+  cursor: 'pointer',
+};
 
 export interface AssignmentSectionProps {
   assetId: string;
@@ -26,6 +35,8 @@ export interface AssignmentSectionProps {
   onPermissionRevoked?: (statusCode?: number) => void;
   // Whether the viewer holds 'assignment:reassign', and what recording a fact needs (F003-T2).
   canReassign: boolean;
+  // Whether the viewer holds 'assignment:correct' (F003-T3).
+  canCorrectAssignment: boolean;
   assignmentVersion: number;
   isLegacy: boolean;
   csrfToken: string | null;
@@ -44,14 +55,14 @@ export const AssignmentSection: React.FC<AssignmentSectionProps> = ({
   dataUpdatedAt,
   onPermissionRevoked,
   canReassign,
+  canCorrectAssignment,
   assignmentVersion,
   isLegacy,
   csrfToken,
   onRecorded,
   onRefresh,
 }) => {
-  // The kind of fact the open form records, fixed when it opens.
-  const [openKind, setOpenKind] = useState<AssignmentEvent['kind'] | null>(null);
+  const [openForm, setOpenForm] = useState<OpenForm | null>(null);
   const [wasRecorded, setWasRecorded] = useState(false);
 
   const timeline = useQuery<AssignmentEvent[], Error & { status?: number }>({
@@ -75,9 +86,22 @@ export const AssignmentSection: React.FC<AssignmentSectionProps> = ({
       previousQuery?.queryKey[1] === actorId && previousQuery?.queryKey[2] === assetId ? previous : undefined,
   });
 
-  // The action on offer: an Initial Assignment while the Asset has none, a Reassignment after it.
+  // The action on offer: an Initial Assignment while the Asset has none standing, a Reassignment after it.
   const offeredKind: AssignmentEvent['kind'] | null =
-    canReassign && timeline.data ? (timeline.data.some(({ kind }) => kind === 'INITIAL') ? 'REASSIGNMENT' : 'INITIAL') : null;
+    canReassign && timeline.data
+      ? timeline.data.some(({ kind, is_voided }) => kind === 'INITIAL' && !is_voided)
+        ? 'REASSIGNMENT'
+        : 'INITIAL'
+      : null;
+
+  // A form stays open only while its action is still allowed: a correction closes if its fact is voided meanwhile.
+  const activeForm =
+    openForm &&
+    (openForm.type === 'RECORD'
+      ? canReassign
+      : canCorrectAssignment && timeline.data?.some(({ id, is_voided }) => id === openForm.eventId && !is_voided))
+      ? openForm
+      : null;
 
   const save: AssignmentSaveProps = {
     assetId,
@@ -85,11 +109,11 @@ export const AssignmentSection: React.FC<AssignmentSectionProps> = ({
     csrfToken,
     onRecorded: async () => {
       await onRecorded();
-      setOpenKind(null);
+      setOpenForm(null);
       setWasRecorded(true);
     },
     onRefresh,
-    onCancel: () => setOpenKind(null),
+    onCancel: () => setOpenForm(null),
     onPermissionRevoked,
   };
 
@@ -138,16 +162,20 @@ export const AssignmentSection: React.FC<AssignmentSectionProps> = ({
         </div>
       )}
 
-      {canReassign && openKind === 'INITIAL' && <InitialAssignmentForm save={save} isLegacy={isLegacy} actorId={actorId} />}
-      {canReassign && openKind === 'REASSIGNMENT' && <ReassignmentForm save={save} timeline={timeline.data} actorId={actorId} />}
-      {!(canReassign && openKind) &&
+      {activeForm?.type === 'RECORD' && activeForm.kind === 'INITIAL' && (
+        <InitialAssignmentForm save={save} isLegacy={isLegacy} actorId={actorId} />
+      )}
+      {activeForm?.type === 'RECORD' && activeForm.kind === 'REASSIGNMENT' && (
+        <ReassignmentForm save={save} timeline={timeline.data} actorId={actorId} />
+      )}
+      {!activeForm &&
         offeredKind && (
           <button
             type="button"
             id="assignment-action"
             onClick={() => {
               setWasRecorded(false);
-              setOpenKind(offeredKind);
+              setOpenForm({ type: 'RECORD', kind: offeredKind });
             }}
             style={{
               padding: '0.5rem 1rem',
@@ -182,54 +210,43 @@ export const AssignmentSection: React.FC<AssignmentSectionProps> = ({
           // The facts in the order of facts: Effective Date with unknown first, then Recorded At.
           <ol data-testid="assignment-timeline" style={{ listStyle: 'none', margin: 0, padding: 0 }}>
             {timeline.data.map((event) => (
-              <li
+              <AssignmentFactItem
                 key={event.id}
-                data-testid={`assignment-event-${event.id}`}
-                style={{
-                  border: '1px solid #e5e7eb',
-                  borderRadius: '6px',
-                  padding: '0.75rem 1rem',
-                  marginBottom: '0.5rem',
-                  fontSize: '0.875rem',
-                  color: '#374151',
-                }}
+                event={event}
+                actions={
+                  canCorrectAssignment &&
+                  !activeForm &&
+                  !event.is_voided && (
+                    <div style={{ display: 'flex', gap: '0.5rem', marginTop: '0.5rem' }}>
+                      {CORRECTION_ACTIONS.map(({ type, testId, label }) => (
+                        <button
+                          key={type}
+                          type="button"
+                          data-testid={`${testId}-${event.id}`}
+                          onClick={() => {
+                            setWasRecorded(false);
+                            setOpenForm({ type, eventId: event.id });
+                          }}
+                          style={correctionActionStyle}
+                        >
+                          {label}
+                        </button>
+                      ))}
+                    </div>
+                  )
+                }
               >
-                <div style={{ fontWeight: 600, color: '#111827' }}>
-                  {KIND_LABELS[event.kind]}
-                  {event.provenance === 'CARRIED_OVER_F002' && (
-                    <span style={{ marginLeft: '0.5rem', fontSize: '0.75rem', fontWeight: 400, color: '#92400e' }}>
-                      ยกมาจากทะเบียนเดิม
-                    </span>
-                  )}
-                </div>
-                <div>
-                  วันที่มีผล:{' '}
-                  {event.effective_date ? (
-                    <time dateTime={event.effective_date}>{thaiDate(event.effective_date)}</time>
-                  ) : (
-                    `ไม่ทราบวันที่ (บันทึกเมื่อ ${THAI_RECORDED_DATE.format(new Date(event.recorded_at))})`
-                  )}
-                </div>
-                <div style={{ color: '#4b5563' }}>
-                  วันที่บันทึก: <time dateTime={event.recorded_at}>{THAI_DATE_TIME.format(new Date(event.recorded_at))}</time>{' '}
-                  โดย {event.recorded_by_username ?? event.recorded_by}
-                </div>
-                <ul style={{ margin: '0.25rem 0 0 0', paddingLeft: '1.25rem' }}>
-                  {event.changes.map((change) => {
-                    const { label } = REFERENCE_DIMENSIONS.find(({ entryField }) => entryField === change.dimension)!;
-                    return (
-                      <li key={change.dimension}>
-                        {label}:{' '}
-                        {event.kind === 'INITIAL'
-                          ? valueText(change.new)
-                          : `${valueText(change.prior)} → ${valueText(change.new)}`}
-                      </li>
-                    );
-                  })}
-                </ul>
-                {event.document_reference && <div>เอกสารอ้างอิง: {event.document_reference}</div>}
-                {event.remark && <div style={{ whiteSpace: 'pre-wrap' }}>หมายเหตุ: {event.remark}</div>}
-              </li>
+                {activeForm?.type === 'AMEND' && activeForm.eventId === event.id && (
+                  <div style={{ marginTop: '0.75rem' }}>
+                    <AssignmentAmendForm save={save} event={event} actorId={actorId} />
+                  </div>
+                )}
+                {activeForm?.type === 'VOID' && activeForm.eventId === event.id && (
+                  <div style={{ marginTop: '0.75rem' }}>
+                    <AssignmentVoidForm save={save} event={event} />
+                  </div>
+                )}
+              </AssignmentFactItem>
             ))}
           </ol>
         ))}

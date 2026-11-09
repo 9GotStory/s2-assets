@@ -24,6 +24,7 @@ import { SessionService } from './services/session.service.ts';
 import { CapabilityService } from './services/capability.service.ts';
 import { AssetService } from './services/asset.service.ts';
 import { AssignmentRecordingService } from './services/assignment-recording.service.ts';
+import { AssignmentCorrectionService } from './services/assignment-correction.service.ts';
 import { AcquisitionService } from './services/acquisition.service.ts';
 import { EvidenceService } from './services/evidence.service.ts';
 
@@ -250,6 +251,7 @@ export async function buildApp(options: AppOptions = {}): Promise<FastifyInstanc
     await app.register(assignmentRoutes, {
       prefix: '/assets',
       assignmentRecordingService: new AssignmentRecordingService({ db: dbClient, clock: options.clock }),
+      assignmentCorrectionService: new AssignmentCorrectionService({ db: dbClient, clock: options.clock }),
     });
 
     // Acquisition routes mounted under /acquisitions

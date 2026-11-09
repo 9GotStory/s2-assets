@@ -163,6 +163,8 @@ describe('Initial Assignment (Seam A - F003-T1)', () => {
           provenance: 'RECORDED',
           document_reference: null,
           remark: null,
+          is_voided: false,
+          corrections: [],
           changes: [
             {
               dimension: 'location',

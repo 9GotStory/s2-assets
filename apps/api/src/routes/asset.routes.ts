@@ -717,10 +717,12 @@ export const assetRoutes: FastifyPluginAsync<AssetRoutesOptions> = async (
 
       let canCorrect = false;
       let canReassign = false;
+      let canCorrectAssignment = false;
       let canViewAcquisition = false;
       if (request.user && capabilityService) {
         canCorrect = await capabilityService.hasCapability(request.user.id, 'asset:correct');
         canReassign = await capabilityService.hasCapability(request.user.id, 'assignment:reassign');
+        canCorrectAssignment = await capabilityService.hasCapability(request.user.id, 'assignment:correct');
         canViewAcquisition = await capabilityService.hasCapability(request.user.id, 'acquisition:view');
       }
 
@@ -742,6 +744,7 @@ export const assetRoutes: FastifyPluginAsync<AssetRoutesOptions> = async (
         ...result,
         can_correct: canCorrect,
         can_reassign: canReassign,
+        can_correct_assignment: canCorrectAssignment,
       });
     }
   );

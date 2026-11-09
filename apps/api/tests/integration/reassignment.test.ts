@@ -203,6 +203,7 @@ describe('Reassign one Asset (Seam A - F003-T2)', () => {
         provenance: 'RECORDED',
         document_reference: 'บันทึกข้อความ ที่ 45/2569',
         remark: 'ย้ายตามการปรับห้องทำงาน',
+        is_voided: false,
         changes: [
           {
             dimension: 'location',
@@ -210,6 +211,7 @@ describe('Reassign one Asset (Seam A - F003-T2)', () => {
             new: { entry: { id: to.id, name: 'ห้องพัสดุใหม่', is_active: true }, legacy_text: null },
           },
         ],
+        corrections: [],
       });
       expect(res.json()).toEqual({
         event: timeline[1],

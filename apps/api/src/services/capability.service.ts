@@ -33,6 +33,7 @@ export const KNOWN_CAPABILITIES = [
   'evidence:correct',
   'reference:maintain',
   'assignment:reassign',
+  'assignment:correct',
 ] as const;
 
 export type Capability = (typeof KNOWN_CAPABILITIES)[number];
@@ -41,9 +42,9 @@ export type Capability = (typeof KNOWN_CAPABILITIES)[number];
  * Immutable role-to-capability mapping (Feature 002 T1–T7 and Feature 003 approved matrix).
  *
  * - SYSTEM_MAINTAINER: grants 'system:maintain' (preserves foundation maintenance grant)
- * - ADMINISTRATOR: grants 'system:maintain', 'asset:view', 'asset:correct', 'asset:search', 'acquisition:view', 'evidence:view', 'evidence:correct', 'reference:maintain'
+ * - ADMINISTRATOR: grants 'system:maintain', 'asset:view', 'asset:correct', 'asset:search', 'acquisition:view', 'evidence:view', 'evidence:correct', 'reference:maintain', 'assignment:correct' (#50 Q3: Assignment Correction)
  * - READ_ONLY: grants 'asset:view', 'asset:search', 'acquisition:view', 'evidence:view' (view and search for registry, acquisitions & evidence)
- * - ASSET_CUSTODIAN: grants 'asset:view', 'asset:duplicate-check', 'asset:register', 'asset:bulk-register', 'asset:correct', 'asset:search', 'acquisition:create', 'acquisition:view', 'evidence:view', 'evidence:create', 'evidence:correct', 'assignment:reassign' (#50 Q3: Initial Assignment and Reassignment)
+ * - ASSET_CUSTODIAN: grants 'asset:view', 'asset:duplicate-check', 'asset:register', 'asset:bulk-register', 'asset:correct', 'asset:search', 'acquisition:create', 'acquisition:view', 'evidence:view', 'evidence:create', 'evidence:correct', 'assignment:reassign', 'assignment:correct' (#50 Q3: Initial Assignment, Reassignment and Assignment Correction)
  * - Unknown roles: empty / unmapped
  */
 export const ROLE_CAPABILITY_MAP: Readonly<Record<string, readonly string[]>> = Object.freeze({
@@ -57,6 +58,7 @@ export const ROLE_CAPABILITY_MAP: Readonly<Record<string, readonly string[]>> = 
     'evidence:view',
     'evidence:correct',
     'reference:maintain',
+    'assignment:correct',
   ] as const),
   READ_ONLY: Object.freeze([
     'asset:view',
@@ -77,6 +79,7 @@ export const ROLE_CAPABILITY_MAP: Readonly<Record<string, readonly string[]>> = 
     'evidence:create',
     'evidence:correct',
     'assignment:reassign',
+    'assignment:correct',
   ] as const),
 });
 

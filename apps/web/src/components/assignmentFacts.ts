@@ -14,6 +14,26 @@ export interface AssignmentChange {
   new: AssignmentValue;
 }
 
+// The before and after of one field an Assignment Correction changed. A dimension is null where the
+// fact does not have it.
+export type AssignmentCorrectionField =
+  | { field: 'effective_date' | 'document_reference' | 'remark'; before: string | null; after: string | null }
+  | {
+      field: AssignmentDimension;
+      before: Pick<AssignmentChange, 'prior' | 'new'> | null;
+      after: Pick<AssignmentChange, 'prior' | 'new'> | null;
+    };
+
+export interface AssignmentCorrection {
+  id: string;
+  action: 'AMENDED' | 'VOIDED';
+  reason: string;
+  recorded_at: string;
+  recorded_by: string;
+  recorded_by_username: string | null;
+  changes: AssignmentCorrectionField[];
+}
+
 export interface AssignmentEvent {
   id: string;
   kind: 'INITIAL' | 'REASSIGNMENT';
@@ -24,13 +44,20 @@ export interface AssignmentEvent {
   provenance: 'RECORDED' | 'CARRIED_OVER_F002';
   document_reference: string | null;
   remark: string | null;
+  is_voided: boolean;
   changes: AssignmentChange[];
+  corrections: AssignmentCorrection[];
 }
 
 // Labels from GLOSSARY.md (#50 Q18).
 export const KIND_LABELS: Record<AssignmentEvent['kind'], string> = {
   INITIAL: 'กำหนดครั้งแรก',
   REASSIGNMENT: 'ย้าย / เปลี่ยนผู้รับผิดชอบ',
+};
+
+export const CORRECTION_LABELS: Record<AssignmentCorrection['action'], string> = {
+  AMENDED: 'แก้ไขรายการที่บันทึกผิด',
+  VOIDED: 'ยกเลิกรายการ (บันทึกผิด)',
 };
 
 const NO_VALUE: AssignmentValue = { entry: null, legacy_text: null };
@@ -64,9 +91,14 @@ export const valueText = (value: AssignmentValue): string => {
   return parts.filter(Boolean).join(' / ') || 'ไม่ระบุ';
 };
 
+// One dimension of a fact: an Initial Assignment shows its new value alone, having no prior value.
+export const changeText = (kind: AssignmentEvent['kind'], change: Pick<AssignmentChange, 'prior' | 'new'>): string =>
+  kind === 'INITIAL' ? valueText(change.new) : `${valueText(change.prior)} → ${valueText(change.new)}`;
+
 /**
  * The value of each dimension in effect on a date, read from a timeline in the order of facts: a
- * preview of the prior values, which the server derives for itself when it records the fact.
+ * preview of the prior values, which the server derives for itself when it records the fact. A
+ * voided fact takes no part.
  */
 export const valuesAt = (timeline: AssignmentEvent[], date: string): Record<AssignmentDimension, AssignmentValue> => {
   const values: Record<AssignmentDimension, AssignmentValue> = {
@@ -75,7 +107,7 @@ export const valuesAt = (timeline: AssignmentEvent[], date: string): Record<Assi
     responsible_person: NO_VALUE,
   };
   for (const event of timeline) {
-    if (event.effective_date === null || event.effective_date <= date) {
+    if (!event.is_voided && (event.effective_date === null || event.effective_date <= date)) {
       for (const change of event.changes) {
         values[change.dimension] = change.new;
       }
