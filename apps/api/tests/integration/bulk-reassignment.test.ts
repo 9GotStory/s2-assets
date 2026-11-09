@@ -159,6 +159,7 @@ describe('Bulk Reassignment (Seam A - F003-T5)', () => {
       const none = await api.post(custodian, '/assets/bulk-reassignments', { assets: [], effective_date: TODAY, location_id: target.id }, { 'x-retry-token': crypto.randomUUID() });
       expect(none.statusCode).toBe(400);
       expect(none.json().code).toBe('VALIDATION_FAILED');
+      expect(none.json().message).toContain('1 to 100');
 
       const tooMany = await bulk([...assetIds, await registered(roomA)], { effective_date: TODAY, location_id: target.id });
       expect(tooMany.statusCode).toBe(400);
