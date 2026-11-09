@@ -359,4 +359,94 @@ test.describe.serial('Assignment journeys: Real SPA -> Composed API -> PostgreSQ
       await expect(page.getByTestId(`assignment-void-${voidedEvent.id}`)).toHaveCount(0);
     }
   });
+
+  test("Journey F003-T3.2: a Custodian corrects facts from the Asset page, and reading the latest facts keeps another user's values", async ({ page, context }) => {
+    const roomA = await entryIn('locations', 'ห้องแก้จากฟอร์ม ก E2E');
+    const roomB = await entryIn('locations', 'ห้องแก้จากฟอร์ม ข E2E');
+    const roomC = await entryIn('locations', 'ห้องแก้จากฟอร์ม ค E2E');
+    const unit = await entryIn('organization-units', 'หน่วยแก้จากฟอร์ม E2E');
+    const assetId = await register({ name: 'ตู้แก้จากฟอร์ม E2E', location_id: roomA.id, effective_date: '2024-01-01' });
+    const reassignment = (await reassignBehindTheForm(assetId, 1, '2024-06-01', roomB.id)).event;
+    const initial = (await pool.query(`SELECT id FROM assignment_events WHERE asset_id = $1 AND kind = 'INITIAL'`, [assetId])).rows[0];
+
+    await loginAs(context, custodianUserId);
+    await page.goto(`${targetBaseUrl}/assets/${assetId}`);
+    await expect(page.locator('#detail-location')).toHaveText('ห้องแก้จากฟอร์ม ข E2E');
+
+    // Amend a Reassignment's new value.
+    await page.getByTestId(`assignment-amend-${reassignment.id}`).click();
+    const form = page.locator('#assignment-form');
+    await expect(form).toBeVisible();
+    await expect(page.locator('#assignment-amend-location-prior')).toHaveValue(roomA.id);
+    await expect(page.locator('#assignment-amend-location-new')).toHaveValue(roomB.id);
+    await expect(page.locator('#assignment-amend-organization_unit-new')).toHaveCount(0);
+
+    // The form refuses no reason, then no change.
+    await page.locator('#assignment-submit').click();
+    await expect(page.getByTestId('assignment-form-error')).toContainText('กรุณาระบุเหตุผล');
+    await page.locator('#assignment-correction-reason').fill('เลือกห้องผิด');
+    await page.locator('#assignment-submit').click();
+    await expect(page.getByTestId('assignment-form-error')).toContainText('ยังไม่มีค่าที่แก้ไข');
+
+    await page.locator('#assignment-amend-location-new').selectOption(roomC.id);
+    await page.locator('#assignment-submit').click();
+    await expect(form).toHaveCount(0);
+    await expect(page.locator('#detail-location')).toHaveText('ห้องแก้จากฟอร์ม ค E2E');
+    await expect(page.getByTestId(`assignment-corrections-${reassignment.id}`)).toContainText('แก้เป็น');
+
+    // Amend the Initial Assignment: add a dimension it missed, and set its date unknown.
+    await page.getByTestId(`assignment-amend-${initial.id}`).click();
+    await page.locator('#assignment-amend-organization_unit_id').selectOption(unit.id);
+    await page.locator('#assignment-amend-effective_date_unknown').check();
+    await page.locator('#assignment-correction-reason').fill('รู้ภายหลังว่าเป็นของหน่วยนี้มาตลอด');
+    await page.locator('#assignment-submit').click();
+    await expect(form).toHaveCount(0);
+    await expect(page.locator('#detail-organization_unit')).toHaveText('หน่วยแก้จากฟอร์ม E2E');
+    await expect(page.getByTestId(`assignment-event-${initial.id}`)).toContainText('ไม่ทราบวันที่');
+
+    // Another user amends the fact after this form opened. Reading the latest facts keeps what this
+    // user typed and shows the other user's value for the field this user left alone.
+    await page.getByTestId(`assignment-amend-${reassignment.id}`).click();
+    await page.locator('#assignment-amend-document_reference').fill('เอกสารของฉัน');
+    await page.locator('#assignment-correction-reason').fill('เติมเอกสาร');
+    await correctionService.correct(custodianUserId, assetId, reassignment.id, { action: 'AMEND', expected_assignment_version: 4, reason: 'คนอื่นแก้', remark: 'หมายเหตุจากคนอื่น' } as any, { retryToken: crypto.randomUUID() });
+    await page.locator('#assignment-submit').click();
+    await expect(page.getByTestId('assignment-form-error')).toContainText('มีการบันทึกรายการอื่น');
+    await page.locator('#assignment-reload').click();
+    await expect(page.getByTestId('assignment-form-error')).toHaveCount(0);
+    await expect(page.locator('#assignment-amend-assignment_remark')).toHaveValue('หมายเหตุจากคนอื่น');
+    await expect(page.locator('#assignment-amend-document_reference')).toHaveValue('เอกสารของฉัน');
+    await page.locator('#assignment-submit').click();
+    await expect(form).toHaveCount(0);
+    const event = page.getByTestId(`assignment-event-${reassignment.id}`);
+    await expect(event).toContainText('หมายเหตุ: หมายเหตุจากคนอื่น');
+    await expect(event).toContainText('เอกสารอ้างอิง: เอกสารของฉัน');
+
+    // Void the Reassignment.
+    await page.getByTestId(`assignment-void-${reassignment.id}`).click();
+    await expect(page.locator('#assignment-cancel')).toHaveText('ไม่ยกเลิก');
+    await page.locator('#assignment-submit').click();
+    await expect(page.getByTestId('assignment-form-error')).toContainText('กรุณาระบุเหตุผล');
+    await page.locator('#assignment-correction-reason').fill('ไม่เคยย้ายจริง');
+    await page.locator('#assignment-submit').click();
+    await expect(form).toHaveCount(0);
+    await expect(page.locator('#detail-location')).toHaveText('ห้องแก้จากฟอร์ม ก E2E');
+    await expect(page.getByTestId(`assignment-fact-${reassignment.id}`)).toHaveCSS('text-decoration-line', 'line-through');
+    await expect(page.getByTestId(`assignment-amend-${reassignment.id}`)).toHaveCount(0);
+
+    // Void the Initial Assignment: "กำหนดครั้งแรก" is offered again.
+    await expect(page.locator('#assignment-action')).toHaveText('ย้าย / เปลี่ยนผู้รับผิดชอบ');
+    await page.getByTestId(`assignment-void-${initial.id}`).click();
+    await page.locator('#assignment-correction-reason').fill('กำหนดผิด');
+    await page.locator('#assignment-submit').click();
+    await expect(form).toHaveCount(0);
+    const action = page.locator('#assignment-action');
+    await expect(action).toHaveText('กำหนดครั้งแรก');
+    await action.click();
+    await page.locator('#assignment-location_id').selectOption(roomB.id);
+    await page.locator('#assignment-submit').click();
+    await expect(form).toHaveCount(0);
+    await expect(page.locator('#detail-location')).toHaveText('ห้องแก้จากฟอร์ม ข E2E');
+    await expect(action).toHaveText('ย้าย / เปลี่ยนผู้รับผิดชอบ');
+  });
 });

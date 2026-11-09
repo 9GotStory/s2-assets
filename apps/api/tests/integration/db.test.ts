@@ -13,6 +13,17 @@ const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
 const migrationFolder = path.resolve(__dirname, '../../../../packages/db/src/migrations');
 
+// Every migration, in the order it applies. A new migration adds its line here.
+const MIGRATIONS = [
+  '0001_foundation',
+  '0002_asset_registry',
+  '0003_acquisitions',
+  '0004_evidence',
+  '0005_reference_context',
+  '0006_initial_assignment',
+  '0007_assignment_correction',
+] as const;
+
 describe('Database Migrations Integration', () => {
   let container: StartedPostgreSqlContainer;
   let databaseUrl: string;
@@ -39,19 +50,31 @@ describe('Database Migrations Integration', () => {
     }
   }, 30_000);
 
+  const expectApplied = (results: Awaited<ReturnType<typeof runMigrator>>['results'], names: readonly string[]) => {
+    expect(results?.map(({ migrationName, direction, status }) => [migrationName, direction, status])).toEqual(
+      names.map((name) => [name, 'Up', 'Success'])
+    );
+  };
+
+  // Rolls back every migration after `name`, the newest first.
+  const rollBackTo = async (name: (typeof MIGRATIONS)[number]) => {
+    for (const migration of MIGRATIONS.slice(MIGRATIONS.indexOf(name) + 1).reverse()) {
+      const result = await runMigrator({ command: 'down', databaseUrl, migrationFolder });
+      expect(result.error).toBeUndefined();
+      expect(result.results).toHaveLength(1);
+      expect(result.results![0]).toMatchObject({ migrationName: migration, direction: 'Down', status: 'Success' });
+    }
+  };
+
   it('verifies migration directory exists and contains all required migration files', () => {
     expect(fs.existsSync(migrationFolder)).toBe(true);
     const files = fs.readdirSync(migrationFolder);
-    expect(files).toContain('0001_foundation.ts');
-    expect(files).toContain('0002_asset_registry.ts');
-    expect(files).toContain('0003_acquisitions.ts');
-    expect(files).toContain('0004_evidence.ts');
-    expect(files).toContain('0005_reference_context.ts');
-    expect(files).toContain('0006_initial_assignment.ts');
-    expect(files).toContain('0007_assignment_correction.ts');
+    for (const name of MIGRATIONS) {
+      expect(files).toContain(`${name}.ts`);
+    }
   });
 
-  it('successfully applies all migrations to a clean database in 0001 -> 0002 -> 0003 -> 0004 -> 0005 -> 0006 -> 0007 order', async () => {
+  it('successfully applies all migrations to a clean database in order', async () => {
     const result = await runMigrator({
       command: 'latest',
       databaseUrl,
@@ -59,36 +82,7 @@ describe('Database Migrations Integration', () => {
     });
 
     expect(result.error).toBeUndefined();
-    expect(result.results).toBeDefined();
-    expect(result.results!.length).toBe(7);
-
-    expect(result.results![0].migrationName).toBe('0001_foundation');
-    expect(result.results![0].direction).toBe('Up');
-    expect(result.results![0].status).toBe('Success');
-
-    expect(result.results![1].migrationName).toBe('0002_asset_registry');
-    expect(result.results![1].direction).toBe('Up');
-    expect(result.results![1].status).toBe('Success');
-
-    expect(result.results![2].migrationName).toBe('0003_acquisitions');
-    expect(result.results![2].direction).toBe('Up');
-    expect(result.results![2].status).toBe('Success');
-
-    expect(result.results![3].migrationName).toBe('0004_evidence');
-    expect(result.results![3].direction).toBe('Up');
-    expect(result.results![3].status).toBe('Success');
-
-    expect(result.results![4].migrationName).toBe('0005_reference_context');
-    expect(result.results![4].direction).toBe('Up');
-    expect(result.results![4].status).toBe('Success');
-
-    expect(result.results![5].migrationName).toBe('0006_initial_assignment');
-    expect(result.results![5].direction).toBe('Up');
-    expect(result.results![5].status).toBe('Success');
-
-    expect(result.results![6].migrationName).toBe('0007_assignment_correction');
-    expect(result.results![6].direction).toBe('Up');
-    expect(result.results![6].status).toBe('Success');
+    expectApplied(result.results, MIGRATIONS);
   });
 
   it('creates the schema and tables in the database across foundation, asset registry, and acquisitions', async () => {
@@ -230,16 +224,8 @@ describe('Database Migrations Integration', () => {
     expect(rerunResult.results?.length ?? 0).toBe(0);
   });
 
-  it('supports complete ordered rollback (0007 -> 0006 -> 0005 -> 0004 -> 0003 -> 0002 -> 0001) on an empty database with complete schema teardown', async () => {
-    // 000. Roll back 0007_assignment_correction: the correction records go
-    const rollback0007 = await runMigrator({
-      command: 'down',
-      databaseUrl,
-      migrationFolder,
-    });
-    expect(rollback0007.error).toBeUndefined();
-    expect(rollback0007.results![0].migrationName).toBe('0007_assignment_correction');
-    expect(rollback0007.results![0].direction).toBe('Down');
+  it('supports complete ordered rollback, newest first, on an empty database with complete schema teardown', async () => {
+    await rollBackTo('0006_initial_assignment');
 
     // 00. Roll back 0006_initial_assignment: the fact tables go and the Feature 002 columns return
     const rollback0006 = await runMigrator({
@@ -425,7 +411,7 @@ describe('Database Migrations Integration', () => {
     }
   });
 
-  it('can re-apply all migrations after rollback in ordered 0001 -> 0002 -> 0003 -> 0004 -> 0005 -> 0006 -> 0007 sequence and restores full schema', async () => {
+  it('can re-apply all migrations after rollback in order and restores full schema', async () => {
     const reapplyResult = await runMigrator({
       command: 'latest',
       databaseUrl,
@@ -433,36 +419,7 @@ describe('Database Migrations Integration', () => {
     });
 
     expect(reapplyResult.error).toBeUndefined();
-    expect(reapplyResult.results).toBeDefined();
-    expect(reapplyResult.results!).toHaveLength(7);
-
-    expect(reapplyResult.results![0].migrationName).toBe('0001_foundation');
-    expect(reapplyResult.results![0].direction).toBe('Up');
-    expect(reapplyResult.results![0].status).toBe('Success');
-
-    expect(reapplyResult.results![1].migrationName).toBe('0002_asset_registry');
-    expect(reapplyResult.results![1].direction).toBe('Up');
-    expect(reapplyResult.results![1].status).toBe('Success');
-
-    expect(reapplyResult.results![2].migrationName).toBe('0003_acquisitions');
-    expect(reapplyResult.results![2].direction).toBe('Up');
-    expect(reapplyResult.results![2].status).toBe('Success');
-
-    expect(reapplyResult.results![3].migrationName).toBe('0004_evidence');
-    expect(reapplyResult.results![3].direction).toBe('Up');
-    expect(reapplyResult.results![3].status).toBe('Success');
-
-    expect(reapplyResult.results![4].migrationName).toBe('0005_reference_context');
-    expect(reapplyResult.results![4].direction).toBe('Up');
-    expect(reapplyResult.results![4].status).toBe('Success');
-
-    expect(reapplyResult.results![5].migrationName).toBe('0006_initial_assignment');
-    expect(reapplyResult.results![5].direction).toBe('Up');
-    expect(reapplyResult.results![5].status).toBe('Success');
-
-    expect(reapplyResult.results![6].migrationName).toBe('0007_assignment_correction');
-    expect(reapplyResult.results![6].direction).toBe('Up');
-    expect(reapplyResult.results![6].status).toBe('Success');
+    expectApplied(reapplyResult.results, MIGRATIONS);
 
     // Verify all application tables exist again
     const client = new Client({ connectionString: databaseUrl });
@@ -494,38 +451,8 @@ describe('Database Migrations Integration', () => {
   });
 
   it('refuses destructive rollback of 0003_acquisitions when meaningful acquisition or link data exists and leaves data intact', async () => {
-    // Roll back empty 0007_assignment_correction, 0006_initial_assignment, 0005_reference_context and 0004_evidence first so current state is at 0003_acquisitions
-    const down0007 = await runMigrator({
-      command: 'down',
-      databaseUrl,
-      migrationFolder,
-    });
-    expect(down0007.error).toBeUndefined();
-    expect(down0007.results![0].migrationName).toBe('0007_assignment_correction');
-
-    const down0006 = await runMigrator({
-      command: 'down',
-      databaseUrl,
-      migrationFolder,
-    });
-    expect(down0006.error).toBeUndefined();
-    expect(down0006.results![0].migrationName).toBe('0006_initial_assignment');
-
-    const down0005 = await runMigrator({
-      command: 'down',
-      databaseUrl,
-      migrationFolder,
-    });
-    expect(down0005.error).toBeUndefined();
-    expect(down0005.results![0].migrationName).toBe('0005_reference_context');
-
-    const down0004 = await runMigrator({
-      command: 'down',
-      databaseUrl,
-      migrationFolder,
-    });
-    expect(down0004.error).toBeUndefined();
-    expect(down0004.results![0].migrationName).toBe('0004_evidence');
+    // Roll back the empty later migrations first so current state is at 0003_acquisitions
+    await rollBackTo('0003_acquisitions');
 
     const client = new Client({ connectionString: databaseUrl });
     await client.connect();
@@ -668,22 +595,7 @@ describe('Database Migrations Integration', () => {
       migrationFolder,
     });
     expect(upgradeResult.error).toBeUndefined();
-    expect(upgradeResult.results).toHaveLength(5);
-    expect(upgradeResult.results![0].migrationName).toBe('0003_acquisitions');
-    expect(upgradeResult.results![0].direction).toBe('Up');
-    expect(upgradeResult.results![0].status).toBe('Success');
-    expect(upgradeResult.results![1].migrationName).toBe('0004_evidence');
-    expect(upgradeResult.results![1].direction).toBe('Up');
-    expect(upgradeResult.results![1].status).toBe('Success');
-    expect(upgradeResult.results![2].migrationName).toBe('0005_reference_context');
-    expect(upgradeResult.results![2].direction).toBe('Up');
-    expect(upgradeResult.results![2].status).toBe('Success');
-    expect(upgradeResult.results![3].migrationName).toBe('0006_initial_assignment');
-    expect(upgradeResult.results![3].direction).toBe('Up');
-    expect(upgradeResult.results![3].status).toBe('Success');
-    expect(upgradeResult.results![4].migrationName).toBe('0007_assignment_correction');
-    expect(upgradeResult.results![4].direction).toBe('Up');
-    expect(upgradeResult.results![4].status).toBe('Success');
+    expectApplied(upgradeResult.results, MIGRATIONS.slice(MIGRATIONS.indexOf('0003_acquisitions')));
 
     // 4. Assert comprehensive preservation of all 0002 and foundation facts
     const verifyClient = new Client({ connectionString: databaseUrl });
