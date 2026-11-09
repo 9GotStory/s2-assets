@@ -1,6 +1,7 @@
 import React from 'react';
 import { REFERENCE_DIMENSIONS } from './ReferenceContextFields';
 import {
+  BULK_REASSIGNMENT_LABEL,
   CORRECTION_LABELS,
   KIND_LABELS,
   changeText,
@@ -92,6 +93,15 @@ export const AssignmentFactItem: React.FC<AssignmentFactItemProps> = ({ event, a
         {KIND_LABELS[event.kind]}
         {event.provenance === 'CARRIED_OVER_F002' && (
           <span style={{ marginLeft: '0.5rem', fontSize: '0.75rem', fontWeight: 400, color: '#92400e' }}>ยกมาจากทะเบียนเดิม</span>
+        )}
+        {event.bulk_reference && (
+          <span
+            data-testid={`assignment-bulk-${event.id}`}
+            title={event.bulk_reference}
+            style={{ marginLeft: '0.5rem', fontSize: '0.75rem', fontWeight: 400, color: '#1d4ed8' }}
+          >
+            {BULK_REASSIGNMENT_LABEL} ชุด {event.bulk_reference.slice(0, 8)}
+          </span>
         )}
       </div>
       <div>

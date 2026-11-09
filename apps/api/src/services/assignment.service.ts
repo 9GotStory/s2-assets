@@ -123,6 +123,8 @@ export interface AssignmentEvent {
   document_reference: string | null;
   remark: string | null;
   is_voided: boolean;
+  // What the events of one Bulk Reassignment share; null for any other fact.
+  bulk_reference: string | null;
   changes: AssignmentChange[];
   corrections: AssignmentCorrection[];
 }
@@ -405,16 +407,23 @@ export function normalizeReassignment(input: ReassignmentInput, today: string): 
   };
 }
 
+export interface RecordReassignmentInput {
+  assetId: string;
+  actorId: string;
+  facts: ReassignmentFacts;
+  today: string;
+}
+
 /**
  * Records a Reassignment and increments the Asset's assignment version, in the caller's transaction
- * and under its lock on the Asset. Each prior value is the one in effect at the Effective Date; a
- * dimension whose new value equals it is dropped, and a request left with no change is refused
- * (MR-01). Returns the event id.
+ * and under its lock on the Asset. Each prior value is the one in effect at the Effective Date, and a
+ * dimension whose new value equals it is dropped. Returns the event id, or null with nothing written
+ * when no dimension is left (MR-01).
  */
-export async function recordReassignment(
+export async function recordReassignmentIfItChanges(
   client: pg.PoolClient | pg.Pool,
-  { assetId, actorId, facts, today }: { assetId: string; actorId: string; facts: ReassignmentFacts; today: string }
-): Promise<string> {
+  { assetId, actorId, facts, today, bulkReference = null }: RecordReassignmentInput & { bulkReference?: string | null }
+): Promise<string | null> {
   const prior = await readAssignmentAt(client, assetId, facts.effective_date);
   const changes = DIMENSIONS.flatMap(({ key, dimension, idField, legacyField, column }) => {
     const target = facts.targets[idField];
@@ -425,7 +434,7 @@ export async function recordReassignment(
       : [{ dimension, idField, column, target, priorEntry, priorLegacy }];
   });
   if (changes.length === 0) {
-    throw new ValidationError('This Reassignment changes nothing at its Effective Date');
+    return null;
   }
   await assertAssignableEntries(
     client,
@@ -434,10 +443,10 @@ export async function recordReassignment(
   );
 
   const eventRes = await client.query(
-    `INSERT INTO assignment_events (asset_id, kind, effective_date, recorded_by, provenance, document_reference, remark)
-     VALUES ($1, 'REASSIGNMENT', $2, $3, 'RECORDED', $4, $5)
+    `INSERT INTO assignment_events (asset_id, kind, effective_date, recorded_by, provenance, document_reference, remark, bulk_reference)
+     VALUES ($1, 'REASSIGNMENT', $2, $3, 'RECORDED', $4, $5, $6)
      RETURNING id`,
-    [assetId, facts.effective_date, actorId, facts.document_reference, facts.remark]
+    [assetId, facts.effective_date, actorId, facts.document_reference, facts.remark, bulkReference]
   );
   const eventId: string = eventRes.rows[0].id;
   for (const { dimension, column, target, priorEntry, priorLegacy } of changes) {
@@ -449,6 +458,44 @@ export async function recordReassignment(
   }
   await client.query('UPDATE assets SET assignment_version = assignment_version + 1 WHERE id = $1', [assetId]);
   return eventId;
+}
+
+/** Records a Reassignment as above, refusing one that changes nothing (MR-01). Returns the event id. */
+export async function recordReassignment(client: pg.PoolClient | pg.Pool, input: RecordReassignmentInput): Promise<string> {
+  const eventId = await recordReassignmentIfItChanges(client, input);
+  if (eventId === null) {
+    throw new ValidationError('This Reassignment changes nothing at its Effective Date');
+  }
+  return eventId;
+}
+
+// An Asset under a batch's lock.
+export interface LockedAsset {
+  id: string;
+  name: string | null;
+  asset_number: string | null;
+  assignment_version: number;
+}
+
+/**
+ * Locks the Assets that exist among `assetIds`, in identifier order so that batches over the same
+ * Assets cannot deadlock (#50). PostgreSQL sorts before it locks; an id never changes, so the order holds.
+ */
+export async function lockAssetsInIdentifierOrder(client: pg.PoolClient, assetIds: string[]): Promise<LockedAsset[]> {
+  const res = await client.query(
+    'SELECT id, name, asset_number, assignment_version FROM assets WHERE id = ANY($1::uuid[]) ORDER BY id FOR UPDATE',
+    [assetIds]
+  );
+  return res.rows;
+}
+
+/** The Assets among `assetIds` that have a non-voided Initial Assignment. */
+export async function assetsWithInitialAssignment(client: pg.PoolClient, assetIds: string[]): Promise<Set<string>> {
+  const res = await client.query(
+    `SELECT asset_id FROM assignment_events WHERE asset_id = ANY($1::uuid[]) AND kind = 'INITIAL' AND NOT is_voided`,
+    [assetIds]
+  );
+  return new Set(res.rows.map((row: any) => row.asset_id));
 }
 
 // An entry by its current name and active flag, or null when no entry is named.
@@ -645,7 +692,8 @@ export async function readAssignmentTimeline(
 ): Promise<AssignmentEvent[]> {
   const eventsRes = await client.query(
     `SELECT e.id, e.kind, to_char(e.effective_date, 'YYYY-MM-DD') AS effective_date, e.recorded_at,
-            e.recorded_by, u.username AS recorded_by_username, e.provenance, e.document_reference, e.remark, e.is_voided
+            e.recorded_by, u.username AS recorded_by_username, e.provenance, e.document_reference, e.remark, e.is_voided,
+            e.bulk_reference
      FROM assignment_events e
      LEFT JOIN users u ON u.id = e.recorded_by
      WHERE e.asset_id = $1
@@ -706,6 +754,7 @@ export async function readAssignmentTimeline(
     document_reference: row.document_reference ?? null,
     remark: row.remark ?? null,
     is_voided: row.is_voided,
+    bulk_reference: row.bulk_reference ?? null,
     changes: DIMENSIONS.flatMap(({ key, dimension }) =>
       changesRes.rows
         .filter((change: any) => change.event_id === row.id && change.dimension === dimension)

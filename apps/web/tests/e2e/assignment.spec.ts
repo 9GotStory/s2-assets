@@ -583,4 +583,176 @@ test.describe.serial('Assignment journeys: Real SPA -> Composed API -> PostgreSQ
     await expect(form).toHaveCount(0);
     await expect(page.getByTestId('assignment-conflict-notice')).toBeVisible();
   });
+
+  // F003-T5 (#55): ย้ายหลายรายการ, from selecting rows in the asset list to each Asset's timeline.
+  const selectRows = async (page: any, assetIds: string[]) => {
+    for (const assetId of assetIds) {
+      await page.getByTestId(`asset-select-${assetId}`).check();
+    }
+  };
+
+  const eventsOf = async (assetIds: string[]): Promise<number> =>
+    (await pool.query('SELECT count(*)::int AS count FROM assignment_events WHERE asset_id = ANY($1::uuid[])', [assetIds])).rows[0].count;
+
+  test('Journey F003-T5.1: a Custodian selects rows, previews each Asset, confirms once, and every timeline shows one action', async ({ page, context }) => {
+    const roomA = await entryIn('locations', 'ห้องชุด ก E2E');
+    const roomB = await entryIn('locations', 'ห้องชุด ข E2E');
+    const target = await entryIn('locations', 'ห้องปลายทางชุด E2E');
+    const first = await register({ name: 'โต๊ะชุด ก E2E', location_id: roomA.id, effective_date: '2024-01-01' });
+    const second = await register({ name: 'โต๊ะชุด ข E2E', location_id: roomB.id, effective_date: '2024-01-01' });
+    const holder = await register({ name: 'โต๊ะชุด ค E2E', location_id: target.id, effective_date: '2024-01-01' });
+    const assetIds = [first, second, holder];
+
+    await loginAs(context, custodianUserId);
+    await page.goto(`${targetBaseUrl}/assets/search`);
+    const open = page.locator('#bulk-reassign-open');
+    await expect(open).toBeDisabled();
+    await selectRows(page, assetIds);
+    await expect(page.locator('#bulk-reassign-count')).toContainText('เลือกแล้ว 3 รายการ');
+    await open.click();
+
+    await expect(page.getByTestId('assignment-loan-note')).toBeVisible();
+    await page.locator('#assignment-effective_date').fill(bangkokToday());
+    await page.locator('#assignment-location_id').selectOption(target.id);
+    await page.locator('#assignment-document_reference').fill('บันทึกข้อความ 9/2569');
+    await page.locator('#assignment-assignment_remark').fill('ย้ายทั้งห้อง');
+    await page.locator('#bulk-reassign-preview').click();
+
+    // The preview shows each Asset's own prior value and the unchanged Asset, and saves nothing.
+    await expect(page.getByTestId(`bulk-preview-changed-${first}`)).toContainText('โต๊ะชุด ก E2E');
+    await expect(page.getByTestId(`bulk-preview-changed-${first}`)).toContainText('ห้องชุด ก E2E → ห้องปลายทางชุด E2E');
+    await expect(page.getByTestId(`bulk-preview-changed-${second}`)).toContainText('ห้องชุด ข E2E → ห้องปลายทางชุด E2E');
+    await expect(page.getByTestId(`bulk-preview-unchanged-${holder}`)).toContainText('โต๊ะชุด ค E2E');
+    expect(await eventsOf(assetIds)).toBe(3);
+
+    // Going back keeps what was entered.
+    await page.locator('#bulk-reassign-back').click();
+    await expect(page.locator('#assignment-location_id')).toHaveValue(target.id);
+    await page.locator('#bulk-reassign-preview').click();
+
+    await page.locator('#bulk-reassign-confirm').click();
+    const done = page.locator('#bulk-reassign-done');
+    await expect(done).toContainText('บันทึกแล้ว 2 รายการ');
+    await expect(done).toContainText('ไม่มีการเปลี่ยนแปลง 1 รายการ');
+    expect(await eventsOf(assetIds)).toBe(5);
+
+    // Each timeline marks the one action, and an unchanged Asset gets no event.
+    const mark = page.locator('[data-testid^="assignment-bulk-"]');
+    await page.getByTestId(`bulk-done-link-${first}`).click();
+    await expect(mark).toHaveCount(1);
+    await expect(mark).toContainText('ย้ายหลายรายการ');
+    await expect(page.getByTestId('assignment-timeline')).toContainText('บันทึกข้อความ 9/2569');
+    await expect(page.getByTestId('assignment-timeline')).toContainText('ย้ายทั้งห้อง');
+    const shared = await mark.textContent();
+    await page.goto(`${targetBaseUrl}/assets/${second}`);
+    await expect(mark).toHaveText(shared!);
+    await page.goto(`${targetBaseUrl}/assets/${holder}`);
+    await expect(page.getByTestId('assignment-timeline')).toContainText('กำหนดครั้งแรก');
+    await expect(mark).toHaveCount(0);
+  });
+
+  test('Journey F003-T5.2: one confirmation covers every conflict, a stale batch is read again, and an Asset with no Initial Assignment is refused by name', async ({ page, context }) => {
+    const roomA = await entryIn('locations', 'ห้องเตือนชุด ก E2E');
+    const roomB = await entryIn('locations', 'ห้องเตือนชุด ข E2E');
+    const roomC = await entryIn('locations', 'ห้องเตือนชุด ค E2E');
+    const contradicted = await register({ name: 'ตู้เตือนชุด E2E', location_id: roomA.id, effective_date: '2024-01-01' });
+    const later = (await reassignBehindTheForm(contradicted, 1, '2024-06-01', roomC.id)).event;
+    const plain = await register({ name: 'ตู้ไม่เตือนชุด E2E', location_id: roomA.id, effective_date: '2024-01-01' });
+
+    await loginAs(context, custodianUserId);
+    await page.goto(`${targetBaseUrl}/assets/search`);
+    await selectRows(page, [contradicted, plain]);
+    await page.locator('#bulk-reassign-open').click();
+    await page.locator('#assignment-effective_date').fill('2024-03-01');
+    await page.locator('#assignment-location_id').selectOption(roomB.id);
+    await page.locator('#bulk-reassign-preview').click();
+
+    const warning = page.getByTestId('assignment-conflict-warning');
+    await expect(warning).toContainText('ตู้เตือนชุด E2E');
+    await expect(warning).toContainText('ค่าก่อนหน้าคือ ห้องเตือนชุด ข E2E');
+    expect(await eventsOf([contradicted, plain])).toBe(3);
+    await page.locator('#assignment-conflict-confirm').click();
+    await expect(page.locator('#bulk-reassign-done')).toContainText('บันทึกแล้ว 2 รายการ');
+    expect(await eventsOf([contradicted, plain])).toBe(5);
+    await page.goto(`${targetBaseUrl}/assets/${contradicted}`);
+    await expect(page.getByTestId(`assignment-conflict-${later.id}-location`)).toContainText('ค่าก่อนหน้าคือ ห้องเตือนชุด ข E2E');
+
+    // A batch whose Asset changed after the preview is refused until the latest facts are read.
+    const moving = await register({ name: 'ตู้รุ่นเก่าชุด E2E', location_id: roomA.id, effective_date: '2024-01-01' });
+    await page.goto(`${targetBaseUrl}/assets/search`);
+    await selectRows(page, [moving]);
+    await page.locator('#bulk-reassign-open').click();
+    await page.locator('#assignment-location_id').selectOption(roomB.id);
+    await page.locator('#bulk-reassign-preview').click();
+    await expect(page.getByTestId(`bulk-preview-changed-${moving}`)).toContainText('ห้องเตือนชุด ก E2E → ห้องเตือนชุด ข E2E');
+    await reassignBehindTheForm(moving, 1, bangkokToday(), roomC.id);
+    await page.locator('#bulk-reassign-confirm').click();
+    await expect(page.getByTestId('bulk-reassign-error')).toContainText('โหลดข้อมูลล่าสุด');
+    expect(await eventsOf([moving])).toBe(2);
+    await page.locator('#bulk-reassign-reload').click();
+    await expect(page.getByTestId(`bulk-preview-changed-${moving}`)).toContainText('ห้องเตือนชุด ค E2E → ห้องเตือนชุด ข E2E');
+    await page.locator('#bulk-reassign-confirm').click();
+    await expect(page.locator('#bulk-reassign-done')).toContainText('บันทึกแล้ว 1 รายการ');
+    expect(await eventsOf([moving])).toBe(3);
+    await page.locator('#bulk-reassign-finish').click();
+    await expect(page.locator('#bulk-reassign-count')).toContainText('เลือกแล้ว 0 รายการ');
+
+    // An Asset with no Initial Assignment is named, and nothing is saved.
+    const unplaced = await register({ name: 'ตู้ยังไม่กำหนดชุด E2E' });
+    const placed = await register({ name: 'ตู้กำหนดแล้วชุด E2E', location_id: roomA.id, effective_date: '2024-01-01' });
+    await page.goto(`${targetBaseUrl}/assets/search`);
+    await selectRows(page, [unplaced, placed]);
+    await page.locator('#bulk-reassign-open').click();
+    await page.locator('#assignment-location_id').selectOption(roomB.id);
+    await page.locator('#bulk-reassign-preview').click();
+    const refusal = page.getByTestId('bulk-reassign-error');
+    await expect(refusal).toContainText('กำหนดครั้งแรก');
+    await expect(refusal).toContainText('ตู้ยังไม่กำหนดชุด E2E');
+    await expect(refusal).not.toContainText('ตู้กำหนดแล้วชุด E2E');
+    expect(await eventsOf([unplaced, placed])).toBe(1);
+  });
+
+  test('Journey F003-T5.3: rows can be selected up to 100 across pages, and a Read-only User is offered no selection', async ({ page, context }) => {
+    const room = await entryIn('locations', 'ห้องร้อยแถว E2E');
+    for (let i = 0; i < 101; i++) {
+      await register({ name: `เก้าอี้ร้อยแถว E2E ${i}`, location_id: room.id, effective_date: '2024-01-01' });
+    }
+
+    await loginAs(context, custodianUserId);
+    await page.goto(`${targetBaseUrl}/assets/search`);
+    await page.locator('#search-field').selectOption('name');
+    await page.locator('#search-value').fill('เก้าอี้ร้อยแถว E2E');
+    await page.locator('#search-submit-btn').click();
+
+    const boxes = page.locator('[data-testid^="asset-select-"]');
+    for (let pageIndex = 0; pageIndex < 4; pageIndex++) {
+      await expect(boxes).toHaveCount(25);
+      for (let row = 0; row < 25; row++) {
+        await boxes.nth(row).check();
+      }
+      await page.locator('#next-page-btn').click();
+    }
+
+    // The selection kept every page, and the 101st row cannot join it.
+    await expect(boxes).toHaveCount(1);
+    await expect(boxes.first()).toBeDisabled();
+    await expect(page.locator('#bulk-reassign-count')).toContainText('เลือกแล้ว 100 รายการ');
+
+    await page.locator('#prev-page-btn').click();
+    await expect(boxes).toHaveCount(25);
+    await expect(boxes.first()).toBeChecked();
+
+    // Clearing a row frees a place for another.
+    await boxes.first().uncheck();
+    await expect(page.locator('#bulk-reassign-count')).toContainText('เลือกแล้ว 99 รายการ');
+
+    // A new actor starts with no selection, and a Read-only User has nothing to select with.
+    await page.goto('about:blank');
+    await loginAs(context, readonlyUserId);
+    await page.goto(`${targetBaseUrl}/assets/search`);
+    await expect(page.locator('#search-results-region')).toBeVisible();
+    await expect(page.locator('#asset-search-table')).toBeVisible();
+    await expect(boxes).toHaveCount(0);
+    await expect(page.locator('#bulk-reassign-open')).toHaveCount(0);
+  });
 });

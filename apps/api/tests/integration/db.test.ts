@@ -22,6 +22,7 @@ const MIGRATIONS = [
   '0005_reference_context',
   '0006_initial_assignment',
   '0007_assignment_correction',
+  '0008_bulk_reassignment',
 ] as const;
 
 describe('Database Migrations Integration', () => {

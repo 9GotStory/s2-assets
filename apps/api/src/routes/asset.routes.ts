@@ -678,7 +678,12 @@ export const assetRoutes: FastifyPluginAsync<AssetRoutesOptions> = async (
           offset: offset as any,
         });
 
-        return reply.status(200).send(result);
+        // F003-T5 (#55): whether the list offers selecting rows for "ย้ายหลายรายการ". The server decides again.
+        const canReassign = request.user && capabilityService
+          ? await capabilityService.hasCapability(request.user.id, 'assignment:reassign')
+          : false;
+
+        return reply.status(200).send({ ...result, can_reassign: canReassign });
       } catch (err: any) {
         if (err instanceof ValidationError) {
           return sendValidationError({ query: err.message });

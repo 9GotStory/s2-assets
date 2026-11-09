@@ -5,6 +5,8 @@ export interface AssignmentConflictWarningProps {
   conflicts: AssignmentConflict[];
   onConfirm: () => void;
   onBack: () => void;
+  // Names each conflict's Asset, when a save covers several.
+  assetLabel?: (assetId: string) => string;
 }
 
 // The amber box of an Assignment Conflict: the warning before a save, and the notice on the Asset page.
@@ -30,13 +32,14 @@ const actionStyle: React.CSSProperties = {
  * F003-T4 (#54): the Assignment Conflicts a save would create. Nothing is saved until the user
  * confirms, and both facts are then kept (MR-05, #50 Q12).
  */
-export const AssignmentConflictWarning: React.FC<AssignmentConflictWarningProps> = ({ conflicts, onConfirm, onBack }) => (
+export const AssignmentConflictWarning: React.FC<AssignmentConflictWarningProps> = ({ conflicts, onConfirm, onBack, assetLabel }) => (
   <div role="alert" data-testid="assignment-conflict-warning" style={conflictBoxStyle}>
     <div style={{ fontWeight: 600 }}>การบันทึกนี้จะทำให้ประวัติขัดแย้งกัน {conflicts.length} รายการ</div>
     <div style={{ marginTop: '0.25rem' }}>ระบบจะเก็บทุกรายการไว้และแสดงเครื่องหมายขัดแย้ง จนกว่าจะแก้ไขรายการที่บันทึกผิด</div>
     <ul style={{ margin: '0.5rem 0', paddingLeft: '1.25rem' }}>
       {conflicts.map((conflict) => (
-        <li key={`${conflict.event_id}-${conflict.dimension}`}>
+        <li key={`${conflict.asset_id}-${conflict.event_id}-${conflict.dimension}`}>
+          {assetLabel && `${assetLabel(conflict.asset_id)}: `}
           {conflict.event_id === null ? 'รายการที่กำลังบันทึก' : KIND_LABELS[conflict.kind]} (
           {conflict.effective_date ? thaiDate(conflict.effective_date) : 'ไม่ทราบวันที่'}) {dimensionLabel(conflict.dimension)}:{' '}
           {conflictText(conflict.recorded_prior, conflict.value_just_before)}
