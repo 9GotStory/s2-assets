@@ -163,8 +163,12 @@ test.describe.serial('Loan journeys: Real SPA -> Composed API -> PostgreSQL (Sea
     await page.locator('#loan-contact_name').fill('คุณสมหญิง ภายนอก');
     await page.locator('#loan-organization_name').fill('บริษัท ตัวอย่าง จำกัด');
     await page.locator('#loan-phone').fill(phone);
+    await page.locator('#loan-loan_date').fill('2025-01-15');
     await page.locator('#loan-due_date').fill('2099-12-31');
+    await page.locator('#loan-authorizer_person_id').selectOption(staff.id);
     await page.locator('#loan-document_reference').fill('บันทึก 9/2569');
+    await page.locator('#loan-assignment_remark').fill('ใช้งานนอกสถานที่');
+    const beforeRecording = Date.now();
     await page.locator('#loan-submit').click();
 
     // The Asset is On Loan, and the page links to the Loan instead of offering another.
@@ -181,8 +185,15 @@ test.describe.serial('Loan journeys: Real SPA -> Composed API -> PostgreSQL (Sea
     const loanUrl = page.url();
     await expect(page.locator('#loan-borrower')).toContainText('คุณสมหญิง ภายนอก');
     await expect(page.locator('#loan-borrower-phone')).toHaveText(phone);
+    await expect(page.locator('#loan-date')).toHaveText('15 มกราคม 2568');
+    await expect(page.locator('#loan-authorizer')).toHaveText('สมชาย ยืมในสำนักงาน');
     await expect(page.locator('#loan-document-reference')).toHaveText('บันทึก 9/2569');
+    await expect(page.locator('#loan-remark')).toHaveText('ใช้งานนอกสถานที่');
     await expect(page.locator('#loan-recorded-by')).toHaveText('custodian_loan');
+    await expect(page.locator('#loan-recorded-at')).not.toBeEmpty();
+    const recordedAt = Date.parse((await page.locator('#loan-recorded-at time').getAttribute('datetime'))!);
+    expect(recordedAt).toBeGreaterThanOrEqual(beforeRecording);
+    expect(recordedAt).toBeLessThanOrEqual(Date.now());
     const item = page.locator('[data-testid="loan-item"]');
     await expect(item).toHaveCount(1);
     await expect(item).toContainText('เครื่องฉาย E2E ยืม');
@@ -202,6 +213,13 @@ test.describe.serial('Loan journeys: Real SPA -> Composed API -> PostgreSQL (Sea
     await expect(page.locator('#loan-borrower-phone')).toHaveCount(0);
     await expect(page.locator('body')).not.toContainText(phone);
     await expect(page.locator('main button')).toHaveCount(0);
+
+    // Nor is the action offered on an Asset free to lend, where the Custodian saw it above.
+    const { asset: free } = await assetService.registerAsset(custodianUserId, { name: 'ลำโพง E2E ยืม' } as any);
+    await page.goto(`${targetBaseUrl}/assets/${free.id}`);
+    await expect(page.locator('[data-testid="loan-history-empty"]')).toBeVisible();
+    await expect(page.locator('[data-testid="loan-on-loan"]')).toHaveCount(0);
+    await expect(page.locator('#loan-action')).toHaveCount(0);
 
     // A Loan stands when its Internal Borrower has left, and the name says so.
     const { asset: heldByDeparted } = await assetService.registerAsset(custodianUserId, { name: 'กล้อง E2E ยืม' } as any);

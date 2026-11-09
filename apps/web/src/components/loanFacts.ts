@@ -65,8 +65,6 @@ export const CONDITION_LABELS: Record<LoanCondition, string> = { NORMAL: 'ปก
 
 export const ON_LOAN_LABEL = 'กำลังถูกยืม';
 
-export const OUTSTANDING_LABEL = 'ยังไม่คืน';
-
 export const borrowerText = (borrower: Borrower): string => {
   if (borrower.kind === 'INTERNAL') {
     return entryLabel(borrower.person);

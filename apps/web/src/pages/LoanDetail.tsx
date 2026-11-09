@@ -3,7 +3,7 @@ import { Link, useNavigate, useParams } from 'react-router';
 import { QueryClient, QueryClientProvider, useQuery } from '@tanstack/react-query';
 import { entryLabel } from '../components/ReferenceContextFields';
 import { thaiDate } from '../components/assignmentFacts';
-import { CONDITION_LABELS, OUTSTANDING_LABEL, borrowerText, type Loan } from '../components/loanFacts';
+import { CONDITION_LABELS, borrowerText, type Loan } from '../components/loanFacts';
 
 const THAI_DATE_TIME = new Intl.DateTimeFormat('th-TH', { dateStyle: 'long', timeStyle: 'short', timeZone: 'Asia/Bangkok' });
 
@@ -150,7 +150,7 @@ const LoanDetailContent: React.FC = () => {
               </div>
               <div>
                 สภาพ: {CONDITION_LABELS[item.condition]}
-                {item.condition_note ? ` (${item.condition_note})` : ''} · {item.ending_kind === 'NONE' && OUTSTANDING_LABEL}
+                {item.condition_note ? ` (${item.condition_note})` : ''}
               </div>
             </li>
           ))}

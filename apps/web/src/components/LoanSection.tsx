@@ -3,7 +3,7 @@ import { Link } from 'react-router';
 import { useQuery } from '@tanstack/react-query';
 import { LoanStartForm, type LoanFormAsset } from './LoanStartForm';
 import { thaiDate } from './assignmentFacts';
-import { CONDITION_LABELS, ON_LOAN_LABEL, OUTSTANDING_LABEL, borrowerText, type AssetLoanItem, type OnLoan } from './loanFacts';
+import { CONDITION_LABELS, ON_LOAN_LABEL, borrowerText, type AssetLoanItem, type OnLoan } from './loanFacts';
 
 export interface LoanSectionProps {
   asset: LoanFormAsset;
@@ -76,10 +76,10 @@ export const LoanSection: React.FC<LoanSectionProps> = ({
           <dd style={{ margin: 0, color: '#111827' }}>
             <time dateTime={onLoan.due_date}>{thaiDate(onLoan.due_date)}</time>
           </dd>
-          <dt style={{ fontWeight: 500, color: '#4b5563' }}>รายการยืม:</dt>
+          <dt style={{ fontWeight: 500, color: '#4b5563' }}>การยืม:</dt>
           <dd style={{ margin: 0 }}>
             <Link to={`/loans/${onLoan.loan_id}`} id="loan-current-link" style={{ color: '#2563eb', textDecoration: 'underline' }}>
-              ดูรายการยืม →
+              ดูการยืม →
             </Link>
           </dd>
         </dl>
@@ -133,9 +133,9 @@ export const LoanSection: React.FC<LoanSectionProps> = ({
                 </div>
                 <div>
                   สภาพ: {CONDITION_LABELS[item.condition]}
-                  {item.condition_note ? ` (${item.condition_note})` : ''} · {item.ending_kind === 'NONE' && OUTSTANDING_LABEL}{' '}
+                  {item.condition_note ? ` (${item.condition_note})` : ''}{' '}
                   <Link to={`/loans/${item.loan_id}`} style={{ color: '#2563eb', textDecoration: 'underline' }}>
-                    ดูรายการยืม
+                    ดูการยืม
                   </Link>
                 </div>
               </li>

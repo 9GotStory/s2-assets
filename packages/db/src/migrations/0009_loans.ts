@@ -49,8 +49,8 @@ export async function up(db: Kysely<any>): Promise<void> {
     .addUniqueConstraint('loan_items_one_per_loan_and_asset', ['loan_id', 'asset_id'])
     .execute();
 
-  // LR-11, and the guard on an Asset that ended Not Returned (#74 Q21).
-  await sql`CREATE UNIQUE INDEX loan_items_one_on_loan_per_asset
+  // LR-11, and the guard on an Asset that ended Not Returned (#74 Q21): either item keeps the Asset from a new Loan.
+  await sql`CREATE UNIQUE INDEX loan_items_one_unlendable_per_asset
     ON loan_items (asset_id) WHERE NOT is_voided AND ending_kind IN ('NONE', 'NOT_RETURNED')`.execute(db);
   await sql`CREATE INDEX idx_loan_items_asset ON loan_items (asset_id)`.execute(db);
 }

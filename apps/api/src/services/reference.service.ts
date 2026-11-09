@@ -48,6 +48,15 @@ export async function findUnassignableEntry(
   return null;
 }
 
+/** Whether a Person, locked FOR SHARE like any entry named, is on the list and, unless `allowInactive`, active. */
+export async function isListedPerson(
+  client: pg.PoolClient | pg.Pool,
+  personId: string,
+  options: { allowInactive?: boolean } = {}
+): Promise<boolean> {
+  return (await findUnassignableEntry(client, { responsible_person_id: personId }, options)) === null;
+}
+
 export interface ReferenceEntry {
   id: string;
   name: string;

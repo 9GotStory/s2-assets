@@ -74,6 +74,7 @@ describe('Starting a Loan (Seam A - F004-T1)', () => {
       const borrower = await person('สมชาย ยืมของ');
       const authorizer = await person('สมศรี อนุญาต');
       const [first, second] = [await registered('โน้ตบุ๊ก A'), await registered('โน้ตบุ๊ก B')];
+      const before = Date.now();
 
       const res = await start({
         assets: [
@@ -107,7 +108,8 @@ describe('Starting a Loan (Seam A - F004-T1)', () => {
         is_voided: false,
         version: 1,
       });
-      expect(Number.isNaN(Date.parse(loan.recorded_at))).toBe(false);
+      expect(Date.parse(loan.recorded_at)).toBeGreaterThanOrEqual(before);
+      expect(Date.parse(loan.recorded_at)).toBeLessThanOrEqual(Date.now());
       expect(loan.items).toEqual([
         {
           id: expect.stringMatching(UUID),
@@ -342,12 +344,17 @@ describe('Starting a Loan (Seam A - F004-T1)', () => {
 
     it('has no way to add an Asset to a started Loan', async () => {
       const [lent, later] = [await registered(), await registered()];
-      const loanId = (await start(base([lent]))).json().loan_id;
+      const token = crypto.randomUUID();
+      const loanId = (await start(base([lent]), token)).json().loan_id;
 
-      const res = await api.post(custodian, `/loans/${loanId}/items`, { assets: itemsFor([later]) }, { 'x-retry-token': crypto.randomUUID() });
+      const namingTheLoan = await start(base([later], { loan_id: loanId }));
+      const underItsToken = await start(base([lent, later]), token);
 
-      expect(res.statusCode).toBe(404);
+      expect(namingTheLoan.statusCode).toBe(400);
+      expect(underItsToken.statusCode).toBe(409);
+      expect(underItsToken.json().code).toBe('RETRY_TOKEN_PAYLOAD_MISMATCH');
       expect((await loanOf(loanId)).items.map(({ asset }: any) => asset.id)).toEqual([lent]);
+      expect(await loansOf(later)).toEqual([]);
     });
   });
 
@@ -545,17 +552,27 @@ describe('Starting a Loan (Seam A - F004-T1)', () => {
       expect(res.statusCode).toBe(201);
     });
 
-    it('refuses control characters in every text', async () => {
+    it('refuses every control character in one-line text, even at its ends', async () => {
+      const assetId = await registered();
+
+      for (const text of ['ก\u0007ข', 'ก\nข', 'ก\tข', 'ก\r\nข', '\nก', 'ก\n']) {
+        await refused(external({ contact_name: text }), [assetId]);
+        await refused(external({ organization_name: text }), [assetId]);
+        await refused({ assets: [{ asset_id: assetId, condition: 'NORMAL', condition_note: text }] }, [assetId]);
+      }
+      await refused(external({ phone: '081-234-5678\n' }), [assetId]);
+    });
+
+    it('keeps line breaks and tabs in a document reference and a remark, as an assignment does, and refuses other control characters', async () => {
       const assetId = await registered();
       const bell = 'ก\u0007ข';
 
-      await refused(external({ contact_name: bell }), [assetId]);
-      await refused(external({ contact_name: 'ก\nข' }), [assetId]);
-      await refused(external({ organization_name: bell }), [assetId]);
-      await refused(external({ organization_name: 'ก\tข' }), [assetId]);
       await refused({ document_reference: bell }, [assetId]);
       await refused({ remark: bell }, [assetId]);
-      await refused({ assets: [{ asset_id: assetId, condition: 'NORMAL', condition_note: bell }] }, [assetId]);
+
+      const res = await start(base([assetId], { document_reference: 'ก\nข', remark: 'ก\tข' }));
+      expect(res.statusCode).toBe(201);
+      expect(await loanOf(res.json().loan_id)).toMatchObject({ document_reference: 'ก\nข', remark: 'ก\tข' });
     });
 
     it('takes a phone number of digits, spaces, plus and hyphen only', async () => {
@@ -808,6 +825,14 @@ describe('Starting a Loan (Seam A - F004-T1)', () => {
       expect((await start(base([second]), token, otherCustodian)).statusCode).toBe(201);
     });
 
+    it('scopes a token to its operation', async () => {
+      const token = crypto.randomUUID();
+      const registration = await api.post(custodian, '/assets', { name: 'ของใต้โทเค็นเดียวกัน' }, { 'x-retry-token': token });
+      expect(registration.statusCode).toBe(201);
+
+      expect((await start(base([registration.json().asset.id]), token)).statusCode).toBe(201);
+    });
+
     it('writes once for concurrent identical submissions, each answered with the committed result', async () => {
       const assetId = await registered();
       const token = crypto.randomUUID();
@@ -843,9 +868,13 @@ describe('Starting a Loan (Seam A - F004-T1)', () => {
   });
 
   describe('a failure to persist', () => {
+    // A Loan with no item is on no Asset, and T1 has no list of Loans to find it on.
+    const loanCount = async (): Promise<number> => (await api.pool.query('SELECT count(*)::int AS n FROM loans')).rows[0].n;
+
     it('saves neither the Loan, nor its items, nor the receipt, and answers in the deterministic shape', async () => {
       const [first, second] = [await registered(), await registered()];
       const token = 'loan-fail-token';
+      const loansBefore = await loanCount();
       await api.pool.query(`
         CREATE FUNCTION fail_loan_item() RETURNS trigger AS $$
         BEGIN
@@ -861,6 +890,7 @@ describe('Starting a Loan (Seam A - F004-T1)', () => {
         expect(res.statusCode).toBe(500);
         expect(res.json().error.code).toBe('INTERNAL_SERVER_ERROR');
         expect(res.body).not.toContain('injected loan failure');
+        expect(await loanCount()).toBe(loansBefore);
         expect(await loansOf(first)).toEqual([]);
         expect((await api.pool.query('SELECT count(*)::int AS n FROM registration_retry_tokens WHERE token = $1', [token])).rows[0].n).toBe(0);
       } finally {
@@ -872,6 +902,7 @@ describe('Starting a Loan (Seam A - F004-T1)', () => {
     it('commits the Loan and its receipt together, or neither', async () => {
       const assetId = await registered();
       const token = 'loan-receipt-fail-token';
+      const loansBefore = await loanCount();
       await api.pool.query(`
         CREATE FUNCTION fail_loan_receipt() RETURNS trigger AS $$
         BEGIN
@@ -886,6 +917,7 @@ describe('Starting a Loan (Seam A - F004-T1)', () => {
       `);
       try {
         expect((await start(base([assetId]), token)).statusCode).toBe(500);
+        expect(await loanCount()).toBe(loansBefore);
         expect(await loansOf(assetId)).toEqual([]);
       } finally {
         await api.pool.query('DROP TRIGGER fail_loan_receipt ON registration_retry_tokens; DROP FUNCTION fail_loan_receipt();');

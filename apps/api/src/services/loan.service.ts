@@ -1,4 +1,5 @@
 import pg from 'pg';
+import { assetExists } from './asset.service.ts';
 import { isValidUuid } from './capability.service.ts';
 import { hasStrictControlChars } from './control-characters.ts';
 import {
@@ -10,8 +11,8 @@ import {
   normalizeText,
   type ReferenceEntrySummary,
 } from './assignment.service.ts';
-import { commitOnce } from './assignment-write.ts';
-import { findUnassignableEntry } from './reference.service.ts';
+import { isListedPerson } from './reference.service.ts';
+import { commitOnce } from './retryable-write.ts';
 import { ValidationError } from './validation-error.ts';
 
 // #74 Q9: as many as a Bulk Reassignment.
@@ -135,27 +136,24 @@ interface LoanFacts {
   remark: string | null;
 }
 
-// One line of text naming someone: trimmed, blank as none, bounded, and with no control character.
-const normalizeName = (value: string | null | undefined, field: string, maxLength: number): string | null => {
+// One line of text: trimmed, blank as none, bounded, and with no control character, even at its ends.
+const normalizeLine = (value: string | null | undefined, field: string, maxLength: number): string | null => {
+  if (hasStrictControlChars(value ?? '')) {
+    throw new ValidationError(`${field} must not contain control characters`);
+  }
   const text = value?.trim() ?? '';
   if (text.length > maxLength) {
     throw new ValidationError(`${field} must be at most ${maxLength} characters`);
-  }
-  if (hasStrictControlChars(text)) {
-    throw new ValidationError(`${field} must not contain control characters`);
   }
   return text.length > 0 ? text : null;
 };
 
 const normalizePhone = (value: string | null | undefined): string | null => {
-  const phone = value?.trim() ?? '';
-  if (phone.length > PHONE_MAX_LENGTH) {
-    throw new ValidationError(`borrower.phone must be at most ${PHONE_MAX_LENGTH} characters`);
-  }
-  if (phone.length > 0 && !PHONE_PATTERN.test(phone)) {
+  const phone = normalizeLine(value, 'borrower.phone', PHONE_MAX_LENGTH);
+  if (phone !== null && !PHONE_PATTERN.test(phone)) {
     throw new ValidationError('borrower.phone must contain only digits, spaces, plus and hyphen');
   }
-  return phone.length > 0 ? phone : null;
+  return phone;
 };
 
 const normalizeBorrower = (borrower: BorrowerInput): LoanFacts['borrower'] => {
@@ -165,14 +163,14 @@ const normalizeBorrower = (borrower: BorrowerInput): LoanFacts['borrower'] => {
     }
     return { kind: 'INTERNAL', person_id: borrower.person_id.trim().toLowerCase() };
   }
-  const contactName = normalizeName(borrower.contact_name, 'borrower.contact_name', CONTACT_NAME_MAX_LENGTH);
+  const contactName = normalizeLine(borrower.contact_name, 'borrower.contact_name', CONTACT_NAME_MAX_LENGTH);
   if (contactName === null) {
     throw new ValidationError('borrower.contact_name is required for an External Borrower');
   }
   return {
     kind: 'EXTERNAL',
     contact_name: contactName,
-    organization_name: normalizeName(borrower.organization_name, 'borrower.organization_name', ORGANIZATION_NAME_MAX_LENGTH),
+    organization_name: normalizeLine(borrower.organization_name, 'borrower.organization_name', ORGANIZATION_NAME_MAX_LENGTH),
     phone: normalizePhone(borrower.phone),
   };
 };
@@ -189,7 +187,7 @@ const normalizeItems = (items: LoanItemInput[]): LoanFacts['items'] => {
     .map(({ asset_id, condition, condition_note }) => ({
       asset_id: asset_id.trim().toLowerCase(),
       condition,
-      condition_note: normalizeText(condition_note, 'condition_note', CONDITION_NOTE_MAX_LENGTH, ''),
+      condition_note: normalizeLine(condition_note, 'condition_note', CONDITION_NOTE_MAX_LENGTH),
     }))
     .sort((a, b) => (a.asset_id < b.asset_id ? -1 : 1));
   if (new Set(normalized.map(({ asset_id }) => asset_id)).size !== normalized.length) {
@@ -291,14 +289,14 @@ export class LoanService {
   }
 
   // A Person named on a Loan must be on the list and, unless the Loan Date is before today, active (#74 Q7, Q14).
-  private async assertPersons(client: pg.PoolClient, facts: LoanFacts, today: string): Promise<void> {
+  private async assertNamedPersons(client: pg.PoolClient, facts: LoanFacts, today: string): Promise<void> {
     const allowInactive = facts.loan_date < today;
     const named = [
       { field: 'borrower.person_id', id: facts.borrower.kind === 'INTERNAL' ? facts.borrower.person_id : null },
       { field: 'authorizer_person_id', id: facts.authorizer_person_id },
     ];
     for (const { field, id } of named) {
-      if (id && (await findUnassignableEntry(client, { responsible_person_id: id }, { allowInactive }))) {
+      if (id && !(await isListedPerson(client, id, { allowInactive }))) {
         throw new ValidationError(`${field} must name ${allowInactive ? 'an' : 'an active'} entry of the Person Reference List`);
       }
     }
@@ -312,7 +310,7 @@ export class LoanService {
       { actorId, operation: 'loan:start', retryToken, payload: { version: 1, ...facts }, explicitContinuation: false },
       async (client) => {
         await this.assertLendable(client, facts.items.map(({ asset_id }) => asset_id));
-        await this.assertPersons(client, facts, today);
+        await this.assertNamedPersons(client, facts, today);
         const { borrower, items } = facts;
         const external = borrower.kind === 'EXTERNAL' ? borrower : null;
         const loanRes = await client.query(
@@ -398,41 +396,39 @@ export class LoanService {
     };
   }
 
-  /** The LoanItems of an Asset with their Loans, latest Loan Date first, or null when there is no such Asset. */
-  async itemsOfAsset(assetId: string): Promise<AssetLoanItem[] | null> {
+  private async readItemsOfAsset(assetId: string): Promise<AssetLoanItem[]> {
     const res = await this.db.query(
       `SELECT li.id AS item_id, to_char(li.due_date, 'YYYY-MM-DD') AS due_date, li.lending_condition, li.lending_condition_note,
               li.ending_kind, li.is_voided AS item_is_voided, ${LOAN_COLUMNS}
-       FROM assets a
-       LEFT JOIN loan_items li ON li.asset_id = a.id
-       LEFT JOIN loans l ON l.id = li.loan_id
+       FROM loan_items li
+       JOIN loans l ON l.id = li.loan_id
        ${LOAN_JOINS}
-       WHERE a.id = $1
+       WHERE li.asset_id = $1
        ORDER BY l.loan_date DESC, l.recorded_at DESC, li.id DESC`,
       [assetId]
     );
-    if (res.rows.length === 0) {
-      return null;
-    }
-    return res.rows
-      .filter((row: any) => row.item_id !== null)
-      .map((row: any) => ({
-        id: row.item_id,
-        loan_id: row.id,
-        loan_date: row.loan_date,
-        due_date: row.due_date,
-        borrower: borrowerOf(row, false),
-        condition: row.lending_condition,
-        condition_note: row.lending_condition_note,
-        ending_kind: row.ending_kind,
-        is_voided: row.item_is_voided,
-      }));
+    return res.rows.map((row: any) => ({
+      id: row.item_id,
+      loan_id: row.id,
+      loan_date: row.loan_date,
+      due_date: row.due_date,
+      borrower: borrowerOf(row, false),
+      condition: row.lending_condition,
+      condition_note: row.lending_condition_note,
+      ending_kind: row.ending_kind,
+      is_voided: row.item_is_voided,
+    }));
+  }
+
+  /** The LoanItems of an Asset with their Loans, latest Loan Date first, or null when there is no such Asset. */
+  async itemsOfAsset(assetId: string): Promise<AssetLoanItem[] | null> {
+    return (await assetExists(this.db, assetId)) ? this.readItemsOfAsset(assetId) : null;
   }
 
   /** Who holds an Asset, or null when it is not On Loan. */
   async onLoanOf(assetId: string): Promise<OnLoan | null> {
-    const items = await this.itemsOfAsset(assetId);
-    const held = items?.find(({ ending_kind, is_voided }) => ending_kind === 'NONE' && !is_voided);
+    const items = await this.readItemsOfAsset(assetId);
+    const held = items.find(({ ending_kind, is_voided }) => ending_kind === 'NONE' && !is_voided);
     return held ? { loan_id: held.loan_id, borrower: held.borrower, due_date: held.due_date } : null;
   }
 }

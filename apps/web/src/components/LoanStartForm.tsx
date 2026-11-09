@@ -63,9 +63,9 @@ export const LoanStartForm: React.FC<LoanStartFormProps> = ({ assets, actorId, c
   // selection as soon as it is no longer offered.
   const offerInactive = isBeforeToday(loanDate);
   const offeredPersons = lists.persons.filter((entry) => entry.is_active || offerInactive);
-  const offered = (id: string): string => (offeredPersons.some((entry) => entry.id === id) ? id : '');
-  const chosenPerson = offered(personId);
-  const chosenAuthorizer = offered(authorizerId);
+  const offeredOrNone = (id: string): string => (offeredPersons.some((entry) => entry.id === id) ? id : '');
+  const chosenPerson = offeredOrNone(personId);
+  const chosenAuthorizer = offeredOrNone(authorizerId);
 
   const itemDraft = (assetId: string): ItemDraft => items[assetId] ?? { condition: 'NORMAL', note: '' };
   const setItemDraft = (assetId: string, change: Partial<ItemDraft>) =>
@@ -222,7 +222,7 @@ export const LoanStartForm: React.FC<LoanStartFormProps> = ({ assets, actorId, c
                 {asset.name ?? asset.asset_number ?? asset.asset_id}:{' '}
                 {asset.reason === 'ON_LOAN' ? (
                   <>
-                    {ON_LOAN_LABEL} <Link to={`/loans/${asset.loan_id}`}>ดูรายการยืม</Link>
+                    {ON_LOAN_LABEL} <Link to={`/loans/${asset.loan_id}`}>ดูการยืม</Link>
                   </>
                 ) : (
                   'ไม่พบครุภัณฑ์'
