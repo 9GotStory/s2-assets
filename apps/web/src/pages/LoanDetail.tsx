@@ -4,7 +4,7 @@ import { QueryClient, QueryClientProvider, useQuery } from '@tanstack/react-quer
 import { LoanReturnForm } from '../components/LoanReturnForm';
 import { entryLabel } from '../components/ReferenceContextFields';
 import { thaiDate } from '../components/assignmentFacts';
-import { CONDITION_LABELS, LOAN_STATUS_LABELS, OUTSTANDING_LABEL, borrowerText, isOutstanding, loanReturnText, type Loan } from '../components/loanFacts';
+import { CONDITION_LABELS, LOAN_STATUS_LABELS, OUTSTANDING_LABEL, assetLabel, borrowerText, isOutstanding, loanReturnText, type Loan } from '../components/loanFacts';
 
 const THAI_DATE_TIME = new Intl.DateTimeFormat('th-TH', { dateStyle: 'long', timeStyle: 'short', timeZone: 'Asia/Bangkok' });
 
@@ -195,7 +195,7 @@ const LoanDetailContent: React.FC = () => {
           {items.map((item) => (
             <li key={item.id} data-testid="loan-item" style={{ borderTop: '1px solid #e5e7eb', padding: '0.75rem 0', fontSize: '0.875rem', color: '#374151' }}>
               <Link to={`/assets/${item.asset.id}`} style={{ color: '#2563eb', textDecoration: 'underline', fontWeight: 500 }}>
-                {item.asset.name ?? item.asset.asset_number ?? item.asset.id}
+                {assetLabel(item.asset)}
               </Link>
               {item.asset.asset_number && item.asset.name && <span style={{ color: '#6b7280' }}> ({item.asset.asset_number})</span>}
               <div>

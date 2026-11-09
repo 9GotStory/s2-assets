@@ -1,4 +1,4 @@
-import { entryLabel, type CurrentAssignment, type ReferenceEntry } from './ReferenceContextFields';
+import { entryLabel, type PermanentAssignment, type ReferenceEntry } from './ReferenceContextFields';
 
 export type LoanCondition = 'NORMAL' | 'DAMAGED';
 
@@ -54,7 +54,7 @@ export interface LoanItem {
   is_voided: boolean;
   loan_return: LoanReturn | null;
   // Where an Outstanding item goes back to, when the Loan is read with a Return Date (#74 Q27).
-  assignment_on_return_date?: CurrentAssignment;
+  assignment_on_return_date?: PermanentAssignment;
 }
 
 export type LoanStatus = 'OUTSTANDING' | 'PARTIALLY_RETURNED' | 'RETURNED';
@@ -99,19 +99,23 @@ export const isOutstanding = ({ ending_kind: endingKind, is_voided: isVoided }: 
 // Labels from GLOSSARY.md (#74 Q30).
 export const CONDITION_LABELS: Record<LoanCondition, string> = { NORMAL: 'ปกติ', DAMAGED: 'ชำรุด' };
 
+export const OUTSTANDING_LABEL = 'ยังไม่คืน';
+
 export const LOAN_STATUS_LABELS: Record<LoanStatus, string> = {
-  OUTSTANDING: 'ยังไม่คืน',
+  OUTSTANDING: OUTSTANDING_LABEL,
   PARTIALLY_RETURNED: 'คืนบางส่วน',
   RETURNED: 'คืนครบ',
 };
-
-export const OUTSTANDING_LABEL = 'ยังไม่คืน';
 
 // What an item's Loan Return says on a page.
 export const loanReturnText = ({ condition, condition_note: note }: Pick<LoanReturn, 'condition' | 'condition_note'>): string =>
   `สภาพเมื่อคืน: ${CONDITION_LABELS[condition]}${note ? ` (${note})` : ''}`;
 
 export const ON_LOAN_LABEL = 'กำลังถูกยืม';
+
+// An Asset by its name, or by what else identifies it.
+export const assetLabel = ({ id, name, asset_number: assetNumber }: { id: string; name: string | null; asset_number: string | null }): string =>
+  name ?? assetNumber ?? id;
 
 export const borrowerText = (borrower: Borrower): string => {
   if (borrower.kind === 'INTERNAL') {

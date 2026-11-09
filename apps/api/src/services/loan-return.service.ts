@@ -15,10 +15,11 @@ import {
   MAX_ASSETS,
   incrementLoanVersion,
   lockLoan,
-  markLoanItemsEnded,
-  readLoanItems,
+  readItemsOfLockedLoan,
+  recordLoanReturns,
   type LoanCondition,
-  type LockedLoanItem,
+  type LoanItemOfLockedLoan,
+  type LoanReturnFacts,
 } from './loan.service.ts';
 import { commitOnce } from './retryable-write.ts';
 import { ValidationError } from './validation-error.ts';
@@ -68,12 +69,8 @@ export class LoanItemsNotReturnableError extends Error {
 }
 
 // A request's facts once validated, before any lock. The retry fingerprint covers these.
-interface LoanReturnFacts {
+interface LoanReturnRequestFacts extends LoanReturnFacts {
   expected_version: number;
-  return_date: string;
-  document_reference: string | null;
-  remark: string | null;
-  items: { loan_item_id: string; condition: LoanCondition; condition_note: string | null }[];
 }
 
 // The items of a request in LoanItem identifier order.
@@ -98,7 +95,7 @@ const normalizeItems = (items: LoanReturnItemInput[]): LoanReturnFacts['items'] 
 };
 
 // #74 Q3: dates compare as text, which YYYY-MM-DD keeps in calendar order.
-const normalizeFacts = (input: RecordLoanReturnInput, today: string): LoanReturnFacts => {
+const normalizeFacts = (input: RecordLoanReturnInput, today: string): LoanReturnRequestFacts => {
   if (!isCalendarDate(input.return_date)) {
     throw new ValidationError('return_date must be a date (YYYY-MM-DD)');
   }
@@ -114,7 +111,8 @@ const normalizeFacts = (input: RecordLoanReturnInput, today: string): LoanReturn
   };
 };
 
-const refusalOf = (loanItemId: string, item: LockedLoanItem | undefined): RefusedLoanItem[] => {
+// The item refused, in a list of one, or an empty list when it can take this Loan Return.
+const refusedItem = (loanItemId: string, item: LoanItemOfLockedLoan | undefined): RefusedLoanItem[] => {
   if (!item) {
     return [{ loan_item_id: loanItemId, asset_id: null, name: null, asset_number: null, reason: 'NOT_FOUND' }];
   }
@@ -148,14 +146,14 @@ export class LoanReturnService {
         if (!loan) {
           throw new NotFoundError('Loan not found');
         }
-        const loanItems = await readLoanItems(client, loanId);
+        const loanItems = await readItemsOfLockedLoan(client, loanId);
         await lockAssetsInIdentifierOrder(client, [...new Set(loanItems.map(({ asset_id }) => asset_id))]);
         if (loan.version !== facts.expected_version) {
           throw new StaleBeforeConflictError('The Loan changed since it was read', { version: loan.version }, { version: facts.expected_version });
         }
 
         const itemById = new Map(loanItems.map((item) => [item.id, item]));
-        const refused = facts.items.flatMap(({ loan_item_id }) => refusalOf(loan_item_id, itemById.get(loan_item_id)));
+        const refused = facts.items.flatMap(({ loan_item_id }) => refusedItem(loan_item_id, itemById.get(loan_item_id)));
         if (refused.length > 0) {
           throw new LoanItemsNotReturnableError(refused);
         }
@@ -164,29 +162,12 @@ export class LoanReturnService {
         }
 
         const actionReference = crypto.randomUUID();
-        const { items } = facts;
-        await client.query(
-          `INSERT INTO loan_item_endings (loan_item_id, kind, ending_date, condition, condition_note, document_reference, remark, action_reference, recorded_by)
-           SELECT item.id, 'LOAN_RETURN', $1, item.condition, item.note, $2, $3, $4, $5
-           FROM unnest($6::uuid[], $7::text[], $8::text[]) AS item(id, condition, note)`,
-          [
-            facts.return_date,
-            facts.document_reference,
-            facts.remark,
-            actionReference,
-            actorId,
-            items.map(({ loan_item_id }) => loan_item_id),
-            items.map(({ condition }) => condition),
-            items.map(({ condition_note }) => condition_note),
-          ]
-        );
-        const itemIds = items.map(({ loan_item_id }) => loan_item_id);
-        await markLoanItemsEnded(client, itemIds, 'LOAN_RETURN');
+        await recordLoanReturns(client, { facts, actionReference, actorId });
         return {
           loan_id: loanId,
           version: await incrementLoanVersion(client, loanId),
           action_reference: actionReference,
-          items: itemIds.map((id) => ({ id, asset_id: itemById.get(id)!.asset_id })),
+          items: facts.items.map(({ loan_item_id: id }) => ({ id, asset_id: itemById.get(id)!.asset_id })),
         };
       }
     );

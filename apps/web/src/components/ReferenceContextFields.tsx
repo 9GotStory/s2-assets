@@ -37,9 +37,9 @@ export interface ReferenceEntry {
   version?: number;
 }
 
-// The Current Assignment (F003-T1, GLOSSARY.md): each dimension's entry by its current name, and
-// its Legacy text, as the asset detail and search return it.
-export interface CurrentAssignment {
+// A Permanent Assignment (GLOSSARY.md): each dimension's entry by its current name, and its Legacy
+// text, as the asset detail and search return it.
+export interface PermanentAssignment {
   location: ReferenceEntry | null;
   organization_unit: ReferenceEntry | null;
   responsible_person: ReferenceEntry | null;
@@ -47,6 +47,9 @@ export interface CurrentAssignment {
   legacy_organization_unit_text: string | null;
   legacy_responsible_person_text: string | null;
 }
+
+// The Permanent Assignment in effect today (F003-T1).
+export type CurrentAssignment = PermanentAssignment;
 
 // Form values, where '' means none.
 export type ReferenceContextValues = Record<ReferenceContextField, string>;

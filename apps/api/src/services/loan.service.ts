@@ -296,6 +296,8 @@ const loanReturnOf = (row: any): LoanReturn | null =>
       }
     : null;
 
+const isOutstanding = ({ ending_kind, is_voided }: Pick<LoanItem, 'ending_kind' | 'is_voided'>): boolean => ending_kind === 'NONE' && !is_voided;
+
 const statusOf = (items: Pick<LoanItem, 'ending_kind' | 'is_voided'>[]): LoanStatus => {
   const counted = items.filter(({ is_voided }) => !is_voided);
   const returned = counted.filter(({ ending_kind }) => ending_kind === 'LOAN_RETURN').length;
@@ -329,7 +331,7 @@ export async function lockLoan(client: pg.PoolClient, loanId: string): Promise<L
 }
 
 // A LoanItem as a write on its locked Loan sees it, with its Asset's names.
-export interface LockedLoanItem {
+export interface LoanItemOfLockedLoan {
   id: string;
   asset_id: string;
   name: string | null;
@@ -339,7 +341,7 @@ export interface LockedLoanItem {
 }
 
 /** The items of a Loan whose row the caller holds locked, so they cannot change under it. */
-export async function readLoanItems(client: pg.PoolClient, loanId: string): Promise<LockedLoanItem[]> {
+export async function readItemsOfLockedLoan(client: pg.PoolClient, loanId: string): Promise<LoanItemOfLockedLoan[]> {
   const res = await client.query(
     `SELECT li.id, li.asset_id, a.name, a.asset_number, li.ending_kind, li.is_voided
      FROM loan_items li
@@ -350,9 +352,36 @@ export async function readLoanItems(client: pg.PoolClient, loanId: string): Prom
   return res.rows;
 }
 
-/** Writes the ending kind of LoanItems, in the transaction that writes their ending facts (#74). */
-export async function markLoanItemsEnded(client: pg.PoolClient, itemIds: string[], kind: Exclude<LoanEndingKind, 'NONE'>): Promise<void> {
-  await client.query('UPDATE loan_items SET ending_kind = $2 WHERE id = ANY($1::uuid[])', [itemIds, kind]);
+// One recording's facts: what its items share, and each item's own Condition (#74 Q29).
+export interface LoanReturnFacts {
+  return_date: string;
+  document_reference: string | null;
+  remark: string | null;
+  items: { loan_item_id: string; condition: LoanCondition; condition_note: string | null }[];
+}
+
+/** Records one ending fact per item and each item's ending kind, together in the caller's transaction (#74). */
+export async function recordLoanReturns(
+  client: pg.PoolClient,
+  { facts, actionReference, actorId }: { facts: LoanReturnFacts; actionReference: string; actorId: string }
+): Promise<void> {
+  const itemIds = facts.items.map(({ loan_item_id }) => loan_item_id);
+  await client.query(
+    `INSERT INTO loan_item_endings (loan_item_id, kind, ending_date, condition, condition_note, document_reference, remark, action_reference, recorded_by)
+     SELECT item.id, 'LOAN_RETURN', $1, item.condition, item.note, $2, $3, $4, $5
+     FROM unnest($6::uuid[], $7::text[], $8::text[]) AS item(id, condition, note)`,
+    [
+      facts.return_date,
+      facts.document_reference,
+      facts.remark,
+      actionReference,
+      actorId,
+      itemIds,
+      facts.items.map(({ condition }) => condition),
+      facts.items.map(({ condition_note }) => condition_note),
+    ]
+  );
+  await client.query(`UPDATE loan_items SET ending_kind = 'LOAN_RETURN' WHERE id = ANY($1::uuid[])`, [itemIds]);
 }
 
 /** Increments a locked Loan's version, as every write on it does, and returns the new version. */
@@ -482,8 +511,9 @@ export class LoanService {
        ORDER BY a.name NULLS LAST, a.id`,
       [loanId]
     );
-    const outstandingAssets = itemsRes.rows.filter((item: any) => item.ending_kind === 'NONE' && !item.is_voided).map((item: any) => item.asset_id);
-    const assignments = returnDate ? await readAssignmentsAt(this.db, outstandingAssets, returnDate) : null;
+    const assignments = returnDate
+      ? await readAssignmentsAt(this.db, itemsRes.rows.filter(isOutstanding).map((item: any) => item.asset_id), returnDate)
+      : null;
     return {
       id: row.id,
       borrower: borrowerOf(row, includePhone),
@@ -545,7 +575,7 @@ export class LoanService {
   }
 
   /** The Condition of an Asset's latest Loan Return by Return Date, or null when it has had none (#74 Q23). */
-  async latestReturnConditionOf(assetId: string): Promise<LoanCondition | null> {
+  async latestLoanReturnConditionOf(assetId: string): Promise<LoanCondition | null> {
     const res = await this.db.query(
       `SELECT e.condition
        FROM loan_item_endings e
@@ -561,7 +591,7 @@ export class LoanService {
   /** Who holds an Asset, or null when it is not On Loan. */
   async onLoanOf(assetId: string): Promise<OnLoan | null> {
     const items = await this.readItemsOfAsset(assetId);
-    const held = items.find(({ ending_kind, is_voided }) => ending_kind === 'NONE' && !is_voided);
+    const held = items.find(isOutstanding);
     return held ? { loan_id: held.loan_id, borrower: held.borrower, due_date: held.due_date } : null;
   }
 }

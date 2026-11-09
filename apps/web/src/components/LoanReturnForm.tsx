@@ -1,10 +1,11 @@
 import React, { useState } from 'react';
 import { useQuery } from '@tanstack/react-query';
 import { AssignmentNoteFields, assignmentNotesPayload, type AssignmentNotes } from './AssignmentNoteFields';
+import { LoanConditionFields } from './LoanConditionFields';
 import { LoanSaveForm } from './LoanSaveForm';
 import { REFERENCE_DIMENSIONS, fieldInputStyle, fieldLabelStyle } from './ReferenceContextFields';
 import { bangkokToday, valueText } from './assignmentFacts';
-import { CONDITION_LABELS, isOutstanding, type Loan, type LoanCondition, type LoanItem, type RefusedLoanItem } from './loanFacts';
+import { assetLabel, isOutstanding, type Loan, type LoanCondition, type LoanItem, type RefusedLoanItem } from './loanFacts';
 
 export interface LoanReturnFormProps {
   loan: Loan;
@@ -21,11 +22,7 @@ type ItemDraft = { isReturning: boolean; condition: LoanCondition | ''; note: st
 
 const NO_DRAFT: ItemDraft = { isReturning: false, condition: '', note: '' };
 
-const CONDITIONS = Object.keys(CONDITION_LABELS) as LoanCondition[];
-
 const fieldStyle: React.CSSProperties = { marginBottom: '0.75rem' };
-
-const assetLabel = ({ asset }: LoanItem): string => asset.name ?? asset.asset_number ?? asset.id;
 
 const REFUSAL_LABELS: Record<RefusedLoanItem['reason'], string> = {
   NOT_FOUND: 'ไม่พบรายการนี้ในการยืม',
@@ -69,7 +66,8 @@ export const LoanReturnForm: React.FC<LoanReturnFormProps> = ({ loan, csrfToken,
       Object.fromEntries(outstanding.map(({ id }) => [id, { ...(current[id] ?? NO_DRAFT), condition: 'NORMAL' as const }]))
     );
 
-  const whereItGoes = useQuery<LoanItem[], Error & { status?: number }>({
+  // No placeholder: values read for another date must not show under this one.
+  const itemsOnReturnDate = useQuery<LoanItem[], Error & { status?: number }>({
     queryKey: ['loan-return-assignments', loan.id, returnDate],
     queryFn: async ({ signal }) => {
       const res = await fetch(`/loans/${loan.id}?return_date=${returnDate}`, { credentials: 'include', signal });
@@ -85,9 +83,8 @@ export const LoanReturnForm: React.FC<LoanReturnFormProps> = ({ loan, csrfToken,
       return (await res.json()).items;
     },
     enabled: returnDate !== '',
-    placeholderData: (previous) => previous,
   });
-  const assignmentOf = (itemId: string) => whereItGoes.data?.find(({ id }) => id === itemId)?.assignment_on_return_date;
+  const assignmentOf = (itemId: string) => itemsOnReturnDate.data?.find(({ id }) => id === itemId)?.assignment_on_return_date;
 
   const requestError = (): string | null => {
     if (returning.length === 0) {
@@ -156,7 +153,7 @@ export const LoanReturnForm: React.FC<LoanReturnFormProps> = ({ loan, csrfToken,
             />
           </div>
 
-          {whereItGoes.isError && whereItGoes.error?.status !== 401 && whereItGoes.error?.status !== 403 && (
+          {itemsOnReturnDate.isError && itemsOnReturnDate.error?.status !== 401 && itemsOnReturnDate.error?.status !== 403 && (
             <div role="alert" data-testid="loan-return-assignment-error" style={{ ...fieldStyle, fontSize: '0.8125rem', color: '#b91c1c' }}>
               ไม่สามารถโหลดข้อมูลสถานที่ หน่วยงาน และผู้รับผิดชอบ ณ วันที่คืนได้
             </div>
@@ -183,7 +180,7 @@ export const LoanReturnForm: React.FC<LoanReturnFormProps> = ({ loan, csrfToken,
                     checked={isReturning}
                     onChange={(e) => setDraft(item.id, { isReturning: e.target.checked })}
                   />{' '}
-                  {assetLabel(item)}
+                  {assetLabel(item.asset)}
                 </label>
                 {assignment && (
                   <dl data-testid={`loan-return-assignment-${item.id}`} style={{ margin: '0 0 0.5rem 0', fontSize: '0.8125rem', color: '#6b7280' }}>
@@ -195,39 +192,15 @@ export const LoanReturnForm: React.FC<LoanReturnFormProps> = ({ loan, csrfToken,
                     ))}
                   </dl>
                 )}
-                <div style={{ display: 'grid', gridTemplateColumns: '1fr 2fr', gap: '0.75rem' }}>
-                  <div>
-                    <label htmlFor={`loan-return-condition-${item.id}`} style={fieldLabelStyle}>
-                      สภาพ: {assetLabel(item)}
-                    </label>
-                    <select
-                      id={`loan-return-condition-${item.id}`}
-                      value={condition}
-                      onChange={(e) => setDraft(item.id, { condition: e.target.value as ItemDraft['condition'] })}
-                      style={fieldInputStyle}
-                    >
-                      <option value="">— เลือกสภาพ —</option>
-                      {CONDITIONS.map((value) => (
-                        <option key={value} value={value}>
-                          {CONDITION_LABELS[value]}
-                        </option>
-                      ))}
-                    </select>
-                  </div>
-                  <div>
-                    <label htmlFor={`loan-return-condition-note-${item.id}`} style={fieldLabelStyle}>
-                      บันทึกสภาพ (ไม่บังคับ)
-                    </label>
-                    <input
-                      id={`loan-return-condition-note-${item.id}`}
-                      type="text"
-                      value={note}
-                      maxLength={500}
-                      onChange={(e) => setDraft(item.id, { note: e.target.value })}
-                      style={fieldInputStyle}
-                    />
-                  </div>
-                </div>
+                <LoanConditionFields
+                  idPrefix="loan-return"
+                  itemId={item.id}
+                  assetName={assetLabel(item.asset)}
+                  condition={condition}
+                  note={note}
+                  offerNone
+                  onChange={(change) => setDraft(item.id, change)}
+                />
               </div>
             );
           })}

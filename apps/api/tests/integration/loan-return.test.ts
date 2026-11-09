@@ -211,7 +211,6 @@ describe('Recording a Loan Return (Seam A - F004-T2)', () => {
       const res = await record(loanId, await body(loanId, [], { items: [{ loan_item_id: itemOf[assetId], condition: 'DAMAGED', condition_note: 'ปุ่มหลุด' }] }));
 
       expect(res.statusCode).toBe(201);
-      expect(res.json()).not.toHaveProperty('repair');
       expect(Object.keys(res.json()).sort()).toEqual(['action_reference', 'items', 'loan_id', 'version']);
       expect(await detailOf(assetId)).toMatchObject({ asset, history, current_assignment, assignment_version });
       expect((await loanOf(loanId)).items[0].loan_return).toMatchObject({ condition: 'DAMAGED', condition_note: 'ปุ่มหลุด' });
@@ -416,13 +415,13 @@ describe('Recording a Loan Return (Seam A - F004-T2)', () => {
 
     it('is on the Asset page: none before any Loan Return, then that of the latest', async () => {
       const assetId = await registered();
-      expect((await detailOf(assetId)).latest_return_condition).toBeNull();
+      expect((await detailOf(assetId)).latest_loan_return_condition).toBeNull();
 
       await returned(assetId, 'DAMAGED', '2026-11-03');
-      expect((await detailOf(assetId)).latest_return_condition).toBe('DAMAGED');
+      expect((await detailOf(assetId)).latest_loan_return_condition).toBe('DAMAGED');
 
       await returned(assetId, 'NORMAL', '2026-11-04');
-      expect((await detailOf(assetId)).latest_return_condition).toBe('NORMAL');
+      expect((await detailOf(assetId)).latest_loan_return_condition).toBe('NORMAL');
     });
 
     it('goes by the Return Date, not by the order of recording', async () => {
@@ -431,7 +430,7 @@ describe('Recording a Loan Return (Seam A - F004-T2)', () => {
       await returned(assetId, 'NORMAL', '2026-11-04');
       await returned(assetId, 'DAMAGED', '2026-10-05', '2026-10-01');
 
-      expect((await detailOf(assetId)).latest_return_condition).toBe('NORMAL');
+      expect((await detailOf(assetId)).latest_loan_return_condition).toBe('NORMAL');
     });
 
     it('does not block a new Loan of the Asset', async () => {
@@ -445,11 +444,11 @@ describe('Recording a Loan Return (Seam A - F004-T2)', () => {
       const assetId = await registered();
       await returned(assetId, 'NORMAL', '2026-11-03');
       const later = await returned(assetId, 'DAMAGED', '2026-11-04');
-      expect((await detailOf(assetId)).latest_return_condition).toBe('DAMAGED');
+      expect((await detailOf(assetId)).latest_loan_return_condition).toBe('DAMAGED');
 
       await api.pool.query(`UPDATE loan_item_endings SET is_voided = true WHERE loan_item_id = $1`, [later.itemId]);
 
-      expect((await detailOf(assetId)).latest_return_condition).toBe('NORMAL');
+      expect((await detailOf(assetId)).latest_loan_return_condition).toBe('NORMAL');
     });
   });
 

@@ -50,7 +50,7 @@ export interface AssetDetailResponse {
   on_loan?: OnLoan | null;
   can_record_loan?: boolean;
   // F004-T2: the Condition of the Asset's latest Loan Return.
-  latest_return_condition?: LoanCondition | null;
+  latest_loan_return_condition?: LoanCondition | null;
 }
 
 export const AssetDetail: React.FC = () => {
@@ -793,7 +793,7 @@ const AssetDetailContent: React.FC = () => {
 
         {/* Loans (F004-T1), apart from the assignment timeline */}
         <LoanSection
-          asset={{ ...asset, latest_return_condition: assetData.latest_return_condition ?? null }}
+          asset={{ ...asset, latest_loan_return_condition: assetData.latest_loan_return_condition ?? null }}
           onLoan={assetData.on_loan ?? null}
           canRecordLoan={Boolean(assetData.can_record_loan && !isPermissionRevoked)}
           actorId={currentUser?.id ?? null}

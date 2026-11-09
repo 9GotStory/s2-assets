@@ -1,17 +1,18 @@
 import React, { useState } from 'react';
 import { Link } from 'react-router';
 import { AssignmentNoteFields, assignmentNotesPayload, type AssignmentNotes } from './AssignmentNoteFields';
+import { LoanConditionFields } from './LoanConditionFields';
 import { LoanSaveForm } from './LoanSaveForm';
 import { entryLabel, fieldInputStyle, fieldLabelStyle, useReferenceLists } from './ReferenceContextFields';
 import { bangkokToday, isBeforeToday } from './assignmentFacts';
-import { CONDITION_LABELS, ON_LOAN_LABEL, type LoanCondition, type RefusedAsset } from './loanFacts';
+import { ON_LOAN_LABEL, assetLabel, type LoanCondition, type RefusedAsset } from './loanFacts';
 
 export interface LoanFormAsset {
   id: string;
   name: string | null;
   asset_number: string | null;
   // The Condition of its latest Loan Return, which warns and never blocks (#74 Q23).
-  latest_return_condition?: LoanCondition | null;
+  latest_loan_return_condition?: LoanCondition | null;
 }
 
 export interface LoanStartFormProps {
@@ -23,11 +24,7 @@ export interface LoanStartFormProps {
   onPermissionRevoked?: (statusCode?: number) => void;
 }
 
-type ItemDraft = { condition: LoanCondition; note: string };
-
-const assetLabel = ({ name, asset_number: assetNumber, id }: LoanFormAsset): string => name ?? assetNumber ?? id;
-
-const CONDITIONS = Object.keys(CONDITION_LABELS) as LoanCondition[];
+type ItemDraft = { condition: LoanCondition | ''; note: string };
 
 const fieldStyle: React.CSSProperties = { marginBottom: '0.75rem' };
 
@@ -216,43 +213,21 @@ export const LoanStartForm: React.FC<LoanStartFormProps> = ({ assets, actorId, c
           {assets.map((asset) => {
             const { condition, note } = itemDraft(asset.id);
             return (
-              <div key={asset.id} style={{ display: 'grid', gridTemplateColumns: '1fr 2fr', gap: '0.75rem', ...fieldStyle }}>
-                <div>
-                  <label htmlFor={`loan-condition-${asset.id}`} style={fieldLabelStyle}>
-                    สภาพ: {assetLabel(asset)}
-                  </label>
-                  <select
-                    id={`loan-condition-${asset.id}`}
-                    value={condition}
-                    onChange={(e) => setItemDraft(asset.id, { condition: e.target.value as LoanCondition })}
-                    style={fieldInputStyle}
-                  >
-                    {CONDITIONS.map((value) => (
-                      <option key={value} value={value}>
-                        {CONDITION_LABELS[value]}
-                      </option>
-                    ))}
-                  </select>
-                  {asset.latest_return_condition === 'DAMAGED' && (
-                    <div data-testid={`loan-damaged-warning-${asset.id}`} style={{ marginTop: '0.375rem', fontSize: '0.8125rem', color: '#92400e' }}>
-                      คืนครั้งล่าสุดสภาพชำรุด กรุณาตรวจสอบก่อนให้ยืม
-                    </div>
-                  )}
-                </div>
-                <div>
-                  <label htmlFor={`loan-condition-note-${asset.id}`} style={fieldLabelStyle}>
-                    บันทึกสภาพ (ไม่บังคับ)
-                  </label>
-                  <input
-                    id={`loan-condition-note-${asset.id}`}
-                    type="text"
-                    value={note}
-                    maxLength={500}
-                    onChange={(e) => setItemDraft(asset.id, { note: e.target.value })}
-                    style={fieldInputStyle}
-                  />
-                </div>
-              </div>
+              <LoanConditionFields
+                key={asset.id}
+                idPrefix="loan"
+                itemId={asset.id}
+                assetName={assetLabel(asset)}
+                condition={condition}
+                note={note}
+                onChange={(change) => setItemDraft(asset.id, change)}
+              >
+                {asset.latest_loan_return_condition === 'DAMAGED' && (
+                  <div data-testid={`loan-damaged-warning-${asset.id}`} style={{ marginTop: '0.375rem', fontSize: '0.8125rem', color: '#92400e' }}>
+                    คืนครั้งล่าสุดสภาพชำรุด กรุณาตรวจสอบก่อนให้ยืม
+                  </div>
+                )}
+              </LoanConditionFields>
             );
           })}
 
