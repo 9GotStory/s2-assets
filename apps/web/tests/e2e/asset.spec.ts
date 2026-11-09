@@ -150,8 +150,9 @@ test.describe.serial('Asset Registry Real SPA -> Composed API -> PostgreSQL Jour
   });
 
   // #66: keep request interception on for the whole journey. A request that starts while Playwright
-  // removes a page's last route is paused by Chromium and never released (Playwright 1.63.0,
-  // `_updateProtocolRequestInterception`), so the journey would wait for a response that cannot come.
+  // removes a page's last route can stay paused with no response, because
+  // `_updateProtocolRequestInterception` (Playwright 1.63.0) flips its flag before `Fetch.disable`
+  // arrives. So a journey removes its own routes by name until it ends.
   test.beforeEach(async ({ page }) => {
     await page.route('**/*', (route: any) => route.fallback());
   });
@@ -3787,7 +3788,7 @@ test.describe.serial('Asset Registry Real SPA -> Composed API -> PostgreSQL Jour
     await expect(page.locator('#forbidden-alert')).toBeVisible();
     await expect(page.locator('#duplicate-warnings-banner')).not.toBeVisible();
 
-    await page.unrouteAll({ behavior: 'ignoreErrors' });
+    await page.unroute('**/auth/session-check');
 
     // Part B: Unmocked regression: genuine same-actor DB role revocation (ASSET_CUSTODIAN -> READ_ONLY)
     // with exact whitespace-only duplicate candidate (F1)
@@ -4287,7 +4288,7 @@ test.describe.serial('Asset Registry Real SPA -> Composed API -> PostgreSQL Jour
     await page.locator('[data-testid="create-evidence-submit-btn"]').click();
     await abortDone;
     await expect(page.locator('[data-testid="uncertain-mutation-alert"]')).toBeVisible();
-    await page.unrouteAll({ behavior: 'wait' });
+    await page.unroute('**/evidence');
 
     // Trigger focus revalidation: alert must remain visible
     const refetched = page.waitForResponse((r) => new URL(r.url()).pathname === `/acquisitions/${acqId}`);
@@ -5190,8 +5191,6 @@ test.describe.serial('Asset Registry Real SPA -> Composed API -> PostgreSQL Jour
     await refocus(page, actorA);
     await expect(alert).toBeVisible();
     await expect(page.locator('[data-testid="add-evidence-btn"]')).toBeDisabled();
-    // This click bypasses Playwright's wait for an enabled button, so the journey waits itself.
-    await expect(retry).toBeEnabled();
     await page.evaluate(() => {
       const button = document.querySelector('[data-testid="retry-mutation-btn"]') as HTMLButtonElement;
       button.click();
@@ -5570,48 +5569,6 @@ test.describe.serial('Asset Registry Real SPA -> Composed API -> PostgreSQL Jour
     await page.unrouteAll({ behavior: 'wait' });
   });
 
-  test('Journey T7.11b (#66): while the page re-verifies after a focus return, Retry is disabled, so a click cannot be lost', async ({
-    page,
-    context,
-  }) => {
-    const actorA = await seedCustodianActor('a2_reverify');
-    const acqId = await seedAcquisitionFor(actorA, 'PO-T7-A2-REVERIFY');
-    const ref = `A2 reverify ${Date.now()}`;
-    const alert = page.locator('[data-testid="uncertain-mutation-alert"]');
-    const retry = page.locator('[data-testid="retry-mutation-btn"]');
-
-    await loginAs(page, context, actorA);
-    await page.goto(`${targetBaseUrl}/acquisitions/${acqId}`);
-    await page.locator('[data-testid="add-evidence-btn"]').click();
-    await page.locator('[data-testid="create-ref-text-input"]').fill(ref);
-    const lost = await loseNextCreateDelivery(page);
-    await page.locator('[data-testid="create-evidence-submit-btn"]').click();
-    expect((await lost.committed).status).toBe(201);
-    await lost.unroute();
-    await expect(alert).toBeVisible();
-    await expect(retry).toBeEnabled();
-
-    // The page re-verifies until its read of the Acquisition answers; hold that read.
-    const answerRead = deferred<void>();
-    const acquisitionRead = (url: URL) => url.pathname === `/acquisitions/${acqId}`;
-    await page.route(acquisitionRead, async (route: any) => {
-      await answerRead.promise;
-      await route.fallback().catch(() => {});
-    });
-    await page.evaluate(() => window.dispatchEvent(new Event('focus')));
-    await expect(retry).toBeDisabled();
-    await expect(alert).toBeVisible();
-
-    answerRead.resolve();
-    await expect(retry).toBeEnabled();
-    await page.unroute(acquisitionRead);
-    const replay = page.waitForResponse((r: any) => isEvidenceMutation(r.request()));
-    await retry.click();
-    expect((await replay).ok()).toBe(true);
-    await expect(alert).toHaveCount(0);
-    expect(await countEvidence(ref)).toBe(1);
-  });
-
   test('Journey T7.16 (ARCH-A2 SF2): a first submit whose session check is overtaken by a focus revalidation sends nothing; the resubmitted intent commits once', async ({
     page,
     context,
@@ -5675,6 +5632,48 @@ test.describe.serial('Asset Registry Real SPA -> Composed API -> PostgreSQL Jour
     expect(await countEvidence(ref)).toBe(1);
 
     await page.unrouteAll({ behavior: 'wait' });
+  });
+
+  test('Journey T7.17 (#66): while the page re-verifies after a focus return, Retry is disabled', async ({
+    page,
+    context,
+  }) => {
+    const actorA = await seedCustodianActor('a2_reverify');
+    const acqId = await seedAcquisitionFor(actorA, 'PO-T7-A2-REVERIFY');
+    const ref = `A2 reverify ${Date.now()}`;
+    const alert = page.locator('[data-testid="uncertain-mutation-alert"]');
+    const retry = page.locator('[data-testid="retry-mutation-btn"]');
+
+    await loginAs(page, context, actorA);
+    await page.goto(`${targetBaseUrl}/acquisitions/${acqId}`);
+    await page.locator('[data-testid="add-evidence-btn"]').click();
+    await page.locator('[data-testid="create-ref-text-input"]').fill(ref);
+    const lost = await loseNextCreateDelivery(page);
+    await page.locator('[data-testid="create-evidence-submit-btn"]').click();
+    expect((await lost.committed).status).toBe(201);
+    await lost.unroute();
+    await expect(alert).toBeVisible();
+    await expect(retry).toBeEnabled();
+
+    // The page re-verifies until its read of the Acquisition answers; hold that read.
+    const answerRead = deferred<void>();
+    const acquisitionMatcher = (url: URL) => url.pathname === `/acquisitions/${acqId}`;
+    await page.route(acquisitionMatcher, async (route: any) => {
+      await answerRead.promise;
+      await route.fallback().catch(() => {});
+    });
+    await page.evaluate(() => window.dispatchEvent(new Event('focus')));
+    await expect(retry).toBeDisabled();
+    await expect(alert).toBeVisible();
+
+    answerRead.resolve();
+    await expect(retry).toBeEnabled();
+    await page.unroute(acquisitionMatcher);
+    const replay = page.waitForResponse((r: any) => isEvidenceMutation(r.request()));
+    await retry.click();
+    expect((await replay).ok()).toBe(true);
+    await expect(alert).toHaveCount(0);
+    expect(await countEvidence(ref)).toBe(1);
   });
 
   // T4 (#25, D7-A / D3): reference lists and Asset reference context through the real SPA.
