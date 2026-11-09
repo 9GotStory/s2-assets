@@ -2,6 +2,7 @@ import * as crypto from 'node:crypto';
 import { describe, it, expect, beforeAll, afterAll } from 'vitest';
 import { startApiHarness, type Actor, type ApiHarness } from './support/api-harness.ts';
 import { NO_VALUE, assignmentHelpers, at, type Entry } from './support/assignment-helpers.ts';
+import { withCapabilityAnswer } from './support/capability-helpers.ts';
 
 const TODAY = '2026-11-05';
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/;
@@ -32,18 +33,7 @@ describe('Bulk Reassignment (Seam A - F003-T5)', () => {
   const bulk = async (assetIds: string[], payload: Record<string, unknown>, token: string = crypto.randomUUID(), actor: Actor = custodian) =>
     api.post(actor, '/assets/bulk-reassignments', { assets: await selectionOf(assetIds), ...payload }, { 'x-retry-token': token });
 
-  // Runs `check` with 'assignment:reassign' alone denied: roles grant capabilities together, so only this isolates its gate.
-  const withReassignDenied = async (check: () => Promise<void>) => {
-    const capabilities = api.app.capabilityService!;
-    const original = capabilities.hasCapability;
-    capabilities.hasCapability = async (userId: string, capability: string) =>
-      capability === 'assignment:reassign' ? false : original.call(capabilities, userId, capability);
-    try {
-      await check();
-    } finally {
-      capabilities.hasCapability = original;
-    }
-  };
+  const withReassignDenied = (check: () => Promise<void>) => withCapabilityAnswer(api.app, 'assignment:reassign', async () => false, check);
 
   beforeAll(async () => {
     api = await startApiHarness({ clock: () => new Date('2026-11-05T05:00:00Z') });

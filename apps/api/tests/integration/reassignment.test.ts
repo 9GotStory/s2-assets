@@ -10,6 +10,7 @@ import { runMigrator } from '../../../../packages/db/src/migrator.ts';
 import { buildApp } from '../../src/app.ts';
 import { SessionService } from '../../src/services/session.service.ts';
 import { UserService } from '../../src/services/user.service.ts';
+import { withCapabilityAnswer } from './support/capability-helpers.ts';
 
 const { Pool } = pg;
 
@@ -83,19 +84,8 @@ describe('Reassign one Asset (Seam A - F003-T2)', () => {
   const reassign = (assetId: string, payload: Record<string, unknown>, token?: string) =>
     record(assetId, { kind: 'REASSIGNMENT', ...payload }, token);
 
-  // Runs `work` with 'assignment:reassign' answered by `answer` instead of the role map, which grants
-  // capabilities together and so could hide a gate that fails open.
-  const withReassignCapability = async <T>(answer: () => Promise<boolean>, work: () => Promise<T>): Promise<T> => {
-    const capabilities = app.capabilityService!;
-    const original = capabilities.hasCapability;
-    capabilities.hasCapability = async (userId: string, capability: string) =>
-      capability === 'assignment:reassign' ? answer() : original.call(capabilities, userId, capability);
-    try {
-      return await work();
-    } finally {
-      capabilities.hasCapability = original;
-    }
-  };
+  const withReassignCapability = <T>(answer: () => Promise<boolean>, work: () => Promise<T>): Promise<T> =>
+    withCapabilityAnswer(app, 'assignment:reassign', answer, work);
 
   // What an observer reads of an Asset's assignment, to show that a refused write changed nothing.
   const assignmentOf = async (assetId: string) => {

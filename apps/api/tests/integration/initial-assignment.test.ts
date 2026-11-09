@@ -9,6 +9,7 @@ import { runMigrator } from '../../../../packages/db/src/migrator.ts';
 import { buildApp } from '../../src/app.ts';
 import { SessionService } from '../../src/services/session.service.ts';
 import { UserService } from '../../src/services/user.service.ts';
+import { withCapabilityAnswer } from './support/capability-helpers.ts';
 
 const { Pool } = pg;
 
@@ -488,12 +489,8 @@ describe('Initial Assignment (Seam A - F003-T1)', () => {
 
     it('refuses dimension values to an actor who may register but not record an assignment, and still registers without them', async () => {
       const room = await entry('locations', 'ห้องไม่มีสิทธิ์กำหนด');
-      const capabilities = app.capabilityService!;
-      const original = capabilities.hasCapability;
       // Only an Asset Custodian holds both capabilities today, so the second check is isolated here.
-      capabilities.hasCapability = async (userId: string, capability: string) =>
-        capability === 'assignment:reassign' ? false : original.call(capabilities, userId, capability);
-      try {
+      await withCapabilityAnswer(app, 'assignment:reassign', async () => false, async () => {
         const single = await post(custodian, '/assets', {
           name: 'ลงทะเบียนโดยไม่มีสิทธิ์กำหนด',
           location_id: room.id,
@@ -516,9 +513,7 @@ describe('Initial Assignment (Seam A - F003-T1)', () => {
 
         const plain = await post(custodian, '/assets', { name: 'ลงทะเบียนได้โดยไม่กำหนด' });
         expect(plain.statusCode).toBe(201);
-      } finally {
-        capabilities.hasCapability = original;
-      }
+      });
       const found = await get(readonly, `/assets/search?field=name&value=${encodeURIComponent('ลงทะเบียนโดยไม่มีสิทธิ์กำหนด')}`);
       expect(found.json().total_count).toBe(0);
     });

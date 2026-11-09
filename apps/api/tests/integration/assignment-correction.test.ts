@@ -10,6 +10,7 @@ import { runMigrator } from '../../../../packages/db/src/migrator.ts';
 import { buildApp } from '../../src/app.ts';
 import { SessionService } from '../../src/services/session.service.ts';
 import { UserService } from '../../src/services/user.service.ts';
+import { withCapabilityAnswer } from './support/capability-helpers.ts';
 
 const { Pool } = pg;
 
@@ -1011,18 +1012,8 @@ describe('Correct or void an assignment fact (Seam A - F003-T3)', () => {
   });
 
   describe('Authorization (Q3, US 47)', () => {
-    // Runs `work` with 'assignment:correct' answered by `answer` instead of the role map.
-    const withCorrectCapability = async <T>(answer: () => Promise<boolean>, work: () => Promise<T>): Promise<T> => {
-      const capabilities = app.capabilityService!;
-      const original = capabilities.hasCapability;
-      capabilities.hasCapability = async (userId: string, capability: string) =>
-        capability === 'assignment:correct' ? answer() : original.call(capabilities, userId, capability);
-      try {
-        return await work();
-      } finally {
-        capabilities.hasCapability = original;
-      }
-    };
+    const withCorrectCapability = <T>(answer: () => Promise<boolean>, work: () => Promise<T>): Promise<T> =>
+      withCapabilityAnswer(app, 'assignment:correct', answer, work);
 
     it('lets an Asset Custodian and an Administrator correct, recording who did', async () => {
       const { assetId, initial, reassignment } = await reassigned('ห้องสิทธิ์แก้');
