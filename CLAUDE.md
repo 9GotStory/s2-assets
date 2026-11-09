@@ -89,8 +89,8 @@ integration-branch commit the task started from.
 
 ### Issue tracker
 
-GitHub Issues of `9GotStory/s2-assets`, through the `gh` CLI. See `docs/agents/issue-tracker.md`,
-also for pull request bodies.
+GitHub Issues of `9GotStory/s2-assets`, through the `gh` CLI. See `docs/agents/issue-tracker.md`
+whenever the Product Owner decides something, and for pull request bodies.
 
 ### Triage labels
 

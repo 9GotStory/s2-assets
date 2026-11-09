@@ -75,7 +75,8 @@ A record that one Borrower took one or more Assets for a time and is expected to
 It never changes a Permanent Assignment.
 
 **LoanItem** (รายการยืม):
-One Asset within a Loan, with its own Due Date, Condition and ending.
+One Asset within a Loan, with its own Due Date, Condition and ending. As a page title, "รายการยืม"
+means the list of Loans.
 
 **Temporary Custody** (การยืมชั่วคราว):
 Holding an Asset for a time with its return expected, which a Loan records. It is separate from
