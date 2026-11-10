@@ -119,6 +119,7 @@ describe('Starting a Loan (Seam A - F004-T1)', () => {
           condition_note: null,
           ending_kind: 'NONE',
           is_voided: false,
+          loan_return: null,
         },
         {
           id: expect.stringMatching(UUID),
@@ -128,6 +129,7 @@ describe('Starting a Loan (Seam A - F004-T1)', () => {
           condition_note: 'ฝาหลังบุบ',
           ending_kind: 'NONE',
           is_voided: false,
+          loan_return: null,
         },
       ]);
     });
@@ -234,6 +236,7 @@ describe('Starting a Loan (Seam A - F004-T1)', () => {
           condition_note: null,
           ending_kind: 'NONE',
           is_voided: false,
+          loan_return: null,
         },
       ]);
     });

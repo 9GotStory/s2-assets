@@ -24,6 +24,7 @@ const MIGRATIONS = [
   '0007_assignment_correction',
   '0008_bulk_reassignment',
   '0009_loans',
+  '0010_loan_item_endings',
 ] as const;
 
 describe('Database Migrations Integration', () => {

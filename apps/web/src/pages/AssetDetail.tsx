@@ -7,7 +7,7 @@ import { AssignmentSection } from '../components/AssignmentSection';
 import { EvidencePanel } from '../components/EvidencePanel';
 import { LoanSection } from '../components/LoanSection';
 import { type CurrentAssignment } from '../components/ReferenceContextFields';
-import { type OnLoan } from '../components/loanFacts';
+import { type LoanCondition, type OnLoan } from '../components/loanFacts';
 
 export interface AssetRecord {
   id: string;
@@ -49,6 +49,8 @@ export interface AssetDetailResponse {
   // F004-T1: who holds the Asset, and whether the viewer holds 'loan:record'.
   on_loan?: OnLoan | null;
   can_record_loan?: boolean;
+  // F004-T2: the Condition of the Asset's latest Loan Return.
+  latest_loan_return_condition?: LoanCondition | null;
 }
 
 export const AssetDetail: React.FC = () => {
@@ -791,7 +793,7 @@ const AssetDetailContent: React.FC = () => {
 
         {/* Loans (F004-T1), apart from the assignment timeline */}
         <LoanSection
-          asset={asset}
+          asset={{ ...asset, latest_loan_return_condition: assetData.latest_loan_return_condition ?? null }}
           onLoan={assetData.on_loan ?? null}
           canRecordLoan={Boolean(assetData.can_record_loan && !isPermissionRevoked)}
           actorId={currentUser?.id ?? null}

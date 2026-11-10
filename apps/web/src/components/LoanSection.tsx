@@ -3,7 +3,7 @@ import { Link } from 'react-router';
 import { useQuery } from '@tanstack/react-query';
 import { LoanStartForm, type LoanFormAsset } from './LoanStartForm';
 import { thaiDate } from './assignmentFacts';
-import { CONDITION_LABELS, ON_LOAN_LABEL, borrowerText, type AssetLoanItem, type OnLoan } from './loanFacts';
+import { CONDITION_LABELS, ON_LOAN_LABEL, borrowerText, loanReturnText, type AssetLoanItem, type OnLoan } from './loanFacts';
 
 export interface LoanSectionProps {
   asset: LoanFormAsset;
@@ -138,6 +138,11 @@ export const LoanSection: React.FC<LoanSectionProps> = ({
                     ดูการยืม
                   </Link>
                 </div>
+                {item.loan_return && (
+                  <div>
+                    คืนแล้ว: <time dateTime={item.loan_return.return_date}>{thaiDate(item.loan_return.return_date)}</time> · {loanReturnText(item.loan_return)}
+                  </div>
+                )}
               </li>
             ))}
           </ol>

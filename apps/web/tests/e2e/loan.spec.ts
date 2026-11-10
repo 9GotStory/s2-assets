@@ -14,6 +14,7 @@ import { SessionService } from '../../../api/src/services/session.service.ts';
 import { AssetService } from '../../../api/src/services/asset.service.ts';
 import { ReferenceService } from '../../../api/src/services/reference.service.ts';
 import { LoanService } from '../../../api/src/services/loan.service.ts';
+import { AssignmentRecordingService } from '../../../api/src/services/assignment-recording.service.ts';
 import { repositoryProxyConfig } from '../../vite.config.ts';
 
 const { Pool } = pg;
@@ -118,10 +119,12 @@ test.describe.serial('Loan journeys: Real SPA -> Composed API -> PostgreSQL (Sea
     await loginAs(context, userId);
   };
 
-  const yesterday = () => {
+  const daysAgo = (days: number) => {
     const today = new Intl.DateTimeFormat('en-CA', { timeZone: 'Asia/Bangkok', year: 'numeric', month: '2-digit', day: '2-digit' }).format(new Date());
-    return new Date(Date.parse(`${today}T00:00:00Z`) - 86_400_000).toISOString().slice(0, 10);
+    return new Date(Date.parse(`${today}T00:00:00Z`) - days * 86_400_000).toISOString().slice(0, 10);
   };
+
+  const yesterday = () => daysAgo(1);
 
   test('Journey F004-T1.1: a Custodian lends an Asset from its page, and a Read-only User sees the Borrower, no phone number and no action', async ({ page, context }) => {
     const phone = '081-234-5678';
@@ -237,5 +240,124 @@ test.describe.serial('Loan journeys: Real SPA -> Composed API -> PostgreSQL (Sea
     await expect(page.locator('[data-testid="loan-on-loan"]')).toContainText('สมศรี ลาออกแล้ว (ปิดใช้งาน)');
     await page.goto(`${targetBaseUrl}/loans/${departedLoanId}`);
     await expect(page.locator('#loan-borrower')).toHaveText('สมศรี ลาออกแล้ว (ปิดใช้งาน)');
+  });
+
+  // F004-T2 (#76): a partial Loan Return with Condition, after which the returned Asset can be lent again.
+  test('Journey F004-T2.1: a Custodian records a partial Loan Return, and the returned Asset can be lent again at once', async ({ page, context }) => {
+    const room = await referenceService.create('locations', adminUserId, 'ห้องเก็บของ E2E คืน');
+    const reassignedTo = await referenceService.create('locations', adminUserId, 'ห้องใหม่ E2E คืน');
+    const place = { location_id: room.id, effective_date: '2024-01-01' };
+    const { asset: damaged } = await assetService.registerAsset(custodianUserId, { name: 'เครื่องฉาย E2E คืนชำรุด', ...place } as any);
+    const { asset: stillOut } = await assetService.registerAsset(custodianUserId, { name: 'กล้อง E2E ยังไม่คืน', ...place } as any);
+    const { loan_id: loanId } = await loanService.start(
+      custodianUserId,
+      {
+        assets: [damaged, stillOut].map(({ id }) => ({ asset_id: id, condition: 'NORMAL' as const })),
+        borrower: { kind: 'EXTERNAL', contact_name: 'คุณผู้ยืม E2E คืน' },
+        loan_date: daysAgo(2),
+        due_date: '2099-12-31',
+      },
+      { retryToken: crypto.randomUUID() }
+    );
+    const { rows: [{ assignment_version: assignmentVersion }] } = await pool.query('SELECT assignment_version FROM assets WHERE id = $1', [damaged.id]);
+    await new AssignmentRecordingService({ db: pool }).record(
+      custodianUserId,
+      damaged.id,
+      { kind: 'REASSIGNMENT', expected_assignment_version: assignmentVersion, location_id: reassignedTo.id, effective_date: yesterday() },
+      { retryToken: crypto.randomUUID() }
+    );
+    const loan = await loanService.read(loanId, { includePhone: false });
+    const itemOf = (assetId: string) => loan!.items.find(({ asset }) => asset.id === assetId)!.id;
+    const [damagedItem, stillOutItem] = [itemOf(damaged.id), itemOf(stillOut.id)];
+
+    await loginAs(context, custodianUserId);
+    await page.goto(`${targetBaseUrl}/loans/${loanId}`);
+    await expect(page.locator('#loan-status')).toContainText('ยังไม่คืน');
+    await page.locator('#loan-return-action').click();
+
+    // The form says where each item goes back to on the Return Date, as the server derives it: the
+    // Reassignment made during the Loan stands, and the values from the Loan's start do not come back.
+    const assignmentOnReturnDate = page.locator(`[data-testid="loan-return-assignment-${damagedItem}"]`);
+    await expect(assignmentOnReturnDate).toContainText('ห้องใหม่ E2E คืน');
+    await expect(page.locator(`[data-testid="loan-return-assignment-${stillOutItem}"]`)).toContainText('ห้องเก็บของ E2E คืน');
+
+    // While the values of another Return Date are being read, those of the last date are not shown under it.
+    let answerRead = () => {};
+    const held = new Promise<void>((resolve) => { answerRead = resolve; });
+    await page.route(`**/loans/${loanId}?return_date=${daysAgo(2)}`, async (route) => {
+      await held;
+      await route.continue();
+    });
+    await page.locator('#loan-return-return_date').fill(daysAgo(2));
+    await expect(assignmentOnReturnDate).toHaveCount(0);
+    answerRead();
+    await expect(assignmentOnReturnDate).toContainText('ห้องเก็บของ E2E คืน');
+    await page.locator('#loan-return-return_date').fill(daysAgo(0));
+    await expect(assignmentOnReturnDate).toContainText('ห้องใหม่ E2E คืน');
+
+    // The Condition has no default, and the form says what it needs before asking.
+    await expect(page.locator(`#loan-return-condition-${damagedItem}`)).toHaveValue('');
+    await page.locator('#loan-return-submit').click();
+    await expect(page.locator('[data-testid="loan-return-form-error"]')).toContainText('กรุณาเลือกรายการที่คืน');
+    await page.locator(`#loan-return-select-${damagedItem}`).check();
+    await page.locator('#loan-return-submit').click();
+    await expect(page.locator('[data-testid="loan-return-form-error"]')).toContainText('กรุณาเลือกสภาพ');
+
+    // The button sets every item to ปกติ, and one is then changed by hand.
+    await page.locator('#loan-return-all-normal').click();
+    await expect(page.locator(`#loan-return-condition-${damagedItem}`)).toHaveValue('NORMAL');
+    await expect(page.locator(`#loan-return-condition-${stillOutItem}`)).toHaveValue('NORMAL');
+    await page.locator(`#loan-return-condition-${damagedItem}`).selectOption('DAMAGED');
+    await page.locator(`#loan-return-condition-note-${damagedItem}`).fill('เลนส์มีรอยแตก');
+    await page.locator('#loan-return-document_reference').fill('บันทึกคืน 4/2569');
+    await page.locator('#loan-return-assignment_remark').fill('คุณสมชายนำมาคืนแทน');
+    await page.locator('#loan-return-submit').click();
+
+    // Only the item picked came back: the rest of the Loan stays open.
+    await expect(page.locator('#loan-return-form')).toHaveCount(0);
+    await expect(page.locator('#loan-status')).toContainText('คืนบางส่วน');
+    await expect(page.locator('#loan-status')).toContainText('คืนแล้ว 1 จาก 2 รายการ');
+    const returned = page.locator('[data-testid="loan-item"]').filter({ hasText: 'เครื่องฉาย E2E คืนชำรุด' });
+    await expect(returned.locator('[data-testid="loan-item-return"]')).toContainText('ชำรุด (เลนส์มีรอยแตก)');
+    await expect(returned.locator('[data-testid="loan-item-return"]')).toContainText('บันทึกคืน 4/2569');
+    await expect(returned.locator('[data-testid="loan-item-return"]')).toContainText('คุณสมชายนำมาคืนแทน');
+    await expect(returned.locator('[data-testid="loan-item-return"]')).toContainText('custodian_loan');
+    await expect(page.locator('[data-testid="loan-item"]').filter({ hasText: 'กล้อง E2E ยังไม่คืน' }).locator('[data-testid="loan-item-outstanding"]')).toHaveText('ยังไม่คืน');
+
+    // A Read-only User sees the outcome and no action, on a Loan where the Custodian has one.
+    await expect(page.locator('#loan-return-action')).toBeVisible();
+    await switchActor(page, context, readonlyUserId);
+    await page.goto(`${targetBaseUrl}/loans/${loanId}`);
+    await expect(page.locator('#loan-status')).toContainText('คืนบางส่วน');
+    await expect(page.locator('#loan-return-action')).toHaveCount(0);
+    await expect(page.locator('main button')).toHaveCount(0);
+
+    // The item still out keeps its Asset On Loan.
+    await switchActor(page, context, custodianUserId);
+    await page.goto(`${targetBaseUrl}/assets/${stillOut.id}`);
+    await expect(page.locator('[data-testid="loan-on-loan"]')).toContainText('คุณผู้ยืม E2E คืน');
+    await expect(page.locator('#loan-action')).toHaveCount(0);
+
+    // The returned Asset can be lent at once, and the form warns of its last Condition without blocking.
+    await page.goto(`${targetBaseUrl}/assets/${damaged.id}`);
+    await expect(page.locator('[data-testid="loan-history"]')).toContainText('ชำรุด (เลนส์มีรอยแตก)');
+    await expect(page.locator('[data-testid="loan-on-loan"]')).toHaveCount(0);
+    await page.locator('#loan-action').click();
+    await expect(page.locator(`[data-testid="loan-damaged-warning-${damaged.id}"]`)).toBeVisible();
+    await page.getByLabel('ผู้ยืมภายนอก').check();
+    await page.locator('#loan-contact_name').fill('คุณผู้ยืมรายใหม่ E2E');
+    await page.locator('#loan-due_date').fill('2099-12-31');
+    await page.locator('#loan-submit').click();
+    await expect(page.locator('[data-testid="loan-on-loan"]')).toContainText('คุณผู้ยืมรายใหม่ E2E');
+
+    // The last item back closes the Loan, and the action goes with it.
+    await page.goto(`${targetBaseUrl}/loans/${loanId}`);
+    await page.locator('#loan-return-action').click();
+    await page.locator(`#loan-return-select-${stillOutItem}`).check();
+    await page.locator(`#loan-return-condition-${stillOutItem}`).selectOption('NORMAL');
+    await page.locator('#loan-return-submit').click();
+    await expect(page.locator('#loan-status')).toContainText('คืนครบ');
+    await expect(page.locator('#loan-status')).toContainText('คืนแล้ว 2 จาก 2 รายการ');
+    await expect(page.locator('#loan-return-action')).toHaveCount(0);
   });
 });
