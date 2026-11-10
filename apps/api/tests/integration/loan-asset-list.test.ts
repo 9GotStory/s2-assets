@@ -15,31 +15,11 @@ describe('On Loan on the Asset list (Seam A - F004-T4)', () => {
   // 2026-11-05 in Asia/Bangkok: DUE itself.
   let now = new Date('2026-11-05T05:00:00Z');
 
-  const { registered, loanOf } = loanHelpers(() => ({ api, custodian, reader: readonly }));
-
-  // A started Loan of `assetIds`, with its LoanItem ids by Asset.
-  const lent = async (assetIds: string[], borrower: Record<string, unknown> = { kind: 'EXTERNAL', contact_name: 'คุณผู้ยืมจากรายการ' }) => {
-    const res = await api.post(
-      custodian,
-      '/loans',
-      { assets: assetIds.map((asset_id) => ({ asset_id, condition: 'NORMAL' })), borrower, loan_date: LOAN_DATE, due_date: DUE },
-      { 'x-retry-token': crypto.randomUUID() }
-    );
-    expect(res.statusCode).toBe(201);
-    const { loan_id: loanId, items } = res.json();
-    return { loanId: loanId as string, itemOf: Object.fromEntries(items.map(({ id, asset_id }: any) => [asset_id, id])) as Record<string, string> };
-  };
-
-  // A Loan Return of `itemIds` in `condition` on `returnDate`.
-  const returned = async (loanId: string, itemIds: string[], condition: 'NORMAL' | 'DAMAGED', returnDate: string = '2026-11-05') => {
-    const res = await api.post(
-      custodian,
-      `/loans/${loanId}/returns`,
-      { expected_version: (await loanOf(loanId)).version, return_date: returnDate, items: itemIds.map((loan_item_id) => ({ loan_item_id, condition })) },
-      { 'x-retry-token': crypto.randomUUID() }
-    );
-    expect(res.statusCode).toBe(201);
-  };
+  const { registered, lent, returned, closedNotReturned } = loanHelpers(() => ({ api, custodian, reader: readonly }), {
+    loanDate: LOAN_DATE,
+    dueDate: DUE,
+    contactName: 'คุณผู้ยืมจากรายการ',
+  });
 
   const search = async (query: string, actor: Actor = readonly) => {
     const res = await api.get(actor, `/assets/search?${query}`);
@@ -67,7 +47,7 @@ describe('On Loan on the Asset list (Seam A - F004-T4)', () => {
   describe('each row says whether the Asset is On Loan', () => {
     it('names who holds an On Loan Asset, its Due Date and its Loan, and no phone number', async () => {
       const assetId = await registered();
-      const { loanId } = await lent([assetId], { kind: 'EXTERNAL', contact_name: 'คุณมานี', organization_name: 'บริษัทยืม', phone: '081-000-0000' });
+      const { loanId } = await lent([assetId], { borrower: { kind: 'EXTERNAL', contact_name: 'คุณมานี', organization_name: 'บริษัทยืม', phone: '081-000-0000' } });
 
       const row = await rowOf(assetId, custodian);
 
@@ -88,7 +68,7 @@ describe('On Loan on the Asset list (Seam A - F004-T4)', () => {
       const [back, out] = [await registered(), await registered()];
       const { loanId, itemOf } = await lent([back, out]);
 
-      await returned(loanId, [itemOf[back]], 'DAMAGED');
+      await returned(loanId, [itemOf[back]], '2026-11-05', 'DAMAGED');
 
       expect((await rowOf(back)).on_loan).toBeNull();
       expect((await rowOf(out)).on_loan).toMatchObject({ loan_id: loanId });
@@ -98,13 +78,7 @@ describe('On Loan on the Asset list (Seam A - F004-T4)', () => {
       const assetId = await registered();
       const { loanId, itemOf } = await lent([assetId]);
 
-      const res = await api.post(
-        custodian,
-        `/loans/${loanId}/not-returned`,
-        { expected_version: (await loanOf(loanId)).version, not_returned_date: '2026-11-05', reason: 'ผู้ยืมแจ้งว่าทำหาย', items: [{ loan_item_id: itemOf[assetId] }] },
-        { 'x-retry-token': crypto.randomUUID() }
-      );
-      expect(res.statusCode).toBe(201);
+      await closedNotReturned(loanId, [itemOf[assetId]], '2026-11-05');
 
       expect((await rowOf(assetId)).on_loan).toBeNull();
     });
@@ -197,11 +171,11 @@ describe('On Loan on the Asset list (Seam A - F004-T4)', () => {
       expect((await rowOf(assetId)).latest_loan_return_condition).toBeNull();
 
       const first = await lent([assetId]);
-      await returned(first.loanId, [first.itemOf[assetId]], 'DAMAGED', '2026-11-02');
+      await returned(first.loanId, [first.itemOf[assetId]], '2026-11-02', 'DAMAGED');
       expect((await rowOf(assetId)).latest_loan_return_condition).toBe('DAMAGED');
 
       const second = await lent([assetId]);
-      await returned(second.loanId, [second.itemOf[assetId]], 'NORMAL', '2026-11-03');
+      await returned(second.loanId, [second.itemOf[assetId]], '2026-11-03');
       expect((await rowOf(assetId)).latest_loan_return_condition).toBe('NORMAL');
       expect((await api.get(readonly, `/assets/${assetId}`)).json().latest_loan_return_condition).toBe('NORMAL');
     });

@@ -19,10 +19,13 @@ import {
   type InitialAssignmentFacts,
   type InitialAssignmentInput,
 } from './assignment.service.ts';
+import { containsPattern } from './asset-lookups.ts';
 import { loanSearch, type AssetSearchLoanFacts } from './loan.service.ts';
+import { canonicalJson } from './canonical-json.ts';
+import { NotFoundError, RetryTokenConflictError, StaleBeforeConflictError } from './service-errors.ts';
 import { ValidationError } from './validation-error.ts';
 
-export { ValidationError };
+export { NotFoundError, RetryTokenConflictError, StaleBeforeConflictError, ValidationError, canonicalJson };
 
 export interface AssetRecord {
   id: string;
@@ -127,38 +130,6 @@ export interface AssetServiceOptions {
   clock?: () => Date;
 }
 
-export class NotFoundError extends Error {
-  statusCode: number;
-  code: string;
-
-  constructor(message: string = 'Asset not found') {
-    super(message);
-    this.name = 'NotFoundError';
-    this.statusCode = 404;
-    this.code = 'NOT_FOUND';
-  }
-}
-
-export class StaleBeforeConflictError extends Error {
-  statusCode: number;
-  code: string;
-  current_values?: Record<string, string | number | null>;
-  expected_values?: Record<string, string | number | null>;
-
-  constructor(
-    message: string = 'Current asset state differs from expected before values',
-    currentValues?: Record<string, string | number | null>,
-    expectedValues?: Record<string, string | number | null>
-  ) {
-    super(message);
-    this.name = 'StaleBeforeConflictError';
-    this.statusCode = 409;
-    this.code = 'STALE_BEFORE_CONFLICT';
-    this.current_values = currentValues;
-    this.expected_values = expectedValues;
-  }
-}
-
 export interface DuplicateCandidatesResult {
   candidates: AssetRecord[];
   total_count: number;
@@ -226,35 +197,6 @@ export class BulkDuplicateCandidateWarningError extends Error {
   }
 }
 
-export class RetryTokenConflictError extends Error {
-  statusCode: number;
-  code: string;
-
-  constructor(message: string = 'Retry token payload mismatch') {
-    super(message);
-    this.name = 'RetryTokenConflictError';
-    this.statusCode = 409;
-    this.code = 'RETRY_TOKEN_PAYLOAD_MISMATCH';
-  }
-}
-
-/**
- * Deterministically serializes values with recursively sorted keys.
- */
-export function canonicalJson(obj: unknown): string {
-  if (obj === null || typeof obj !== 'object') {
-    return JSON.stringify(obj);
-  }
-  if (Array.isArray(obj)) {
-    return `[${obj.map((item) => canonicalJson(item)).join(',')}]`;
-  }
-  const record = obj as Record<string, unknown>;
-  const keys = Object.keys(record)
-    .filter((k) => record[k] !== undefined)
-    .sort();
-  return `{${keys.map((k) => `${JSON.stringify(k)}:${canonicalJson(record[k])}`).join(',')}}`;
-}
-
 // T4 (#25): each legacy reference text is searched on its own, keeping the dimensions distinct.
 export type SearchAssetField =
   | 'stable_id'
@@ -314,16 +256,6 @@ function refuseAssignmentFields(input: CorrectAssetInput): void {
       `The registry correction does not change Location, OrganizationUnit or Responsible Person; record an assignment action instead (${named.join(', ')})`
     );
   }
-}
-
-// A case-insensitive literal substring pattern for ILIKE ... ESCAPE '\'.
-export const containsPattern = (value: string): string =>
-  `%${value.replace(/\\/g, '\\\\').replace(/%/g, '\\%').replace(/_/g, '\\_')}%`;
-
-/** Whether an Asset is registered. */
-export async function assetExists(db: pg.Pool | any, assetId: string): Promise<boolean> {
-  const res = await db.query('SELECT 1 FROM assets WHERE id = $1', [assetId]);
-  return res.rows.length > 0;
 }
 
 export class AssetService {

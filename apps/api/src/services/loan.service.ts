@@ -1,5 +1,5 @@
 import pg from 'pg';
-import { NotFoundError, StaleBeforeConflictError, assetExists, containsPattern } from './asset.service.ts';
+import { assetExists, containsPattern } from './asset-lookups.ts';
 import { isValidUuid } from './capability.service.ts';
 import { hasStrictControlChars } from './control-characters.ts';
 import {
@@ -15,6 +15,7 @@ import {
 } from './assignment.service.ts';
 import { isSelectablePerson } from './reference.service.ts';
 import { commitOnce } from './retryable-write.ts';
+import { NotFoundError, StaleBeforeConflictError } from './service-errors.ts';
 import { ValidationError } from './validation-error.ts';
 
 // #74 Q9: as many as a Bulk Reassignment.

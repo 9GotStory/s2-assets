@@ -19,37 +19,13 @@ describe('The Loan list and Overdue (Seam A - F004-T3)', () => {
   const logLines: string[] = [];
 
   const { entry } = assignmentHelpers(() => ({ api, admin, reader: readonly }));
-  const { registered, loanOf } = loanHelpers(() => ({ api, custodian, reader: readonly }));
+  const { registered, loanOf, lent: lentAssets, returned, closedNotReturned } = loanHelpers(() => ({ api, custodian, reader: readonly }), { loanDate: LOAN_DATE, dueDate: DUE });
 
   // A started Loan of `count` new Assets, with its LoanItem ids in Asset order.
   const lent = async (count: number, overrides: Record<string, unknown> = {}) => {
     const assetIds = await Promise.all(Array.from({ length: count }, () => registered()));
-    const res = await api.post(
-      custodian,
-      '/loans',
-      {
-        assets: assetIds.map((asset_id) => ({ asset_id, condition: 'NORMAL' })),
-        borrower: { kind: 'EXTERNAL', contact_name: `คุณ ${crypto.randomUUID()}` },
-        loan_date: LOAN_DATE,
-        due_date: DUE,
-        ...overrides,
-      },
-      { 'x-retry-token': crypto.randomUUID() }
-    );
-    expect(res.statusCode).toBe(201);
-    const { loan_id: loanId, items } = res.json();
-    return { loanId: loanId as string, assetIds, itemIds: assetIds.map((assetId) => items.find(({ asset_id }: any) => asset_id === assetId).id as string) };
-  };
-
-  // A Loan Return of `itemIds` as ปกติ on `returnDate`.
-  const returned = async (loanId: string, itemIds: string[], returnDate: string = '2026-11-05') => {
-    const res = await api.post(
-      custodian,
-      `/loans/${loanId}/returns`,
-      { expected_version: (await loanOf(loanId)).version, return_date: returnDate, items: itemIds.map((loan_item_id) => ({ loan_item_id, condition: 'NORMAL' })) },
-      { 'x-retry-token': crypto.randomUUID() }
-    );
-    expect(res.statusCode).toBe(201);
+    const { loanId, itemOf } = await lentAssets(assetIds, { borrower: { kind: 'EXTERNAL', contact_name: `คุณ ${crypto.randomUUID()}` }, ...overrides });
+    return { loanId, assetIds, itemIds: assetIds.map((assetId) => itemOf[assetId]) };
   };
 
   const list = async (query: string = '', actor: Actor = readonly) => {
@@ -401,7 +377,7 @@ describe('The Loan list and Overdue (Seam A - F004-T3)', () => {
     it('shows the Borrower, the Loan Date, the item counts, the status and whether the Loan is Overdue', async () => {
       const person = await entry('persons', 'สมชาย ผู้ยืมในรายการ');
       const { loanId, itemIds } = await lent(3, { borrower: { kind: 'INTERNAL', person_id: person.id } });
-      await returned(loanId, [itemIds[0]]);
+      await returned(loanId, [itemIds[0]], '2026-11-05');
 
       const { items } = await list(`borrower_person_id=${person.id}`);
 
@@ -425,8 +401,6 @@ describe('The Loan list and Overdue (Seam A - F004-T3)', () => {
       const res = await api.post(custodian, `/loans/${loanId}/${path}`, { expected_version: (await loanOf(loanId)).version, ...payload }, { 'x-retry-token': crypto.randomUUID() });
       expect(res.statusCode).toBe(201);
     };
-    const closed = (loanId: string, itemIds: string[]) =>
-      write(loanId, 'not-returned', { not_returned_date: '2026-11-05', reason: 'หาย', items: itemIds.map((loan_item_id) => ({ loan_item_id })) });
     const extended = (loanId: string, itemIds: string[], newDueDate: string) =>
       write(loanId, 'due-date-extensions', { new_due_date: newDueDate, items: itemIds.map((loan_item_id) => ({ loan_item_id })) });
 
@@ -437,9 +411,9 @@ describe('The Loan list and Overdue (Seam A - F004-T3)', () => {
         const allClosed = await lent(3, { borrower });
         const stillOut = await lent(2, { borrower });
         const extendedLoan = await lent(2, { borrower });
-        await returned(allClosed.loanId, [allClosed.itemIds[0]]);
-        await closed(allClosed.loanId, allClosed.itemIds.slice(1));
-        await closed(stillOut.loanId, [stillOut.itemIds[0]]);
+        await returned(allClosed.loanId, [allClosed.itemIds[0]], '2026-11-05');
+        await closedNotReturned(allClosed.loanId, allClosed.itemIds.slice(1), '2026-11-05');
+        await closedNotReturned(stillOut.loanId, [stillOut.itemIds[0]], '2026-11-05');
         await extended(extendedLoan.loanId, extendedLoan.itemIds, '2026-11-08');
         now = new Date('2026-11-07T05:00:00Z');
         const rows = Object.fromEntries((await list(`borrower_name=${tag}`)).items.map((row: any) => [row.id, row]));
