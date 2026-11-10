@@ -8,10 +8,10 @@ import {
   incrementLoanVersion,
   lockLoanForWrite,
   recordLoanReturns,
-  type LoanCondition,
   type LoanItemOfLockedLoan,
   type LoanReturnFacts,
 } from './loan.service.ts';
+import type { LoanCondition } from './loan-read.service.ts';
 import { commitOnce } from './retryable-write.ts';
 import { ValidationError } from './validation-error.ts';
 

@@ -20,7 +20,7 @@ import {
   type InitialAssignmentInput,
 } from './assignment.service.ts';
 import { containsPattern } from './asset-lookups.ts';
-import { loanSearch, type AssetSearchLoanFacts } from './loan.service.ts';
+import { loanSearch, type AssetSearchLoanFacts } from './loan-read.service.ts';
 import { canonicalJson } from './canonical-json.ts';
 import { NotFoundError, RetryTokenConflictError, StaleBeforeConflictError } from './service-errors.ts';
 import { ValidationError } from './validation-error.ts';

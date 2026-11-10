@@ -7,12 +7,14 @@ import { isCalendarDate } from '../services/assignment.service.ts';
 import { CapabilityService, isValidUuid } from '../services/capability.service.ts';
 import { hasStrictControlChars } from '../services/control-characters.ts';
 import { LoanItemsNotReturnableError, LoanReturnService, type RecordLoanReturnInput } from '../services/loan-return.service.ts';
+import { LoanReadService } from '../services/loan-read.service.ts';
 import { AssetsNotLendableError, LoanItemsNotOutstandingError, LoanService, type StartLoanInput } from '../services/loan.service.ts';
 import { NotReturnedService, type RecordNotReturnedInput } from '../services/not-returned.service.ts';
 import { DueDateExtensionService, type RecordDueDateExtensionInput } from '../services/due-date-extension.service.ts';
 
 export interface LoanRoutesOptions {
   loanService: LoanService;
+  loanReadService: LoanReadService;
   loanReturnService: LoanReturnService;
   notReturnedService: NotReturnedService;
   dueDateExtensionService: DueDateExtensionService;
@@ -177,7 +179,7 @@ const answerOfWriteOnLoan = async <T extends { retry_token?: string }>(
 };
 
 export const loanRoutes: FastifyPluginAsync<LoanRoutesOptions> = async (fastify, options) => {
-  const { loanService, loanReturnService, notReturnedService, dueDateExtensionService, capabilityService } = options;
+  const { loanService, loanReadService, loanReturnService, notReturnedService, dueDateExtensionService, capabilityService } = options;
 
   /**
    * POST /loans
@@ -253,7 +255,7 @@ export const loanRoutes: FastifyPluginAsync<LoanRoutesOptions> = async (fastify,
     }
     const { borrower_person_id: personId, overdue, limit = 25, offset = 0, ...filters } = parsed.data;
     return reply.status(200).send(
-      await loanService.list({ ...filters, overdue: overdue === 'true', borrower_person_id: personId?.trim().toLowerCase(), limit, offset })
+      await loanReadService.list({ ...filters, overdue: overdue === 'true', borrower_person_id: personId?.trim().toLowerCase(), limit, offset })
     );
   });
 
@@ -274,7 +276,7 @@ export const loanRoutes: FastifyPluginAsync<LoanRoutesOptions> = async (fastify,
     }
 
     const canRecordLoan = await capabilityService.hasCapability(request.user!.id, 'loan:record');
-    const loan = await loanService.read(id.trim().toLowerCase(), { includePhone: canRecordLoan, returnDate });
+    const loan = await loanReadService.read(id.trim().toLowerCase(), { includePhone: canRecordLoan, returnDate });
     if (!loan) {
       return reply.status(404).send(errorBody(404, 'NOT_FOUND', 'Loan not found'));
     }
@@ -292,7 +294,7 @@ export const loanRoutes: FastifyPluginAsync<LoanRoutesOptions> = async (fastify,
       return reply.status(400).send(errorBody(400, 'INVALID_ID', 'Asset ID must be a valid UUID string'));
     }
 
-    const items = await loanService.itemsOfAsset(id.trim().toLowerCase());
+    const items = await loanReadService.itemsOfAsset(id.trim().toLowerCase());
     if (!items) {
       return reply.status(404).send(errorBody(404, 'NOT_FOUND', 'Asset not found'));
     }
