@@ -4,8 +4,8 @@ import { AssignmentNoteFields, assignmentNotesPayload, type AssignmentNotes } fr
 import { LoanConditionFields } from './LoanConditionFields';
 import { LoanSaveForm } from './LoanSaveForm';
 import { REFERENCE_DIMENSIONS, fieldInputStyle, fieldLabelStyle } from './ReferenceContextFields';
-import { bangkokToday, valueText } from './assignmentFacts';
-import { assetLabel, isOutstanding, type Loan, type LoanCondition, type LoanItem, type RefusedLoanItem } from './loanFacts';
+import { bangkokToday, thaiDate, valueText } from './assignmentFacts';
+import { NOT_RETURNED_LABEL, assetLabel, isReturnable, type Loan, type LoanCondition, type LoanItem, type RefusedLoanItem } from './loanFacts';
 
 export interface LoanReturnFormProps {
   loan: Loan;
@@ -44,7 +44,8 @@ const RefusedItems: React.FC<{ items: RefusedLoanItem[] }> = ({ items }) => (
 );
 
 /**
- * Records a Loan Return for the Outstanding items the Custodian picks: one Return Date, document
+ * Records a Loan Return for the items the Custodian picks, Outstanding or Not Returned and come back
+ * later (#74 Q21): one Return Date, document
  * reference and remark, and each item's own Condition. It shows where each item goes back to on the
  * Return Date, as the server derives it (#74 Q27). The server decides again everything this form checks.
  */
@@ -55,15 +56,15 @@ export const LoanReturnForm: React.FC<LoanReturnFormProps> = ({ loan, csrfToken,
   const [notes, setNotes] = useState<AssignmentNotes>({ documentReference: '', remark: '' });
   const [drafts, setDrafts] = useState<Record<string, ItemDraft>>({});
 
-  const outstanding = loan.items.filter(isOutstanding);
+  const returnable = loan.items.filter(isReturnable);
   const draftOf = (itemId: string): ItemDraft => drafts[itemId] ?? NO_DRAFT;
   const setDraft = (itemId: string, change: Partial<ItemDraft>) =>
     setDrafts((current) => ({ ...current, [itemId]: { ...(current[itemId] ?? NO_DRAFT), ...change } }));
-  const returning = outstanding.filter(({ id }) => draftOf(id).isReturning);
+  const returning = returnable.filter(({ id }) => draftOf(id).isReturning);
 
   const setEveryConditionNormal = () =>
     setDrafts((current) =>
-      Object.fromEntries(outstanding.map(({ id }) => [id, { ...(current[id] ?? NO_DRAFT), condition: 'NORMAL' as const }]))
+      Object.fromEntries(returnable.map(({ id }) => [id, { ...(current[id] ?? NO_DRAFT), condition: 'NORMAL' as const }]))
     );
 
   // No placeholder: values read for another date must not show under this one.
@@ -98,6 +99,9 @@ export const LoanReturnForm: React.FC<LoanReturnFormProps> = ({ loan, csrfToken,
     }
     if (returnDate < loan.loan_date) {
       return 'วันที่คืนต้องไม่ก่อนวันที่ยืม';
+    }
+    if (returning.some(({ not_returned: notReturned }) => notReturned && returnDate < notReturned.not_returned_date)) {
+      return 'วันที่คืนต้องไม่ก่อนวันที่ทราบว่าไม่ได้รับคืน';
     }
     return returning.some(({ id }) => draftOf(id).condition === '') ? 'กรุณาเลือกสภาพของทุกรายการที่คืน' : null;
   };
@@ -168,7 +172,7 @@ export const LoanReturnForm: React.FC<LoanReturnFormProps> = ({ loan, csrfToken,
             ตั้งปกติทั้งหมด
           </button>
 
-          {outstanding.map((item) => {
+          {returnable.map((item) => {
             const { isReturning, condition, note } = draftOf(item.id);
             const assignment = assignmentOf(item.id);
             return (
@@ -182,6 +186,11 @@ export const LoanReturnForm: React.FC<LoanReturnFormProps> = ({ loan, csrfToken,
                   />{' '}
                   {assetLabel(item.asset)}
                 </label>
+                {item.not_returned && (
+                  <div data-testid={`loan-return-not-returned-${item.id}`} style={{ margin: '0 0 0.5rem 0', fontSize: '0.8125rem', color: '#6b7280' }}>
+                    {NOT_RETURNED_LABEL}เมื่อ <time dateTime={item.not_returned.not_returned_date}>{thaiDate(item.not_returned.not_returned_date)}</time>
+                  </div>
+                )}
                 {assignment && (
                   <dl data-testid={`loan-return-assignment-${item.id}`} style={{ margin: '0 0 0.5rem 0', fontSize: '0.8125rem', color: '#6b7280' }}>
                     {REFERENCE_DIMENSIONS.map(({ entryField, legacyField, label }) => (

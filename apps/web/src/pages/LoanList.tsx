@@ -4,7 +4,7 @@ import { QueryClient, QueryClientProvider, useQuery } from '@tanstack/react-quer
 import { OverdueBadge } from '../components/LoanBadges';
 import { entryLabel, fetchReferenceList, type ReferenceEntry } from '../components/ReferenceContextFields';
 import { thaiDate } from '../components/assignmentFacts';
-import { LOAN_STATUS_LABELS, borrowerText, type Borrower, type LoanListRow, type LoanStatus } from '../components/loanFacts';
+import { LOAN_STATUS_LABELS, borrowerText, loanStatusText, type Borrower, type LoanListRow, type LoanStatus } from '../components/loanFacts';
 
 const PAGE_SIZE = 25;
 
@@ -290,7 +290,7 @@ const LoanListContent: React.FC = () => {
                               คืนแล้ว {loan.returned_count} จาก {loan.item_count} รายการ
                             </td>
                             <td style={cellStyle}>
-                              {LOAN_STATUS_LABELS[loan.status]}
+                              {loanStatusText(loan.status, loan.not_returned_count)}
                               {loan.is_overdue && <OverdueBadge />}
                             </td>
                             <td style={cellStyle}>

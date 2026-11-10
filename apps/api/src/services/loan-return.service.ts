@@ -1,21 +1,12 @@
 import * as crypto from 'node:crypto';
 import pg from 'pg';
-import { NotFoundError, StaleBeforeConflictError } from './asset.service.ts';
-import {
-  DOCUMENT_REFERENCE_MAX_LENGTH,
-  REMARK_MAX_LENGTH,
-  bangkokDate,
-  isCalendarDate,
-  lockAssetsInIdentifierOrder,
-  normalizeText,
-} from './assignment.service.ts';
+import { DOCUMENT_REFERENCE_MAX_LENGTH, REMARK_MAX_LENGTH, bangkokDate, isCalendarDate, normalizeText } from './assignment.service.ts';
 import { isValidUuid } from './capability.service.ts';
 import {
   CONDITION_NOTE_MAX_LENGTH,
   MAX_ASSETS,
   incrementLoanVersion,
-  lockLoan,
-  readItemsOfLockedLoan,
+  lockLoanForWrite,
   recordLoanReturns,
   type LoanCondition,
   type LoanItemOfLockedLoan,
@@ -120,11 +111,13 @@ const refusalsOfItem = (loanItemId: string, item: LoanItemOfLockedLoan | undefin
   if (item.is_voided) {
     return [{ loan_item_id: loanItemId, asset_id, name, asset_number, reason: 'VOIDED' }];
   }
-  return item.ending_kind === 'NONE' ? [] : [{ loan_item_id: loanItemId, asset_id, name, asset_number, reason: 'ALREADY_RETURNED' }];
+  // A Not Returned item that turns up takes its Loan Return (#74 Q21).
+  return item.ending_kind === 'LOAN_RETURN' ? [{ loan_item_id: loanItemId, asset_id, name, asset_number, reason: 'ALREADY_RETURNED' }] : [];
 };
 
 /**
- * F004-T2 (#76): records that Assets came back from a Loan, some or all of them. A Loan Return writes
+ * F004-T2 (#76): records that Assets came back from a Loan, some or all of them, an item closed as
+ * Not Returned among them (F004-T5). A Loan Return writes
  * no assignment fact (MR-15, MR-16), and a Condition of ชำรุด records only that (#74 Q16).
  */
 export class LoanReturnService {
@@ -142,16 +135,7 @@ export class LoanReturnService {
       this.db,
       { actorId, operation: `loan:return:${loanId}`, retryToken, payload: { version: 1, ...facts }, explicitContinuation: false },
       async (client) => {
-        const loan = await lockLoan(client, loanId);
-        if (!loan) {
-          throw new NotFoundError('Loan not found');
-        }
-        const loanItems = await readItemsOfLockedLoan(client, loanId);
-        await lockAssetsInIdentifierOrder(client, [...new Set(loanItems.map(({ asset_id }) => asset_id))]);
-        if (loan.version !== facts.expected_version) {
-          throw new StaleBeforeConflictError('The Loan changed since it was read', { version: loan.version }, { version: facts.expected_version });
-        }
-
+        const { loan, items: loanItems } = await lockLoanForWrite(client, loanId, facts.expected_version);
         const itemById = new Map(loanItems.map((item) => [item.id, item]));
         const refused = facts.items.flatMap(({ loan_item_id }) => refusalsOfItem(loan_item_id, itemById.get(loan_item_id)));
         if (refused.length > 0) {
@@ -159,6 +143,14 @@ export class LoanReturnService {
         }
         if (facts.return_date < loan.loan_date) {
           throw new ValidationError('return_date must not be before the Loan Date');
+        }
+        // An earlier date means the Not Returned was wrong, which a Loan Correction fixes (#74 Q21).
+        const notReturnedLater = facts.items
+          .map(({ loan_item_id }) => itemById.get(loan_item_id)!)
+          .filter(({ not_returned_date: notReturnedDate }) => notReturnedDate !== null && facts.return_date < notReturnedDate);
+        if (notReturnedLater.length > 0) {
+          const names = notReturnedLater.map(({ name, asset_number, asset_id }) => name ?? asset_number ?? asset_id).join(', ');
+          throw new ValidationError(`return_date must not be before the Not Returned date of ${names}`);
         }
 
         const actionReference = crypto.randomUUID();

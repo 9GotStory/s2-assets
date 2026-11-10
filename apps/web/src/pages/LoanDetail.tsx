@@ -1,11 +1,25 @@
 import React, { useEffect, useState } from 'react';
 import { Link, useNavigate, useParams } from 'react-router';
 import { QueryClient, QueryClientProvider, useQuery } from '@tanstack/react-query';
+import { DueDateExtensionForm } from '../components/DueDateExtensionForm';
 import { OverdueBadge, ReturnedLateBadge } from '../components/LoanBadges';
 import { LoanReturnForm } from '../components/LoanReturnForm';
+import { NotReturnedForm } from '../components/NotReturnedForm';
 import { entryLabel } from '../components/ReferenceContextFields';
 import { thaiDate } from '../components/assignmentFacts';
-import { CONDITION_LABELS, LOAN_STATUS_LABELS, OUTSTANDING_LABEL, assetLabel, borrowerText, isOutstanding, loanReturnText, type Loan } from '../components/loanFacts';
+import {
+  CONDITION_LABELS,
+  DUE_DATE_EXTENSION_LABEL,
+  NOT_RETURNED_LABEL,
+  OUTSTANDING_LABEL,
+  assetLabel,
+  borrowerText,
+  isOutstanding,
+  isReturnable,
+  loanReturnText,
+  loanStatusText,
+  type Loan,
+} from '../components/loanFacts';
 
 const THAI_DATE_TIME = new Intl.DateTimeFormat('th-TH', { dateStyle: 'long', timeStyle: 'short', timeZone: 'Asia/Bangkok' });
 
@@ -38,10 +52,26 @@ const noneStyle: React.CSSProperties = { color: '#9ca3af' };
 
 const orNone = (value: string | null): React.ReactNode => value ?? <span style={noneStyle}>ไม่ระบุ</span>;
 
+// The writes on a Loan, one form open at a time.
+type LoanForm = 'return' | 'extension' | 'not-returned';
+
+const actionStyle: React.CSSProperties = {
+  padding: '0.5rem 1rem',
+  backgroundColor: '#2563eb',
+  color: '#ffffff',
+  border: 'none',
+  borderRadius: '6px',
+  fontSize: '0.875rem',
+  fontWeight: 500,
+  cursor: 'pointer',
+};
+
+const secondaryActionStyle: React.CSSProperties = { ...actionStyle, backgroundColor: '#ffffff', color: '#374151', border: '1px solid #d1d5db' };
+
 const LoanDetailContent: React.FC = () => {
   const { id } = useParams<{ id: string }>();
   const navigate = useNavigate();
-  const [isReturnOpen, setIsReturnOpen] = useState(false);
+  const [openForm, setOpenForm] = useState<LoanForm | null>(null);
 
   const loan = useQuery<Loan, Error & { status?: number }>({
     queryKey: ['loan', id],
@@ -103,7 +133,30 @@ const LoanDetailContent: React.FC = () => {
   const { borrower, loan_date: loanDate, authorizer, document_reference: documentReference, remark, recorded_by: recordedBy, recorded_by_username: recordedByUsername, recorded_at: recordedAt, status, is_overdue: isOverdue, items } = loan.data;
   const counted = items.filter(({ is_voided: isVoided }) => !isVoided);
   const returnedCount = counted.filter(({ ending_kind: endingKind }) => endingKind === 'LOAN_RETURN').length;
-  const mayReturn = canRecordLoan && items.some(isOutstanding);
+  const notReturnedCount = counted.filter(({ ending_kind: endingKind }) => endingKind === 'NOT_RETURNED').length;
+  // A Loan Return also takes an item closed as Not Returned; the other writes take Outstanding items only.
+  const mayReturn = canRecordLoan && items.some(isReturnable);
+  const mayChangeOutstanding = canRecordLoan && items.some(isOutstanding);
+  const formProps = {
+    loan: loan.data,
+    csrfToken: session.data ?? null,
+    onRecorded: async () => {
+      await loan.refetch();
+      setOpenForm(null);
+    },
+    onRefresh: async () => {
+      const result = await loan.refetch();
+      return result.isError ? null : (result.data?.version ?? null);
+    },
+    onCancel: () => setOpenForm(null),
+    onPermissionRevoked: (statusCode?: number) => {
+      if (statusCode === 401) {
+        navigate('/login', { replace: true });
+        return;
+      }
+      void loan.refetch();
+    },
+  };
 
   return (
     <main style={pageStyle}>
@@ -122,7 +175,7 @@ const LoanDetailContent: React.FC = () => {
         <dl style={{ display: 'grid', gridTemplateColumns: 'max-content 1fr', gap: '0.75rem 1.5rem', margin: '0 0 2rem 0', fontSize: '0.9375rem', backgroundColor: '#f9fafb', padding: '1.25rem', borderRadius: '6px' }}>
           <dt style={termStyle}>สถานะ:</dt>
           <dd id="loan-status" style={valueStyle}>
-            {LOAN_STATUS_LABELS[status]} (คืนแล้ว {returnedCount} จาก {counted.length} รายการ)
+            {loanStatusText(status, notReturnedCount)} (คืนแล้ว {returnedCount} จาก {counted.length} รายการ)
             {isOverdue && <OverdueBadge id="loan-overdue" />}
           </dd>
           <dt style={termStyle}>ผู้ยืม:</dt>
@@ -163,37 +216,27 @@ const LoanDetailContent: React.FC = () => {
           </dd>
         </dl>
 
-        {mayReturn && isReturnOpen && (
-          <LoanReturnForm
-            loan={loan.data}
-            csrfToken={session.data ?? null}
-            onRecorded={async () => {
-              await loan.refetch();
-              setIsReturnOpen(false);
-            }}
-            onRefresh={async () => {
-              const result = await loan.refetch();
-              return result.isError ? null : (result.data?.version ?? null);
-            }}
-            onCancel={() => setIsReturnOpen(false)}
-            onPermissionRevoked={(statusCode) => {
-              if (statusCode === 401) {
-                navigate('/login', { replace: true });
-                return;
-              }
-              void loan.refetch();
-            }}
-          />
-        )}
-        {mayReturn && !isReturnOpen && (
-          <button
-            type="button"
-            id="loan-return-action"
-            onClick={() => setIsReturnOpen(true)}
-            style={{ padding: '0.5rem 1rem', backgroundColor: '#2563eb', color: '#ffffff', border: 'none', borderRadius: '6px', fontSize: '0.875rem', fontWeight: 500, cursor: 'pointer', marginBottom: '1rem' }}
-          >
-            คืน
-          </button>
+        {mayReturn && openForm === 'return' && <LoanReturnForm {...formProps} />}
+        {mayChangeOutstanding && openForm === 'extension' && <DueDateExtensionForm {...formProps} />}
+        {mayChangeOutstanding && openForm === 'not-returned' && <NotReturnedForm {...formProps} />}
+        {(mayReturn || mayChangeOutstanding) && openForm === null && (
+          <div style={{ display: 'flex', flexWrap: 'wrap', gap: '0.5rem', marginBottom: '1rem' }}>
+            {mayReturn && (
+              <button type="button" id="loan-return-action" onClick={() => setOpenForm('return')} style={actionStyle}>
+                คืน
+              </button>
+            )}
+            {mayChangeOutstanding && (
+              <>
+                <button type="button" id="loan-extension-action" onClick={() => setOpenForm('extension')} style={secondaryActionStyle}>
+                  {DUE_DATE_EXTENSION_LABEL}
+                </button>
+                <button type="button" id="loan-not-returned-action" onClick={() => setOpenForm('not-returned')} style={secondaryActionStyle}>
+                  {NOT_RETURNED_LABEL}
+                </button>
+              </>
+            )}
+          </div>
         )}
 
         <h2 style={{ fontSize: '1.125rem', fontWeight: 600, marginTop: 0, marginBottom: '1rem', color: '#374151' }}>รายการยืม</h2>
@@ -207,10 +250,34 @@ const LoanDetailContent: React.FC = () => {
               <div>
                 กำหนดคืน: <time dateTime={item.due_date}>{thaiDate(item.due_date)}</time>
               </div>
+              {item.due_date_extensions.length > 0 && (
+                <ul data-testid="loan-item-extensions" style={{ margin: '0.25rem 0', paddingLeft: '1.25rem', color: '#4b5563' }}>
+                  {item.due_date_extensions.map((extension) => (
+                    <li key={extension.id} data-testid="loan-item-extension">
+                      {DUE_DATE_EXTENSION_LABEL}: <time dateTime={extension.prior_due_date}>{thaiDate(extension.prior_due_date)}</time> →{' '}
+                      <time dateTime={extension.new_due_date}>{thaiDate(extension.new_due_date)}</time>
+                      {extension.reason && ` · เหตุผล: ${extension.reason}`} · ผู้บันทึก: {extension.recorded_by_username ?? extension.recorded_by} ·{' '}
+                      <time dateTime={extension.recorded_at}>{THAI_DATE_TIME.format(new Date(extension.recorded_at))}</time>
+                    </li>
+                  ))}
+                </ul>
+              )}
               <div>
                 สภาพ: {CONDITION_LABELS[item.condition]}
                 {item.condition_note ? ` (${item.condition_note})` : ''}
               </div>
+              {item.not_returned && (
+                <div data-testid="loan-item-not-returned">
+                  <div>
+                    {NOT_RETURNED_LABEL}: <time dateTime={item.not_returned.not_returned_date}>{thaiDate(item.not_returned.not_returned_date)}</time>
+                  </div>
+                  <div style={{ whiteSpace: 'pre-line' }}>เหตุผล: {item.not_returned.reason}</div>
+                  <div>
+                    ผู้บันทึก: {item.not_returned.recorded_by_username ?? item.not_returned.recorded_by} ·{' '}
+                    <time dateTime={item.not_returned.recorded_at}>{THAI_DATE_TIME.format(new Date(item.not_returned.recorded_at))}</time>
+                  </div>
+                </div>
+              )}
               {item.loan_return ? (
                 <div data-testid="loan-item-return">
                   <div>

@@ -1,4 +1,4 @@
-import type { FastifyPluginAsync } from 'fastify';
+import type { FastifyPluginAsync, FastifyRequest } from 'fastify';
 import { z } from 'zod';
 import { requireCapability } from '../middleware/authorization.ts';
 import { errorBody, parseWrite } from './write-request.ts';
@@ -7,11 +7,15 @@ import { isCalendarDate } from '../services/assignment.service.ts';
 import { CapabilityService, isValidUuid } from '../services/capability.service.ts';
 import { hasStrictControlChars } from '../services/control-characters.ts';
 import { LoanItemsNotReturnableError, LoanReturnService, type RecordLoanReturnInput } from '../services/loan-return.service.ts';
-import { AssetsNotLendableError, LoanService, type StartLoanInput } from '../services/loan.service.ts';
+import { AssetsNotLendableError, LoanItemsNotOutstandingError, LoanService, type StartLoanInput } from '../services/loan.service.ts';
+import { NotReturnedService, type RecordNotReturnedInput } from '../services/not-returned.service.ts';
+import { DueDateExtensionService, type RecordDueDateExtensionInput } from '../services/due-date-extension.service.ts';
 
 export interface LoanRoutesOptions {
   loanService: LoanService;
   loanReturnService: LoanReturnService;
+  notReturnedService: NotReturnedService;
+  dueDateExtensionService: DueDateExtensionService;
   capabilityService: CapabilityService;
 }
 
@@ -70,11 +74,33 @@ const RecordLoanReturnSchema = z
   })
   .strict();
 
+// #74 Q21: a date it became known and a reason, shared by every item named.
+const RecordNotReturnedSchema = z
+  .object({
+    expected_version: z.number().int().min(1),
+    not_returned_date: z.string(),
+    reason: z.string(),
+    items: z.array(z.object({ loan_item_id: z.string() }).strict()),
+    retry_token: z.string().optional(),
+  })
+  .strict();
+
+// #74 Q6, Q28: one new date and an optional reason for every item named.
+const RecordDueDateExtensionSchema = z
+  .object({
+    expected_version: z.number().int().min(1),
+    new_due_date: z.string(),
+    reason: z.string().nullable().optional(),
+    items: z.array(z.object({ loan_item_id: z.string() }).strict()),
+    retry_token: z.string().optional(),
+  })
+  .strict();
+
 // The Loan list's query: each filter narrows the list on its own, and a page is read as on the Asset list.
 // A repeated parameter arrives as an array and is refused.
 const LoanListQuerySchema = z
   .object({
-    status: z.enum(['OUTSTANDING', 'PARTIALLY_RETURNED', 'RETURNED']).optional(),
+    status: z.enum(['OUTSTANDING', 'PARTIALLY_RETURNED', 'RETURNED', 'CLOSED']).optional(),
     // "เกินกำหนด" takes one value; leaving it out lists every Loan.
     overdue: z.literal('true').optional(),
     borrower_kind: z.enum(['INTERNAL', 'EXTERNAL']).optional(),
@@ -107,7 +133,7 @@ const refusalOf = (err: unknown) => {
   if (err instanceof AssetsNotLendableError) {
     return { ...errorBody(err.statusCode, err.code, err.message), assets: err.assets };
   }
-  if (err instanceof LoanItemsNotReturnableError) {
+  if (err instanceof LoanItemsNotReturnableError || err instanceof LoanItemsNotOutstandingError) {
     return { ...errorBody(err.statusCode, err.code, err.message), items: err.items };
   }
   if (err instanceof StaleBeforeConflictError) {
@@ -123,8 +149,35 @@ const refusalOf = (err: unknown) => {
   return null;
 };
 
+// The answer to a write on an existing Loan, for the handler to send: 201 with what it recorded, or
+// the refusal of its id, its body or its facts.
+const answerOfWriteOnLoan = async <T extends { retry_token?: string }>(
+  request: FastifyRequest,
+  schema: z.ZodType<T>,
+  write: (loanId: string, input: Omit<T, 'retry_token'>, retryToken: string) => Promise<unknown>
+): Promise<{ statusCode: number; body: unknown }> => {
+  const { id } = request.params as { id: string };
+  if (!isValidUuid(id)) {
+    return { statusCode: 400, body: errorBody(400, 'INVALID_ID', 'Loan ID must be a valid UUID string') };
+  }
+  const parsed = parseWrite(schema, request);
+  if ('refusal' in parsed) {
+    return { statusCode: 400, body: parsed.refusal };
+  }
+  try {
+    const { retry_token: _retryToken, ...input } = parsed.data;
+    return { statusCode: 201, body: await write(id.trim().toLowerCase(), input, parsed.retryToken) };
+  } catch (err) {
+    const refusal = refusalOf(err);
+    if (!refusal) {
+      throw err;
+    }
+    return { statusCode: refusal.statusCode, body: refusal };
+  }
+};
+
 export const loanRoutes: FastifyPluginAsync<LoanRoutesOptions> = async (fastify, options) => {
-  const { loanService, loanReturnService, capabilityService } = options;
+  const { loanService, loanReturnService, notReturnedService, dueDateExtensionService, capabilityService } = options;
 
   /**
    * POST /loans
@@ -155,29 +208,34 @@ export const loanRoutes: FastifyPluginAsync<LoanRoutesOptions> = async (fastify,
    * Protected: requires 'loan:record' capability (Asset Custodian)
    */
   fastify.post('/loans/:id/returns', { preHandler: [requireCapability('loan:record')] }, async (request, reply) => {
-    const { id } = request.params as { id: string };
-    if (!isValidUuid(id)) {
-      return reply.status(400).send(errorBody(400, 'INVALID_ID', 'Loan ID must be a valid UUID string'));
-    }
+    const { statusCode, body } = await answerOfWriteOnLoan(request, RecordLoanReturnSchema, (loanId, input, retryToken) =>
+      loanReturnService.record(request.user!.id, loanId, input as RecordLoanReturnInput, { retryToken })
+    );
+    return reply.status(statusCode).send(body);
+  });
 
-    const write = parseWrite(RecordLoanReturnSchema, request);
-    if ('refusal' in write) {
-      return reply.status(400).send(write.refusal);
-    }
+  /**
+   * POST /loans/:id/not-returned
+   * Closes one or more Outstanding items of a Loan as Not Returned ("ปิดโดยไม่ได้รับคืน"), all of them or none (F004-T5).
+   * Protected: requires 'loan:record' capability (Asset Custodian)
+   */
+  fastify.post('/loans/:id/not-returned', { preHandler: [requireCapability('loan:record')] }, async (request, reply) => {
+    const { statusCode, body } = await answerOfWriteOnLoan(request, RecordNotReturnedSchema, (loanId, input, retryToken) =>
+      notReturnedService.record(request.user!.id, loanId, input as RecordNotReturnedInput, { retryToken })
+    );
+    return reply.status(statusCode).send(body);
+  });
 
-    try {
-      const { retry_token: _retryToken, ...input } = write.data;
-      const result = await loanReturnService.record(request.user!.id, id.trim().toLowerCase(), input as RecordLoanReturnInput, {
-        retryToken: write.retryToken,
-      });
-      return reply.status(201).send(result);
-    } catch (err) {
-      const refusal = refusalOf(err);
-      if (!refusal) {
-        throw err;
-      }
-      return reply.status(refusal.statusCode).send(refusal);
-    }
+  /**
+   * POST /loans/:id/due-date-extensions
+   * Moves the Due Date of one or more Outstanding items of a Loan later ("เลื่อนกำหนดคืน"), all of them or none (F004-T5).
+   * Protected: requires 'loan:record' capability (Asset Custodian)
+   */
+  fastify.post('/loans/:id/due-date-extensions', { preHandler: [requireCapability('loan:record')] }, async (request, reply) => {
+    const { statusCode, body } = await answerOfWriteOnLoan(request, RecordDueDateExtensionSchema, (loanId, input, retryToken) =>
+      dueDateExtensionService.record(request.user!.id, loanId, input as RecordDueDateExtensionInput, { retryToken })
+    );
+    return reply.status(statusCode).send(body);
   });
 
   /**

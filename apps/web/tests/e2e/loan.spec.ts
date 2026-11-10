@@ -15,6 +15,7 @@ import { AssetService } from '../../../api/src/services/asset.service.ts';
 import { ReferenceService } from '../../../api/src/services/reference.service.ts';
 import { LoanService } from '../../../api/src/services/loan.service.ts';
 import { LoanReturnService } from '../../../api/src/services/loan-return.service.ts';
+import { NotReturnedService } from '../../../api/src/services/not-returned.service.ts';
 import { AssignmentRecordingService } from '../../../api/src/services/assignment-recording.service.ts';
 import { repositoryProxyConfig } from '../../vite.config.ts';
 
@@ -243,9 +244,9 @@ test.describe.serial('Loan journeys: Real SPA -> Composed API -> PostgreSQL (Sea
     await expect(page.locator('#loan-borrower')).toHaveText('สมศรี ลาออกแล้ว (ปิดใช้งาน)');
   });
 
-  // F004-T3 (#77): a backdated Loan past its Due Date shows "เกินกำหนด". F004-T5 completes this journey
-  // with a Due Date Extension that clears it.
-  test('Journey F004-T3.1: a backdated Loan past its Due Date shows "เกินกำหนด" on the Loan list, the Loan page and the Asset page', async ({ page, context }) => {
+  // F004-T3 (#77): a backdated Loan past its Due Date shows "เกินกำหนด", and F004-T5 (#79) completes the
+  // journey with a Due Date Extension that clears it.
+  test('Journey F004-T3.1: a backdated Loan past its Due Date shows "เกินกำหนด" on the Loan list, the Loan page and the Asset page, and a Due Date Extension clears it', async ({ page, context }) => {
     const start = async (name: string, assetNames: string[], dueDate: string) => {
       const assets = [];
       for (const assetName of assetNames) {
@@ -323,6 +324,160 @@ test.describe.serial('Loan journeys: Real SPA -> Composed API -> PostgreSQL (Sea
     await page.goto(`${targetBaseUrl}/assets/${onTime.assets[0].id}`);
     await expect(page.locator('[data-testid="loan-on-loan"]')).toContainText('คุณยังไม่ถึงกำหนด E2E');
     await expect(page.locator('[data-testid="loan-on-loan-overdue"]')).toHaveCount(0);
+
+    // F004-T5: a Custodian extends the Due Date of the item still out, the only one the form offers.
+    await switchActor(page, context, custodianUserId);
+    await page.goto(`${targetBaseUrl}/loans/${late.loanId}`);
+    await expect(page.locator('#loan-overdue')).toHaveText('เกินกำหนด');
+    await page.locator('#loan-extension-action').click();
+    const offered = page.locator('[data-testid="loan-extension-item"]');
+    await expect(offered).toHaveCount(1);
+    await expect(offered).toContainText(stillOut.name);
+    await expect(page.locator(`#loan-extension-select-${late.items.find(({ asset_id }) => asset_id === stillOut.id)!.id}`)).toBeChecked();
+
+    // A new date that is not later than the current Due Date is refused before it is sent.
+    await page.locator('#loan-extension-new_due_date').fill(daysAgo(3));
+    await page.locator('#loan-extension-submit').click();
+    await expect(page.locator('[data-testid="loan-extension-form-error"]')).toContainText('ต้องช้ากว่ากำหนดคืนเดิม');
+    await page.locator('#loan-extension-new_due_date').fill(daysAgo(-7));
+    await page.locator('#loan-extension-reason').fill('ผู้ยืมขอใช้ต่ออีกหนึ่งสัปดาห์');
+    await page.locator('#loan-extension-submit').click();
+
+    // The extended item is no longer Overdue, nor is the Loan, and the item back late keeps "คืนเกินกำหนด".
+    const extension = itemOf(stillOut).locator('[data-testid="loan-item-extension"]');
+    await expect(extension).toContainText('เลื่อนกำหนดคืน');
+    await expect(extension).toContainText('ผู้ยืมขอใช้ต่ออีกหนึ่งสัปดาห์');
+    await expect(extension).toContainText('custodian_loan');
+    await expect(itemOf(stillOut).locator('time').first()).toHaveAttribute('datetime', daysAgo(-7));
+    await expect(itemOf(stillOut).locator('[data-testid="loan-item-overdue"]')).toHaveCount(0);
+    await expect(page.locator('#loan-overdue')).toHaveCount(0);
+    await expect(itemOf(returnedLate).locator('[data-testid="loan-item-returned-late"]')).toHaveText('คืนเกินกำหนด');
+
+    // The Loan list and the Asset page say the same.
+    await page.goto(`${targetBaseUrl}/loans?overdue=true&borrower_name=${encodeURIComponent('หน่วยงาน E2E รายการยืม')}`);
+    await expect(page.locator('#loan-list-empty')).toBeVisible();
+    await page.goto(`${targetBaseUrl}/assets/${stillOut.id}`);
+    await expect(page.locator('[data-testid="loan-on-loan"]')).toContainText('คุณเกินกำหนด E2E');
+    await expect(page.locator('[data-testid="loan-on-loan"] time')).toHaveAttribute('datetime', daysAgo(-7));
+    await expect(page.locator('[data-testid="loan-on-loan-overdue"]')).toHaveCount(0);
+  });
+
+  // F004-T5 (#79): "ปิดโดยไม่ได้รับคืน", after which a new Loan of that Asset is refused until it comes back.
+  test('Journey F004-T5.1: a Custodian closes an item as "ปิดโดยไม่ได้รับคืน", the Asset cannot be lent again until it turns up, and then it can', async ({ page, context }) => {
+    const { asset: lost } = await assetService.registerAsset(custodianUserId, { name: 'แท็บเล็ต E2E ไม่ได้คืน' } as any);
+    const { asset: back } = await assetService.registerAsset(custodianUserId, { name: 'ขาตั้ง E2E คืนแล้ว' } as any);
+    const { loan_id: loanId, items } = await loanService.start(
+      custodianUserId,
+      {
+        assets: [lost, back].map(({ id }) => ({ asset_id: id, condition: 'NORMAL' as const })),
+        borrower: { kind: 'EXTERNAL', contact_name: 'คุณผู้ยืม E2E ไม่ได้คืน' },
+        loan_date: daysAgo(5),
+        due_date: '2099-12-31',
+      },
+      { retryToken: crypto.randomUUID() }
+    );
+    const itemIdOf = (assetId: string) => items.find(({ asset_id }) => asset_id === assetId)!.id;
+    const itemOf = (name: string) => page.locator('[data-testid="loan-item"]').filter({ hasText: name });
+
+    await loginAs(context, custodianUserId);
+    await page.goto(`${targetBaseUrl}/loans/${loanId}`);
+    await page.locator('#loan-not-returned-action').click();
+
+    // No item is chosen, and the date it became known and the reason are asked for before the request.
+    await expect(page.locator(`#loan-not-returned-select-${itemIdOf(lost.id)}`)).not.toBeChecked();
+    await page.locator('#loan-not-returned-submit').click();
+    await expect(page.locator('[data-testid="loan-not-returned-form-error"]')).toContainText('กรุณาเลือกรายการที่ไม่ได้รับคืน');
+    await page.locator(`#loan-not-returned-select-${itemIdOf(lost.id)}`).check();
+    await page.locator('#loan-not-returned-submit').click();
+    await expect(page.locator('[data-testid="loan-not-returned-form-error"]')).toContainText('กรุณาระบุเหตุผล');
+    await page.locator('#loan-not-returned-date').fill(daysAgo(1));
+    await page.locator('#loan-not-returned-reason').fill('ผู้ยืมแจ้งว่าทำหายระหว่างเดินทาง');
+    await page.locator('#loan-not-returned-submit').click();
+
+    // It is its own ending, and no Loan Return.
+    const closure = itemOf(lost.name).locator('[data-testid="loan-item-not-returned"]');
+    await expect(closure).toContainText('ปิดโดยไม่ได้รับคืน');
+    await expect(closure).toContainText('ผู้ยืมแจ้งว่าทำหายระหว่างเดินทาง');
+    await expect(closure).toContainText('custodian_loan');
+    await expect(itemOf(lost.name).locator('[data-testid="loan-item-return"]')).toHaveCount(0);
+    await expect(page.locator('#loan-status')).toContainText('ยังไม่คืน');
+    await expect(page.locator('#loan-status')).toContainText('คืนแล้ว 0 จาก 2 รายการ');
+
+    // The other item comes back, and the Loan is "ปิดแล้ว", which the list's status filter finds.
+    await page.locator('#loan-return-action').click();
+    await page.locator(`#loan-return-select-${itemIdOf(back.id)}`).check();
+    await page.locator(`#loan-return-condition-${itemIdOf(back.id)}`).selectOption('NORMAL');
+    await page.locator('#loan-return-submit').click();
+    await expect(page.locator('#loan-status')).toContainText('ปิดแล้ว (ไม่ได้รับคืน 1 ชิ้น)');
+    await expect(page.locator('#loan-status')).toContainText('คืนแล้ว 1 จาก 2 รายการ');
+    await expect(page.locator('#loan-return-action')).toBeVisible();
+    await expect(page.locator('#loan-extension-action')).toHaveCount(0);
+    await expect(page.locator('#loan-not-returned-action')).toHaveCount(0);
+
+    await page.goto(`${targetBaseUrl}/loans`);
+    await page.locator('#loan-filter-status').selectOption('CLOSED');
+    await page.locator('#loan-filter-borrower_kind').selectOption('EXTERNAL');
+    await page.locator('#loan-filter-borrower_name').fill('คุณผู้ยืม E2E ไม่ได้คืน');
+    await page.locator('#loan-list-submit').click();
+    await expect(page.locator(`[data-testid="loan-row-${loanId}"]`)).toContainText('ปิดแล้ว (ไม่ได้รับคืน 1 ชิ้น)');
+    await expect(page.locator('#loan-list-table tbody tr')).toHaveCount(1);
+
+    // The Asset page says why it cannot be lent, and offers no new Loan, where a returned Asset has one.
+    await page.goto(`${targetBaseUrl}/assets/${back.id}`);
+    await expect(page.locator('#loan-action')).toBeVisible();
+    await page.goto(`${targetBaseUrl}/assets/${lost.id}`);
+    const notice = page.locator('[data-testid="loan-not-returned"]');
+    await expect(notice).toContainText('ปิดโดยไม่ได้รับคืน');
+    await expect(page.locator('[data-testid="loan-history-not-returned"]')).toContainText('ปิดโดยไม่ได้รับคืน');
+    await expect(page.locator('[data-testid="loan-on-loan"]')).toHaveCount(0);
+    await expect(page.locator('#loan-action')).toHaveCount(0);
+
+    // It turns up: the Loan Return is not dated before the Not Returned date, and both facts stay.
+    await page.locator('#loan-not-returned-link').click();
+    await expect(page).toHaveURL(new RegExp(`/loans/${loanId}$`));
+    await page.locator('#loan-return-action').click();
+    await expect(page.locator(`[data-testid="loan-return-not-returned-${itemIdOf(lost.id)}"]`)).toContainText('ปิดโดยไม่ได้รับคืน');
+    await page.locator(`#loan-return-select-${itemIdOf(lost.id)}`).check();
+    await page.locator(`#loan-return-condition-${itemIdOf(lost.id)}`).selectOption('DAMAGED');
+    await page.locator('#loan-return-return_date').fill(daysAgo(2));
+    await page.locator('#loan-return-submit').click();
+    await expect(page.locator('[data-testid="loan-return-form-error"]')).toContainText('ไม่ก่อนวันที่ทราบว่าไม่ได้รับคืน');
+    await page.locator('#loan-return-return_date').fill(daysAgo(0));
+    await page.locator('#loan-return-submit').click();
+    await expect(page.locator('#loan-status')).toContainText('คืนครบ');
+    await expect(itemOf(lost.name).locator('[data-testid="loan-item-return"]')).toContainText('ชำรุด');
+    await expect(itemOf(lost.name).locator('[data-testid="loan-item-not-returned"]')).toContainText('ผู้ยืมแจ้งว่าทำหายระหว่างเดินทาง');
+
+    // Now the Asset can be lent again.
+    await page.goto(`${targetBaseUrl}/assets/${lost.id}`);
+    await expect(page.locator('#loan-action')).toBeVisible();
+    await expect(page.locator('[data-testid="loan-not-returned"]')).toHaveCount(0);
+
+    // A form opened before an Asset was closed as Not Returned elsewhere: the server refuses the new
+    // Loan, and the refusal names the Asset, the reason and the Loan.
+    const { asset: raced } = await assetService.registerAsset(custodianUserId, { name: 'กล้อง E2E ถูกปิดระหว่างกรอก' } as any);
+    await page.goto(`${targetBaseUrl}/assets/${raced.id}`);
+    await page.locator('#loan-action').click();
+    await page.getByLabel('ผู้ยืมภายนอก').check();
+    await page.locator('#loan-contact_name').fill('คุณผู้ยืมรายใหม่ E2E');
+    await page.locator('#loan-due_date').fill('2099-12-31');
+    const elsewhere = await loanService.start(
+      custodianUserId,
+      { assets: [{ asset_id: raced.id, condition: 'NORMAL' }], borrower: { kind: 'EXTERNAL', contact_name: 'คุณผู้ยืมก่อนหน้า E2E' }, loan_date: daysAgo(3), due_date: '2099-12-31' },
+      { retryToken: crypto.randomUUID() }
+    );
+    await new NotReturnedService({ db: pool }).record(
+      custodianUserId,
+      elsewhere.loan_id,
+      { expected_version: elsewhere.version, not_returned_date: daysAgo(0), reason: 'ผู้ยืมแจ้งว่าทำหาย', items: [{ loan_item_id: elsewhere.items[0].id }] },
+      { retryToken: crypto.randomUUID() }
+    );
+    await page.locator('#loan-submit').click();
+    const refused = page.locator('[data-testid="loan-refused"]');
+    await expect(refused).toContainText('กล้อง E2E ถูกปิดระหว่างกรอก');
+    await expect(refused).toContainText('ปิดโดยไม่ได้รับคืน');
+    await expect(refused.getByRole('link', { name: 'ดูการยืม' })).toHaveAttribute('href', `/loans/${elsewhere.loan_id}`);
+    expect((await loanService.itemsOfAsset(raced.id))!.map(({ loan_id }) => loan_id)).toEqual([elsewhere.loan_id]);
   });
 
   // F004-T2 (#76): a partial Loan Return with Condition, after which the returned Asset can be lent again.
