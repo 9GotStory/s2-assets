@@ -4,9 +4,7 @@ import * as crypto from 'node:crypto';
 import * as path from 'node:path';
 import * as fs from 'node:fs';
 import { fileURLToPath } from 'node:url';
-import type { FastifyInstance } from 'fastify';
-import { PostgreSqlContainer, type StartedPostgreSqlContainer } from '../../../api/node_modules/@testcontainers/postgresql/build/index.js';
-import pg from '../../../api/node_modules/pg/lib/index.js';
+import { PostgreSqlContainer, pg, type FastifyInstance, type StartedPostgreSqlContainer } from '../../../api/tests/journey-deps.ts';
 import { runMigrator } from '../../../../packages/db/src/migrator.ts';
 import { buildApp } from '../../../api/src/app.ts';
 import { UserService } from '../../../api/src/services/user.service.ts';
@@ -429,7 +427,7 @@ test.describe.serial('Loan journeys: Real SPA -> Composed API -> PostgreSQL (Sea
     await lateRow.getByRole('link', { name: 'ดูการยืม' }).click();
     await expect(page).toHaveURL(new RegExp(`/loans/${late.loanId}$`));
     await expect(page.locator('#loan-overdue')).toHaveText('เกินกำหนด');
-    const itemOf = (asset: { name: string }) => page.locator('[data-testid="loan-item"]').filter({ hasText: asset.name });
+    const itemOf = (asset: { name: string | null }) => page.locator('[data-testid="loan-item"]').filter({ hasText: asset.name! });
     await expect(itemOf(stillOut).locator('[data-testid="loan-item-overdue"]')).toHaveText('เกินกำหนด');
     await expect(itemOf(returnedLate).locator('[data-testid="loan-item-returned-late"]')).toHaveText('คืนเกินกำหนด');
     await expect(itemOf(returnedLate).locator('[data-testid="loan-item-overdue"]')).toHaveCount(0);
@@ -457,7 +455,7 @@ test.describe.serial('Loan journeys: Real SPA -> Composed API -> PostgreSQL (Sea
     await page.locator('#loan-extension-action').click();
     const offered = page.locator('[data-testid="loan-extension-item"]');
     await expect(offered).toHaveCount(1);
-    await expect(offered).toContainText(stillOut.name);
+    await expect(offered).toContainText(stillOut.name!);
     await expect(page.locator(`#loan-extension-select-${late.items.find(({ asset_id }) => asset_id === stillOut.id)!.id}`)).toBeChecked();
 
     // A new date that is not later than the current Due Date is refused before it is sent.
@@ -502,7 +500,7 @@ test.describe.serial('Loan journeys: Real SPA -> Composed API -> PostgreSQL (Sea
       { retryToken: crypto.randomUUID() }
     );
     const itemIdOf = (assetId: string) => items.find(({ asset_id }) => asset_id === assetId)!.id;
-    const itemOf = (name: string) => page.locator('[data-testid="loan-item"]').filter({ hasText: name });
+    const itemOf = (name: string | null) => page.locator('[data-testid="loan-item"]').filter({ hasText: name! });
 
     await loginAs(context, custodianUserId);
     await page.goto(`${targetBaseUrl}/loans/${loanId}`);
