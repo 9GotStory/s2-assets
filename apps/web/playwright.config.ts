@@ -26,6 +26,9 @@ export default defineConfig({
   outputDir: './test-results',
   use: {
     baseURL,
+    // A locator that never turns up fails its action within 10 s, naming the locator, instead of
+    // running out the test's timeout (F004-T5 retrospective, #79).
+    actionTimeout: 10_000,
     trace: 'retain-on-failure',
     screenshot: 'only-on-failure',
     video: 'off',
