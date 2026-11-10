@@ -109,6 +109,7 @@ describe('Starting a Loan (Seam A - F004-T1)', () => {
           condition_note: null,
           ending_kind: 'NONE',
           is_voided: false,
+          is_overdue: false,
           loan_return: null,
         },
         {
@@ -119,6 +120,7 @@ describe('Starting a Loan (Seam A - F004-T1)', () => {
           condition_note: 'ฝาหลังบุบ',
           ending_kind: 'NONE',
           is_voided: false,
+          is_overdue: false,
           loan_return: null,
         },
       ]);
@@ -205,6 +207,7 @@ describe('Starting a Loan (Seam A - F004-T1)', () => {
         loan_id: started.json().loan_id,
         borrower: { kind: 'INTERNAL', person: { id: borrower.id, name: 'สมชาย ถือของ', is_active: true } },
         due_date: DUE,
+        is_overdue: false,
       });
     });
 
@@ -226,6 +229,7 @@ describe('Starting a Loan (Seam A - F004-T1)', () => {
           condition_note: null,
           ending_kind: 'NONE',
           is_voided: false,
+          is_overdue: false,
           loan_return: null,
         },
       ]);

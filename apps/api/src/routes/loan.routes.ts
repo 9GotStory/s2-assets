@@ -69,6 +69,37 @@ const RecordLoanReturnSchema = z
   })
   .strict();
 
+// The Loan list's query: each filter narrows the list on its own, and a page is read as on the Asset list.
+// A repeated parameter arrives as an array and is refused.
+const LoanListQuerySchema = z
+  .object({
+    status: z.enum(['OUTSTANDING', 'PARTIALLY_RETURNED', 'RETURNED']).optional(),
+    // "เกินกำหนด" takes one value; leaving it out lists every Loan.
+    overdue: z.literal('true').optional(),
+    borrower_kind: z.enum(['INTERNAL', 'EXTERNAL']).optional(),
+    borrower_name: z
+      .string()
+      .refine((name) => !name.includes('\0'), 'must not contain NUL bytes')
+      .refine((name) => Buffer.byteLength(name, 'utf8') <= 4096, 'must be at most 4096 bytes')
+      .transform((name) => name.trim())
+      .refine((name) => name.length > 0, 'must not be blank')
+      .optional(),
+    borrower_person_id: z.string().refine(isValidUuid, 'must be a valid UUID').optional(),
+    limit: z
+      .string()
+      .regex(/^[1-9]\d*$/, 'must be a canonical positive integer')
+      .transform(Number)
+      .refine((limit) => limit <= 100, 'must be between 1 and 100')
+      .optional(),
+    offset: z
+      .string()
+      .regex(/^(0|[1-9]\d*)$/, 'must be a canonical non-negative integer')
+      .transform(Number)
+      .refine((offset) => offset <= 2147483647, 'must be between 0 and 2147483647')
+      .optional(),
+  })
+  .strict();
+
 // The answer to a refused write, or null for an error that is not a refusal.
 const refusalOf = (err: unknown) => {
   if (err instanceof AssetsNotLendableError) {
@@ -145,6 +176,25 @@ export const loanRoutes: FastifyPluginAsync<LoanRoutesOptions> = async (fastify,
       }
       return reply.status(refusal.statusCode).send(refusal);
     }
+  });
+
+  /**
+   * GET /loans
+   * The Loan list ("รายการยืม"), latest Loan Date first (F004-T3). It never carries a phone number.
+   * Its log level is silent, so that a search by Borrower stays out of the logs (LR-15).
+   * Protected: requires 'asset:view' capability, like a Loan
+   */
+  fastify.get('/loans', { logLevel: 'silent', preHandler: [requireCapability('asset:view')] }, async (request, reply) => {
+    reply.header('Cache-Control', 'no-store');
+    const parsed = LoanListQuerySchema.safeParse(request.query ?? {});
+    if (!parsed.success) {
+      const issues = parsed.error.issues.map((issue) => `${issue.path.join('.') || 'query'}: ${issue.message}`).join(', ');
+      return reply.status(400).send(errorBody(400, 'VALIDATION_FAILED', `Invalid query: ${issues}`));
+    }
+    const { borrower_person_id: personId, overdue, limit = 25, offset = 0, ...filters } = parsed.data;
+    return reply.status(200).send(
+      await loanService.list({ ...filters, overdue: overdue === 'true', borrower_person_id: personId?.trim().toLowerCase(), limit, offset })
+    );
   });
 
   /**
