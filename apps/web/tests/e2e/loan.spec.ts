@@ -15,6 +15,7 @@ import { AssetService } from '../../../api/src/services/asset.service.ts';
 import { ReferenceService } from '../../../api/src/services/reference.service.ts';
 import { LoanService } from '../../../api/src/services/loan.service.ts';
 import { LoanReturnService } from '../../../api/src/services/loan-return.service.ts';
+import { NotReturnedService } from '../../../api/src/services/not-returned.service.ts';
 import { AssignmentRecordingService } from '../../../api/src/services/assignment-recording.service.ts';
 import { repositoryProxyConfig } from '../../vite.config.ts';
 
@@ -451,6 +452,32 @@ test.describe.serial('Loan journeys: Real SPA -> Composed API -> PostgreSQL (Sea
     await page.goto(`${targetBaseUrl}/assets/${lost.id}`);
     await expect(page.locator('#loan-action')).toBeVisible();
     await expect(page.locator('[data-testid="loan-not-returned"]')).toHaveCount(0);
+
+    // A form opened before an Asset was closed as Not Returned elsewhere: the server refuses the new
+    // Loan, and the refusal names the Asset, the reason and the Loan.
+    const { asset: raced } = await assetService.registerAsset(custodianUserId, { name: 'กล้อง E2E ถูกปิดระหว่างกรอก' } as any);
+    await page.goto(`${targetBaseUrl}/assets/${raced.id}`);
+    await page.locator('#loan-action').click();
+    await page.getByLabel('ผู้ยืมภายนอก').check();
+    await page.locator('#loan-contact_name').fill('คุณผู้ยืมรายใหม่ E2E');
+    await page.locator('#loan-due_date').fill('2099-12-31');
+    const elsewhere = await loanService.start(
+      custodianUserId,
+      { assets: [{ asset_id: raced.id, condition: 'NORMAL' }], borrower: { kind: 'EXTERNAL', contact_name: 'คุณผู้ยืมก่อนหน้า E2E' }, loan_date: daysAgo(3), due_date: '2099-12-31' },
+      { retryToken: crypto.randomUUID() }
+    );
+    await new NotReturnedService({ db: pool }).record(
+      custodianUserId,
+      elsewhere.loan_id,
+      { expected_version: elsewhere.version, not_returned_date: daysAgo(0), reason: 'ผู้ยืมแจ้งว่าทำหาย', items: [{ loan_item_id: elsewhere.items[0].id }] },
+      { retryToken: crypto.randomUUID() }
+    );
+    await page.locator('#loan-submit').click();
+    const refused = page.locator('[data-testid="loan-refused"]');
+    await expect(refused).toContainText('กล้อง E2E ถูกปิดระหว่างกรอก');
+    await expect(refused).toContainText('ปิดโดยไม่ได้รับคืน');
+    await expect(refused.getByRole('link', { name: 'ดูการยืม' })).toHaveAttribute('href', `/loans/${elsewhere.loan_id}`);
+    expect((await loanService.itemsOfAsset(raced.id))!.map(({ loan_id }) => loan_id)).toEqual([elsewhere.loan_id]);
   });
 
   // F004-T2 (#76): a partial Loan Return with Condition, after which the returned Asset can be lent again.

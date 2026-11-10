@@ -1,14 +1,17 @@
 import * as crypto from 'node:crypto';
 import pg from 'pg';
-import { NotFoundError, StaleBeforeConflictError } from './asset.service.ts';
-import { REMARK_MAX_LENGTH, bangkokDate, isCalendarDate, lockAssetsInIdentifierOrder, normalizeText } from './assignment.service.ts';
-import { isValidUuid } from './capability.service.ts';
-import { MAX_ASSETS, assertOutstanding, incrementLoanVersion, lockLoan, readItemsOfLockedLoan, recordNotReturned, type NotReturnedFacts } from './loan.service.ts';
+import { bangkokDate, isCalendarDate, normalizeText } from './assignment.service.ts';
+import {
+  REASON_MAX_LENGTH,
+  assertOutstanding,
+  incrementLoanVersion,
+  lockLoanForWrite,
+  normalizeLoanItemIds,
+  recordNotReturned,
+  type NotReturnedFacts,
+} from './loan.service.ts';
 import { commitOnce } from './retryable-write.ts';
 import { ValidationError } from './validation-error.ts';
-
-// A reason is free text, bounded as a correction's (MR-06).
-const REASON_MAX_LENGTH = REMARK_MAX_LENGTH;
 
 export interface RecordNotReturnedInput {
   expected_version: number;
@@ -30,21 +33,6 @@ interface NotReturnedRequestFacts extends NotReturnedFacts {
   expected_version: number;
 }
 
-// The items of a request in LoanItem identifier order.
-const normalizeItemIds = (items: { loan_item_id: string }[]): string[] => {
-  if (items.length < 1 || items.length > MAX_ASSETS) {
-    throw new ValidationError(`Not Returned names 1 to ${MAX_ASSETS} items`);
-  }
-  if (items.some(({ loan_item_id }) => !isValidUuid(loan_item_id))) {
-    throw new ValidationError('loan_item_id must be a valid UUID');
-  }
-  const ids = items.map(({ loan_item_id }) => loan_item_id.trim().toLowerCase()).sort();
-  if (new Set(ids).size !== ids.length) {
-    throw new ValidationError('Not Returned names each item once');
-  }
-  return ids;
-};
-
 // #74 Q21: dates compare as text, which YYYY-MM-DD keeps in calendar order.
 const normalizeFacts = (input: RecordNotReturnedInput, today: string): NotReturnedRequestFacts => {
   if (!isCalendarDate(input.not_returned_date)) {
@@ -61,7 +49,7 @@ const normalizeFacts = (input: RecordNotReturnedInput, today: string): NotReturn
     expected_version: input.expected_version,
     not_returned_date: input.not_returned_date,
     reason,
-    loan_item_ids: normalizeItemIds(input.items),
+    loan_item_ids: normalizeLoanItemIds(input.items, 'Not Returned'),
   };
 };
 
@@ -84,16 +72,7 @@ export class NotReturnedService {
       this.db,
       { actorId, operation: `loan:not-returned:${loanId}`, retryToken, payload: { version: 1, ...facts }, explicitContinuation: false },
       async (client) => {
-        const loan = await lockLoan(client, loanId);
-        if (!loan) {
-          throw new NotFoundError('Loan not found');
-        }
-        const loanItems = await readItemsOfLockedLoan(client, loanId);
-        await lockAssetsInIdentifierOrder(client, [...new Set(loanItems.map(({ asset_id }) => asset_id))]);
-        if (loan.version !== facts.expected_version) {
-          throw new StaleBeforeConflictError('The Loan changed since it was read', { version: loan.version }, { version: facts.expected_version });
-        }
-
+        const { loan, items: loanItems } = await lockLoanForWrite(client, loanId, facts.expected_version);
         assertOutstanding(facts.loan_item_ids, loanItems);
         if (facts.not_returned_date < loan.loan_date) {
           throw new ValidationError('not_returned_date must not be before the Loan Date');
@@ -101,12 +80,12 @@ export class NotReturnedService {
 
         const actionReference = crypto.randomUUID();
         await recordNotReturned(client, { facts, actionReference, actorId });
-        const assetOf = new Map(loanItems.map(({ id, asset_id }) => [id, asset_id]));
+        const assetIdOf = new Map(loanItems.map(({ id, asset_id }) => [id, asset_id]));
         return {
           loan_id: loanId,
           version: await incrementLoanVersion(client, loanId),
           action_reference: actionReference,
-          items: facts.loan_item_ids.map((id) => ({ id, asset_id: assetOf.get(id)! })),
+          items: facts.loan_item_ids.map((id) => ({ id, asset_id: assetIdOf.get(id)! })),
         };
       }
     );

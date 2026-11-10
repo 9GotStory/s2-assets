@@ -1,5 +1,5 @@
 import pg from 'pg';
-import { assetExists, containsPattern } from './asset.service.ts';
+import { NotFoundError, StaleBeforeConflictError, assetExists, containsPattern } from './asset.service.ts';
 import { isValidUuid } from './capability.service.ts';
 import { hasStrictControlChars } from './control-characters.ts';
 import {
@@ -24,6 +24,8 @@ const CONTACT_NAME_MAX_LENGTH = 200;
 const ORGANIZATION_NAME_MAX_LENGTH = 200;
 const PHONE_MAX_LENGTH = 32;
 export const CONDITION_NOTE_MAX_LENGTH = 500;
+// A reason is free text, bounded as a correction's (MR-06).
+export const REASON_MAX_LENGTH = REMARK_MAX_LENGTH;
 
 const PHONE_PATTERN = /^[0-9+\- ]+$/;
 
@@ -380,7 +382,7 @@ const NOT_RETURNED_JOINS = `LEFT JOIN loan_item_endings not_returned
          ON not_returned.loan_item_id = li.id AND not_returned.kind = 'NOT_RETURNED' AND NOT not_returned.is_voided
        LEFT JOIN users not_returned_user ON not_returned_user.id = not_returned.recorded_by`;
 
-const notReturnedOf = (row: any): NotReturned | null =>
+const notReturnedOfRow = (row: any): NotReturned | null =>
   row.not_returned_id
     ? {
         id: row.not_returned_id,
@@ -480,6 +482,43 @@ export async function readItemsOfLockedLoan(client: pg.PoolClient, loanId: strin
     [loanId]
   );
   return res.rows;
+}
+
+/**
+ * The first steps of every write on an existing Loan (#74): it locks the Loan row, then all of its
+ * Assets in identifier order, and refuses a client that read another version. The Loan's items cannot
+ * change under the caller after this.
+ */
+export async function lockLoanForWrite(
+  client: pg.PoolClient,
+  loanId: string,
+  expectedVersion: number
+): Promise<{ loan: LockedLoan; items: LoanItemOfLockedLoan[] }> {
+  const loan = await lockLoan(client, loanId);
+  if (!loan) {
+    throw new NotFoundError('Loan not found');
+  }
+  const items = await readItemsOfLockedLoan(client, loanId);
+  await lockAssetsInIdentifierOrder(client, [...new Set(items.map(({ asset_id }) => asset_id))]);
+  if (loan.version !== expectedVersion) {
+    throw new StaleBeforeConflictError('The Loan changed since it was read', { version: loan.version }, { version: expectedVersion });
+  }
+  return { loan, items };
+}
+
+/** The LoanItem ids a write names, in identifier order: 1 to 100 of them, well formed, each once. */
+export function normalizeLoanItemIds(items: { loan_item_id: string }[], write: string): string[] {
+  if (items.length < 1 || items.length > MAX_ASSETS) {
+    throw new ValidationError(`${write} names 1 to ${MAX_ASSETS} items`);
+  }
+  if (items.some(({ loan_item_id }) => !isValidUuid(loan_item_id))) {
+    throw new ValidationError('loan_item_id must be a valid UUID');
+  }
+  const ids = items.map(({ loan_item_id }) => loan_item_id.trim().toLowerCase()).sort();
+  if (new Set(ids).size !== ids.length) {
+    throw new ValidationError(`${write} names each item once`);
+  }
+  return ids;
 }
 
 // A LoanItem that a write for Outstanding items cannot take, and why.
@@ -792,7 +831,7 @@ export class LoanService {
         is_voided: item.is_voided,
         is_overdue: item.is_overdue,
         loan_return: loanReturnOf(item),
-        not_returned: notReturnedOf(item),
+        not_returned: notReturnedOfRow(item),
         due_date_extensions: extensionsOf(item.id),
         assignment_on_return_date: assignments?.get(item.asset_id),
       })),
@@ -908,7 +947,7 @@ export class LoanService {
       is_voided: row.item_is_voided,
       is_overdue: row.is_overdue,
       loan_return: loanReturnOf(row),
-      not_returned: notReturnedOf(row),
+      not_returned: notReturnedOfRow(row),
     }));
   }
 
@@ -939,9 +978,9 @@ export class LoanService {
   }
 
   /** The Not Returned that keeps an Asset from a new Loan, or null when there is none (#74 Q21). */
-  async notReturnedOf(assetId: string): Promise<AssetNotReturned | null> {
+  async assetNotReturnedOf(assetId: string): Promise<AssetNotReturned | null> {
     const items = await this.readItemsOfAsset(assetId);
-    const closed = items.find(({ ending_kind, is_voided }) => ending_kind === 'NOT_RETURNED' && !is_voided);
-    return closed?.not_returned ? { loan_id: closed.loan_id, not_returned_date: closed.not_returned.not_returned_date } : null;
+    const notReturned = items.find(({ ending_kind, is_voided }) => ending_kind === 'NOT_RETURNED' && !is_voided);
+    return notReturned?.not_returned ? { loan_id: notReturned.loan_id, not_returned_date: notReturned.not_returned.not_returned_date } : null;
   }
 }

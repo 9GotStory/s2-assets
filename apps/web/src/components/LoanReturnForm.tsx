@@ -56,15 +56,15 @@ export const LoanReturnForm: React.FC<LoanReturnFormProps> = ({ loan, csrfToken,
   const [notes, setNotes] = useState<AssignmentNotes>({ documentReference: '', remark: '' });
   const [drafts, setDrafts] = useState<Record<string, ItemDraft>>({});
 
-  const outstanding = loan.items.filter(isReturnable);
+  const returnable = loan.items.filter(isReturnable);
   const draftOf = (itemId: string): ItemDraft => drafts[itemId] ?? NO_DRAFT;
   const setDraft = (itemId: string, change: Partial<ItemDraft>) =>
     setDrafts((current) => ({ ...current, [itemId]: { ...(current[itemId] ?? NO_DRAFT), ...change } }));
-  const returning = outstanding.filter(({ id }) => draftOf(id).isReturning);
+  const returning = returnable.filter(({ id }) => draftOf(id).isReturning);
 
   const setEveryConditionNormal = () =>
     setDrafts((current) =>
-      Object.fromEntries(outstanding.map(({ id }) => [id, { ...(current[id] ?? NO_DRAFT), condition: 'NORMAL' as const }]))
+      Object.fromEntries(returnable.map(({ id }) => [id, { ...(current[id] ?? NO_DRAFT), condition: 'NORMAL' as const }]))
     );
 
   // No placeholder: values read for another date must not show under this one.
@@ -172,7 +172,7 @@ export const LoanReturnForm: React.FC<LoanReturnFormProps> = ({ loan, csrfToken,
             ตั้งปกติทั้งหมด
           </button>
 
-          {outstanding.map((item) => {
+          {returnable.map((item) => {
             const { isReturning, condition, note } = draftOf(item.id);
             const assignment = assignmentOf(item.id);
             return (

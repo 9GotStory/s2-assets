@@ -253,10 +253,11 @@ const LoanDetailContent: React.FC = () => {
               {item.due_date_extensions.length > 0 && (
                 <ul data-testid="loan-item-extensions" style={{ margin: '0.25rem 0', paddingLeft: '1.25rem', color: '#4b5563' }}>
                   {item.due_date_extensions.map((extension) => (
-                    <li key={extension.id} data-testid="loan-item-extension" style={extension.is_voided ? { textDecoration: 'line-through' } : undefined}>
+                    <li key={extension.id} data-testid="loan-item-extension">
                       {DUE_DATE_EXTENSION_LABEL}: <time dateTime={extension.prior_due_date}>{thaiDate(extension.prior_due_date)}</time> →{' '}
                       <time dateTime={extension.new_due_date}>{thaiDate(extension.new_due_date)}</time>
-                      {extension.reason && ` · เหตุผล: ${extension.reason}`} · ผู้บันทึก: {extension.recorded_by_username ?? extension.recorded_by}
+                      {extension.reason && ` · เหตุผล: ${extension.reason}`} · ผู้บันทึก: {extension.recorded_by_username ?? extension.recorded_by} ·{' '}
+                      <time dateTime={extension.recorded_at}>{THAI_DATE_TIME.format(new Date(extension.recorded_at))}</time>
                     </li>
                   ))}
                 </ul>
@@ -271,7 +272,10 @@ const LoanDetailContent: React.FC = () => {
                     {NOT_RETURNED_LABEL}: <time dateTime={item.not_returned.not_returned_date}>{thaiDate(item.not_returned.not_returned_date)}</time>
                   </div>
                   <div style={{ whiteSpace: 'pre-line' }}>เหตุผล: {item.not_returned.reason}</div>
-                  <div>ผู้บันทึก: {item.not_returned.recorded_by_username ?? item.not_returned.recorded_by}</div>
+                  <div>
+                    ผู้บันทึก: {item.not_returned.recorded_by_username ?? item.not_returned.recorded_by} ·{' '}
+                    <time dateTime={item.not_returned.recorded_at}>{THAI_DATE_TIME.format(new Date(item.not_returned.recorded_at))}</time>
+                  </div>
                 </div>
               )}
               {item.loan_return ? (

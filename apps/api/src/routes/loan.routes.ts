@@ -179,7 +179,6 @@ const answerOfWriteOnLoan = async <T extends { retry_token?: string }>(
 export const loanRoutes: FastifyPluginAsync<LoanRoutesOptions> = async (fastify, options) => {
   const { loanService, loanReturnService, notReturnedService, dueDateExtensionService, capabilityService } = options;
 
-
   /**
    * POST /loans
    * Starts one Loan of 1 to 100 Assets, all of it or none (F004-T1).
