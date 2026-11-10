@@ -3,6 +3,7 @@ import { describe, it, expect, beforeAll, afterAll } from 'vitest';
 import { startApiHarness, type Actor, type ApiHarness } from './support/api-harness.ts';
 import { assignmentHelpers, at, NO_VALUE, type Entry } from './support/assignment-helpers.ts';
 import { withCapabilityAnswer } from './support/capability-helpers.ts';
+import { loanHelpers, over } from './support/loan-helpers.ts';
 
 const TODAY = '2026-11-05';
 const LOAN_DATE = '2026-11-01';
@@ -19,12 +20,7 @@ describe('Recording a Loan Return (Seam A - F004-T2)', () => {
   const logLines: string[] = [];
 
   const { entry, entries, detailOf, assignmentOf } = assignmentHelpers(() => ({ api, admin, reader: readonly }));
-
-  const registered = async (name: string = `ของ ${crypto.randomUUID()}`): Promise<string> => {
-    const res = await api.post(custodian, '/assets', { name });
-    expect(res.statusCode).toBe(201);
-    return res.json().asset.id;
-  };
+  const { registered, loanOf, whileHolding, isWaitingOnLoanLock } = loanHelpers(() => ({ api, custodian, reader: readonly }));
 
   const start = (assetIds: string[], overrides: Record<string, unknown> = {}) =>
     api.post(
@@ -52,12 +48,6 @@ describe('Recording a Loan Return (Seam A - F004-T2)', () => {
 
   const record = (loanId: string, payload: Record<string, unknown>, token: string = crypto.randomUUID(), actor: Actor = custodian) =>
     api.post(actor, `/loans/${loanId}/returns`, payload, { 'x-retry-token': token });
-
-  const loanOf = async (loanId: string, actor: Actor = readonly) => {
-    const res = await api.get(actor, `/loans/${loanId}`);
-    expect(res.statusCode).toBe(200);
-    return res.json();
-  };
 
   // A Loan Return of `itemIds` as ปกติ, against the Loan's latest version unless `overrides` says otherwise.
   const body = async (loanId: string, itemIds: string[], overrides: Record<string, unknown> = {}) => ({
@@ -261,7 +251,6 @@ describe('Recording a Loan Return (Seam A - F004-T2)', () => {
   });
 
   describe('text', () => {
-    const over = (length: number) => 'ก'.repeat(length + 1);
     const exactly = (length: number) => 'ก'.repeat(length);
 
     const refused = async (loanId: string, itemId: string, overrides: Record<string, unknown>) => {
@@ -665,25 +654,6 @@ describe('Recording a Loan Return (Seam A - F004-T2)', () => {
         await client.query('ROLLBACK');
         client.release();
       }
-    };
-
-    // Runs `work` while a row is held locked, and lets the lock go however `work` ends, so that a
-    // failing assertion cannot leave the connection checked out and hang the harness's close.
-    const whileHolding = async <T>(table: 'loans' | 'assets', id: string, work: () => Promise<T>): Promise<T> => {
-      const holder = await api.pool.connect();
-      try {
-        await holder.query('BEGIN');
-        await holder.query(`SELECT 1 FROM ${table} WHERE id = $1 FOR UPDATE`, [id]);
-        return await work();
-      } finally {
-        await holder.query('COMMIT');
-        holder.release();
-      }
-    };
-
-    const isWaitingOnLoanLock = async (): Promise<boolean> => {
-      const res = await api.pool.query(`SELECT count(*)::int AS n FROM pg_stat_activity WHERE wait_event_type = 'Lock' AND query LIKE '%FROM loans WHERE id%FOR UPDATE%'`);
-      return res.rows[0].n > 0;
     };
 
     it('refuses a stale version with the stale-before conflict, and writes nothing', async () => {

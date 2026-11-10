@@ -1,4 +1,5 @@
 import * as path from 'node:path';
+import { setTimeout as delay } from 'node:timers/promises';
 import { fileURLToPath } from 'node:url';
 import { PostgreSqlContainer } from '@testcontainers/postgresql';
 import pg from 'pg';
@@ -15,6 +16,7 @@ const { Pool } = pg;
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
 const migrationFolder = path.resolve(__dirname, '../../../../../packages/db/src/migrations');
+const POOL_END_TIMEOUT_MS = 5_000;
 
 export type Actor = { id: string; cookie: string; csrf: string };
 
@@ -87,7 +89,9 @@ export async function startApiHarness(options: { clock?: () => Date; logger?: Ap
     get: (actor, url) => app.inject({ method: 'GET', url, headers: { cookie: actor.cookie } }),
     close: async () => {
       await app.close();
-      await pool.end();
+      // pool.end() waits for every checked-out connection, so one left behind by a failing test would
+      // hang the file instead of letting it fail. Stopping the container drops that connection.
+      await Promise.race([pool.end(), delay(POOL_END_TIMEOUT_MS, undefined, { ref: false })]);
       await container.stop();
     },
   };

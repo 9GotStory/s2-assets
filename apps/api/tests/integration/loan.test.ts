@@ -3,6 +3,7 @@ import { describe, it, expect, beforeAll, afterAll } from 'vitest';
 import { startApiHarness, type Actor, type ApiHarness } from './support/api-harness.ts';
 import { assignmentHelpers, type Entry } from './support/assignment-helpers.ts';
 import { withCapabilityAnswer } from './support/capability-helpers.ts';
+import { loanHelpers, over } from './support/loan-helpers.ts';
 
 const TODAY = '2026-11-05';
 const DUE = '2026-11-20';
@@ -18,12 +19,7 @@ describe('Starting a Loan (Seam A - F004-T1)', () => {
   const logLines: string[] = [];
 
   const { entry, entries, detailOf, assignmentOf } = assignmentHelpers(() => ({ api, admin, reader: readonly }));
-
-  const registered = async (name: string = `ของ ${crypto.randomUUID()}`): Promise<string> => {
-    const res = await api.post(custodian, '/assets', { name });
-    expect(res.statusCode).toBe(201);
-    return res.json().asset.id;
-  };
+  const { registered, loanOf } = loanHelpers(() => ({ api, custodian, reader: readonly }));
 
   const person = (name: string = `คน ${crypto.randomUUID()}`): Promise<Entry> => entry('persons', name);
 
@@ -42,12 +38,6 @@ describe('Starting a Loan (Seam A - F004-T1)', () => {
 
   const start =(payload: Record<string, unknown>, token: string = crypto.randomUUID(), actor: Actor = custodian) =>
     api.post(actor, '/loans', payload, { 'x-retry-token': token });
-
-  const loanOf = async (loanId: string, actor: Actor = readonly) => {
-    const res = await api.get(actor, `/loans/${loanId}`);
-    expect(res.statusCode).toBe(200);
-    return res.json();
-  };
 
   const loansOf = async (assetId: string) => {
     const res = await api.get(readonly, `/assets/${assetId}/loans`);
@@ -530,7 +520,6 @@ describe('Starting a Loan (Seam A - F004-T1)', () => {
 
     it('bounds text', async () => {
       const assetId = await registered();
-      const over = (length: number) => 'ก'.repeat(length + 1);
 
       await refused(external({ contact_name: over(200) }), [assetId]);
       await refused(external({ organization_name: over(200) }), [assetId]);
