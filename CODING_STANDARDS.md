@@ -35,6 +35,10 @@ It lets through any name that already exists, so review judges whether new code 
 name for a new concept. In F003-T1, the first draft typed the Current Assignment with Feature
 002's `AssetReferenceContext`.
 
+A new concept that a user sees, such as a status, a label or an action, gets its `GLOSSARY.md`
+entry in the same change. In F004-T5 (#79), the Loan status "ปิดแล้ว" reached its pull request
+with no entry, and neither review round flagged it.
+
 ## A text field's kind decides its control characters
 
 A name, a phone number or a token is one line and refuses every control character
