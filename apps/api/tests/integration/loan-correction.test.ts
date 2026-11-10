@@ -193,7 +193,9 @@ describe('Loan Correction (Seam A - F004-T6)', () => {
       const res = await api.get(custodian, `/loans/${loanId}`);
       expect(res.json().borrower.phone).toBe('090-000-1111');
       expect(res.json().corrections[0].changes).toEqual([{ field: 'borrower_phone' }]);
-      expect(JSON.stringify(res.json().corrections)).not.toContain('090');
+      for (const phone of [PHONE, '090-000-1111']) {
+        expect(JSON.stringify(res.json().corrections)).not.toContain(phone);
+      }
     });
 
     it('may name deactivated Person entries, but only entries of the Person Reference List', async () => {
@@ -234,18 +236,6 @@ describe('Loan Correction (Seam A - F004-T6)', () => {
 
       // The Due Date, the Return Date and the Not Returned date may each be the Loan Date itself.
       await amended(loanId, { kind: 'LOAN' }, { loan_date: '2026-10-25' });
-    });
-
-    it('checks a Due Date Extension\'s new date against the Loan Date too', async () => {
-      const assetId = await registered();
-      const { loanId, itemOf } = await lent([assetId], { loan_date: '2026-10-20', due_date: '2026-10-21' });
-      await extended(loanId, [itemOf[assetId]], '2026-10-25');
-      await amended(loanId, { kind: 'LOAN_ITEM', id: itemOf[assetId] }, { due_date: '2026-11-04' });
-
-      const res = await correct(loanId, await amendment(loanId, { kind: 'LOAN' }, { loan_date: '2026-10-26' }));
-
-      expect(res.statusCode).toBe(400);
-      expect(res.json().message).toMatch(/Due Date/);
     });
 
     it('needs a nonblank reason and a change, and takes only the Loan\'s own fields', async () => {
@@ -310,6 +300,20 @@ describe('Loan Correction (Seam A - F004-T6)', () => {
       await amended(loanId, { kind: 'LOAN_ITEM', id: itemOf[assetId] }, { due_date: '2026-11-08' });
 
       expect(await itemOfLoan(loanId, itemOf[assetId])).toMatchObject({ due_date: '2026-11-20', first_due_date: '2026-11-08' });
+    });
+
+    it('refuses a first Due Date on or after a Due Date Extension\'s, which would no longer move it later', async () => {
+      const assetId = await registered();
+      const { loanId, itemOf } = await lent([assetId]);
+      await extended(loanId, [itemOf[assetId]], '2026-11-20');
+      const before = await loanOf(loanId);
+
+      for (const due_date of ['2026-11-20', '2026-11-25']) {
+        const refused = await correct(loanId, await amendment(loanId, { kind: 'LOAN_ITEM', id: itemOf[assetId] }, { due_date }));
+        expect(refused.statusCode).toBe(400);
+        expect(refused.json().message).toMatch(/Due Date Extension/);
+      }
+      expect(await loanOf(loanId)).toEqual(before);
     });
 
     it('refuses a Due Date before the Loan Date, and never changes the item\'s Asset', async () => {

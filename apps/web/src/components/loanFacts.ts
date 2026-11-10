@@ -212,6 +212,9 @@ export const LOAN_STATUS_LABELS: Record<LoanStatus, string> = {
 // A fact voided by a Loan Correction, which stays shown, struck through (GLOSSARY.md: Loan Correction).
 export const VOIDED_LABEL = 'ยกเลิกแล้ว';
 
+// What a voided fact no longer counts in, as the void form and a voided Loan say it.
+export const VOIDED_COUNTS_IN_NOTHING = 'ไม่นับรวมในสถานะ เกินกำหนด และกำลังถูกยืม';
+
 // The Loan's status as a page shows it: "ปิดแล้ว" says how many items did not come back (#74 Q22), and a
 // voided Loan has none.
 export const loanStatusText = (status: LoanStatus | null, notReturnedCount: number): string => {

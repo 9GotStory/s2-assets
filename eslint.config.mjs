@@ -20,7 +20,7 @@ const writesTo = (tables, owner) => {
     message: `Write this table through ${owner}, the module that owns it (#76).`,
   };
 };
-const WRITES_TO_LOAN_TABLES = writesTo('loans|loan_items|loan_item_endings|loan_due_date_extensions', 'loan.service.ts');
+const WRITES_TO_LOAN_TABLES = writesTo('loans|loan_items|loan_item_endings|loan_due_date_extensions|loan_corrections', 'loan.service.ts');
 const WRITES_TO_ASSIGNMENT_CHANGES = writesTo('assignment_changes', 'assignment.service.ts');
 const apiSyntaxRule = (...guards) => ({ 'no-restricted-syntax': ['error', NO_PROMISED_REPLY, ...guards] });
 

@@ -95,6 +95,7 @@ const DATE_RULE_MESSAGES: Record<BrokenLoanDateRule, string> = {
   NOT_RETURNED_DATE_BEFORE_LOAN_DATE: 'A Not Returned date must not be before the Loan Date',
   ENDING_DATE_AFTER_TODAY: 'A Return Date or Not Returned date must not be after today (Asia/Bangkok)',
   RETURN_DATE_BEFORE_NOT_RETURNED_DATE: "A Loan Return must not be dated before its item's Not Returned date",
+  EXTENSION_NOT_AFTER_FIRST_DUE_DATE: "The first Due Date must be before each of the item's Due Date Extensions: void the extension first",
 };
 
 // The phone number's change is kept without either value (#74 Q24).

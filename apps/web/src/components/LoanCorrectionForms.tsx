@@ -5,7 +5,7 @@ import { LoanSaveForm } from './LoanSaveForm';
 import { ReasonField } from './OutstandingItemFields';
 import { entryLabel, fieldInputStyle, fieldLabelStyle, useReferenceLists } from './ReferenceContextFields';
 import { CORRECTION_LABELS, bangkokToday } from './assignmentFacts';
-import { NOT_RETURNED_LABEL, ON_LOAN_LABEL, type Loan, type LoanCondition, type LoanCorrectionTarget } from './loanFacts';
+import { NOT_RETURNED_LABEL, ON_LOAN_LABEL, VOIDED_COUNTS_IN_NOTHING, type Loan, type LoanCondition, type LoanCorrectionTarget } from './loanFacts';
 
 export interface LoanCorrectionFormProps {
   loan: Loan;
@@ -71,8 +71,8 @@ export const LoanVoidForm: React.FC<LoanCorrectionFormProps> = ({ loan, target, 
         <fieldset disabled={isLocked} style={{ border: 'none', padding: 0, margin: '0 0 1rem 0' }}>
           <p style={{ margin: '0 0 0.75rem 0', fontSize: '0.8125rem', color: '#92400e' }}>
             {target.kind === 'LOAN'
-              ? 'การยืมนี้และทุกรายการในการยืมจะยังแสดงแบบขีดฆ่า และไม่นับรวมในสถานะ เกินกำหนด และกำลังถูกยืม'
-              : 'รายการนี้จะยังแสดงแบบขีดฆ่า และไม่นับรวมในสถานะ เกินกำหนด และกำลังถูกยืม'}
+              ? `การยืมนี้และทุกรายการในการยืมจะยังแสดงแบบขีดฆ่า และ${VOIDED_COUNTS_IN_NOTHING}`
+              : `รายการนี้จะยังแสดงแบบขีดฆ่า และ${VOIDED_COUNTS_IN_NOTHING}`}
           </p>
           <ReasonField idPrefix="loan-void" label="เหตุผลที่ยกเลิก" value={reason} onChange={setReason} />
         </fieldset>
@@ -135,12 +135,13 @@ const changesOf = (stored: Draft, draft: Draft): Record<string, unknown> => {
   return changes;
 };
 
-const DateField: React.FC<{ id: string; label: string; value: string; min?: string; onChange: (value: string) => void }> = ({ id, label, value, min, onChange }) => (
+// `max` is today for a date that has happened; a Due Date has none.
+const DateField: React.FC<{ id: string; label: string; value: string; min?: string; max?: string; onChange: (value: string) => void }> = ({ id, label, value, min, max, onChange }) => (
   <div style={fieldStyle}>
     <label htmlFor={id} style={fieldLabelStyle}>
       {label}
     </label>
-    <input id={id} type="date" value={value} min={min} max={bangkokToday()} onChange={(e) => onChange(e.target.value)} style={fieldInputStyle} />
+    <input id={id} type="date" value={value} min={min} max={max} onChange={(e) => onChange(e.target.value)} style={fieldInputStyle} />
   </div>
 );
 
@@ -264,7 +265,7 @@ export const LoanAmendForm: React.FC<LoanCorrectionFormProps> = ({ loan, target,
                   <TextField id="loan-amend-phone" label="เบอร์โทร (ไม่บังคับ ลบออกได้)" type="tel" value={draft.phone} maxLength={32} onChange={set('phone')} />
                 </>
               )}
-              <DateField id="loan-amend-loan_date" label="วันที่ยืม" value={draft.loan_date} onChange={set('loan_date')} />
+              <DateField id="loan-amend-loan_date" label="วันที่ยืม" value={draft.loan_date} max={bangkokToday()} onChange={set('loan_date')} />
               <div style={fieldStyle}>
                 <label htmlFor="loan-amend-authorizer_person_id" style={fieldLabelStyle}>
                   ผู้อนุญาต (ไม่บังคับ)
@@ -291,13 +292,13 @@ export const LoanAmendForm: React.FC<LoanCorrectionFormProps> = ({ loan, target,
           )}
           {target.kind === 'LOAN_RETURN' && (
             <>
-              <DateField id="loan-amend-return_date" label="วันที่คืน" value={draft.return_date} min={loan.loan_date} onChange={set('return_date')} />
+              <DateField id="loan-amend-return_date" label="วันที่คืน" value={draft.return_date} min={loan.loan_date} max={bangkokToday()} onChange={set('return_date')} />
               {conditionFields}
             </>
           )}
           {target.kind === 'NOT_RETURNED' && (
             <>
-              <DateField id="loan-amend-not_returned_date" label="วันที่ทราบ" value={draft.not_returned_date} min={loan.loan_date} onChange={set('not_returned_date')} />
+              <DateField id="loan-amend-not_returned_date" label="วันที่ทราบ" value={draft.not_returned_date} min={loan.loan_date} max={bangkokToday()} onChange={set('not_returned_date')} />
               <ReasonField idPrefix="loan-amend-not-returned" label="เหตุผลที่ไม่ได้รับคืน" value={draft.reason} onChange={set('reason')} />
             </>
           )}

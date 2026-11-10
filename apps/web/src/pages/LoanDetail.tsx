@@ -14,6 +14,7 @@ import {
   DUE_DATE_EXTENSION_LABEL,
   NOT_RETURNED_LABEL,
   OUTSTANDING_LABEL,
+  VOIDED_COUNTS_IN_NOTHING,
   VOIDED_LABEL,
   assetLabel,
   borrowerText,
@@ -226,7 +227,7 @@ const LoanDetailContent: React.FC = () => {
 
         {isVoided && (
           <div data-testid="loan-voided" role="note" style={{ padding: '0.75rem 1rem', backgroundColor: '#fee2e2', color: '#991b1b', borderRadius: '6px', marginBottom: '1rem', fontWeight: 600 }}>
-            {VOIDED_LABEL}: การยืมนี้ไม่เคยเกิดขึ้นจริง และไม่นับรวมในสถานะ เกินกำหนด และกำลังถูกยืม
+            {VOIDED_LABEL}: การยืมนี้ไม่เคยเกิดขึ้นจริง และ{VOIDED_COUNTS_IN_NOTHING}
           </div>
         )}
 

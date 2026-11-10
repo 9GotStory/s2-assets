@@ -451,22 +451,22 @@ export interface StoredLoanFact {
   fields: Record<string, string | null>;
 }
 
-const DATE = (column: string) => `to_char(${column}, 'YYYY-MM-DD')`;
+const isoDateOf = (column: string) => `to_char(${column}, 'YYYY-MM-DD')`;
 
 /** A fact of a Loan whose row the caller holds locked, or null when the Loan has no such fact. */
 export async function readStoredLoanFact(client: pg.PoolClient, loanId: string, target: LoanCorrectionTarget): Promise<StoredLoanFact | null> {
   const select = {
     LOAN: `SELECT l.id, l.is_voided, NULL::uuid AS loan_item_id, l.borrower_kind, l.borrower_person_id, l.borrower_contact_name,
-                  l.borrower_organization_name, l.borrower_phone, ${DATE('l.loan_date')} AS loan_date, l.authorizer_person_id,
+                  l.borrower_organization_name, l.borrower_phone, ${isoDateOf('l.loan_date')} AS loan_date, l.authorizer_person_id,
                   l.document_reference, l.remark
            FROM loans l WHERE l.id = $1`,
-    LOAN_ITEM: `SELECT li.id, li.is_voided, li.id AS loan_item_id, ${DATE('li.due_date')} AS due_date, li.lending_condition AS condition,
+    LOAN_ITEM: `SELECT li.id, li.is_voided, li.id AS loan_item_id, ${isoDateOf('li.due_date')} AS due_date, li.lending_condition AS condition,
                        li.lending_condition_note AS condition_note
                 FROM loan_items li WHERE li.loan_id = $1 AND li.id = $2`,
-    LOAN_RETURN: `SELECT e.id, e.is_voided, e.loan_item_id, ${DATE('e.ending_date')} AS return_date, e.condition, e.condition_note
+    LOAN_RETURN: `SELECT e.id, e.is_voided, e.loan_item_id, ${isoDateOf('e.ending_date')} AS return_date, e.condition, e.condition_note
                   FROM loan_item_endings e JOIN loan_items li ON li.id = e.loan_item_id
                   WHERE li.loan_id = $1 AND e.id = $2 AND e.kind = 'LOAN_RETURN'`,
-    NOT_RETURNED: `SELECT e.id, e.is_voided, e.loan_item_id, ${DATE('e.ending_date')} AS not_returned_date, e.reason
+    NOT_RETURNED: `SELECT e.id, e.is_voided, e.loan_item_id, ${isoDateOf('e.ending_date')} AS not_returned_date, e.reason
                    FROM loan_item_endings e JOIN loan_items li ON li.id = e.loan_item_id
                    WHERE li.loan_id = $1 AND e.id = $2 AND e.kind = 'NOT_RETURNED'`,
     DUE_DATE_EXTENSION: `SELECT x.id, x.is_voided, x.loan_item_id
@@ -487,6 +487,10 @@ export async function amendLoanFact(client: pg.PoolClient, target: LoanCorrectio
   const fields = Object.keys(values);
   if (fields.length === 0) {
     return;
+  }
+  const unknown = fields.find((field) => !Object.hasOwn(columns, field));
+  if (unknown !== undefined) {
+    throw new Error(`${unknown} is not an amendable field of a ${target.kind}`);
   }
   const assignments = fields.map((field, i) => `${columns[field]} = $${i + 2}`).join(', ');
   await client.query(`UPDATE ${TARGET_TABLES[target.kind]} SET ${assignments} WHERE id = $1`, [factId, ...fields.map((field) => values[field])]);
@@ -561,26 +565,29 @@ export type BrokenLoanDateRule =
   | 'RETURN_DATE_BEFORE_LOAN_DATE'
   | 'NOT_RETURNED_DATE_BEFORE_LOAN_DATE'
   | 'ENDING_DATE_AFTER_TODAY'
-  | 'RETURN_DATE_BEFORE_NOT_RETURNED_DATE';
+  | 'RETURN_DATE_BEFORE_NOT_RETURNED_DATE'
+  | 'EXTENSION_NOT_AFTER_FIRST_DUE_DATE';
 
 /**
  * The date rules a Loan breaks as it now stands in the caller's transaction, over its non-voided facts:
  * the Loan Date is no later than today; every Due Date, Return Date and Not Returned date is not before
- * the Loan Date, and no ending is after today; a Loan Return is not dated before its item's Not Returned.
+ * the Loan Date, and no ending is after today; a Loan Return is not dated before its item's Not Returned;
+ * and every Due Date Extension still moves its item's Due Date later than the first one, which keeps
+ * the extended Due Dates after the Loan Date too.
  */
 export async function brokenLoanDateRules(client: pg.PoolClient, loanId: string, today: string): Promise<BrokenLoanDateRule[]> {
   const res = await client.query(
     `WITH items AS (SELECT li.id, li.due_date FROM loan_items li WHERE li.loan_id = $1 AND NOT li.is_voided),
           endings AS (SELECT e.loan_item_id, e.kind, e.ending_date FROM loan_item_endings e JOIN items ON items.id = e.loan_item_id WHERE NOT e.is_voided)
      SELECT l.loan_date > $2::date AS "LOAN_DATE_AFTER_TODAY",
-            EXISTS (SELECT 1 FROM items WHERE items.due_date < l.loan_date)
-              OR EXISTS (SELECT 1 FROM loan_due_date_extensions x JOIN items ON items.id = x.loan_item_id
-                         WHERE NOT x.is_voided AND x.new_due_date < l.loan_date) AS "DUE_DATE_BEFORE_LOAN_DATE",
+            EXISTS (SELECT 1 FROM items WHERE items.due_date < l.loan_date) AS "DUE_DATE_BEFORE_LOAN_DATE",
             EXISTS (SELECT 1 FROM endings WHERE kind = 'LOAN_RETURN' AND ending_date < l.loan_date) AS "RETURN_DATE_BEFORE_LOAN_DATE",
             EXISTS (SELECT 1 FROM endings WHERE kind = 'NOT_RETURNED' AND ending_date < l.loan_date) AS "NOT_RETURNED_DATE_BEFORE_LOAN_DATE",
             EXISTS (SELECT 1 FROM endings WHERE ending_date > $2::date) AS "ENDING_DATE_AFTER_TODAY",
             EXISTS (SELECT 1 FROM endings r JOIN endings n ON n.loan_item_id = r.loan_item_id AND n.kind = 'NOT_RETURNED'
-                    WHERE r.kind = 'LOAN_RETURN' AND r.ending_date < n.ending_date) AS "RETURN_DATE_BEFORE_NOT_RETURNED_DATE"
+                    WHERE r.kind = 'LOAN_RETURN' AND r.ending_date < n.ending_date) AS "RETURN_DATE_BEFORE_NOT_RETURNED_DATE",
+            EXISTS (SELECT 1 FROM loan_due_date_extensions x JOIN items ON items.id = x.loan_item_id
+                    WHERE NOT x.is_voided AND x.new_due_date <= items.due_date) AS "EXTENSION_NOT_AFTER_FIRST_DUE_DATE"
      FROM loans l WHERE l.id = $1`,
     [loanId, today]
   );
