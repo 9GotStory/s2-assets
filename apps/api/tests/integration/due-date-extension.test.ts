@@ -21,7 +21,7 @@ describe('Recording a Due Date Extension (Seam A - F004-T5)', () => {
   const logLines: string[] = [];
 
   const { detailOf, assignmentOf } = assignmentHelpers(() => ({ api, admin, reader: readonly }));
-  const { registered, loanOf, lent, returned, whileHolding, isWaitingOnLoanLock } = loanHelpers(() => ({ api, custodian, reader: readonly }), {
+  const { registered, loanOf, lent, returned, closedNotReturned, whileHolding, isWaitingOnLoanLock } = loanHelpers(() => ({ api, custodian, reader: readonly }), {
     loanDate: LOAN_DATE,
     dueDate: DUE,
     contactName: 'คุณผู้ยืมขอเลื่อน',
@@ -125,13 +125,7 @@ describe('Recording a Due Date Extension (Seam A - F004-T5)', () => {
       const { loanId, itemOf } = await lent([free, back, closed, voided]);
       const other = await lent([elsewhere]);
       await returned(loanId, [itemOf[back]], TODAY);
-      const closure = await api.post(
-        custodian,
-        `/loans/${loanId}/not-returned`,
-        { expected_version: (await loanOf(loanId)).version, not_returned_date: TODAY, reason: 'หาย', items: [{ loan_item_id: itemOf[closed] }] },
-        { 'x-retry-token': crypto.randomUUID() }
-      );
-      expect(closure.statusCode).toBe(201);
+      await closedNotReturned(loanId, [itemOf[closed]], TODAY);
       await api.pool.query('UPDATE loan_items SET is_voided = true WHERE id = $1', [itemOf[voided]]);
       const missing = crypto.randomUUID();
       const before = await loanOf(loanId);

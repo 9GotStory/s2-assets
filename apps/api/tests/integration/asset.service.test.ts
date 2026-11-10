@@ -1762,7 +1762,9 @@ describe('AssetService Integration Tests (Seam A - Core Service & Transactions)'
       expect(full.total_count).toBe(4);
       expect(full.items.map((i) => i.id)).toEqual([idC, idA, idB, idD]);
 
-      // Public items carry NO internal sort keys. asset.routes.test.ts pins a row's exact fields (#78 retro).
+      // Each item carries its own fields and NO internal sort keys. asset.routes.test.ts pins a row's exact
+      // fields (#78 retro).
+      expect(full.items[0]).toMatchObject({ id: idC, name: expect.any(String) });
       expect((full.items[0] as any).recorded_at).toBeUndefined();
 
       // Page 1: limit 2, offset 0 -> [idC, idA]

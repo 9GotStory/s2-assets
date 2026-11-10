@@ -21,10 +21,11 @@ import {
 } from './assignment.service.ts';
 import { containsPattern } from './asset-lookups.ts';
 import { loanSearch, type AssetSearchLoanFacts } from './loan.service.ts';
-import { NotFoundError, StaleBeforeConflictError } from './service-errors.ts';
+import { canonicalJson } from './canonical-json.ts';
+import { NotFoundError, RetryTokenConflictError, StaleBeforeConflictError } from './service-errors.ts';
 import { ValidationError } from './validation-error.ts';
 
-export { NotFoundError, StaleBeforeConflictError, ValidationError };
+export { NotFoundError, RetryTokenConflictError, StaleBeforeConflictError, ValidationError, canonicalJson };
 
 export interface AssetRecord {
   id: string;
@@ -194,35 +195,6 @@ export class BulkDuplicateCandidateWarningError extends Error {
     this.code = 'DUPLICATE_CANDIDATES_FOUND';
     this.warnings = warnings;
   }
-}
-
-export class RetryTokenConflictError extends Error {
-  statusCode: number;
-  code: string;
-
-  constructor(message: string = 'Retry token payload mismatch') {
-    super(message);
-    this.name = 'RetryTokenConflictError';
-    this.statusCode = 409;
-    this.code = 'RETRY_TOKEN_PAYLOAD_MISMATCH';
-  }
-}
-
-/**
- * Deterministically serializes values with recursively sorted keys.
- */
-export function canonicalJson(obj: unknown): string {
-  if (obj === null || typeof obj !== 'object') {
-    return JSON.stringify(obj);
-  }
-  if (Array.isArray(obj)) {
-    return `[${obj.map((item) => canonicalJson(item)).join(',')}]`;
-  }
-  const record = obj as Record<string, unknown>;
-  const keys = Object.keys(record)
-    .filter((k) => record[k] !== undefined)
-    .sort();
-  return `{${keys.map((k) => `${JSON.stringify(k)}:${canonicalJson(record[k])}`).join(',')}}`;
 }
 
 // T4 (#25): each legacy reference text is searched on its own, keeping the dimensions distinct.

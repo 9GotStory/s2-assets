@@ -1,6 +1,7 @@
 import * as crypto from 'node:crypto';
 import pg from 'pg';
-import { RetryTokenConflictError, canonicalJson } from './asset.service.ts';
+import { canonicalJson } from './canonical-json.ts';
+import { RetryTokenConflictError } from './service-errors.ts';
 
 // What makes one write retryable: who asked, for which operation, under which token, and the request
 // itself. A confirmation is part of the request.

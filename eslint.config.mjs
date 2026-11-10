@@ -68,16 +68,7 @@ export default tseslint.config(
   },
   {
     files: ['apps/api/src/services/loan.service.ts'],
-    rules: {
-      ...apiSyntaxRule(WRITES_TO_ASSIGNMENT_CHANGES),
-      // asset.service.ts imports this module for the Asset search (#78): importing it back is a cycle.
-      'no-restricted-imports': [
-        'error',
-        {
-          paths: [{ name: './asset.service.ts', message: 'Import from asset-lookups.ts or service-errors.ts: asset.service.ts imports loan.service.ts (#78).' }],
-        },
-      ],
-    },
+    rules: apiSyntaxRule(WRITES_TO_ASSIGNMENT_CHANGES),
   },
   {
     files: ['apps/api/src/services/assignment.service.ts'],

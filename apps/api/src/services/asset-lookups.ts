@@ -1,4 +1,4 @@
-import pg from 'pg';
+import type pg from 'pg';
 
 // Lookups of the Asset module that other services use. This module imports no service, so
 // loan.service.ts can use it while asset.service.ts imports loan.service.ts (#78).

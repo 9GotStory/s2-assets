@@ -1,5 +1,5 @@
-// The not-found and stale refusals the registry services raise. Like validation-error.ts, this module
-// imports nothing, so any service can use it without an import cycle.
+// The not-found, stale and retry-token refusals the services raise. Like validation-error.ts, this
+// module imports nothing, so any service can use it without an import cycle.
 
 export class NotFoundError extends Error {
   statusCode: number;
@@ -30,5 +30,17 @@ export class StaleBeforeConflictError extends Error {
     this.code = 'STALE_BEFORE_CONFLICT';
     this.current_values = currentValues;
     this.expected_values = expectedValues;
+  }
+}
+
+export class RetryTokenConflictError extends Error {
+  statusCode: number;
+  code: string;
+
+  constructor(message: string = 'Retry token payload mismatch') {
+    super(message);
+    this.name = 'RetryTokenConflictError';
+    this.statusCode = 409;
+    this.code = 'RETRY_TOKEN_PAYLOAD_MISMATCH';
   }
 }
