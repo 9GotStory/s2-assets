@@ -3,6 +3,7 @@ import { Link, useNavigate, useParams } from 'react-router';
 import { QueryClient, QueryClientProvider, useQuery } from '@tanstack/react-query';
 import { DueDateExtensionForm } from '../components/DueDateExtensionForm';
 import { OverdueBadge, ReturnedLateBadge } from '../components/LoanBadges';
+import { LoanConflictMarks } from '../components/LoanConflicts';
 import { LoanAmendForm, LoanVoidForm } from '../components/LoanCorrectionForms';
 import { LoanCorrectionList, correctionTargetText } from '../components/LoanCorrectionList';
 import { LoanReturnForm } from '../components/LoanReturnForm';
@@ -327,6 +328,7 @@ const LoanDetailContent: React.FC = () => {
                   {item.condition_note ? ` (${item.condition_note})` : ''}
                 </div>
               </div>
+              <LoanConflictMarks conflicts={item.conflicts} testId={`loan-item-conflicts-${item.id}`} />
               {!item.is_voided && correctionActions(`loan-item-${item.id}`, { kind: 'LOAN_ITEM', id: item.id })}
               {item.due_date_extensions.length > 0 && (
                 <ul data-testid="loan-item-extensions" style={{ margin: '0.25rem 0', paddingLeft: '1.25rem', color: '#4b5563' }}>

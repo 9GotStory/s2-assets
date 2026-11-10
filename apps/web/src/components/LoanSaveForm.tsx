@@ -1,4 +1,6 @@
 import React, { useRef, useState } from 'react';
+import { LoanConflictWarning } from './LoanConflicts';
+import type { WarnedLoanConflict } from './loanFacts';
 
 export interface LoanSaveFormProps {
   // Names this form's elements: `${idPrefix}-form`, `${idPrefix}-submit`, and so on.
@@ -31,6 +33,12 @@ interface SaveFailure {
 
 type SaveRequest = Record<string, unknown> & { retry_token: string };
 
+// The Loan Conflicts a save would create, and the request they were found for.
+interface ConflictWarning {
+  request: SaveRequest;
+  conflicts: WarnedLoanConflict[];
+}
+
 const recoveryButtonStyle: React.CSSProperties = {
   marginLeft: '1rem',
   padding: '0.375rem 0.75rem',
@@ -46,7 +54,9 @@ const recoveryButtonStyle: React.CSSProperties = {
 /**
  * The form around one Loan write: its heading, save and cancel, and what happens to a save. A retry
  * after an unknown outcome resends the same request under the same token, so one action records one
- * fact. A stale save is refused until the latest facts are read.
+ * fact. A stale save is refused until the latest facts are read. A save that would create Loan Conflicts
+ * waits for confirmation, with the fields locked so that what is confirmed is the request warned about,
+ * under the same retry token (#74 Q20).
  */
 export const LoanSaveForm: React.FC<LoanSaveFormProps> = ({
   idPrefix,
@@ -67,15 +77,17 @@ export const LoanSaveForm: React.FC<LoanSaveFormProps> = ({
   const [failure, setFailure] = useState<SaveFailure | null>(null);
   const [refused, setRefused] = useState<React.ReactNode>(null);
   const [isSubmitting, setIsSubmitting] = useState(false);
+  const [conflictWarning, setConflictWarning] = useState<ConflictWarning | null>(null);
   // The request whose outcome is unknown.
   const uncertainRef = useRef<SaveRequest | null>(null);
 
-  const isLocked = isSubmitting || failure?.next === 'retry';
+  const isLocked = isSubmitting || failure?.next === 'retry' || conflictWarning !== null;
 
   const send = async (request: SaveRequest) => {
     setIsSubmitting(true);
     setFailure(null);
     setRefused(null);
+    setConflictWarning(null);
     uncertainRef.current = request;
 
     let res: Response;
@@ -112,6 +124,10 @@ export const LoanSaveForm: React.FC<LoanSaveFormProps> = ({
     if (res.status === 400 || res.status === 404 || res.status === 409) {
       uncertainRef.current = null;
       const body = await res.json().catch(() => null);
+      if (body?.code === 'LOAN_CONFLICTS_FOUND') {
+        setConflictWarning({ request, conflicts: body.conflicts });
+        return;
+      }
       if (body?.code === 'STALE_BEFORE_CONFLICT' && onRefresh) {
         setFailure({ message: 'มีการบันทึกรายการอื่นของการยืมนี้หลังจากเปิดฟอร์ม กรุณาโหลดข้อมูลล่าสุดแล้วตรวจสอบอีกครั้ง', next: 'reload' });
         return;
@@ -189,6 +205,20 @@ export const LoanSaveForm: React.FC<LoanSaveFormProps> = ({
         <div role="alert" data-testid={`${idPrefix}-refused`} style={{ padding: '0.75rem 1rem', backgroundColor: '#fee2e2', color: '#991b1b', borderRadius: '6px', marginBottom: '1rem', fontSize: '0.875rem' }}>
           {refused}
         </div>
+      )}
+
+      {conflictWarning && (
+        <LoanConflictWarning
+          conflicts={conflictWarning.conflicts}
+          // The refused warning stored nothing, so the same token carries the confirmed request.
+          onConfirm={() =>
+            void send({
+              ...conflictWarning.request,
+              confirmed_conflicts: conflictWarning.conflicts.map(({ conflicting }) => ({ conflicting_loan_item_id: conflicting.loan_item_id })),
+            })
+          }
+          onBack={() => setConflictWarning(null)}
+        />
       )}
 
       {children(isLocked)}

@@ -784,4 +784,81 @@ test.describe.serial('Loan journeys: Real SPA -> Composed API -> PostgreSQL (Sea
     await expect(page.locator(`[data-testid="loan-ending-voided-${loanReturnId}"]`)).toBeVisible();
     await expect(page.locator('main button')).toHaveCount(0);
   });
+
+  test('Journey F004-T7.1: a backdated Loan warns of a Loan Conflict, is confirmed and marked, is found through "มี conflict ค้างตรวจ", and a correction clears it', async ({ page, context }) => {
+    const { asset } = await assetService.registerAsset(custodianUserId, { name: 'กล้อง E2E ช่วงยืมทับกัน' } as any);
+    const earlier = await loanService.start(
+      custodianUserId,
+      { assets: [{ asset_id: asset.id, condition: 'NORMAL' }], borrower: { kind: 'EXTERNAL', contact_name: 'คุณผู้ยืมก่อน E2E' }, loan_date: daysAgo(10), due_date: daysAgo(5) },
+      { retryToken: crypto.randomUUID() }
+    );
+    await new LoanReturnService({ db: pool }).record(
+      custodianUserId,
+      earlier.loan_id,
+      { expected_version: earlier.version, return_date: daysAgo(5), items: [{ loan_item_id: earlier.items[0].id, condition: 'NORMAL' }] },
+      { retryToken: crypto.randomUUID() }
+    );
+    // A Loan with no Loan Conflict, which the filter leaves out.
+    const { asset: other } = await assetService.registerAsset(custodianUserId, { name: 'ไมค์ E2E ไม่ทับ' } as any);
+    const clean = await loanService.start(
+      custodianUserId,
+      { assets: [{ asset_id: other.id, condition: 'NORMAL' }], borrower: { kind: 'EXTERNAL', contact_name: 'คุณไม่ทับ E2E' }, loan_date: daysAgo(10), due_date: '2099-12-31' },
+      { retryToken: crypto.randomUUID() }
+    );
+
+    // A Custodian records a Loan that began while the earlier one was still out.
+    await loginAs(context, custodianUserId);
+    await page.goto(`${targetBaseUrl}/assets/${asset.id}`);
+    await page.locator('#loan-action').click();
+    await page.locator('#loan-loan_date').fill(daysAgo(8));
+    await page.locator('#loan-due_date').fill(daysAgo(1));
+    await page.getByRole('radio', { name: 'ผู้ยืมภายนอก' }).check();
+    await page.locator('#loan-contact_name').fill('คุณยืมย้อนหลัง E2E');
+    await page.locator('#loan-submit').click();
+
+    // Nothing is saved until the Loan Conflict is confirmed, and the fields stay as warned about.
+    const warning = page.locator('[data-testid="loan-conflict-warning"]');
+    await expect(warning).toContainText('ช่วงยืมทับกัน 1 รายการ');
+    await expect(warning).toContainText('กล้อง E2E ช่วงยืมทับกัน');
+    await expect(page.locator('#loan-loan_date')).toBeDisabled();
+    expect((await loanReadService.itemsOfAsset(asset.id))!).toHaveLength(1);
+    await page.locator('#loan-conflict-confirm').click();
+    await expect(page.locator('#loan-form')).toHaveCount(0);
+
+    // Both Loans are kept and marked on the Asset page.
+    await expect(page.locator('[data-testid="loan-on-loan"]')).toContainText('คุณยืมย้อนหลัง E2E');
+    await expect(page.locator('[data-testid="loan-conflict-notice"]')).toContainText('ช่วงยืมทับกัน');
+    const backdated = (await loanReadService.itemsOfAsset(asset.id))!.find(({ loan_id: loanId }) => loanId !== earlier.loan_id)!;
+    await expect(page.locator(`[data-testid="loan-history-conflicts-${backdated.id}"]`)).toContainText('ช่วงยืมทับกันกับการยืม');
+    await expect(page.locator(`[data-testid="loan-history-conflicts-${earlier.items[0].id}"]`)).toContainText('ยังไม่สิ้นสุด');
+
+    // The Loan list's filter finds both Loans and leaves the other out.
+    await page.goto(`${targetBaseUrl}/loans`);
+    const rowOf = (loanId: string) => page.locator(`[data-testid="loan-row-${loanId}"]`);
+    await expect(rowOf(clean.loan_id)).toBeVisible();
+    await page.locator('#loan-filter-has_loan_conflict').check();
+    await page.locator('#loan-list-submit').click();
+    await expect(rowOf(earlier.loan_id)).toBeVisible();
+    await expect(rowOf(backdated.loan_id)).toBeVisible();
+    await expect(rowOf(clean.loan_id)).toHaveCount(0);
+
+    // On the backdated Loan's page, correcting its Loan Date to the day the earlier Loan came back clears the mark.
+    await rowOf(backdated.loan_id).getByRole('link', { name: 'ดูการยืม' }).click();
+    await expect(page).toHaveURL(new RegExp(`/loans/${backdated.loan_id}$`));
+    const marks = page.locator(`[data-testid="loan-item-conflicts-${backdated.id}"]`);
+    await expect(marks).toContainText('ช่วงยืมทับกันกับการยืม');
+    await page.locator('#loan-amend-action').click();
+    await page.locator('#loan-amend-loan_date').fill(daysAgo(5));
+    await page.locator('#loan-amend-reason').fill('วันที่ยืมจริงคือวันที่ได้ของคืนจากผู้ยืมก่อน');
+    await page.locator('#loan-amend-submit').click();
+    await expect(page.locator('#loan-amend-form')).toHaveCount(0);
+    await expect(page.locator('#loan-corrections [data-testid="loan-correction"]')).toHaveCount(1);
+    await expect(marks).toHaveCount(0);
+
+    // The filter no longer finds either Loan.
+    await page.goto(`${targetBaseUrl}/loans?has_loan_conflict=true`);
+    await expect(page.locator('#loan-list-count')).toBeVisible();
+    await expect(rowOf(backdated.loan_id)).toHaveCount(0);
+    await expect(rowOf(earlier.loan_id)).toHaveCount(0);
+  });
 });

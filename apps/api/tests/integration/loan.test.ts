@@ -115,6 +115,7 @@ describe('Starting a Loan (Seam A - F004-T1)', () => {
           not_returned: null,
           voided_endings: [],
           due_date_extensions: [],
+          conflicts: [],
         },
         {
           id: expect.stringMatching(UUID),
@@ -130,6 +131,7 @@ describe('Starting a Loan (Seam A - F004-T1)', () => {
           not_returned: null,
           voided_endings: [],
           due_date_extensions: [],
+          conflicts: [],
         },
       ]);
     });
@@ -243,6 +245,7 @@ describe('Starting a Loan (Seam A - F004-T1)', () => {
           is_overdue: false,
           loan_return: null,
           not_returned: null,
+          conflicts: [],
         },
       ]);
     });

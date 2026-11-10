@@ -4,7 +4,7 @@ import { QueryClient, QueryClientProvider, useQuery } from '@tanstack/react-quer
 import { OverdueBadge } from '../components/LoanBadges';
 import { entryLabel, fetchReferenceList, type ReferenceEntry } from '../components/ReferenceContextFields';
 import { thaiDate } from '../components/assignmentFacts';
-import { LOAN_STATUS_LABELS, borrowerText, loanStatusText, voidedStyle, type Borrower, type LoanListRow, type LoanStatus } from '../components/loanFacts';
+import { LOAN_CONFLICT_FILTER_LABEL, LOAN_STATUS_LABELS, borrowerText, loanStatusText, voidedStyle, type Borrower, type LoanListRow, type LoanStatus } from '../components/loanFacts';
 
 const PAGE_SIZE = 25;
 
@@ -16,6 +16,7 @@ const LOAD_ERRORS: Record<number, string> = {
 interface Filters {
   status: '' | LoanStatus;
   overdue: boolean;
+  has_loan_conflict: boolean;
   borrower_kind: '' | Borrower['kind'];
   borrower_person_id: string;
   borrower_name: string;
@@ -24,6 +25,7 @@ interface Filters {
 const filtersOf = (params: URLSearchParams): Filters => ({
   status: (params.get('status') ?? '') as Filters['status'],
   overdue: params.get('overdue') === 'true',
+  has_loan_conflict: params.get('has_loan_conflict') === 'true',
   borrower_kind: (params.get('borrower_kind') ?? '') as Filters['borrower_kind'],
   borrower_person_id: params.get('borrower_person_id') ?? '',
   borrower_name: params.get('borrower_name') ?? '',
@@ -34,6 +36,7 @@ const paramsOf = (filters: Filters, offset: number): URLSearchParams => {
   const params = new URLSearchParams();
   if (filters.status) params.set('status', filters.status);
   if (filters.overdue) params.set('overdue', 'true');
+  if (filters.has_loan_conflict) params.set('has_loan_conflict', 'true');
   if (filters.borrower_kind) params.set('borrower_kind', filters.borrower_kind);
   if (filters.borrower_kind === 'INTERNAL' && filters.borrower_person_id) params.set('borrower_person_id', filters.borrower_person_id);
   if (filters.borrower_kind === 'EXTERNAL' && filters.borrower_name.trim()) params.set('borrower_name', filters.borrower_name.trim());
@@ -224,6 +227,15 @@ const LoanListContent: React.FC = () => {
                 <label htmlFor="loan-filter-overdue" style={{ display: 'flex', alignItems: 'center', gap: '0.375rem', fontSize: '0.875rem', fontWeight: 500, color: '#374151' }}>
                   <input id="loan-filter-overdue" type="checkbox" checked={draft.overdue} onChange={(e) => setDraftField('overdue', e.target.checked)} />
                   เกินกำหนด
+                </label>
+                <label htmlFor="loan-filter-has_loan_conflict" style={{ display: 'flex', alignItems: 'center', gap: '0.375rem', fontSize: '0.875rem', fontWeight: 500, color: '#374151' }}>
+                  <input
+                    id="loan-filter-has_loan_conflict"
+                    type="checkbox"
+                    checked={draft.has_loan_conflict}
+                    onChange={(e) => setDraftField('has_loan_conflict', e.target.checked)}
+                  />
+                  {LOAN_CONFLICT_FILTER_LABEL}
                 </label>
                 <button
                   type="submit"

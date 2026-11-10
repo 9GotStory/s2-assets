@@ -141,9 +141,10 @@ A traceable fix to a Loan fact that was wrong as recorded, up to voiding a fact 
 (ยกเลิกรายการ). It is not a business event. A voided fact stays shown as ยกเลิกแล้ว, struck through,
 and counts in no status; a voided Loan has no status at all.
 
-**Loan Conflict**:
+**Loan Conflict** (ช่วงยืมทับกัน):
 Two LoanItems of one Asset whose periods overlap, usually because a backdated Loan was recorded
-later. A Loan Return and a new Loan on the same day are not one.
+later. A Loan Return and a new Loan on the same day are not one. The Loan list finds them with
+"มี conflict ค้างตรวจ", and one goes away once a Loan Correction removes the overlap.
 _Avoid_: double loan
 
 ## Roles

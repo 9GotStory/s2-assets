@@ -20,6 +20,7 @@ import {
   type LoanCorrectionTarget,
   type StoredLoanFact,
 } from './loan.service.ts';
+import { loanConflictCheck, normalizeConfirmedConflicts, type ConfirmedLoanConflictInput } from './loan-conflict.ts';
 import type { LoanCondition } from './loan-read.service.ts';
 import { isSelectablePerson } from './reference.service.ts';
 import { commitOnce } from './retryable-write.ts';
@@ -47,6 +48,8 @@ export interface CorrectLoanInput {
   target: LoanCorrectionTarget;
   reason: string;
   changes?: LoanAmendmentInput;
+  // The Loan Conflicts the user saw in a warning and confirms (#74 Q25).
+  confirmed_conflicts?: ConfirmedLoanConflictInput[];
 }
 
 // What a Loan Correction answers. It carries no Borrower detail, as for starting a Loan (LR-15, #74 Q24).
@@ -254,12 +257,16 @@ export class LoanCorrectionService {
 
   async correct(actorId: string, loanId: string, input: CorrectLoanInput, { retryToken }: { retryToken: string }): Promise<RecordedLoanCorrection> {
     const facts = normalizeFacts(input);
+    const confirmed = normalizeConfirmedConflicts(input.confirmed_conflicts);
     const today = bangkokDate(this.clock());
+    // An unconfirmed request keeps the payload it had before confirmation existed (#74 Q25).
+    const payload = confirmed.length > 0 ? { version: 1, ...facts, confirmed_conflicts: confirmed } : { version: 1, ...facts };
     return commitOnce(
       this.db,
-      { actorId, operation: `loan:correct:${loanId}`, retryToken, payload: { version: 1, ...facts }, explicitContinuation: false },
+      { actorId, operation: `loan:correct:${loanId}`, retryToken, payload, explicitContinuation: false },
       async (client) => {
         const { items } = await lockLoanForWrite(client, loanId, facts.expected_version);
+        const conflicts = await loanConflictCheck(client, [...new Set(items.map(({ asset_id }) => asset_id))]);
         const { target } = facts;
         const fact = await readStoredLoanFact(client, loanId, target);
         if (!fact) {
@@ -288,6 +295,8 @@ export class LoanCorrectionService {
         if (broken.length > 0) {
           throw new ValidationError(DATE_RULE_MESSAGES[broken[0]]);
         }
+        // A corrected date or a voided ending may open an overlap with another Loan of the same Asset (#74 Q25).
+        await conflicts.assertConfirmed({ loanId, isNewLoan: false, confirmed });
 
         const correctionId = await recordLoanCorrection(client, {
           target,

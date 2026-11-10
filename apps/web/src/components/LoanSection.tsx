@@ -2,10 +2,12 @@ import React, { useState } from 'react';
 import { Link } from 'react-router';
 import { useQuery } from '@tanstack/react-query';
 import { OverdueBadge, ReturnedLateBadge } from './LoanBadges';
+import { LoanConflictMarks } from './LoanConflicts';
 import { LoanStartForm, type LoanFormAsset } from './LoanStartForm';
 import { thaiDate } from './assignmentFacts';
 import {
   CONDITION_LABELS,
+  LOAN_CONFLICT_LABEL,
   NOT_RETURNED_LABEL,
   ON_LOAN_LABEL,
   START_LOAN_LABEL,
@@ -23,6 +25,8 @@ export interface LoanSectionProps {
   onLoan: OnLoan | null;
   // The Not Returned that keeps the Asset from a new Loan (F004-T5).
   notReturned: AssetNotReturned | null;
+  // Whether any of the Asset's LoanItems is in a Loan Conflict (F004-T7).
+  hasLoanConflict: boolean;
   // Whether the viewer holds 'loan:record'.
   canRecordLoan: boolean;
   actorId: string | null;
@@ -41,6 +45,7 @@ export const LoanSection: React.FC<LoanSectionProps> = ({
   asset,
   onLoan,
   notReturned,
+  hasLoanConflict,
   canRecordLoan,
   actorId,
   dataUpdatedAt,
@@ -113,6 +118,12 @@ export const LoanSection: React.FC<LoanSectionProps> = ({
         </div>
       )}
 
+      {hasLoanConflict && (
+        <div data-testid="loan-conflict-notice" role="note" style={{ margin: '0 0 1rem 0', fontSize: '0.875rem', backgroundColor: '#fef3c7', border: '1px solid #f59e0b', padding: '0.75rem 1rem', borderRadius: '6px', color: '#92400e' }}>
+          <span style={{ fontWeight: 600 }}>{LOAN_CONFLICT_LABEL}</span>: ประวัติการยืมของครุภัณฑ์นี้มีช่วงยืมที่ทับกัน กรุณาตรวจสอบและแก้ไขรายการที่บันทึกผิด
+        </div>
+      )}
+
       {mayStart && isFormOpen && (
         <LoanStartForm
           assets={[asset]}
@@ -174,6 +185,7 @@ export const LoanSection: React.FC<LoanSectionProps> = ({
                     ดูการยืม
                   </Link>
                 </div>
+                <LoanConflictMarks conflicts={item.conflicts} testId={`loan-history-conflicts-${item.id}`} />
                 {item.not_returned && (
                   <div data-testid="loan-history-not-returned">
                     {NOT_RETURNED_LABEL}: <time dateTime={item.not_returned.not_returned_date}>{thaiDate(item.not_returned.not_returned_date)}</time>

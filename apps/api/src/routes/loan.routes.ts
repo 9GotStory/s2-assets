@@ -8,6 +8,7 @@ import { CapabilityService, isValidUuid } from '../services/capability.service.t
 import { hasStrictControlChars } from '../services/control-characters.ts';
 import { LoanItemsNotReturnableError, LoanReturnService, type RecordLoanReturnInput } from '../services/loan-return.service.ts';
 import { AssetOnAnotherLoanError, LoanCorrectionService, type CorrectLoanInput } from '../services/loan-correction.service.ts';
+import { LoanConflictWarningError } from '../services/loan-conflict.ts';
 import { LoanReadService } from '../services/loan-read.service.ts';
 import { AssetsNotLendableError, LoanItemsNotOutstandingError, LoanService, type StartLoanInput } from '../services/loan.service.ts';
 import { NotReturnedService, type RecordNotReturnedInput } from '../services/not-returned.service.ts';
@@ -37,6 +38,9 @@ const BorrowerSchema = z.discriminatedUnion('kind', [
     .strict(),
 ]);
 
+// #74 Q20: the Loan Conflicts a warning listed that the user confirms, by the other LoanItem of each.
+const ConfirmedConflictsSchema = z.array(z.object({ conflicting_loan_item_id: z.string() }).strict()).optional();
+
 const StartLoanSchema = z
   .object({
     assets: z.array(
@@ -54,6 +58,7 @@ const StartLoanSchema = z
     authorizer_person_id: z.string().nullable().optional(),
     document_reference: z.string().nullable().optional(),
     remark: z.string().nullable().optional(),
+    confirmed_conflicts: ConfirmedConflictsSchema,
     retry_token: z.string().optional(),
   })
   .strict();
@@ -130,6 +135,7 @@ const LoanCorrectionSchema = z
       })
       .strict()
       .optional(),
+    confirmed_conflicts: ConfirmedConflictsSchema,
     retry_token: z.string().optional(),
   })
   .strict();
@@ -141,6 +147,8 @@ const LoanListQuerySchema = z
     status: z.enum(['OUTSTANDING', 'PARTIALLY_RETURNED', 'RETURNED', 'CLOSED']).optional(),
     // "เกินกำหนด" takes one value; leaving it out lists every Loan.
     overdue: z.literal('true').optional(),
+    // "มี conflict ค้างตรวจ" likewise.
+    has_loan_conflict: z.literal('true').optional(),
     borrower_kind: z.enum(['INTERNAL', 'EXTERNAL']).optional(),
     // A name is one line, so a control character, even at an end, can match none (CODING_STANDARDS.md).
     borrower_name: z
@@ -173,6 +181,9 @@ const refusalOf = (err: unknown) => {
   }
   if (err instanceof LoanItemsNotReturnableError || err instanceof LoanItemsNotOutstandingError) {
     return { ...errorBody(err.statusCode, err.code, err.message), items: err.items };
+  }
+  if (err instanceof LoanConflictWarningError) {
+    return { ...errorBody(err.statusCode, err.code, err.message), conflicts: err.conflicts };
   }
   if (err instanceof AssetOnAnotherLoanError) {
     return { ...errorBody(err.statusCode, err.code, err.message), asset: err.asset };
@@ -305,9 +316,16 @@ export const loanRoutes: FastifyPluginAsync<LoanRoutesOptions> = async (fastify,
       const issues = parsed.error.issues.map((issue) => `${issue.path.join('.') || 'query'}: ${issue.message}`).join(', ');
       return reply.status(400).send(errorBody(400, 'VALIDATION_FAILED', `Invalid query: ${issues}`));
     }
-    const { borrower_person_id: personId, overdue, limit = 25, offset = 0, ...filters } = parsed.data;
+    const { borrower_person_id: personId, overdue, has_loan_conflict: hasLoanConflict, limit = 25, offset = 0, ...filters } = parsed.data;
     return reply.status(200).send(
-      await loanReadService.list({ ...filters, overdue: overdue === 'true', borrower_person_id: personId?.trim().toLowerCase(), limit, offset })
+      await loanReadService.list({
+        ...filters,
+        overdue: overdue === 'true',
+        has_loan_conflict: hasLoanConflict === 'true',
+        borrower_person_id: personId?.trim().toLowerCase(),
+        limit,
+        offset,
+      })
     );
   });
 

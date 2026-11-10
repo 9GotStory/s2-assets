@@ -9,6 +9,7 @@ import {
   lockAssetsInIdentifierOrder,
   normalizeText,
 } from './assignment.service.ts';
+import { loanConflictCheck, normalizeConfirmedConflicts, type ConfirmedLoanConflictInput } from './loan-conflict.ts';
 import { CURRENT_DUE_DATE, type LoanCondition, type LoanEndingKind } from './loan-read.service.ts';
 import { isSelectablePerson } from './reference.service.ts';
 import { commitOnce } from './retryable-write.ts';
@@ -45,6 +46,8 @@ export interface StartLoanInput {
   authorizer_person_id?: string | null;
   document_reference?: string | null;
   remark?: string | null;
+  // The Loan Conflicts the user saw in a warning and confirms (#74 Q20).
+  confirmed_conflicts?: ConfirmedLoanConflictInput[];
 }
 
 // What a Loan write answers. It carries no Borrower detail, because the retry-token store keeps it
@@ -672,12 +675,18 @@ export class LoanService {
   async start(actorId: string, input: StartLoanInput, { retryToken }: { retryToken: string }): Promise<StartedLoan> {
     const today = bangkokDate(this.clock());
     const facts = normalizeFacts(input, today);
+    const confirmed = normalizeConfirmedConflicts(input.confirmed_conflicts);
+    // An unconfirmed request keeps the payload it had before confirmation existed (#74 Q20).
+    const payload = confirmed.length > 0 ? { version: 1, ...facts, confirmed_conflicts: confirmed } : { version: 1, ...facts };
     return commitOnce(
       this.db,
-      { actorId, operation: 'loan:start', retryToken, payload: { version: 1, ...facts }, explicitContinuation: false },
+      { actorId, operation: 'loan:start', retryToken, payload, explicitContinuation: false },
       async (client) => {
-        await this.assertLendable(client, facts.items.map(({ asset_id }) => asset_id));
+        const assetIds = facts.items.map(({ asset_id }) => asset_id);
+        // LR-11 refuses an Asset On Loan today before any Loan Conflict is looked at, so no confirmation is offered for it.
+        await this.assertLendable(client, assetIds);
         await this.assertNamedPersons(client, facts, today);
+        const conflicts = await loanConflictCheck(client, assetIds);
         const { borrower, items } = facts;
         const external = borrower.kind === 'EXTERNAL' ? borrower : null;
         const loanRes = await client.query(
@@ -706,6 +715,8 @@ export class LoanService {
            RETURNING id, asset_id`,
           [loanId, facts.due_date, items.map(({ asset_id }) => asset_id), items.map(({ condition }) => condition), items.map(({ condition_note }) => condition_note)]
         );
+        // A backdated Loan may overlap an earlier one of the same Asset (#74 Q20).
+        await conflicts.assertConfirmed({ loanId, isNewLoan: true, confirmed });
         return {
           loan_id: loanId,
           version: loanRes.rows[0].version,

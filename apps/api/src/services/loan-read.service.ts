@@ -76,6 +76,8 @@ export interface LoanItem {
   voided_endings: VoidedEnding[];
   // Oldest first, a voided one among them.
   due_date_extensions: DueDateExtension[];
+  // The other LoanItems of its Asset whose periods overlap its own, earliest first (#74 Q20).
+  conflicts: LoanConflict[];
   // Where an Outstanding or Not Returned item goes back to, when the Loan is read with a Return Date (#74 Q27).
   assignment_on_return_date?: PermanentAssignment;
 }
@@ -94,6 +96,8 @@ export interface AssetLoanItem {
   is_overdue: boolean;
   loan_return: LoanReturn | null;
   not_returned: NotReturned | null;
+  // The other LoanItems of the Asset whose periods overlap this one, earliest first (#74 Q20).
+  conflicts: LoanConflict[];
 }
 
 // Who holds an Asset that is On Loan.
@@ -175,6 +179,8 @@ export interface LoanListFilters {
   borrower_person_id?: string;
   // An External Borrower's contact or organization name, never the phone number (#74 Q24).
   borrower_name?: string;
+  // "มี conflict ค้างตรวจ": a Loan with a Loan Conflict (#74 Q20).
+  has_loan_conflict?: boolean;
   limit: number;
   offset: number;
 }
@@ -200,6 +206,77 @@ const ITEM_IS_OUTSTANDING = `li.ending_kind = 'NONE' AND NOT li.is_voided`;
 // LR-06, #74 Q5: an Outstanding LoanItem whose current Due Date is before today, for a row aliased `li`
 // and today's Asia/Bangkok date as the parameter `today`. An item due today is not Overdue.
 const itemIsOverdue = (today: string): string => `(${ITEM_IS_OUTSTANDING} AND ${CURRENT_DUE_DATE} < ${today}::date)`;
+
+// The period of each non-voided LoanItem of a non-voided Loan that `scope` keeps, for rows aliased `li`
+// and `l`: from the Loan Date to the effective ending date, the Loan Return's date, otherwise the Not
+// Returned date, and open-ended without either (#74).
+const loanItemPeriods = (scope: string): string => `SELECT li.id AS loan_item_id, li.loan_id, li.asset_id, l.loan_date AS starts,
+         coalesce(loan_return.ending_date, not_returned.ending_date) AS ends
+       FROM loan_items li
+       JOIN loans l ON l.id = li.loan_id
+       LEFT JOIN loan_item_endings loan_return
+         ON loan_return.loan_item_id = li.id AND loan_return.kind = 'LOAN_RETURN' AND NOT loan_return.is_voided
+       LEFT JOIN loan_item_endings not_returned
+         ON not_returned.loan_item_id = li.id AND not_returned.kind = 'NOT_RETURNED' AND NOT not_returned.is_voided
+       WHERE NOT li.is_voided AND NOT l.is_voided AND ${scope}`;
+
+// Every Loan Conflict among the LoanItems that `scope` keeps, once from each side: two periods of one
+// Asset conflict when each starts strictly before the other ends, so a shared boundary day is none (#74 Q20).
+const loanConflictPairs = (scope: string): string => `WITH periods AS (${loanItemPeriods(scope)})
+     SELECT p.asset_id, p.loan_item_id, p.loan_id, o.loan_id AS conflicting_loan_id, o.loan_item_id AS conflicting_loan_item_id,
+            to_char(o.starts, 'YYYY-MM-DD') AS conflicting_loan_date, to_char(o.ends, 'YYYY-MM-DD') AS conflicting_ending_date
+     FROM periods p
+     JOIN periods o ON o.asset_id = p.asset_id AND o.loan_item_id <> p.loan_item_id
+     WHERE p.starts < coalesce(o.ends, 'infinity'::date) AND o.starts < coalesce(p.ends, 'infinity'::date)`;
+
+/** A Loan Conflict as one LoanItem sees it: the other LoanItem whose period overlaps its own. */
+export interface LoanConflict {
+  loan_id: string;
+  loan_item_id: string;
+  loan_date: string;
+  // The other item's effective ending date, or null while it has none.
+  ending_date: string | null;
+}
+
+/** A Loan Conflict of one LoanItem, with the item and its Asset. */
+export interface LoanItemConflict {
+  asset_id: string;
+  loan_id: string;
+  loan_item_id: string;
+  conflicting: LoanConflict;
+}
+
+/**
+ * The Loan Conflicts of `assetIds`, once from each side, computed on read and never stored (#74 Q20).
+ * A write that decides on them holds the Assets locked.
+ */
+export async function readLoanConflictsOfAssets(db: pg.Pool | pg.PoolClient | any, assetIds: string[]): Promise<LoanItemConflict[]> {
+  const res = await db.query(
+    `${loanConflictPairs('li.asset_id = ANY($1::uuid[])')}
+     ORDER BY p.asset_id, o.starts, o.loan_item_id`,
+    [assetIds]
+  );
+  return res.rows.map((row: any) => ({
+    asset_id: row.asset_id,
+    loan_id: row.loan_id,
+    loan_item_id: row.loan_item_id,
+    conflicting: {
+      loan_id: row.conflicting_loan_id,
+      loan_item_id: row.conflicting_loan_item_id,
+      loan_date: row.conflicting_loan_date,
+      ending_date: row.conflicting_ending_date,
+    },
+  }));
+}
+
+// The Loan Conflicts of each LoanItem among `conflicts`, by item.
+const conflictsByItem = (conflicts: LoanItemConflict[]): Map<string, LoanConflict[]> => {
+  const byItem = new Map<string, LoanConflict[]>();
+  for (const { loan_item_id: itemId, conflicting } of conflicts) {
+    byItem.set(itemId, [...(byItem.get(itemId) ?? []), conflicting]);
+  }
+  return byItem;
+};
 
 const LOAN_COLUMNS = `l.id, l.borrower_kind, l.borrower_person_id, l.borrower_contact_name, l.borrower_organization_name,
        l.borrower_phone, to_char(l.loan_date, 'YYYY-MM-DD') AS loan_date, l.authorizer_person_id, l.document_reference, l.remark,
@@ -490,6 +567,7 @@ export class LoanReadService {
           recorded_at: new Date(recorded_at).toISOString(),
         }));
     const voidedEndings = await readVoidedEndingsOf(this.db, loanId);
+    const conflicts = conflictsByItem(await readLoanConflictsOfAssets(this.db, [...new Set<string>(itemsRes.rows.map(({ asset_id }: any) => asset_id))]));
     const assignments = returnDate
       ? await readAssignmentsAt(this.db, itemsRes.rows.filter(isReturnable).map((item: any) => item.asset_id), returnDate)
       : null;
@@ -523,6 +601,7 @@ export class LoanReadService {
         not_returned: notReturnedOfRow(item),
         voided_endings: voidedEndings.get(item.id) ?? [],
         due_date_extensions: extensionsOf(item.id),
+        conflicts: conflicts.get(item.id) ?? [],
         assignment_on_return_date: assignments?.get(item.asset_id),
       })),
       corrections: await readCorrectionsOf(this.db, loanId),
@@ -554,6 +633,9 @@ export class LoanReadService {
     }
     if (filters.overdue) {
       conditions.push('is_overdue');
+    }
+    if (filters.has_loan_conflict) {
+      conditions.push(`id IN (SELECT conflict.loan_id FROM (${loanConflictPairs('true')}) conflict)`);
     }
     params.push(filters.limit, filters.offset);
 
@@ -628,6 +710,7 @@ export class LoanReadService {
        ORDER BY l.loan_date DESC, l.recorded_at DESC, li.id DESC`,
       [assetId, bangkokDate(this.clock())]
     );
+    const conflicts = conflictsByItem(await readLoanConflictsOfAssets(this.db, [assetId]));
     return res.rows.map((row: any) => ({
       id: row.item_id,
       loan_id: row.id,
@@ -641,6 +724,7 @@ export class LoanReadService {
       is_overdue: row.is_overdue,
       loan_return: loanReturnOf(row),
       not_returned: notReturnedOfRow(row),
+      conflicts: conflicts.get(row.item_id) ?? [],
     }));
   }
 
@@ -652,6 +736,11 @@ export class LoanReadService {
   /** The Condition of an Asset's latest Loan Return by Return Date, or null when it has had none (#74 Q23). */
   async latestLoanReturnConditionOf(assetId: string): Promise<LoanCondition | null> {
     return (await latestLoanReturnConditionsOf(this.db, [assetId])).get(assetId) ?? null;
+  }
+
+  /** Whether any LoanItem of an Asset is in a Loan Conflict (#74 Q20). */
+  async hasLoanConflict(assetId: string): Promise<boolean> {
+    return (await readLoanConflictsOfAssets(this.db, [assetId])).length > 0;
   }
 
   /** Who holds an Asset, or null when it is not On Loan. */

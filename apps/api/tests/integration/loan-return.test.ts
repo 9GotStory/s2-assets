@@ -377,8 +377,8 @@ describe('Recording a Loan Return (Seam A - F004-T2)', () => {
   });
 
   describe('the latest Loan Return\'s Condition (#74 Q23)', () => {
-    const returned = async (assetId: string, condition: string, returnDate: string, loanDate: string = LOAN_DATE) => {
-      const { loanId, itemOf } = await lent([assetId], { loan_date: loanDate });
+    const returned = async (assetId: string, condition: string, returnDate: string, loanDate: string = LOAN_DATE, overrides: Record<string, unknown> = {}) => {
+      const { loanId, itemOf } = await lent([assetId], { loan_date: loanDate, ...overrides });
       const res = await record(loanId, await body(loanId, [], { return_date: returnDate, items: [{ loan_item_id: itemOf[assetId], condition }] }));
       expect(res.statusCode).toBe(201);
       return { loanId, itemId: itemOf[assetId] };
@@ -391,15 +391,17 @@ describe('Recording a Loan Return (Seam A - F004-T2)', () => {
       await returned(assetId, 'DAMAGED', '2026-11-03');
       expect((await detailOf(assetId)).latest_loan_return_condition).toBe('DAMAGED');
 
-      await returned(assetId, 'NORMAL', '2026-11-04');
+      // Lent again on the day it came back, so the two periods do not overlap (#74 Q20).
+      await returned(assetId, 'NORMAL', '2026-11-04', '2026-11-03');
       expect((await detailOf(assetId)).latest_loan_return_condition).toBe('NORMAL');
     });
 
     it('goes by the Return Date, not by the order of recording', async () => {
       const assetId = await registered();
 
-      await returned(assetId, 'NORMAL', '2026-11-04');
-      await returned(assetId, 'DAMAGED', '2026-10-05', '2026-10-01');
+      const later = await returned(assetId, 'NORMAL', '2026-11-04');
+      // Until its Loan Return is recorded, the earlier Loan's period is open and overlaps the later one (#74 Q20).
+      await returned(assetId, 'DAMAGED', '2026-10-05', '2026-10-01', { confirmed_conflicts: [{ conflicting_loan_item_id: later.itemId }] });
 
       expect((await detailOf(assetId)).latest_loan_return_condition).toBe('NORMAL');
     });
@@ -414,7 +416,7 @@ describe('Recording a Loan Return (Seam A - F004-T2)', () => {
     it('takes no voided Loan Return into account', async () => {
       const assetId = await registered();
       await returned(assetId, 'NORMAL', '2026-11-03');
-      const later = await returned(assetId, 'DAMAGED', '2026-11-04');
+      const later = await returned(assetId, 'DAMAGED', '2026-11-04', '2026-11-03');
       expect((await detailOf(assetId)).latest_loan_return_condition).toBe('DAMAGED');
 
       await api.pool.query(`UPDATE loan_item_endings SET is_voided = true WHERE loan_item_id = $1`, [later.itemId]);
