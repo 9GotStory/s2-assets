@@ -120,7 +120,7 @@ describe('Recording Not Returned (Seam A - F004-T5)', () => {
       // The item not named stays Outstanding, and Overdue.
       expect(itemById[itemOf[kept]]).toMatchObject({ ending_kind: 'NONE', is_overdue: true, not_returned: null });
     });
-  
+
     it('refuses an item that has ended or is voided, and one of another Loan, naming each, and writes nothing', async () => {
       const [free, returned, closed, voided, elsewhere] = [await registered(), await registered('ของคืนแล้ว'), await registered('ของปิดแล้ว'), await registered(), await registered()];
       const { loanId, itemOf } = await lent([free, returned, closed, voided]);

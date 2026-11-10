@@ -5,7 +5,7 @@ import { LoanConditionFields } from './LoanConditionFields';
 import { LoanSaveForm } from './LoanSaveForm';
 import { entryLabel, fieldInputStyle, fieldLabelStyle, useReferenceLists } from './ReferenceContextFields';
 import { bangkokToday, isBeforeToday } from './assignmentFacts';
-import { ON_LOAN_LABEL, assetLabel, type LoanCondition, type RefusedAsset } from './loanFacts';
+import { NOT_RETURNED_LABEL, ON_LOAN_LABEL, assetLabel, type LoanCondition, type RefusedAsset } from './loanFacts';
 
 export interface LoanFormAsset {
   id: string;
@@ -35,12 +35,12 @@ const RefusedAssets: React.FC<{ assets: RefusedAsset[] }> = ({ assets }) => (
       {assets.map((asset) => (
         <li key={asset.asset_id}>
           {asset.name ?? asset.asset_number ?? asset.asset_id}:{' '}
-          {asset.reason === 'ON_LOAN' ? (
-            <>
-              {ON_LOAN_LABEL} <Link to={`/loans/${asset.loan_id}`}>ดูการยืม</Link>
-            </>
-          ) : (
+          {asset.reason === 'NOT_FOUND' ? (
             'ไม่พบครุภัณฑ์'
+          ) : (
+            <>
+              {asset.reason === 'ON_LOAN' ? ON_LOAN_LABEL : NOT_RETURNED_LABEL} <Link to={`/loans/${asset.loan_id}`}>ดูการยืม</Link>
+            </>
           )}
         </li>
       ))}

@@ -4,11 +4,13 @@ import { useQuery } from '@tanstack/react-query';
 import { OverdueBadge, ReturnedLateBadge } from './LoanBadges';
 import { LoanStartForm, type LoanFormAsset } from './LoanStartForm';
 import { thaiDate } from './assignmentFacts';
-import { CONDITION_LABELS, ON_LOAN_LABEL, borrowerText, loanReturnText, type AssetLoanItem, type OnLoan } from './loanFacts';
+import { CONDITION_LABELS, NOT_RETURNED_LABEL, ON_LOAN_LABEL, borrowerText, loanReturnText, type AssetLoanItem, type AssetNotReturned, type OnLoan } from './loanFacts';
 
 export interface LoanSectionProps {
   asset: LoanFormAsset;
   onLoan: OnLoan | null;
+  // The Not Returned that keeps the Asset from a new Loan (F004-T5).
+  notReturned: AssetNotReturned | null;
   // Whether the viewer holds 'loan:record'.
   canRecordLoan: boolean;
   actorId: string | null;
@@ -26,6 +28,7 @@ export interface LoanSectionProps {
 export const LoanSection: React.FC<LoanSectionProps> = ({
   asset,
   onLoan,
+  notReturned,
   canRecordLoan,
   actorId,
   dataUpdatedAt,
@@ -55,8 +58,9 @@ export const LoanSection: React.FC<LoanSectionProps> = ({
       previousQuery?.queryKey[1] === actorId && previousQuery?.queryKey[2] === asset.id ? previous : undefined,
   });
 
-  // While the Asset is On Loan, the page links to that Loan instead of offering another.
-  const mayStart = canRecordLoan && !onLoan;
+  // While the Asset is On Loan, or its item ended Not Returned, the page links to that Loan instead of
+  // offering another: the server would refuse it (LR-11, #74 Q21).
+  const mayStart = canRecordLoan && !onLoan && !notReturned;
 
   return (
     <section aria-labelledby="loan-heading" id="loan-section" style={{ marginBottom: '2rem' }}>
@@ -85,6 +89,16 @@ export const LoanSection: React.FC<LoanSectionProps> = ({
             </Link>
           </dd>
         </dl>
+      )}
+
+      {notReturned && (
+        <div data-testid="loan-not-returned" style={{ margin: '0 0 1rem 0', fontSize: '0.9375rem', backgroundColor: '#f3f4f6', padding: '1rem 1.25rem', borderRadius: '6px', color: '#374151' }}>
+          <span style={{ fontWeight: 600 }}>{NOT_RETURNED_LABEL}</span> เมื่อ <time dateTime={notReturned.not_returned_date}>{thaiDate(notReturned.not_returned_date)}</time>{' '}
+          ยืมใหม่ไม่ได้จนกว่าจะบันทึกคืนในการยืมเดิม{' '}
+          <Link to={`/loans/${notReturned.loan_id}`} id="loan-not-returned-link" style={{ color: '#2563eb', textDecoration: 'underline' }}>
+            ดูการยืม →
+          </Link>
+        </div>
       )}
 
       {mayStart && isFormOpen && (
@@ -141,6 +155,11 @@ export const LoanSection: React.FC<LoanSectionProps> = ({
                     ดูการยืม
                   </Link>
                 </div>
+                {item.not_returned && (
+                  <div data-testid="loan-history-not-returned">
+                    {NOT_RETURNED_LABEL}: <time dateTime={item.not_returned.not_returned_date}>{thaiDate(item.not_returned.not_returned_date)}</time>
+                  </div>
+                )}
                 {item.loan_return && (
                   <div>
                     คืนแล้ว: <time dateTime={item.loan_return.return_date}>{thaiDate(item.loan_return.return_date)}</time> · {loanReturnText(item.loan_return)}
