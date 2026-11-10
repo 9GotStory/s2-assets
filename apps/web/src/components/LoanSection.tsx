@@ -76,12 +76,7 @@ export const LoanSection: React.FC<LoanSectionProps> = ({
           <dt style={{ fontWeight: 500, color: '#4b5563' }}>กำหนดคืน:</dt>
           <dd style={{ margin: 0, color: '#111827' }}>
             <time dateTime={onLoan.due_date}>{thaiDate(onLoan.due_date)}</time>
-            {onLoan.is_overdue && (
-              <>
-                {' '}
-                <OverdueBadge testId="loan-on-loan-overdue" />
-              </>
-            )}
+            {onLoan.is_overdue && <OverdueBadge testId="loan-on-loan-overdue" />}
           </dd>
           <dt style={{ fontWeight: 500, color: '#4b5563' }}>การยืม:</dt>
           <dd style={{ margin: 0 }}>
@@ -137,12 +132,7 @@ export const LoanSection: React.FC<LoanSectionProps> = ({
                 <div>
                   วันที่ยืม: <time dateTime={item.loan_date}>{thaiDate(item.loan_date)}</time> · กำหนดคืน:{' '}
                   <time dateTime={item.due_date}>{thaiDate(item.due_date)}</time>
-                  {item.is_overdue && (
-                    <>
-                      {' '}
-                      <OverdueBadge />
-                    </>
-                  )}
+                  {item.is_overdue && <OverdueBadge />}
                 </div>
                 <div>
                   สภาพ: {CONDITION_LABELS[item.condition]}
@@ -154,12 +144,7 @@ export const LoanSection: React.FC<LoanSectionProps> = ({
                 {item.loan_return && (
                   <div>
                     คืนแล้ว: <time dateTime={item.loan_return.return_date}>{thaiDate(item.loan_return.return_date)}</time> · {loanReturnText(item.loan_return)}
-                    {item.loan_return.returned_after_due_date && (
-                      <>
-                        {' '}
-                        <ReturnedLateBadge />
-                      </>
-                    )}
+                    {item.loan_return.returned_after_due_date && <ReturnedLateBadge />}
                   </div>
                 )}
               </li>

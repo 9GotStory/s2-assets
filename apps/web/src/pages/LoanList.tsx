@@ -4,7 +4,7 @@ import { QueryClient, QueryClientProvider, useQuery } from '@tanstack/react-quer
 import { OverdueBadge } from '../components/LoanBadges';
 import { entryLabel, fetchReferenceList, type ReferenceEntry } from '../components/ReferenceContextFields';
 import { thaiDate } from '../components/assignmentFacts';
-import { LOAN_STATUS_LABELS, borrowerText, type LoanListRow, type LoanStatus } from '../components/loanFacts';
+import { LOAN_STATUS_LABELS, borrowerText, type Borrower, type LoanListRow, type LoanStatus } from '../components/loanFacts';
 
 const PAGE_SIZE = 25;
 
@@ -16,7 +16,7 @@ const LOAD_ERRORS: Record<number, string> = {
 interface Filters {
   status: '' | LoanStatus;
   overdue: boolean;
-  borrower_kind: '' | 'INTERNAL' | 'EXTERNAL';
+  borrower_kind: '' | Borrower['kind'];
   borrower_person_id: string;
   borrower_name: string;
 }
@@ -212,6 +212,7 @@ const LoanListContent: React.FC = () => {
                       id="loan-filter-borrower_name"
                       type="text"
                       value={draft.borrower_name}
+                      // A contact or organization name is at most 200 characters (#75).
                       maxLength={200}
                       onChange={(e) => setDraftField('borrower_name', e.target.value)}
                       style={inputStyle}
@@ -290,12 +291,7 @@ const LoanListContent: React.FC = () => {
                             </td>
                             <td style={cellStyle}>
                               {LOAN_STATUS_LABELS[loan.status]}
-                              {loan.is_overdue && (
-                                <>
-                                  {' '}
-                                  <OverdueBadge />
-                                </>
-                              )}
+                              {loan.is_overdue && <OverdueBadge />}
                             </td>
                             <td style={cellStyle}>
                               <Link to={`/loans/${loan.id}`} style={{ color: '#2563eb', textDecoration: 'underline' }}>

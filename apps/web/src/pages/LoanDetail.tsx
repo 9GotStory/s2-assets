@@ -123,12 +123,7 @@ const LoanDetailContent: React.FC = () => {
           <dt style={termStyle}>สถานะ:</dt>
           <dd id="loan-status" style={valueStyle}>
             {LOAN_STATUS_LABELS[status]} (คืนแล้ว {returnedCount} จาก {counted.length} รายการ)
-            {isOverdue && (
-              <>
-                {' '}
-                <OverdueBadge id="loan-overdue" />
-              </>
-            )}
+            {isOverdue && <OverdueBadge id="loan-overdue" />}
           </dd>
           <dt style={termStyle}>ผู้ยืม:</dt>
           <dd id="loan-borrower" style={valueStyle}>
@@ -220,12 +215,7 @@ const LoanDetailContent: React.FC = () => {
                 <div data-testid="loan-item-return">
                   <div>
                     คืนแล้ว: <time dateTime={item.loan_return.return_date}>{thaiDate(item.loan_return.return_date)}</time> · {loanReturnText(item.loan_return)}
-                    {item.loan_return.returned_after_due_date && (
-                      <>
-                        {' '}
-                        <ReturnedLateBadge testId="loan-item-returned-late" />
-                      </>
-                    )}
+                    {item.loan_return.returned_after_due_date && <ReturnedLateBadge testId="loan-item-returned-late" />}
                   </div>
                   {item.loan_return.document_reference && <div>เอกสารอ้างอิงการคืน: {item.loan_return.document_reference}</div>}
                   {item.loan_return.remark && <div>หมายเหตุการคืน: {item.loan_return.remark}</div>}
@@ -235,12 +225,7 @@ const LoanDetailContent: React.FC = () => {
                 isOutstanding(item) && (
                   <div>
                     <span data-testid="loan-item-outstanding">{OUTSTANDING_LABEL}</span>
-                    {item.is_overdue && (
-                      <>
-                        {' '}
-                        <OverdueBadge testId="loan-item-overdue" />
-                      </>
-                    )}
+                    {item.is_overdue && <OverdueBadge testId="loan-item-overdue" />}
                   </div>
                 )
               )}

@@ -4,6 +4,7 @@ import { OVERDUE_LABEL, RETURNED_LATE_LABEL } from './loanFacts';
 const badgeStyle: React.CSSProperties = {
   display: 'inline-block',
   padding: '0.125rem 0.5rem',
+  marginLeft: '0.375rem',
   borderRadius: '9999px',
   fontSize: '0.75rem',
   fontWeight: 600,

@@ -204,7 +204,9 @@ describe('The Loan list and Overdue (Seam A - F004-T3)', () => {
 
     it('never match a phone number (LR-15, #74 Q24)', async () => {
       const phone = `08${crypto.randomInt(10_000_000, 99_999_999)}`;
-      await lent(1, external('คุณมีเบอร์', { organization_name: 'บริษัทมีเบอร์', phone }));
+      const organization = `บริษัทมีเบอร์ ${crypto.randomUUID().slice(0, 8)}`;
+      const { loanId } = await lent(1, external('คุณมีเบอร์', { organization_name: organization, phone }));
+      expect(await idsOf(`borrower_name=${encodeURIComponent(organization)}`)).toEqual([loanId]);
 
       expect(await idsOf(`borrower_name=${phone}`)).toEqual([]);
       expect(await idsOf(`borrower_name=${phone.slice(2)}`)).toEqual([]);
@@ -257,6 +259,8 @@ describe('The Loan list and Overdue (Seam A - F004-T3)', () => {
         'borrower_name=',
         'borrower_name=%20%20',
         'borrower_name=%00',
+        'borrower_name=%E0%B8%81%0A',
+        'borrower_name=%E0%B8%81%09%E0%B8%82',
         `borrower_name=${'a'.repeat(4097)}`,
       ]) {
         const res = await api.get(readonly, `/loans?${query}`);
@@ -331,6 +335,7 @@ describe('The Loan list and Overdue (Seam A - F004-T3)', () => {
 
     it('needs asset:view itself: denying it alone, or failing to look it up, shows nothing', async () => {
       await lent(1, { borrower: { kind: 'EXTERNAL', contact_name: 'คุณไม่ควรเห็นในรายการ' } });
+      expect((await api.get(custodian, '/loans')).body).toContain('คุณไม่ควรเห็นในรายการ');
 
       const denied = await withCapabilityAnswer(api.app, 'asset:view', async () => false, () => api.get(custodian, '/loans'));
       expect(denied.statusCode).toBe(403);

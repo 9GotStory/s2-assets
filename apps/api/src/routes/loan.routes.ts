@@ -5,6 +5,7 @@ import { errorBody, parseWrite } from './write-request.ts';
 import { NotFoundError, RetryTokenConflictError, StaleBeforeConflictError, ValidationError } from '../services/asset.service.ts';
 import { isCalendarDate } from '../services/assignment.service.ts';
 import { CapabilityService, isValidUuid } from '../services/capability.service.ts';
+import { hasStrictControlChars } from '../services/control-characters.ts';
 import { LoanItemsNotReturnableError, LoanReturnService, type RecordLoanReturnInput } from '../services/loan-return.service.ts';
 import { AssetsNotLendableError, LoanService, type StartLoanInput } from '../services/loan.service.ts';
 
@@ -77,9 +78,10 @@ const LoanListQuerySchema = z
     // "เกินกำหนด" takes one value; leaving it out lists every Loan.
     overdue: z.literal('true').optional(),
     borrower_kind: z.enum(['INTERNAL', 'EXTERNAL']).optional(),
+    // A name is one line, so a control character, even at an end, can match none (CODING_STANDARDS.md).
     borrower_name: z
       .string()
-      .refine((name) => !name.includes('\0'), 'must not contain NUL bytes')
+      .refine((name) => !hasStrictControlChars(name), 'must not contain control characters')
       .refine((name) => Buffer.byteLength(name, 'utf8') <= 4096, 'must be at most 4096 bytes')
       .transform((name) => name.trim())
       .refine((name) => name.length > 0, 'must not be blank')
