@@ -1,6 +1,7 @@
 import React, { useEffect, useState } from 'react';
 import { Link, useNavigate, useParams } from 'react-router';
 import { QueryClient, QueryClientProvider, useQuery } from '@tanstack/react-query';
+import { OverdueBadge, ReturnedLateBadge } from '../components/LoanBadges';
 import { LoanReturnForm } from '../components/LoanReturnForm';
 import { entryLabel } from '../components/ReferenceContextFields';
 import { thaiDate } from '../components/assignmentFacts';
@@ -99,7 +100,7 @@ const LoanDetailContent: React.FC = () => {
     );
   }
 
-  const { borrower, loan_date: loanDate, authorizer, document_reference: documentReference, remark, recorded_by: recordedBy, recorded_by_username: recordedByUsername, recorded_at: recordedAt, status, items } = loan.data;
+  const { borrower, loan_date: loanDate, authorizer, document_reference: documentReference, remark, recorded_by: recordedBy, recorded_by_username: recordedByUsername, recorded_at: recordedAt, status, is_overdue: isOverdue, items } = loan.data;
   const counted = items.filter(({ is_voided: isVoided }) => !isVoided);
   const returnedCount = counted.filter(({ ending_kind: endingKind }) => endingKind === 'LOAN_RETURN').length;
   const mayReturn = canRecordLoan && items.some(isOutstanding);
@@ -110,6 +111,10 @@ const LoanDetailContent: React.FC = () => {
         <Link to="/dashboard" id="nav-dashboard-link" style={{ color: '#2563eb', textDecoration: 'none', fontSize: '0.875rem' }}>
           ← กลับไปยังแดชบอร์ด
         </Link>
+        <span style={{ color: '#d1d5db', margin: '0 0.75rem' }}>|</span>
+        <Link to="/loans" id="nav-loan-list-link" style={{ color: '#2563eb', textDecoration: 'none', fontSize: '0.875rem' }}>
+          รายการยืม
+        </Link>
         <h1 id="loan-detail-heading" style={{ fontSize: '1.5rem', fontWeight: 600, margin: '0.75rem 0 1.5rem 0', color: '#111827' }}>
           การยืม
         </h1>
@@ -118,6 +123,12 @@ const LoanDetailContent: React.FC = () => {
           <dt style={termStyle}>สถานะ:</dt>
           <dd id="loan-status" style={valueStyle}>
             {LOAN_STATUS_LABELS[status]} (คืนแล้ว {returnedCount} จาก {counted.length} รายการ)
+            {isOverdue && (
+              <>
+                {' '}
+                <OverdueBadge id="loan-overdue" />
+              </>
+            )}
           </dd>
           <dt style={termStyle}>ผู้ยืม:</dt>
           <dd id="loan-borrower" style={valueStyle}>
@@ -209,13 +220,29 @@ const LoanDetailContent: React.FC = () => {
                 <div data-testid="loan-item-return">
                   <div>
                     คืนแล้ว: <time dateTime={item.loan_return.return_date}>{thaiDate(item.loan_return.return_date)}</time> · {loanReturnText(item.loan_return)}
+                    {item.loan_return.returned_after_due_date && (
+                      <>
+                        {' '}
+                        <ReturnedLateBadge testId="loan-item-returned-late" />
+                      </>
+                    )}
                   </div>
                   {item.loan_return.document_reference && <div>เอกสารอ้างอิงการคืน: {item.loan_return.document_reference}</div>}
                   {item.loan_return.remark && <div>หมายเหตุการคืน: {item.loan_return.remark}</div>}
                   <div>ผู้บันทึกการคืน: {item.loan_return.recorded_by_username ?? item.loan_return.recorded_by}</div>
                 </div>
               ) : (
-                isOutstanding(item) && <div data-testid="loan-item-outstanding">{OUTSTANDING_LABEL}</div>
+                isOutstanding(item) && (
+                  <div>
+                    <span data-testid="loan-item-outstanding">{OUTSTANDING_LABEL}</span>
+                    {item.is_overdue && (
+                      <>
+                        {' '}
+                        <OverdueBadge testId="loan-item-overdue" />
+                      </>
+                    )}
+                  </div>
+                )
               )}
             </li>
           ))}

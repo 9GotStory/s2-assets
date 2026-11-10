@@ -21,6 +21,8 @@ export interface LoanReturn {
   recorded_by: string;
   recorded_by_username: string | null;
   recorded_at: string;
+  // "คืนเกินกำหนด", derived by the server (F004-T3).
+  returned_after_due_date: boolean;
 }
 
 // Who holds an Asset that is On Loan (GET /assets/:id, F004-T1).
@@ -28,6 +30,7 @@ export interface OnLoan {
   loan_id: string;
   borrower: Borrower;
   due_date: string;
+  is_overdue: boolean;
 }
 
 // One LoanItem of an Asset, with its Loan (GET /assets/:id/loans, F004-T1).
@@ -41,6 +44,7 @@ export interface AssetLoanItem {
   condition_note: string | null;
   ending_kind: EndingKind;
   is_voided: boolean;
+  is_overdue: boolean;
   loan_return: LoanReturn | null;
 }
 
@@ -52,6 +56,7 @@ export interface LoanItem {
   condition_note: string | null;
   ending_kind: EndingKind;
   is_voided: boolean;
+  is_overdue: boolean;
   loan_return: LoanReturn | null;
   // Where an Outstanding item goes back to, when the Loan is read with a Return Date (#74 Q27).
   assignment_on_return_date?: PermanentAssignment;
@@ -72,9 +77,21 @@ export interface Loan {
   is_voided: boolean;
   version: number;
   status: LoanStatus;
+  is_overdue: boolean;
   items: LoanItem[];
   // Whether the viewer holds 'loan:record' (F004-T2).
   can_record_loan: boolean;
+}
+
+// One row of the Loan list (GET /loans, F004-T3). It carries no phone number.
+export interface LoanListRow {
+  id: string;
+  borrower: Borrower;
+  loan_date: string;
+  item_count: number;
+  returned_count: number;
+  status: LoanStatus;
+  is_overdue: boolean;
 }
 
 // A LoanItem the server refused a Loan Return, and why (F004-T2).
@@ -112,6 +129,10 @@ export const loanReturnText = ({ condition, condition_note: note }: Pick<LoanRet
   `สภาพเมื่อคืน: ${CONDITION_LABELS[condition]}${note ? ` (${note})` : ''}`;
 
 export const ON_LOAN_LABEL = 'กำลังถูกยืม';
+
+// Derived by the server from today's Asia/Bangkok date (F004-T3, #74 Q5).
+export const OVERDUE_LABEL = 'เกินกำหนด';
+export const RETURNED_LATE_LABEL = 'คืนเกินกำหนด';
 
 // An Asset by its name, or by what else identifies it.
 export const assetLabel = ({ id, name, asset_number: assetNumber }: LoanItem['asset']): string =>
