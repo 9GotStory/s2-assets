@@ -530,12 +530,11 @@ export const assetRoutes: FastifyPluginAsync<AssetRoutesOptions> = async (
    * T4 (#25): each legacy reference text is a field searched like name, and
    * location_id / organization_unit_id / responsible_person_id filter by exact entry, with AND.
    * Requires BOTH 'asset:search' and 'asset:view' capabilities.
-   * Prevents query disclosure in operational logs via sanitized URLs and logLevel 'silent'.
+   * Prevents query disclosure in operational logs via sanitized URLs and the logger's path-only request serializer.
    */
   fastify.get(
     '/search',
     {
-      logLevel: 'silent',
       preHandler: [
         requireCapability('asset:search'),
         requireCapability('asset:view'),

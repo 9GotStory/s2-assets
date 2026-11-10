@@ -40,8 +40,10 @@ name for a new concept. In F003-T1, the first draft typed the Current Assignment
 A name, a phone number or a token is one line and refuses every control character
 (`hasStrictControlChars`). A new one is checked before it is trimmed, so a line break at its end is
 refused, not dropped. Free text, such as a document reference, a remark, a note or a reason, keeps
-tab and line breaks inside it and refuses the rest (`hasDisallowedControlChars`). The first review
-of F004-T1 (#75) read a Condition note as one line, and the second undid the fix.
+tab and line breaks inside it and refuses the rest (`hasDisallowedControlChars`). A search term
+follows the rule of the field it searches: the Loan list's Borrower-name search refuses every
+control character (#77). The first review of F004-T1 (#75) read a Condition note as one line, and
+the second undid the fix.
 
 ## A feature's code gets its own files
 
