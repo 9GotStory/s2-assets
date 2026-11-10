@@ -14,6 +14,7 @@ import { SessionService } from '../../../api/src/services/session.service.ts';
 import { AssetService } from '../../../api/src/services/asset.service.ts';
 import { ReferenceService } from '../../../api/src/services/reference.service.ts';
 import { LoanService } from '../../../api/src/services/loan.service.ts';
+import { LoanReturnService } from '../../../api/src/services/loan-return.service.ts';
 import { AssignmentRecordingService } from '../../../api/src/services/assignment-recording.service.ts';
 import { repositoryProxyConfig } from '../../vite.config.ts';
 
@@ -240,6 +241,88 @@ test.describe.serial('Loan journeys: Real SPA -> Composed API -> PostgreSQL (Sea
     await expect(page.locator('[data-testid="loan-on-loan"]')).toContainText('สมศรี ลาออกแล้ว (ปิดใช้งาน)');
     await page.goto(`${targetBaseUrl}/loans/${departedLoanId}`);
     await expect(page.locator('#loan-borrower')).toHaveText('สมศรี ลาออกแล้ว (ปิดใช้งาน)');
+  });
+
+  // F004-T3 (#77): a backdated Loan past its Due Date shows "เกินกำหนด". F004-T5 completes this journey
+  // with a Due Date Extension that clears it.
+  test('Journey F004-T3.1: a backdated Loan past its Due Date shows "เกินกำหนด" on the Loan list, the Loan page and the Asset page', async ({ page, context }) => {
+    const start = async (name: string, assetNames: string[], dueDate: string) => {
+      const assets = [];
+      for (const assetName of assetNames) {
+        assets.push((await assetService.registerAsset(custodianUserId, { name: assetName } as any)).asset);
+      }
+      const { loan_id: loanId, items } = await loanService.start(
+        custodianUserId,
+        {
+          assets: assets.map(({ id }) => ({ asset_id: id, condition: 'NORMAL' as const })),
+          borrower: { kind: 'EXTERNAL', contact_name: name, organization_name: 'หน่วยงาน E2E รายการยืม' },
+          loan_date: daysAgo(10),
+          due_date: dueDate,
+        },
+        { retryToken: crypto.randomUUID() }
+      );
+      return { loanId, assets, items };
+    };
+    const late = await start('คุณเกินกำหนด E2E', ['โปรเจกเตอร์ E2E เกินกำหนด', 'จอ E2E คืนช้า'], daysAgo(3));
+    const onTime = await start('คุณยังไม่ถึงกำหนด E2E', ['ไมค์ E2E ยังไม่ถึงกำหนด'], '2099-12-31');
+    const [stillOut, returnedLate] = late.assets;
+    await new LoanReturnService({ db: pool }).record(
+      custodianUserId,
+      late.loanId,
+      { expected_version: 1, return_date: daysAgo(1), items: [{ loan_item_id: late.items.find(({ asset_id }) => asset_id === returnedLate.id)!.id, condition: 'NORMAL' }] },
+      { retryToken: crypto.randomUUID() }
+    );
+
+    // A Read-only User reaches the list from the Dashboard and finds the Loans by the External Borrower's organization.
+    await loginAs(context, readonlyUserId);
+    await page.goto(`${targetBaseUrl}/dashboard`);
+    await page.locator('#nav-loan-list').click();
+    await expect(page).toHaveURL(/\/loans$/);
+    await expect(page.getByRole('heading', { name: 'รายการยืม' })).toBeVisible();
+    await page.locator('#loan-filter-borrower_kind').selectOption('EXTERNAL');
+    await page.locator('#loan-filter-borrower_name').fill('หน่วยงาน E2E รายการยืม');
+    await page.locator('#loan-list-submit').click();
+
+    const lateRow = page.locator(`[data-testid="loan-row-${late.loanId}"]`);
+    const onTimeRow = page.locator(`[data-testid="loan-row-${onTime.loanId}"]`);
+    await expect(lateRow).toContainText('คุณเกินกำหนด E2E');
+    await expect(lateRow).toContainText('คืนบางส่วน');
+    await expect(lateRow).toContainText('คืนแล้ว 1 จาก 2 รายการ');
+    await expect(lateRow.locator('[data-testid="loan-overdue"]')).toHaveText('เกินกำหนด');
+    await expect(onTimeRow).toContainText('ยังไม่คืน');
+    await expect(page.locator('#loan-list-table tbody tr')).toHaveCount(2);
+    await expect(onTimeRow.locator('[data-testid="loan-overdue"]')).toHaveCount(0);
+
+    // The Overdue filter leaves the Loan still past its Due Date.
+    await page.locator('#loan-filter-overdue').check();
+    await page.locator('#loan-list-submit').click();
+    await expect(page.locator('#loan-list-table tbody tr')).toHaveCount(1);
+    await expect(lateRow).toBeVisible();
+
+    // The Loan page says the Loan and its item still out are Overdue, and the item back after its Due Date "คืนเกินกำหนด".
+    await lateRow.getByRole('link', { name: 'ดูการยืม' }).click();
+    await expect(page).toHaveURL(new RegExp(`/loans/${late.loanId}$`));
+    await expect(page.locator('#loan-overdue')).toHaveText('เกินกำหนด');
+    const itemOf = (asset: { name: string }) => page.locator('[data-testid="loan-item"]').filter({ hasText: asset.name });
+    await expect(itemOf(stillOut).locator('[data-testid="loan-item-overdue"]')).toHaveText('เกินกำหนด');
+    await expect(itemOf(returnedLate).locator('[data-testid="loan-item-returned-late"]')).toHaveText('คืนเกินกำหนด');
+    await expect(itemOf(returnedLate).locator('[data-testid="loan-item-overdue"]')).toHaveCount(0);
+
+    // Back on the list, its filters stand.
+    await page.goBack();
+    await expect(page.locator('#loan-filter-overdue')).toBeChecked();
+    await expect(page.locator('#loan-list-table tbody tr')).toHaveCount(1);
+
+    // The Asset page's "การยืม" section says so too, and only for the Loan past its Due Date.
+    await page.goto(`${targetBaseUrl}/assets/${stillOut.id}`);
+    await expect(page.locator('[data-testid="loan-on-loan"]')).toContainText('คุณเกินกำหนด E2E');
+    await expect(page.locator('[data-testid="loan-on-loan-overdue"]')).toHaveText('เกินกำหนด');
+    await expect(page.locator('[data-testid="loan-history"] [data-testid="loan-overdue"]')).toHaveText('เกินกำหนด');
+    await page.goto(`${targetBaseUrl}/assets/${returnedLate.id}`);
+    await expect(page.locator('[data-testid="loan-history"] [data-testid="loan-returned-late"]')).toHaveText('คืนเกินกำหนด');
+    await page.goto(`${targetBaseUrl}/assets/${onTime.assets[0].id}`);
+    await expect(page.locator('[data-testid="loan-on-loan"]')).toContainText('คุณยังไม่ถึงกำหนด E2E');
+    await expect(page.locator('[data-testid="loan-on-loan-overdue"]')).toHaveCount(0);
   });
 
   // F004-T2 (#76): a partial Loan Return with Condition, after which the returned Asset can be lent again.

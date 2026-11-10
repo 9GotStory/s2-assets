@@ -5,6 +5,7 @@ import { errorBody, parseWrite } from './write-request.ts';
 import { NotFoundError, RetryTokenConflictError, StaleBeforeConflictError, ValidationError } from '../services/asset.service.ts';
 import { isCalendarDate } from '../services/assignment.service.ts';
 import { CapabilityService, isValidUuid } from '../services/capability.service.ts';
+import { hasStrictControlChars } from '../services/control-characters.ts';
 import { LoanItemsNotReturnableError, LoanReturnService, type RecordLoanReturnInput } from '../services/loan-return.service.ts';
 import { AssetsNotLendableError, LoanService, type StartLoanInput } from '../services/loan.service.ts';
 
@@ -66,6 +67,38 @@ const RecordLoanReturnSchema = z
         .strict()
     ),
     retry_token: z.string().optional(),
+  })
+  .strict();
+
+// The Loan list's query: each filter narrows the list on its own, and a page is read as on the Asset list.
+// A repeated parameter arrives as an array and is refused.
+const LoanListQuerySchema = z
+  .object({
+    status: z.enum(['OUTSTANDING', 'PARTIALLY_RETURNED', 'RETURNED']).optional(),
+    // "เกินกำหนด" takes one value; leaving it out lists every Loan.
+    overdue: z.literal('true').optional(),
+    borrower_kind: z.enum(['INTERNAL', 'EXTERNAL']).optional(),
+    // A name is one line, so a control character, even at an end, can match none (CODING_STANDARDS.md).
+    borrower_name: z
+      .string()
+      .refine((name) => !hasStrictControlChars(name), 'must not contain control characters')
+      .refine((name) => Buffer.byteLength(name, 'utf8') <= 4096, 'must be at most 4096 bytes')
+      .transform((name) => name.trim())
+      .refine((name) => name.length > 0, 'must not be blank')
+      .optional(),
+    borrower_person_id: z.string().refine(isValidUuid, 'must be a valid UUID').optional(),
+    limit: z
+      .string()
+      .regex(/^[1-9]\d*$/, 'must be a canonical positive integer')
+      .transform(Number)
+      .refine((limit) => limit <= 100, 'must be between 1 and 100')
+      .optional(),
+    offset: z
+      .string()
+      .regex(/^(0|[1-9]\d*)$/, 'must be a canonical non-negative integer')
+      .transform(Number)
+      .refine((offset) => offset <= 2147483647, 'must be between 0 and 2147483647')
+      .optional(),
   })
   .strict();
 
@@ -145,6 +178,25 @@ export const loanRoutes: FastifyPluginAsync<LoanRoutesOptions> = async (fastify,
       }
       return reply.status(refusal.statusCode).send(refusal);
     }
+  });
+
+  /**
+   * GET /loans
+   * The Loan list ("รายการยืม"), latest Loan Date first (F004-T3). It never carries a phone number.
+   * Its log level is silent, so that a search by Borrower stays out of the logs (LR-15).
+   * Protected: requires 'asset:view' capability, like a Loan
+   */
+  fastify.get('/loans', { logLevel: 'silent', preHandler: [requireCapability('asset:view')] }, async (request, reply) => {
+    reply.header('Cache-Control', 'no-store');
+    const parsed = LoanListQuerySchema.safeParse(request.query ?? {});
+    if (!parsed.success) {
+      const issues = parsed.error.issues.map((issue) => `${issue.path.join('.') || 'query'}: ${issue.message}`).join(', ');
+      return reply.status(400).send(errorBody(400, 'VALIDATION_FAILED', `Invalid query: ${issues}`));
+    }
+    const { borrower_person_id: personId, overdue, limit = 25, offset = 0, ...filters } = parsed.data;
+    return reply.status(200).send(
+      await loanService.list({ ...filters, overdue: overdue === 'true', borrower_person_id: personId?.trim().toLowerCase(), limit, offset })
+    );
   });
 
   /**

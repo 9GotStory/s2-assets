@@ -314,7 +314,7 @@ function refuseAssignmentFields(input: CorrectAssetInput): void {
 }
 
 // A case-insensitive literal substring pattern for ILIKE ... ESCAPE '\'.
-const containsPattern = (value: string): string =>
+export const containsPattern = (value: string): string =>
   `%${value.replace(/\\/g, '\\\\').replace(/%/g, '\\%').replace(/_/g, '\\_')}%`;
 
 /** Whether an Asset is registered. */
