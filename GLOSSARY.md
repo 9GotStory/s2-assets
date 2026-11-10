@@ -114,6 +114,10 @@ The Thai calendar day an Asset came back from a Loan.
 The ending of a LoanItem whose Asset did not come back. It is not a Loan Return, and it does not
 say the Asset is lost or Retired.
 
+**Closed** (ปิดแล้ว):
+A Loan with no Outstanding LoanItem and at least one Not Returned item, shown as "ปิดแล้ว (ไม่ได้รับคืน
+n ชิ้น)". A Loan whose every item has a Loan Return is คืนครบ, not Closed.
+
 **Borrower** (ผู้ยืม):
 Who holds the Assets of a Loan: an Internal Borrower or an External Borrower.
 
