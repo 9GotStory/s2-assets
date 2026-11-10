@@ -376,6 +376,25 @@ describe('The Loan list and Overdue (Seam A - F004-T3)', () => {
       expect(logged).not.toContain(name);
       expect(logged).not.toContain(encodeURIComponent(name));
     });
+
+    it('logs each request by its path, so a failed read reaches the logs without its search', async () => {
+      const name = 'คุณค้นตอนระบบขัดข้อง';
+      logLines.length = 0;
+
+      const res = await withCapabilityAnswer(api.app, 'asset:view', async () => { throw new Error('lookup failed'); }, () =>
+        api.get(readonly, `/loans?borrower_name=${encodeURIComponent(name)}&status=OUTSTANDING`)
+      );
+      expect(res.statusCode).toBe(500);
+
+      const lines = logLines.map((line) => JSON.parse(line));
+      const incoming = lines.find(({ req }) => req?.url === '/loans');
+      expect(incoming).toBeDefined();
+      expect(lines.some(({ reqId, res: reply }) => reqId === incoming.reqId && reply?.statusCode === 500)).toBe(true);
+      const logged = logLines.join('');
+      expect(logged).not.toContain(name);
+      expect(logged).not.toContain(encodeURIComponent(name));
+      expect(logged).not.toContain('status=OUTSTANDING');
+    });
   });
 
   describe('a row', () => {

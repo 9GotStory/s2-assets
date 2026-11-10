@@ -182,11 +182,11 @@ export const loanRoutes: FastifyPluginAsync<LoanRoutesOptions> = async (fastify,
 
   /**
    * GET /loans
-   * The Loan list ("รายการยืม"), latest Loan Date first (F004-T3). It never carries a phone number.
-   * Its log level is silent, so that a search by Borrower stays out of the logs (LR-15).
+   * The Loan list ("รายการยืม"), latest Loan Date first (F004-T3). It never carries a phone number,
+   * and the logger names a request by its path, so a search by Borrower stays out of the logs (LR-15).
    * Protected: requires 'asset:view' capability, like a Loan
    */
-  fastify.get('/loans', { logLevel: 'silent', preHandler: [requireCapability('asset:view')] }, async (request, reply) => {
+  fastify.get('/loans', { preHandler: [requireCapability('asset:view')] }, async (request, reply) => {
     reply.header('Cache-Control', 'no-store');
     const parsed = LoanListQuerySchema.safeParse(request.query ?? {});
     if (!parsed.success) {

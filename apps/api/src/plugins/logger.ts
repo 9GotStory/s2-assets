@@ -55,6 +55,27 @@ export const REDACTED_PATHS: readonly string[] = [
 
 export const CENSOR_VALUE = '[REDACTED]' as const;
 
+/**
+ * The request a log line names, by its path only: a query string can carry a search term such as a
+ * Borrower's name (LR-15), so no request logs one, whichever route serves it (#77 retro). In Fastify
+ * 5.12.5 this replaces the default `req` serializer, so it lists the default's other fields again,
+ * and a serializer must never throw (Context7 /fastify/fastify/v5.12.5, Reference/Logging.md).
+ */
+export function serializeRequest(request: any): Record<string, unknown> {
+  try {
+    return {
+      method: request.method,
+      url: typeof request.url === 'string' ? request.url.split('?')[0] : undefined,
+      version: request.headers?.['accept-version'],
+      host: request.host,
+      remoteAddress: request.ip,
+      remotePort: request.socket?.remotePort,
+    };
+  } catch {
+    return {};
+  }
+}
+
 export type AppLoggerOptions = LoggerOptions & {
   stream?: DestinationStream;
 };
@@ -80,6 +101,7 @@ export function getLoggerOptions(options?: AppLoggerOptions): ConfiguredLoggerOp
 
   return {
     ...options,
+    serializers: { ...options?.serializers, req: serializeRequest },
     redact: {
       paths,
       censor: CENSOR_VALUE,
