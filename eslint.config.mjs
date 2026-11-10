@@ -5,6 +5,31 @@ import tseslint from 'typescript-eslint';
 const awaitedCallWith = (text) =>
   `ExpressionStatement:matches([expression.argument.arguments.0.value=/${text}/], [expression.argument.arguments.0.quasis.0.value.raw=/${text}/])`;
 
+// A later block replaces no-restricted-syntax whole, so the blocks on apps/api/src share these.
+const NO_PROMISED_REPLY = {
+  selector: "TSTypeReference[typeName.name='Promise'] TSTypeReference[typeName.name='FastifyReply']",
+  message:
+    'A FastifyReply is thenable, so awaiting it yields undefined. Return a decision (such as a boolean) and let the route handler send the reply.',
+};
+
+// SQL text that writes one of these tables, as a string or in a template.
+const writesTo = (tables, owner) => {
+  const sql = `\\b(INSERT INTO|UPDATE|DELETE FROM)\\s+(${tables})\\b`;
+  return {
+    selector: `:matches(Literal[value=/${sql}/], TemplateElement[value.raw=/${sql}/])`,
+    message: `Write this table through ${owner}, the module that owns it (#76).`,
+  };
+};
+const WRITES_TO_LOAN_TABLES = writesTo('loans|loan_items|loan_item_endings', 'loan.service.ts');
+const WRITES_TO_ASSIGNMENT_CHANGES = writesTo('assignment_changes', 'assignment.service.ts');
+const apiSyntaxRule = (...guards) => ({ 'no-restricted-syntax': ['error', NO_PROMISED_REPLY, ...guards] });
+
+// An awaited expect, by its matcher, and whether it goes through .not.
+const matcher = (name) => `[expression.argument.callee.property.name='${name}']`;
+const NEGATED = "[expression.argument.callee.object.property.name='not']";
+const NOT_NEGATED = "[expression.argument.callee.object.property.name!='not']";
+const ABSENCE = `ExpressionStatement:matches(${matcher('toHaveCount')}[expression.argument.arguments.0.value=0]${NOT_NEGATED}, ${matcher('toBeHidden')}${NOT_NEGATED}, ${matcher('toBeVisible')}${NEGATED}, ${matcher('toBeAttached')}${NEGATED})`;
+
 export default tseslint.config(
   {
     ignores: [
@@ -39,13 +64,25 @@ export default tseslint.config(
     // A FastifyReply is thenable: awaiting a Promise<FastifyReply> waits until the reply is sent and
     // yields undefined, so a helper that hands one back lets its route run on after a 403 (#51).
     files: ['apps/api/src/**/*.ts'],
+    rules: apiSyntaxRule(WRITES_TO_LOAN_TABLES, WRITES_TO_ASSIGNMENT_CHANGES),
+  },
+  {
+    files: ['apps/api/src/services/loan.service.ts'],
+    rules: apiSyntaxRule(WRITES_TO_ASSIGNMENT_CHANGES),
+  },
+  {
+    files: ['apps/api/src/services/assignment.service.ts'],
+    rules: apiSyntaxRule(WRITES_TO_LOAN_TABLES),
+  },
+  {
+    // #76: data kept across a key change shows one query's values under another's.
+    files: ['apps/web/src/**/*.ts', 'apps/web/src/**/*.tsx'],
     rules: {
       'no-restricted-syntax': [
         'error',
         {
-          selector: "TSTypeReference[typeName.name='Promise'] TSTypeReference[typeName.name='FastifyReply']",
-          message:
-            'A FastifyReply is thenable, so awaiting it yields undefined. Return a decision (such as a boolean) and let the route handler send the reply.',
+          selector: "Property[key.name='placeholderData'] > :matches(ArrowFunctionExpression[params.length=1], Identifier[name='keepPreviousData'])",
+          message: 'Keep placeholder data only after comparing previousQuery: these values may belong to another key (#76).',
         },
       ],
     },
@@ -70,6 +107,11 @@ export default tseslint.config(
           // #75: a read that lands between the two statements finds the user with no role.
           selector: `${awaitedCallWith('DELETE FROM user_roles')} + ${awaitedCallWith('INSERT INTO user_roles')}`,
           message: 'Change a role with one UPDATE, so that no read of an open page finds the user without one (#75).',
+        },
+        {
+          // #76: the page has read nothing yet, so the absence holds whatever its facts say.
+          selector: `ExpressionStatement${matcher('goto')} + ${ABSENCE}`,
+          message: 'Assert what the loaded page shows before what it does not: right after goto, nothing is there yet (#76).',
         },
       ],
     },

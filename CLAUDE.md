@@ -138,7 +138,8 @@ databases and container tooling before relying on it:
 - **Verification against real invariants.** Tests put business invariants before implementation
   details and never weaken or redefine accepted business semantics. PostgreSQL transaction and
   concurrency semantics that matter in production are verified against real PostgreSQL, not
-  database mocks alone. Size verification to the scope: lint, typecheck, unit, integration,
+  database mocks alone. A test first seen green is not done: break the code it covers and watch it
+  go red. Size verification to the scope: lint, typecheck, unit, integration,
   browser/E2E, migration, security or container checks as they apply.
 
 ## Runtimes

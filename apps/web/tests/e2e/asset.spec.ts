@@ -4137,6 +4137,7 @@ test.describe.serial('Asset Registry Real SPA -> Composed API -> PostgreSQL Jour
 
     // 7. Verify Asset 2 no longer lists this evidence
     await page.goto(`${targetBaseUrl}/assets/${ast2Id}`);
+    await expect(page.locator('[data-testid="no-evidence-message"]')).toBeVisible();
     await expect(page.locator(`[data-testid="evidence-row-${evId}"]`)).not.toBeVisible();
 
     // 8. Verify Acquisition still lists the surviving evidence
