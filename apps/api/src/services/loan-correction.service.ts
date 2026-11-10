@@ -20,7 +20,7 @@ import {
   type LoanCorrectionTarget,
   type StoredLoanFact,
 } from './loan.service.ts';
-import { loanConflictCheck, normalizeConfirmedConflicts, type ConfirmedLoanConflictInput } from './loan-conflict.ts';
+import { loanConflictCheck, normalizeConfirmedConflicts, withConfirmedConflicts, type ConfirmedLoanConflictInput } from './loan-conflict.ts';
 import type { LoanCondition } from './loan-read.service.ts';
 import { isSelectablePerson } from './reference.service.ts';
 import { commitOnce } from './retryable-write.ts';
@@ -259,11 +259,15 @@ export class LoanCorrectionService {
     const facts = normalizeFacts(input);
     const confirmed = normalizeConfirmedConflicts(input.confirmed_conflicts);
     const today = bangkokDate(this.clock());
-    // An unconfirmed request keeps the payload it had before confirmation existed (#74 Q25).
-    const payload = confirmed.length > 0 ? { version: 1, ...facts, confirmed_conflicts: confirmed } : { version: 1, ...facts };
     return commitOnce(
       this.db,
-      { actorId, operation: `loan:correct:${loanId}`, retryToken, payload, explicitContinuation: false },
+      {
+        actorId,
+        operation: `loan:correct:${loanId}`,
+        retryToken,
+        payload: withConfirmedConflicts({ version: 1, ...facts }, confirmed),
+        explicitContinuation: false,
+      },
       async (client) => {
         const { items } = await lockLoanForWrite(client, loanId, facts.expected_version);
         const conflicts = await loanConflictCheck(client, [...new Set(items.map(({ asset_id }) => asset_id))]);

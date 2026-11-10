@@ -45,6 +45,14 @@ export function normalizeConfirmedConflicts(confirmed: ConfirmedLoanConflictInpu
   return [...new Set(confirmed.map(({ conflicting_loan_item_id: id }) => id.trim().toLowerCase()))].sort();
 }
 
+/**
+ * A write's retry payload with what it confirms. An unconfirmed request keeps the payload it had before
+ * confirmation existed, so its fingerprint is unchanged (#74 Q20).
+ */
+export function withConfirmedConflicts<Payload extends object>(payload: Payload, confirmed: string[]): Payload | (Payload & { confirmed_conflicts: string[] }) {
+  return confirmed.length > 0 ? { ...payload, confirmed_conflicts: confirmed } : payload;
+}
+
 // A conflict of the written Loan, by the two LoanItems that overlap.
 const pairKey = ({ loan_item_id, conflicting }: LoanItemConflict): string => `${loan_item_id}:${conflicting.loan_item_id}`;
 

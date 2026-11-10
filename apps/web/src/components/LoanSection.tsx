@@ -2,6 +2,7 @@ import React, { useState } from 'react';
 import { Link } from 'react-router';
 import { useQuery } from '@tanstack/react-query';
 import { OverdueBadge, ReturnedLateBadge } from './LoanBadges';
+import { conflictBoxStyle } from './AssignmentConflictWarning';
 import { LoanConflictMarks } from './LoanConflicts';
 import { LoanStartForm, type LoanFormAsset } from './LoanStartForm';
 import { thaiDate } from './assignmentFacts';
@@ -119,7 +120,7 @@ export const LoanSection: React.FC<LoanSectionProps> = ({
       )}
 
       {hasLoanConflict && (
-        <div data-testid="loan-conflict-notice" role="note" style={{ margin: '0 0 1rem 0', fontSize: '0.875rem', backgroundColor: '#fef3c7', border: '1px solid #f59e0b', padding: '0.75rem 1rem', borderRadius: '6px', color: '#92400e' }}>
+        <div data-testid="loan-conflict-notice" role="note" style={conflictBoxStyle}>
           <span style={{ fontWeight: 600 }}>{LOAN_CONFLICT_LABEL}</span>: ประวัติการยืมของครุภัณฑ์นี้มีช่วงยืมที่ทับกัน กรุณาตรวจสอบและแก้ไขรายการที่บันทึกผิด
         </div>
       )}

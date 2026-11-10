@@ -1,20 +1,12 @@
 import React from 'react';
 import { Link } from 'react-router';
-import { conflictBoxStyle } from './AssignmentConflictWarning';
+import { conflictActionStyle, conflictBoxStyle } from './AssignmentConflictWarning';
 import { thaiDate } from './assignmentFacts';
 import { LOAN_CONFLICT_LABEL, type LoanConflict, type WarnedLoanConflict } from './loanFacts';
 
 // The other item's period: from its Loan Date to its ending, or still open.
 const periodText = ({ loan_date: loanDate, ending_date: endingDate }: LoanConflict): string =>
   `${thaiDate(loanDate)} – ${endingDate ? thaiDate(endingDate) : 'ยังไม่สิ้นสุด'}`;
-
-const actionStyle: React.CSSProperties = {
-  padding: '0.375rem 0.75rem',
-  borderRadius: '4px',
-  fontSize: '0.8125rem',
-  fontWeight: 600,
-  cursor: 'pointer',
-};
 
 /**
  * F004-T7 (#81): the Loan Conflicts of one LoanItem, each with the other Loan. The mark goes away by
@@ -61,10 +53,10 @@ export const LoanConflictWarning: React.FC<LoanConflictWarningProps> = ({ confli
       ))}
     </ul>
     <div style={{ display: 'flex', gap: '0.5rem' }}>
-      <button type="button" id="loan-conflict-confirm" onClick={onConfirm} style={{ ...actionStyle, backgroundColor: '#b45309', color: '#ffffff', border: 'none' }}>
+      <button type="button" id="loan-conflict-confirm" onClick={onConfirm} style={{ ...conflictActionStyle, backgroundColor: '#b45309', color: '#ffffff', border: 'none' }}>
         ยืนยันบันทึก
       </button>
-      <button type="button" id="loan-conflict-back" onClick={onBack} style={{ ...actionStyle, backgroundColor: '#ffffff', color: '#92400e', border: '1px solid #f59e0b' }}>
+      <button type="button" id="loan-conflict-back" onClick={onBack} style={{ ...conflictActionStyle, backgroundColor: '#ffffff', color: '#92400e', border: '1px solid #f59e0b' }}>
         กลับไปแก้ไข
       </button>
     </div>

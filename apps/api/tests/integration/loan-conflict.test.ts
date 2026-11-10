@@ -142,6 +142,33 @@ describe('Loan Conflict (Seam A - F004-T7)', () => {
       expect(await loansOf(assetId)).toHaveLength(1);
     });
 
+    it('of an Asset closed as Not Returned stays refused, with no confirmation offered (#74 Q21)', async () => {
+      const assetId = await registered();
+      const lost = await lent([assetId], { loan_date: '2026-10-20', due_date: '2026-10-25' });
+      await closedNotReturned(lost.loanId, [lost.itemOf[assetId]], '2026-10-30');
+
+      const res = await start([assetId], {
+        loan_date: '2026-10-01',
+        due_date: '2026-10-05',
+        confirmed_conflicts: [{ conflicting_loan_item_id: lost.itemOf[assetId] }],
+      });
+
+      expect(res.statusCode).toBe(409);
+      expect(res.json()).toMatchObject({ code: 'ASSETS_NOT_LENDABLE', assets: [{ asset_id: assetId, reason: 'NOT_RETURNED', loan_id: lost.loanId }] });
+    });
+
+    it("ends an item's period at its Loan Return when it also has a Not Returned", async () => {
+      const assetId = await registered();
+      const lost = await lent([assetId], { loan_date: '2026-09-01', due_date: '2026-09-05' });
+      await closedNotReturned(lost.loanId, [lost.itemOf[assetId]], '2026-09-10');
+      await returned(lost.loanId, [lost.itemOf[assetId]], '2026-10-05');
+
+      const res = await start([assetId], { loan_date: '2026-10-01', due_date: '2026-10-25' });
+
+      expect(res.statusCode).toBe(409);
+      expect(res.json().conflicts[0].conflicting).toEqual({ loan_id: lost.loanId, loan_item_id: lost.itemOf[assetId], loan_date: '2026-09-01', ending_date: '2026-10-05' });
+    });
+
     it('refuses a confirmation that names no LoanItem id', async () => {
       const assetId = await registered();
 
@@ -321,6 +348,16 @@ describe('Loan Conflict (Seam A - F004-T7)', () => {
       expect(await conflictsOf(earlier.loanId)).toEqual([]);
       expect((await api.get(readonly, `/assets/${assetId}`)).json().has_loan_conflict).toBe(false);
       expect(await listed('has_loan_conflict=true')).not.toEqual(expect.arrayContaining([earlier.loanId]));
+    });
+
+    it('that voids one LoanItem clears its Loan Conflicts', async () => {
+      const [assetId, clean] = [await registered(), await registered()];
+      const { earlier, later } = await inConflict(assetId, [clean]);
+
+      await corrected(later.loanId, { kind: 'LOAN_ITEM', id: later.itemOf[assetId] });
+
+      expect(await conflictsOf(earlier.loanId)).toEqual([]);
+      expect((await api.get(readonly, `/assets/${assetId}`)).json().has_loan_conflict).toBe(false);
     });
 
     it('ends a period at the Not Returned date when the item has no Loan Return', async () => {

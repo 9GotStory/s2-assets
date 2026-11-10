@@ -9,7 +9,7 @@ import {
   lockAssetsInIdentifierOrder,
   normalizeText,
 } from './assignment.service.ts';
-import { loanConflictCheck, normalizeConfirmedConflicts, type ConfirmedLoanConflictInput } from './loan-conflict.ts';
+import { loanConflictCheck, normalizeConfirmedConflicts, withConfirmedConflicts, type ConfirmedLoanConflictInput } from './loan-conflict.ts';
 import { CURRENT_DUE_DATE, type LoanCondition, type LoanEndingKind } from './loan-read.service.ts';
 import { isSelectablePerson } from './reference.service.ts';
 import { commitOnce } from './retryable-write.ts';
@@ -676,11 +676,9 @@ export class LoanService {
     const today = bangkokDate(this.clock());
     const facts = normalizeFacts(input, today);
     const confirmed = normalizeConfirmedConflicts(input.confirmed_conflicts);
-    // An unconfirmed request keeps the payload it had before confirmation existed (#74 Q20).
-    const payload = confirmed.length > 0 ? { version: 1, ...facts, confirmed_conflicts: confirmed } : { version: 1, ...facts };
     return commitOnce(
       this.db,
-      { actorId, operation: 'loan:start', retryToken, payload, explicitContinuation: false },
+      { actorId, operation: 'loan:start', retryToken, payload: withConfirmedConflicts({ version: 1, ...facts }, confirmed), explicitContinuation: false },
       async (client) => {
         const assetIds = facts.items.map(({ asset_id }) => asset_id);
         // LR-11 refuses an Asset On Loan today before any Loan Conflict is looked at, so no confirmation is offered for it.
