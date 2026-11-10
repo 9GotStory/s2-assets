@@ -1,5 +1,5 @@
 import React from 'react';
-import { OVERDUE_LABEL, RETURNED_LATE_LABEL } from './loanFacts';
+import { ON_LOAN_LABEL, OVERDUE_LABEL, RETURNED_LATE_LABEL } from './loanFacts';
 
 const badgeStyle: React.CSSProperties = {
   display: 'inline-block',
@@ -14,6 +14,13 @@ const badgeStyle: React.CSSProperties = {
 export const OverdueBadge: React.FC<{ id?: string; testId?: string }> = ({ id, testId = 'loan-overdue' }) => (
   <span id={id} data-testid={testId} style={{ ...badgeStyle, backgroundColor: '#fee2e2', color: '#991b1b' }}>
     {OVERDUE_LABEL}
+  </span>
+);
+
+// "กำลังถูกยืม": the Asset has an Outstanding LoanItem (F004-T4).
+export const OnLoanBadge: React.FC<{ testId: string }> = ({ testId }) => (
+  <span data-testid={testId} style={{ ...badgeStyle, backgroundColor: '#fef3c7', color: '#92400e' }}>
+    {ON_LOAN_LABEL}
   </span>
 );
 

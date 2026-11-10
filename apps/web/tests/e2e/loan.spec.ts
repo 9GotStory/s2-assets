@@ -244,6 +244,128 @@ test.describe.serial('Loan journeys: Real SPA -> Composed API -> PostgreSQL (Sea
     await expect(page.locator('#loan-borrower')).toHaveText('สมศรี ลาออกแล้ว (ปิดใช้งาน)');
   });
 
+  // F004-T4 (#78): the Asset list knows about Loans, and the Reassignment forms say who holds an Asset.
+  test('Journey F004-T4.1: a Custodian selects Assets across pages of the Asset list, starts one Loan and sees "กำลังถูกยืม"; the Reassignment forms say who holds them', async ({ page, context }) => {
+    const tag = `รายการยืม E2E ${crypto.randomUUID().slice(0, 8)}`;
+    const room = await referenceService.create('locations', adminUserId, `ห้อง ${tag}`);
+    const register = async (name: string) =>
+      (await assetService.registerAsset(custodianUserId, { name: `${tag} ${name}`, location_id: room.id, effective_date: '2024-01-01' } as any)).asset;
+
+    // The list reads newest first, 25 rows a page: the two registered first land on the second page.
+    const held = await register('กล้องที่ถูกยืมอยู่');
+    const damaged = await register('ขาตั้งคืนชำรุด');
+    const fillers = [];
+    for (let i = 0; i < 25; i++) {
+      fillers.push(await register(`เก้าอี้ ${String(i).padStart(2, '0')}`));
+    }
+    const newest = fillers[24];
+
+    await loanService.start(
+      custodianUserId,
+      { assets: [{ asset_id: held.id, condition: 'NORMAL' }], borrower: { kind: 'EXTERNAL', contact_name: 'คุณถือไว้ก่อน E2E' }, loan_date: yesterday(), due_date: '2099-12-31' },
+      { retryToken: crypto.randomUUID() }
+    );
+    const earlier = await loanService.start(
+      custodianUserId,
+      { assets: [{ asset_id: damaged.id, condition: 'NORMAL' }], borrower: { kind: 'EXTERNAL', contact_name: 'คุณคืนชำรุด E2E' }, loan_date: daysAgo(3), due_date: daysAgo(2) },
+      { retryToken: crypto.randomUUID() }
+    );
+    await new LoanReturnService({ db: pool }).record(
+      custodianUserId,
+      earlier.loan_id,
+      { expected_version: earlier.version, return_date: daysAgo(2), items: [{ loan_item_id: earlier.items[0].id, condition: 'DAMAGED' }] },
+      { retryToken: crypto.randomUUID() }
+    );
+
+    await loginAs(context, custodianUserId);
+    await page.goto(`${targetBaseUrl}/assets/search`);
+    await page.locator('#search-field').selectOption('name');
+    await page.locator('#search-value').fill(tag);
+    await page.locator('#search-submit-btn').click();
+
+    // One row on the first page and two on the second, among them the Asset already On Loan.
+    await expect(page.locator(`[data-testid="search-result-row-${newest.id}"]`)).toBeVisible();
+    await expect(page.locator(`[data-testid="search-result-on-loan-${newest.id}"]`)).toHaveCount(0);
+    await page.getByTestId(`asset-select-${newest.id}`).check();
+    await page.locator('#next-page-btn').click();
+    await expect(page.locator(`[data-testid="search-result-on-loan-${held.id}"]`)).toHaveText('กำลังถูกยืม');
+    await expect(page.locator(`[data-testid="search-result-on-loan-${damaged.id}"]`)).toHaveCount(0);
+    await page.getByTestId(`asset-select-${damaged.id}`).check();
+    await page.getByTestId(`asset-select-${held.id}`).check();
+    await expect(page.locator('#bulk-reassign-count')).toContainText('เลือกแล้ว 3 รายการ');
+
+    // The Start Loan form shows the three, and warns of the latest Loan Return in ชำรุด as the Asset page does.
+    const fillLoan = async () => {
+      await page.getByLabel('ผู้ยืมภายนอก').check();
+      await page.locator('#loan-contact_name').fill('คุณยืมจากรายการ E2E');
+      await page.locator('#loan-due_date').fill('2099-12-31');
+    };
+    await page.locator('#loan-from-list-open').click();
+    for (const asset of [newest, damaged, held]) {
+      await expect(page.locator(`#loan-condition-${asset.id}`)).toHaveValue('NORMAL');
+    }
+    await expect(page.locator(`[data-testid="loan-damaged-warning-${damaged.id}"]`)).toBeVisible();
+    await expect(page.locator(`[data-testid="loan-damaged-warning-${newest.id}"]`)).toHaveCount(0);
+    await fillLoan();
+    await page.locator('#loan-submit').click();
+
+    // The Asset On Loan is refused by name, and nothing is saved.
+    const refused = page.locator('[data-testid="loan-refused"]');
+    await expect(refused).toContainText(`${tag} กล้องที่ถูกยืมอยู่: กำลังถูกยืม`);
+    await expect(refused).not.toContainText('เก้าอี้');
+    expect((await pool.query('SELECT count(*)::int AS n FROM loan_items WHERE asset_id = ANY($1::uuid[])', [[newest.id, damaged.id]])).rows[0].n).toBe(1);
+
+    // Without it, the Loan starts, and the list read again shows the two On Loan.
+    await page.locator('#loan-cancel').click();
+    await page.getByTestId(`asset-select-${held.id}`).uncheck();
+    await expect(page.locator('#bulk-reassign-count')).toContainText('เลือกแล้ว 2 รายการ');
+    await page.locator('#loan-from-list-open').click();
+    await fillLoan();
+    await page.locator('#loan-submit').click();
+    await expect(page.locator('#loan-form')).toHaveCount(0);
+    await expect(page.locator(`[data-testid="search-result-on-loan-${damaged.id}"]`)).toHaveText('กำลังถูกยืม');
+    await expect(page.locator('#bulk-reassign-count')).toContainText('เลือกแล้ว 0 รายการ');
+
+    // "กำลังถูกยืม" combines with the name search.
+    await page.locator('#search-filter-on_loan').check();
+    await page.locator('#search-submit-btn').click();
+    await expect(page.locator('#results-count-summary')).toContainText('พบ 3 รายการ');
+    for (const asset of [newest, damaged, held]) {
+      await expect(page.locator(`[data-testid="search-result-on-loan-${asset.id}"]`)).toBeVisible();
+    }
+
+    // "ย้ายหลายรายการ" says who holds each selected Asset, and blocks nothing.
+    await page.getByTestId(`asset-select-${held.id}`).check();
+    await page.getByTestId(`asset-select-${newest.id}`).check();
+    await page.locator('#bulk-reassign-open').click();
+    await expect(page.locator('[data-testid="assignment-loan-note"]')).toBeVisible();
+    await expect(page.locator(`[data-testid="assignment-on-loan-${held.id}"]`)).toContainText('คุณถือไว้ก่อน E2E');
+    await expect(page.locator(`[data-testid="assignment-on-loan-${newest.id}"]`)).toContainText('คุณยืมจากรายการ E2E');
+    await expect(page.locator('[data-testid="assignment-on-loan-notice"]')).toContainText('การย้ายไม่เปลี่ยนผู้ยืม');
+    await expect(page.locator('#bulk-reassign-preview')).toBeEnabled();
+    await page.locator('#bulk-reassign-cancel').click();
+
+    // So does the Reassignment form on the Asset page, and on an Asset free to lend it says nothing.
+    await page.goto(`${targetBaseUrl}/assets/${held.id}`);
+    await page.locator('#assignment-action').click();
+    await expect(page.locator(`[data-testid="assignment-on-loan-${held.id}"]`)).toContainText('คุณถือไว้ก่อน E2E');
+    const free = await register('โต๊ะว่าง');
+    await page.goto(`${targetBaseUrl}/assets/${free.id}`);
+    await page.locator('#assignment-action').click();
+    await expect(page.locator('[data-testid="assignment-loan-note"]')).toBeVisible();
+    await expect(page.locator('[data-testid="assignment-on-loan-notice"]')).toHaveCount(0);
+
+    // A Read-only User sees "กำลังถูกยืม" and is offered no selection and no Loan action.
+    await switchActor(page, context, readonlyUserId);
+    await page.goto(`${targetBaseUrl}/assets/search`);
+    await page.locator('#search-field').selectOption('name');
+    await page.locator('#search-value').fill(tag);
+    await page.locator('#search-submit-btn').click();
+    await expect(page.locator(`[data-testid="search-result-on-loan-${newest.id}"]`)).toBeVisible();
+    await expect(page.locator('[data-testid^="asset-select-"]')).toHaveCount(0);
+    await expect(page.locator('#loan-from-list-open')).toHaveCount(0);
+  });
+
   // F004-T3 (#77): a backdated Loan past its Due Date shows "เกินกำหนด", and F004-T5 (#79) completes the
   // journey with a Due Date Extension that clears it.
   test('Journey F004-T3.1: a backdated Loan past its Due Date shows "เกินกำหนด" on the Loan list, the Loan page and the Asset page, and a Due Date Extension clears it', async ({ page, context }) => {

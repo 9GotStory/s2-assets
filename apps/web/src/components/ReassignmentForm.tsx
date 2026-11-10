@@ -3,19 +3,22 @@ import { AssignmentSaveForm, type AssignmentSaveProps } from './AssignmentSaveFo
 import { ReassignmentFields, useReassignmentDraft } from './ReassignmentFields';
 import { REFERENCE_DIMENSIONS } from './ReferenceContextFields';
 import { KIND_LABELS, effectiveDateError, valuesAt, type AssignmentEvent } from './assignmentFacts';
+import type { OnLoan } from './loanFacts';
 
 export interface ReassignmentFormProps {
   save: AssignmentSaveProps;
   // Absent while the timeline cannot be read: the prior values are then not previewed.
   timeline?: AssignmentEvent[];
   actorId: string | null;
+  // Who holds the Asset while it is On Loan (F004-T4).
+  onLoan?: OnLoan | null;
 }
 
 /**
  * "ย้าย / เปลี่ยนผู้รับผิดชอบ": one real change of an Asset's Permanent Assignment, effective today or
  * earlier. The server derives the prior values and decides every rule; this form previews them.
  */
-export const ReassignmentForm: React.FC<ReassignmentFormProps> = ({ save, timeline, actorId }) => {
+export const ReassignmentForm: React.FC<ReassignmentFormProps> = ({ save, timeline, actorId, onLoan }) => {
   const draft = useReassignmentDraft(actorId);
   const { effectiveDate, requested, requestFields } = draft;
 
@@ -46,7 +49,14 @@ export const ReassignmentForm: React.FC<ReassignmentFormProps> = ({ save, timeli
       requestError={requestError}
       requestBody={() => ({ kind: 'REASSIGNMENT', ...requestFields })}
     >
-      {(isLocked) => <ReassignmentFields draft={draft} isLocked={isLocked} priorValues={priorValues} />}
+      {(isLocked) => (
+        <ReassignmentFields
+          draft={draft}
+          isLocked={isLocked}
+          priorValues={priorValues}
+          onLoan={onLoan ? [{ id: save.assetId, label: 'ครุภัณฑ์นี้', onLoan }] : []}
+        />
+      )}
     </AssignmentSaveForm>
   );
 };

@@ -1,12 +1,10 @@
 import React, { useEffect, useState, useRef, useCallback } from 'react';
 import { useNavigate, Link } from 'react-router';
-import {
-  BULK_REASSIGNMENT_MAX_ASSETS,
-  BulkReassignmentBar,
-  BulkReassignmentPanel,
-  assetLabelOf,
-  type BulkSelectedAsset,
-} from '../components/BulkReassignmentPanel';
+import { AssetSelectionBar, SELECTION_MAX_ASSETS, type SelectedAsset } from '../components/AssetSelection';
+import { BulkReassignmentPanel, assetLabelOf } from '../components/BulkReassignmentPanel';
+import { OnLoanBadge, OverdueBadge } from '../components/LoanBadges';
+import { LoanStartForm } from '../components/LoanStartForm';
+import { ON_LOAN_LABEL, type LoanCondition, type OnLoan } from '../components/loanFacts';
 import {
   REFERENCE_DIMENSIONS,
   entryLabel,
@@ -26,6 +24,9 @@ export interface SearchAssetItem {
   legacy_location_text?: string | null;
   legacy_organization_unit_text?: string | null;
   legacy_responsible_person_text?: string | null;
+  // F004-T4 (#78): who holds it while On Loan, and the Condition of its latest Loan Return.
+  on_loan: OnLoan | null;
+  latest_loan_return_condition: LoanCondition | null;
 }
 
 export interface SearchAssetResult {
@@ -36,6 +37,8 @@ export interface SearchAssetResult {
   has_more: boolean;
   // Whether the viewer holds 'assignment:reassign' (F003-T5).
   can_reassign: boolean;
+  // Whether the viewer holds 'loan:record' (F004-T4).
+  can_record_loan: boolean;
 }
 
 // T4 (#25): each legacy reference text is its own field, keeping the dimensions distinct.
@@ -49,9 +52,34 @@ export type SearchFieldType =
 
 // T4 (#25): one exact entry per dimension, '' for any; the server combines them with AND. F003-T4
 // (#54): has_assignment_conflict is 'true' to list only Assets with an Assignment Conflict, '' for any.
-export type AssetListFilters = Record<ReferenceIdField | 'has_assignment_conflict', string>;
+// F004-T4 (#78): on_loan likewise, for "กำลังถูกยืม".
+export type AssetListFilters = Record<ReferenceIdField | 'has_assignment_conflict' | 'on_loan', string>;
 
-const NO_FILTERS: AssetListFilters = { location_id: '', organization_unit_id: '', responsible_person_id: '', has_assignment_conflict: '' };
+const NO_FILTERS: AssetListFilters = { location_id: '', organization_unit_id: '', responsible_person_id: '', has_assignment_conflict: '', on_loan: '' };
+
+// The rows chosen act through one of these, opened above the results.
+type SelectionPanel = 'REASSIGNMENT' | 'LOAN';
+
+const selectedAssetOf = ({ id, name, asset_number, on_loan, latest_loan_return_condition }: SearchAssetItem): SelectedAsset => ({
+  id,
+  name,
+  asset_number,
+  on_loan,
+  latest_loan_return_condition,
+});
+
+// The selection with each of its rows as `items` read it last, so that a form opened later shows the latest.
+const withLatestRows = (selection: Map<string, SelectedAsset>, items: SearchAssetItem[]): Map<string, SelectedAsset> => {
+  const fresh = items.filter(({ id }) => selection.has(id));
+  if (fresh.length === 0) {
+    return selection;
+  }
+  const next = new Map(selection);
+  for (const item of fresh) {
+    next.set(item.id, selectedAssetOf(item));
+  }
+  return next;
+};
 
 export const AssetSearch: React.FC = () => {
   const navigate = useNavigate();
@@ -76,11 +104,13 @@ export const AssetSearch: React.FC = () => {
   const [errorMessage, setErrorMessage] = useState<string | null>(null);
   const [isForbidden, setIsForbidden] = useState<boolean>(false);
 
-  // F003-T5 (#55): the rows chosen for "ย้ายหลายรายการ", kept across pages and searches.
+  // F003-T5 (#55): the rows chosen for "ย้ายหลายรายการ", kept across pages and searches; F004-T4 (#78):
+  // and for "บันทึกการยืม".
   const [canReassign, setCanReassign] = useState<boolean>(false);
+  const [canRecordLoan, setCanRecordLoan] = useState<boolean>(false);
   const [csrfToken, setCsrfToken] = useState<string | null>(null);
-  const [selection, setSelection] = useState<Map<string, BulkSelectedAsset>>(() => new Map());
-  const [isBulkPanelOpen, setIsBulkPanelOpen] = useState<boolean>(false);
+  const [selection, setSelection] = useState<Map<string, SelectedAsset>>(() => new Map());
+  const [openPanel, setOpenPanel] = useState<SelectionPanel | null>(null);
 
   // Filter lists, loaded for the verified actor (inactive entries included: Assets may still name them)
   const [listActorId, setListActorId] = useState<string | null>(null);
@@ -114,6 +144,7 @@ export const AssetSearch: React.FC = () => {
     setIsForbidden(false);
     setIsLoading(false);
     setCanReassign(false);
+    setCanRecordLoan(false);
   }, []);
 
   // Verify authenticated session and bind actor with generation guarding
@@ -186,7 +217,7 @@ export const AssetSearch: React.FC = () => {
           activeFiltersRef.current = NO_FILTERS;
           offsetRef.current = 0;
           setSelection(new Map());
-          setIsBulkPanelOpen(false);
+          setOpenPanel(null);
         }
         currentActorIdRef.current = actorId;
         setCsrfToken(data?.csrfToken ?? null);
@@ -340,6 +371,8 @@ export const AssetSearch: React.FC = () => {
           setTotalCount(data.total_count);
           setHasMore(data.has_more);
           setCanReassign(data.can_reassign === true);
+          setCanRecordLoan(data.can_record_loan === true);
+          setSelection((current) => withLatestRows(current, data.items));
           setOffset(data.offset);
           setActiveField(effectiveField);
           setActiveValue(effectiveValue);
@@ -453,18 +486,21 @@ export const AssetSearch: React.FC = () => {
       const next = new Map(current);
       if (next.has(item.id)) {
         next.delete(item.id);
-      } else if (next.size < BULK_REASSIGNMENT_MAX_ASSETS) {
-        next.set(item.id, { id: item.id, name: item.name, asset_number: item.asset_number });
+      } else if (next.size < SELECTION_MAX_ASSETS) {
+        next.set(item.id, selectedAssetOf(item));
       }
       return next;
     });
   };
 
-  const handleBulkFinished = () => {
+  // After a save, the list is read again with nothing selected.
+  const handleSelectionSaved = () => {
     setSelection(new Map());
-    setIsBulkPanelOpen(false);
+    setOpenPanel(null);
     executeSearch(activeField, activeValue, offset, activeFilters);
   };
+
+  const canSelect = canReassign || canRecordLoan;
 
   return (
     <main
@@ -766,6 +802,26 @@ export const AssetSearch: React.FC = () => {
               />
               มีประวัติขัดแย้งค้างตรวจ
             </label>
+            <label
+              htmlFor="search-filter-on_loan"
+              style={{
+                display: 'flex',
+                alignItems: 'center',
+                gap: '0.375rem',
+                marginTop: '0.5rem',
+                fontSize: '0.875rem',
+                fontWeight: 500,
+                color: '#374151',
+              }}
+            >
+              <input
+                id="search-filter-on_loan"
+                type="checkbox"
+                checked={selectedFilters.on_loan === 'true'}
+                onChange={(e) => setSelectedFilters((current) => ({ ...current, on_loan: e.target.checked ? 'true' : '' }))}
+              />
+              {ON_LOAN_LABEL}
+            </label>
             {referenceLists.error && (
               <div role="alert" style={{ marginTop: '0.5rem', fontSize: '0.8125rem', color: '#b91c1c' }}>
                 {referenceLists.error}
@@ -775,14 +831,25 @@ export const AssetSearch: React.FC = () => {
         )}
 
         {/* F003-T5 (#55): outside the results, so that reading the list again keeps what is being entered */}
-        {isBulkPanelOpen && (
+        {openPanel === 'REASSIGNMENT' && (
           <BulkReassignmentPanel
             selected={[...selection.values()]}
             actorId={listActorId}
             csrfToken={csrfToken}
-            onCancel={() => setIsBulkPanelOpen(false)}
-            onFinished={handleBulkFinished}
+            onCancel={() => setOpenPanel(null)}
+            onFinished={handleSelectionSaved}
             onPermissionRevoked={() => setCanReassign(false)}
+          />
+        )}
+        {/* F004-T4 (#78): one Loan of the selected rows. The server refuses by name any that cannot be lent. */}
+        {openPanel === 'LOAN' && (
+          <LoanStartForm
+            assets={[...selection.values()]}
+            actorId={listActorId}
+            csrfToken={csrfToken}
+            onStarted={async () => handleSelectionSaved()}
+            onCancel={() => setOpenPanel(null)}
+            onPermissionRevoked={() => setCanRecordLoan(false)}
           />
         )}
 
@@ -831,11 +898,14 @@ export const AssetSearch: React.FC = () => {
               </span>
             </div>
 
-            {canReassign && (
-              <BulkReassignmentBar
+            {canSelect && (
+              <AssetSelectionBar
                 selectedCount={selection.size}
-                isPanelOpen={isBulkPanelOpen}
-                onOpen={() => setIsBulkPanelOpen(true)}
+                isPanelOpen={openPanel !== null}
+                canReassign={canReassign}
+                canRecordLoan={canRecordLoan}
+                onOpenReassignment={() => setOpenPanel('REASSIGNMENT')}
+                onOpenLoan={() => setOpenPanel('LOAN')}
                 onClear={() => setSelection(new Map())}
               />
             )}
@@ -869,7 +939,7 @@ export const AssetSearch: React.FC = () => {
                 >
                   <thead>
                     <tr style={{ backgroundColor: '#f9fafb', borderBottom: '2px solid #e5e7eb' }}>
-                      {canReassign && (
+                      {canSelect && (
                         <th style={{ padding: '0.75rem 1rem', fontWeight: 600, color: '#374151' }}>เลือก</th>
                       )}
                       <th style={{ padding: '0.75rem 1rem', fontWeight: 600, color: '#374151' }}>
@@ -898,14 +968,14 @@ export const AssetSearch: React.FC = () => {
                           borderBottom: '1px solid #e5e7eb',
                         }}
                       >
-                        {canReassign && (
+                        {canSelect && (
                           <td style={{ padding: '0.75rem 1rem' }}>
                             <input
                               type="checkbox"
                               data-testid={`asset-select-${item.id}`}
                               aria-label={`เลือก ${assetLabelOf(item, item.id)}`}
                               checked={selection.has(item.id)}
-                              disabled={isBulkPanelOpen || (!selection.has(item.id) && selection.size >= BULK_REASSIGNMENT_MAX_ASSETS)}
+                              disabled={openPanel !== null || (!selection.has(item.id) && selection.size >= SELECTION_MAX_ASSETS)}
                               onChange={() => toggleSelected(item)}
                             />
                           </td>
@@ -915,6 +985,8 @@ export const AssetSearch: React.FC = () => {
                         </td>
                         <td style={{ padding: '0.75rem 1rem', color: '#111827' }}>
                           {item.name || '(ไม่มีชื่อ - บันทึกข้อมูลย้อนหลัง)'}
+                          {item.on_loan && <OnLoanBadge testId={`search-result-on-loan-${item.id}`} />}
+                          {item.on_loan?.is_overdue && <OverdueBadge testId={`search-result-overdue-${item.id}`} />}
                         </td>
                         <td style={{ padding: '0.75rem 1rem', color: '#6b7280' }}>
                           {item.serial_number || '-'}

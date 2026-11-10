@@ -569,7 +569,7 @@ export const assetRoutes: FastifyPluginAsync<AssetRoutesOptions> = async (
       const query = (request.query || {}) as Record<string, unknown>;
 
       // Check for unknown parameters
-      const allowedParams = new Set<string>(['field', 'value', 'limit', 'offset', 'has_assignment_conflict', ...REFERENCE_ID_FIELDS]);
+      const allowedParams = new Set<string>(['field', 'value', 'limit', 'offset', 'has_assignment_conflict', 'on_loan', ...REFERENCE_ID_FIELDS]);
       for (const key of Object.keys(query)) {
         if (!allowedParams.has(key)) {
           return sendValidationError({ query: 'Unknown query parameter' });
@@ -639,6 +639,10 @@ export const assetRoutes: FastifyPluginAsync<AssetRoutesOptions> = async (
       if (query.has_assignment_conflict !== undefined && query.has_assignment_conflict !== 'true') {
         return sendValidationError({ has_assignment_conflict: "has_assignment_conflict must be 'true' when given" });
       }
+      // F004-T4 (#78): "กำลังถูกยืม" likewise.
+      if (query.on_loan !== undefined && query.on_loan !== 'true') {
+        return sendValidationError({ on_loan: "on_loan must be 'true' when given" });
+      }
 
       // Limit validation
       if (limit !== undefined) {
@@ -678,14 +682,17 @@ export const assetRoutes: FastifyPluginAsync<AssetRoutesOptions> = async (
           organization_unit_id: query.organization_unit_id as string | undefined,
           responsible_person_id: query.responsible_person_id as string | undefined,
           has_assignment_conflict: query.has_assignment_conflict === 'true',
+          on_loan: query.on_loan === 'true',
           limit: limit as any,
           offset: offset as any,
         });
 
-        // F003-T5 (#55): whether the list offers selecting rows for "ย้ายหลายรายการ". The server decides again.
+        // F003-T5 (#55): whether the list offers selecting rows for "ย้ายหลายรายการ"; F004-T4 (#78): and
+        // for "บันทึกการยืม". The server decides again.
         const canReassign = request.user ? await mayReassign(request.user.id) : false;
+        const canRecordLoan = request.user && capabilityService ? await capabilityService.hasCapability(request.user.id, 'loan:record') : false;
 
-        return reply.status(200).send({ ...result, can_reassign: canReassign });
+        return reply.status(200).send({ ...result, can_reassign: canReassign, can_record_loan: canRecordLoan });
       } catch (err: any) {
         if (err instanceof ValidationError) {
           return sendValidationError({ query: err.message });
