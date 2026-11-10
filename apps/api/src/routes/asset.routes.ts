@@ -762,6 +762,7 @@ export const assetRoutes: FastifyPluginAsync<AssetRoutesOptions> = async (
         can_correct_assignment: canCorrectAssignment,
         on_loan: await options.loanService.onLoanOf(id.trim().toLowerCase()),
         latest_loan_return_condition: await options.loanService.latestLoanReturnConditionOf(id.trim().toLowerCase()),
+        not_returned: await options.loanService.notReturnedOf(id.trim().toLowerCase()),
         can_record_loan: canRecordLoan,
       });
     }

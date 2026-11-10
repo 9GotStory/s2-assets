@@ -77,11 +77,38 @@ export interface LoanReturn {
   returned_after_due_date: boolean;
 }
 
+// The ending of a LoanItem whose Asset did not come back ("ปิดโดยไม่ได้รับคืน", #74 Q11, Q21). It is
+// not a Loan Return, and it says nothing of the Asset itself.
+export interface NotReturned {
+  id: string;
+  // The date it became known.
+  not_returned_date: string;
+  reason: string;
+  action_reference: string;
+  recorded_by: string;
+  recorded_by_username: string | null;
+  recorded_at: string;
+}
+
 export type LoanEndingKind = 'NONE' | 'LOAN_RETURN' | 'NOT_RETURNED';
+
+// A Due Date Extension of one LoanItem ("เลื่อนกำหนดคืน", #74 Q6, Q28).
+export interface DueDateExtension {
+  id: string;
+  prior_due_date: string;
+  new_due_date: string;
+  reason: string | null;
+  action_reference: string;
+  recorded_by: string;
+  recorded_by_username: string | null;
+  recorded_at: string;
+  is_voided: boolean;
+}
 
 export interface LoanItem {
   id: string;
   asset: { id: string; name: string | null; asset_number: string | null };
+  // The current Due Date: that of the latest Due Date Extension, or the Due Date as first recorded.
   due_date: string;
   condition: LoanCondition;
   condition_note: string | null;
@@ -89,7 +116,10 @@ export interface LoanItem {
   is_voided: boolean;
   is_overdue: boolean;
   loan_return: LoanReturn | null;
-  // Where an Outstanding item goes back to, when the Loan is read with a Return Date (#74 Q27).
+  not_returned: NotReturned | null;
+  // Oldest first, a voided one among them.
+  due_date_extensions: DueDateExtension[];
+  // Where an Outstanding or Not Returned item goes back to, when the Loan is read with a Return Date (#74 Q27).
   assignment_on_return_date?: PermanentAssignment;
 }
 
@@ -106,6 +136,7 @@ export interface AssetLoanItem {
   is_voided: boolean;
   is_overdue: boolean;
   loan_return: LoanReturn | null;
+  not_returned: NotReturned | null;
 }
 
 // Who holds an Asset that is On Loan.
@@ -116,8 +147,15 @@ export interface OnLoan {
   is_overdue: boolean;
 }
 
-// Derived from a Loan's non-voided items, and never stored (#74 Q1).
-export type LoanStatus = 'OUTSTANDING' | 'PARTIALLY_RETURNED' | 'RETURNED';
+// The Not Returned that keeps an Asset from a new Loan until it comes back (#74 Q21).
+export interface AssetNotReturned {
+  loan_id: string;
+  not_returned_date: string;
+}
+
+// Derived from a Loan's non-voided items, and never stored (#74 Q1). CLOSED is "ปิดแล้ว": every item
+// has ended and at least one is Not Returned (#74 Q22).
+export type LoanStatus = 'OUTSTANDING' | 'PARTIALLY_RETURNED' | 'RETURNED' | 'CLOSED';
 
 export interface Loan {
   id: string;
@@ -144,6 +182,7 @@ export interface LoanListRow {
   loan_date: string;
   item_count: number;
   returned_count: number;
+  not_returned_count: number;
   status: LoanStatus;
   is_overdue: boolean;
 }
@@ -171,6 +210,7 @@ export interface LoanList {
 export type RefusedAsset = { asset_id: string; name: string | null; asset_number: string | null } & (
   | { reason: 'NOT_FOUND' }
   | { reason: 'ON_LOAN'; loan_id: string }
+  | { reason: 'NOT_RETURNED'; loan_id: string }
 );
 
 /** A Loan names Assets that cannot be lent. Nothing is saved, and the answer names each one and why. */
@@ -296,9 +336,12 @@ const normalizeFacts = (input: StartLoanInput, today: string): LoanFacts => ({
   remark: normalizeText(input.remark, 'remark', REMARK_MAX_LENGTH, ''),
 });
 
-// A LoanItem's current Due Date, for a row aliased `li`. Until a Due Date Extension exists (T5), it is
-// the Due Date as first recorded.
-const CURRENT_DUE_DATE = 'li.due_date';
+// A LoanItem's current Due Date, for a row aliased `li`: the new date of its latest non-voided Due Date
+// Extension by Recorded At, otherwise the Due Date as first recorded (#74). An extension only extends,
+// so of two recorded in one instant the later date is the later extension.
+const CURRENT_DUE_DATE = `coalesce((SELECT x.new_due_date FROM loan_due_date_extensions x
+                                    WHERE x.loan_item_id = li.id AND NOT x.is_voided
+                                    ORDER BY x.recorded_at DESC, x.new_due_date DESC LIMIT 1), li.due_date)`;
 
 // LR-06, #74 Q5: an Outstanding LoanItem whose current Due Date is before today, for a row aliased `li`
 // and today's Asia/Bangkok date as the parameter `today`. An item due today is not Overdue.
@@ -327,6 +370,29 @@ const LOAN_RETURN_JOINS = `LEFT JOIN loan_item_endings loan_return
          ON loan_return.loan_item_id = li.id AND loan_return.kind = 'LOAN_RETURN' AND NOT loan_return.is_voided
        LEFT JOIN users loan_return_user ON loan_return_user.id = loan_return.recorded_by`;
 
+// A LoanItem's non-voided Not Returned, of which there is at most one, for a row aliased `li`.
+const NOT_RETURNED_COLUMNS = `not_returned.id AS not_returned_id, to_char(not_returned.ending_date, 'YYYY-MM-DD') AS not_returned_date,
+       not_returned.reason AS not_returned_reason, not_returned.action_reference AS not_returned_action_reference,
+       not_returned.recorded_by AS not_returned_recorded_by, not_returned_user.username AS not_returned_recorded_by_username,
+       not_returned.recorded_at AS not_returned_recorded_at`;
+
+const NOT_RETURNED_JOINS = `LEFT JOIN loan_item_endings not_returned
+         ON not_returned.loan_item_id = li.id AND not_returned.kind = 'NOT_RETURNED' AND NOT not_returned.is_voided
+       LEFT JOIN users not_returned_user ON not_returned_user.id = not_returned.recorded_by`;
+
+const notReturnedOf = (row: any): NotReturned | null =>
+  row.not_returned_id
+    ? {
+        id: row.not_returned_id,
+        not_returned_date: row.not_returned_date,
+        reason: row.not_returned_reason,
+        action_reference: row.not_returned_action_reference,
+        recorded_by: row.not_returned_recorded_by,
+        recorded_by_username: row.not_returned_recorded_by_username ?? null,
+        recorded_at: new Date(row.not_returned_recorded_at).toISOString(),
+      }
+    : null;
+
 const loanReturnOf = (row: any): LoanReturn | null =>
   row.return_id
     ? {
@@ -346,9 +412,18 @@ const loanReturnOf = (row: any): LoanReturn | null =>
 
 const isOutstanding = ({ ending_kind, is_voided }: Pick<LoanItem, 'ending_kind' | 'is_voided'>): boolean => ending_kind === 'NONE' && !is_voided;
 
+// An item a Loan Return can still end: Outstanding, or Not Returned and come back later (#74 Q21).
+const isReturnable = ({ ending_kind, is_voided }: Pick<LoanItem, 'ending_kind' | 'is_voided'>): boolean =>
+  ending_kind !== 'LOAN_RETURN' && !is_voided;
+
+// The list's SQL derives the same status over the same items.
 const statusOf = (items: Pick<LoanItem, 'ending_kind' | 'is_voided'>[]): LoanStatus => {
   const counted = items.filter(({ is_voided }) => !is_voided);
-  const returned = counted.filter(({ ending_kind }) => ending_kind === 'LOAN_RETURN').length;
+  const countOf = (kind: LoanEndingKind) => counted.filter(({ ending_kind }) => ending_kind === kind).length;
+  const returned = countOf('LOAN_RETURN');
+  if (countOf('NONE') === 0 && countOf('NOT_RETURNED') > 0) {
+    return 'CLOSED';
+  }
   if (returned === 0) {
     return 'OUTSTANDING';
   }
@@ -386,18 +461,120 @@ export interface LoanItemOfLockedLoan {
   asset_number: string | null;
   ending_kind: LoanEndingKind;
   is_voided: boolean;
+  // The current Due Date.
+  due_date: string;
+  // The date of the item's non-voided Not Returned, or null.
+  not_returned_date: string | null;
 }
 
 /** The items of a Loan whose row the caller holds locked, so they cannot change under it. */
 export async function readItemsOfLockedLoan(client: pg.PoolClient, loanId: string): Promise<LoanItemOfLockedLoan[]> {
   const res = await client.query(
-    `SELECT li.id, li.asset_id, a.name, a.asset_number, li.ending_kind, li.is_voided
+    `SELECT li.id, li.asset_id, a.name, a.asset_number, li.ending_kind, li.is_voided,
+            to_char(${CURRENT_DUE_DATE}, 'YYYY-MM-DD') AS due_date, to_char(not_returned.ending_date, 'YYYY-MM-DD') AS not_returned_date
      FROM loan_items li
      JOIN assets a ON a.id = li.asset_id
+     LEFT JOIN loan_item_endings not_returned
+       ON not_returned.loan_item_id = li.id AND not_returned.kind = 'NOT_RETURNED' AND NOT not_returned.is_voided
      WHERE li.loan_id = $1`,
     [loanId]
   );
   return res.rows;
+}
+
+// A LoanItem that a write for Outstanding items cannot take, and why.
+export interface RefusedOutstandingItem {
+  loan_item_id: string;
+  asset_id: string | null;
+  name: string | null;
+  asset_number: string | null;
+  reason: 'NOT_FOUND' | 'VOIDED' | 'ALREADY_RETURNED' | 'NOT_RETURNED';
+}
+
+/** A write for Outstanding items names one that is not. Nothing is saved, and the answer names each one and why. */
+export class LoanItemsNotOutstandingError extends Error {
+  statusCode = 409;
+  code = 'LOAN_ITEMS_NOT_OUTSTANDING';
+  items: RefusedOutstandingItem[];
+
+  constructor(items: RefusedOutstandingItem[]) {
+    super(`These items are not Outstanding: ${items.map(({ loan_item_id, name, asset_number }) => name ?? asset_number ?? loan_item_id).join(', ')}`);
+    this.name = 'LoanItemsNotOutstandingError';
+    this.items = items;
+  }
+}
+
+/**
+ * Refuses the write unless every item named is an Outstanding item of the locked Loan: a Not Returned
+ * and a Due Date Extension take nothing else (#74).
+ */
+export function assertOutstanding(itemIds: string[], loanItems: LoanItemOfLockedLoan[]): void {
+  const itemById = new Map(loanItems.map((item) => [item.id, item]));
+  const refused = itemIds.flatMap((loanItemId): RefusedOutstandingItem[] => {
+    const item = itemById.get(loanItemId);
+    if (!item) {
+      return [{ loan_item_id: loanItemId, asset_id: null, name: null, asset_number: null, reason: 'NOT_FOUND' }];
+    }
+    const { asset_id, name, asset_number } = item;
+    if (item.is_voided) {
+      return [{ loan_item_id: loanItemId, asset_id, name, asset_number, reason: 'VOIDED' }];
+    }
+    if (item.ending_kind === 'NONE') {
+      return [];
+    }
+    return [{ loan_item_id: loanItemId, asset_id, name, asset_number, reason: item.ending_kind === 'LOAN_RETURN' ? 'ALREADY_RETURNED' : 'NOT_RETURNED' }];
+  });
+  if (refused.length > 0) {
+    throw new LoanItemsNotOutstandingError(refused);
+  }
+}
+
+// One Not Returned recording's facts, which every item shares (#74 Q21).
+export interface NotReturnedFacts {
+  not_returned_date: string;
+  reason: string;
+  loan_item_ids: string[];
+}
+
+/** Records one Not Returned per item and each item's ending kind, together in the caller's transaction (#74). */
+export async function recordNotReturned(
+  client: pg.PoolClient,
+  { facts, actionReference, actorId }: { facts: NotReturnedFacts; actionReference: string; actorId: string }
+): Promise<void> {
+  await client.query(
+    `INSERT INTO loan_item_endings (loan_item_id, kind, ending_date, reason, action_reference, recorded_by)
+     SELECT item_id, 'NOT_RETURNED', $1, $2, $3, $4
+     FROM unnest($5::uuid[]) AS item_id`,
+    [facts.not_returned_date, facts.reason, actionReference, actorId, facts.loan_item_ids]
+  );
+  await client.query(`UPDATE loan_items SET ending_kind = 'NOT_RETURNED' WHERE id = ANY($1::uuid[])`, [facts.loan_item_ids]);
+}
+
+// One Due Date Extension recording: the new date and reason it shares, and each item's prior date.
+export interface DueDateExtensionFacts {
+  new_due_date: string;
+  reason: string | null;
+  items: { loan_item_id: string; prior_due_date: string }[];
+}
+
+/** Records one Due Date Extension per item, in the caller's transaction (#74 Q6). */
+export async function recordDueDateExtensions(
+  client: pg.PoolClient,
+  { facts, actionReference, actorId }: { facts: DueDateExtensionFacts; actionReference: string; actorId: string }
+): Promise<void> {
+  await client.query(
+    `INSERT INTO loan_due_date_extensions (loan_item_id, prior_due_date, new_due_date, reason, action_reference, recorded_by)
+     SELECT item.id, item.prior_due_date, $1, $2, $3, $4
+     FROM unnest($5::uuid[], $6::date[]) AS item(id, prior_due_date)`,
+    [
+      facts.new_due_date,
+      facts.reason,
+      actionReference,
+      actorId,
+      facts.items.map(({ loan_item_id }) => loan_item_id),
+      facts.items.map(({ prior_due_date }) => prior_due_date),
+    ]
+  );
 }
 
 // One recording's facts: what its items share, and each item's own Condition (#74 Q29).
@@ -454,19 +631,25 @@ export class LoanService {
   // Locks the Assets, in identifier order, and refuses the Loan if any of them cannot be lent (LR-11).
   private async assertLendable(client: pg.PoolClient, assetIds: string[]): Promise<void> {
     const locked = new Map((await lockAssetsInIdentifierOrder(client, assetIds)).map((asset) => [asset.id, asset]));
+    // An Asset whose LoanItem ended Not Returned stays out of a new Loan, whatever its date (#74 Q21).
     const heldRes = await client.query(
-      `SELECT asset_id, loan_id FROM loan_items WHERE asset_id = ANY($1::uuid[]) AND NOT is_voided AND ending_kind = 'NONE'`,
+      `SELECT asset_id, loan_id, ending_kind FROM loan_items
+       WHERE asset_id = ANY($1::uuid[]) AND NOT is_voided AND ending_kind IN ('NONE', 'NOT_RETURNED')`,
       [assetIds]
     );
-    const heldBy = new Map<string, string>(heldRes.rows.map((row: any) => [row.asset_id, row.loan_id]));
+    const heldBy = new Map<string, { loan_id: string; ending_kind: LoanEndingKind }>(heldRes.rows.map((row: any) => [row.asset_id, row]));
 
     const refused = assetIds.flatMap((assetId): RefusedAsset[] => {
       const asset = locked.get(assetId);
       if (!asset) {
         return [{ asset_id: assetId, name: null, asset_number: null, reason: 'NOT_FOUND' }];
       }
-      const loanId = heldBy.get(assetId);
-      return loanId ? [{ asset_id: assetId, name: asset.name, asset_number: asset.asset_number, reason: 'ON_LOAN', loan_id: loanId }] : [];
+      const held = heldBy.get(assetId);
+      if (!held) {
+        return [];
+      }
+      const reason = held.ending_kind === 'NONE' ? 'ON_LOAN' : 'NOT_RETURNED';
+      return [{ asset_id: assetId, name: asset.name, asset_number: asset.asset_number, reason, loan_id: held.loan_id }];
     });
     if (refused.length > 0) {
       throw new AssetsNotLendableError(refused);
@@ -550,18 +733,38 @@ export class LoanService {
     }
     const row = loanRes.rows[0];
     const itemsRes = await this.db.query(
-      `SELECT li.id, li.asset_id, a.name AS asset_name, a.asset_number, to_char(li.due_date, 'YYYY-MM-DD') AS due_date,
+      `SELECT li.id, li.asset_id, a.name AS asset_name, a.asset_number, to_char(${CURRENT_DUE_DATE}, 'YYYY-MM-DD') AS due_date,
               li.lending_condition, li.lending_condition_note, li.ending_kind, li.is_voided,
-              ${itemIsOverdue('$2')} AS is_overdue, ${LOAN_RETURN_COLUMNS}
+              ${itemIsOverdue('$2')} AS is_overdue, ${LOAN_RETURN_COLUMNS}, ${NOT_RETURNED_COLUMNS}
        FROM loan_items li
        JOIN assets a ON a.id = li.asset_id
        ${LOAN_RETURN_JOINS}
+       ${NOT_RETURNED_JOINS}
        WHERE li.loan_id = $1
        ORDER BY a.name NULLS LAST, a.id`,
       [loanId, bangkokDate(this.clock())]
     );
+    const extensionsRes = await this.db.query(
+      `SELECT x.id, x.loan_item_id, to_char(x.prior_due_date, 'YYYY-MM-DD') AS prior_due_date,
+              to_char(x.new_due_date, 'YYYY-MM-DD') AS new_due_date, x.reason, x.action_reference,
+              x.recorded_by, u.username AS recorded_by_username, x.recorded_at, x.is_voided
+       FROM loan_due_date_extensions x
+       JOIN loan_items li ON li.id = x.loan_item_id
+       LEFT JOIN users u ON u.id = x.recorded_by
+       WHERE li.loan_id = $1
+       ORDER BY x.recorded_at, x.new_due_date`,
+      [loanId]
+    );
+    const extensionsOf = (itemId: string): DueDateExtension[] =>
+      extensionsRes.rows
+        .filter(({ loan_item_id }: any) => loan_item_id === itemId)
+        .map(({ loan_item_id: _itemId, recorded_by_username, recorded_at, ...extension }: any) => ({
+          ...extension,
+          recorded_by_username: recorded_by_username ?? null,
+          recorded_at: new Date(recorded_at).toISOString(),
+        }));
     const assignments = returnDate
-      ? await readAssignmentsAt(this.db, itemsRes.rows.filter(isOutstanding).map((item: any) => item.asset_id), returnDate)
+      ? await readAssignmentsAt(this.db, itemsRes.rows.filter(isReturnable).map((item: any) => item.asset_id), returnDate)
       : null;
     return {
       id: row.id,
@@ -589,6 +792,8 @@ export class LoanService {
         is_voided: item.is_voided,
         is_overdue: item.is_overdue,
         loan_return: loanReturnOf(item),
+        not_returned: notReturnedOf(item),
+        due_date_extensions: extensionsOf(item.id),
         assignment_on_return_date: assignments?.get(item.asset_id),
       })),
     };
@@ -628,8 +833,9 @@ export class LoanService {
          SELECT l.id, l.borrower_kind, l.borrower_person_id, l.borrower_contact_name, l.borrower_organization_name,
                 to_char(l.loan_date, 'YYYY-MM-DD') AS loan_date, l.loan_date AS sort_date, l.recorded_at,
                 borrower.name AS borrower_name, borrower.is_active AS borrower_is_active,
-                items.item_count, items.returned_count, items.is_overdue,
-                CASE WHEN items.returned_count = 0 THEN 'OUTSTANDING'
+                items.item_count, items.returned_count, items.not_returned_count, items.is_overdue,
+                CASE WHEN items.outstanding_count = 0 AND items.not_returned_count > 0 THEN 'CLOSED'
+                     WHEN items.returned_count = 0 THEN 'OUTSTANDING'
                      WHEN items.returned_count = items.item_count THEN 'RETURNED'
                      ELSE 'PARTIALLY_RETURNED' END AS status
          FROM loans l
@@ -637,6 +843,8 @@ export class LoanService {
          CROSS JOIN LATERAL (
            SELECT count(*) FILTER (WHERE NOT li.is_voided)::int AS item_count,
                   count(*) FILTER (WHERE NOT li.is_voided AND li.ending_kind = 'LOAN_RETURN')::int AS returned_count,
+                  count(*) FILTER (WHERE NOT li.is_voided AND li.ending_kind = 'NOT_RETURNED')::int AS not_returned_count,
+                  count(*) FILTER (WHERE NOT li.is_voided AND li.ending_kind = 'NONE')::int AS outstanding_count,
                   coalesce(bool_or(${itemIsOverdue('$1')}), false) AS is_overdue
            FROM loan_items li
            WHERE li.loan_id = l.id
@@ -667,6 +875,7 @@ export class LoanService {
         loan_date: row.loan_date,
         item_count: row.item_count,
         returned_count: row.returned_count,
+        not_returned_count: row.not_returned_count,
         status: row.status,
         is_overdue: row.is_overdue,
       }));
@@ -675,13 +884,14 @@ export class LoanService {
 
   private async readItemsOfAsset(assetId: string): Promise<AssetLoanItem[]> {
     const res = await this.db.query(
-      `SELECT li.id AS item_id, to_char(li.due_date, 'YYYY-MM-DD') AS due_date, li.lending_condition, li.lending_condition_note,
+      `SELECT li.id AS item_id, to_char(${CURRENT_DUE_DATE}, 'YYYY-MM-DD') AS due_date, li.lending_condition, li.lending_condition_note,
               li.ending_kind, li.is_voided AS item_is_voided, ${itemIsOverdue('$2')} AS is_overdue,
-              ${LOAN_COLUMNS}, ${LOAN_RETURN_COLUMNS}
+              ${LOAN_COLUMNS}, ${LOAN_RETURN_COLUMNS}, ${NOT_RETURNED_COLUMNS}
        FROM loan_items li
        JOIN loans l ON l.id = li.loan_id
        ${LOAN_JOINS}
        ${LOAN_RETURN_JOINS}
+       ${NOT_RETURNED_JOINS}
        WHERE li.asset_id = $1
        ORDER BY l.loan_date DESC, l.recorded_at DESC, li.id DESC`,
       [assetId, bangkokDate(this.clock())]
@@ -698,6 +908,7 @@ export class LoanService {
       is_voided: row.item_is_voided,
       is_overdue: row.is_overdue,
       loan_return: loanReturnOf(row),
+      not_returned: notReturnedOf(row),
     }));
   }
 
@@ -725,5 +936,12 @@ export class LoanService {
     const items = await this.readItemsOfAsset(assetId);
     const held = items.find(isOutstanding);
     return held ? { loan_id: held.loan_id, borrower: held.borrower, due_date: held.due_date, is_overdue: held.is_overdue } : null;
+  }
+
+  /** The Not Returned that keeps an Asset from a new Loan, or null when there is none (#74 Q21). */
+  async notReturnedOf(assetId: string): Promise<AssetNotReturned | null> {
+    const items = await this.readItemsOfAsset(assetId);
+    const closed = items.find(({ ending_kind, is_voided }) => ending_kind === 'NOT_RETURNED' && !is_voided);
+    return closed?.not_returned ? { loan_id: closed.loan_id, not_returned_date: closed.not_returned.not_returned_date } : null;
   }
 }

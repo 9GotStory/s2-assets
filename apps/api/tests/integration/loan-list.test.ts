@@ -250,7 +250,7 @@ describe('The Loan list and Overdue (Seam A - F004-T3)', () => {
 
     it('refuse a value they do not know, and a blank name', async () => {
       for (const query of [
-        'status=CLOSED',
+        'status=LOST',
         'status=',
         'overdue=false',
         'overdue=1',
@@ -412,10 +412,86 @@ describe('The Loan list and Overdue (Seam A - F004-T3)', () => {
           loan_date: LOAN_DATE,
           item_count: 3,
           returned_count: 1,
+          not_returned_count: 0,
           status: 'PARTIALLY_RETURNED',
           is_overdue: false,
         },
       ]);
+    });
+  });
+
+  describe('Not Returned and Due Date Extensions (F004-T5)', () => {
+    const write = async (loanId: string, path: string, payload: Record<string, unknown>) => {
+      const res = await api.post(custodian, `/loans/${loanId}/${path}`, { expected_version: (await loanOf(loanId)).version, ...payload }, { 'x-retry-token': crypto.randomUUID() });
+      expect(res.statusCode).toBe(201);
+    };
+    const closed = (loanId: string, itemIds: string[]) =>
+      write(loanId, 'not-returned', { not_returned_date: '2026-11-05', reason: 'หาย', items: itemIds.map((loan_item_id) => ({ loan_item_id })) });
+    const extended = (loanId: string, itemIds: string[], newDueDate: string) =>
+      write(loanId, 'due-date-extensions', { new_due_date: newDueDate, items: itemIds.map((loan_item_id) => ({ loan_item_id })) });
+
+    it('show "ปิดแล้ว" with its count, and an extended item by its current Due Date', async () => {
+      await atClock(async () => {
+        const tag = `T5-${crypto.randomUUID().slice(0, 8)}`;
+        const borrower = { kind: 'EXTERNAL', contact_name: `คุณ ${tag}` };
+        const allClosed = await lent(3, { borrower });
+        const stillOut = await lent(2, { borrower });
+        const extendedLoan = await lent(2, { borrower });
+        await returned(allClosed.loanId, [allClosed.itemIds[0]]);
+        await closed(allClosed.loanId, allClosed.itemIds.slice(1));
+        await closed(stillOut.loanId, [stillOut.itemIds[0]]);
+        await extended(extendedLoan.loanId, extendedLoan.itemIds, '2026-11-08');
+        now = new Date('2026-11-07T05:00:00Z');
+        const rows = Object.fromEntries((await list(`borrower_name=${tag}`)).items.map((row: any) => [row.id, row]));
+
+        expect(rows[allClosed.loanId]).toMatchObject({ status: 'CLOSED', item_count: 3, returned_count: 1, not_returned_count: 2, is_overdue: false });
+        expect(rows[stillOut.loanId]).toMatchObject({ status: 'OUTSTANDING', returned_count: 0, not_returned_count: 1, is_overdue: true });
+        expect(rows[extendedLoan.loanId]).toMatchObject({ status: 'OUTSTANDING', is_overdue: false });
+        expect((await list(`status=CLOSED&borrower_name=${tag}`)).items.map(({ id }: any) => id)).toEqual([allClosed.loanId]);
+        expect((await list(`overdue=true&borrower_name=${tag}`)).items.map(({ id }: any) => id)).toEqual([stillOut.loanId]);
+      });
+    });
+  });
+
+  // The status and counts are derived twice, by the list's SQL and by the Loan page's reading of its
+  // items, so the two must agree on every Loan the tests above built (F004-T3 retrospective).
+  describe('the list and the Loan page', () => {
+    const allRows = async () => {
+      const rows: any[] = [];
+      for (let offset = 0; ; offset += 100) {
+        const page = await list(`limit=100&offset=${offset}`);
+        rows.push(...page.items);
+        if (!page.has_more) {
+          return rows;
+        }
+      }
+    };
+
+    it('agree on the status, Overdue and the item counts of every Loan', async () => {
+      const rows = await allRows();
+      expect(rows.length).toBeGreaterThan(20);
+      expect(new Set(rows.map(({ status }) => status)).size).toBeGreaterThan(2);
+
+      for (const row of rows) {
+        const loan = await loanOf(row.id);
+        const counted = loan.items.filter(({ is_voided }: any) => !is_voided);
+        expect(
+          {
+            status: row.status,
+            is_overdue: row.is_overdue,
+            item_count: row.item_count,
+            returned_count: row.returned_count,
+            not_returned_count: row.not_returned_count,
+          },
+          row.id
+        ).toEqual({
+          status: loan.status,
+          is_overdue: loan.is_overdue,
+          item_count: counted.length,
+          returned_count: counted.filter(({ ending_kind }: any) => ending_kind === 'LOAN_RETURN').length,
+          not_returned_count: counted.filter(({ ending_kind }: any) => ending_kind === 'NOT_RETURNED').length,
+        });
+      }
     });
   });
 });

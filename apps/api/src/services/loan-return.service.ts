@@ -120,11 +120,13 @@ const refusalsOfItem = (loanItemId: string, item: LoanItemOfLockedLoan | undefin
   if (item.is_voided) {
     return [{ loan_item_id: loanItemId, asset_id, name, asset_number, reason: 'VOIDED' }];
   }
-  return item.ending_kind === 'NONE' ? [] : [{ loan_item_id: loanItemId, asset_id, name, asset_number, reason: 'ALREADY_RETURNED' }];
+  // A Not Returned item that turns up takes its Loan Return (#74 Q21).
+  return item.ending_kind === 'LOAN_RETURN' ? [{ loan_item_id: loanItemId, asset_id, name, asset_number, reason: 'ALREADY_RETURNED' }] : [];
 };
 
 /**
- * F004-T2 (#76): records that Assets came back from a Loan, some or all of them. A Loan Return writes
+ * F004-T2 (#76): records that Assets came back from a Loan, some or all of them, an item closed as
+ * Not Returned among them (F004-T5). A Loan Return writes
  * no assignment fact (MR-15, MR-16), and a Condition of ชำรุด records only that (#74 Q16).
  */
 export class LoanReturnService {
@@ -159,6 +161,14 @@ export class LoanReturnService {
         }
         if (facts.return_date < loan.loan_date) {
           throw new ValidationError('return_date must not be before the Loan Date');
+        }
+        // An earlier date means the Not Returned was wrong, which a Loan Correction fixes (#74 Q21).
+        const closedLater = facts.items
+          .map(({ loan_item_id }) => itemById.get(loan_item_id)!)
+          .filter(({ not_returned_date: notReturnedDate }) => notReturnedDate !== null && facts.return_date < notReturnedDate);
+        if (closedLater.length > 0) {
+          const names = closedLater.map(({ name, asset_number, asset_id }) => name ?? asset_number ?? asset_id).join(', ');
+          throw new ValidationError(`return_date must not be before the Not Returned date of ${names}`);
         }
 
         const actionReference = crypto.randomUUID();
