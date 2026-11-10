@@ -20,29 +20,10 @@ describe('Recording a Loan Return (Seam A - F004-T2)', () => {
   const logLines: string[] = [];
 
   const { entry, entries, detailOf, assignmentOf } = assignmentHelpers(() => ({ api, admin, reader: readonly }));
-  const { registered, loanOf, whileHolding, isWaitingOnLoanLock } = loanHelpers(() => ({ api, custodian, reader: readonly }));
-
-  const start = (assetIds: string[], overrides: Record<string, unknown> = {}) =>
-    api.post(
-      custodian,
-      '/loans',
-      {
-        assets: assetIds.map((asset_id) => ({ asset_id, condition: 'NORMAL' })),
-        borrower: { kind: 'EXTERNAL', contact_name: 'คุณผู้ยืม' },
-        loan_date: LOAN_DATE,
-        due_date: DUE,
-        ...overrides,
-      },
-      { 'x-retry-token': crypto.randomUUID() }
-    );
-
-  // A started Loan of `assetIds`, with its LoanItem ids by Asset.
-  const lent = async (assetIds: string[], overrides: Record<string, unknown> = {}) => {
-    const res = await start(assetIds, overrides);
-    expect(res.statusCode).toBe(201);
-    const { loan_id: loanId, version, items } = res.json();
-    return { loanId: loanId as string, version: version as number, itemOf: Object.fromEntries(items.map(({ id, asset_id }: any) => [asset_id, id])) as Record<string, string> };
-  };
+  const { registered, loanOf, start, lent, whileHolding, isWaitingOnLoanLock } = loanHelpers(() => ({ api, custodian, reader: readonly }), {
+    loanDate: LOAN_DATE,
+    dueDate: DUE,
+  });
 
   const normal = (itemId: string) => ({ loan_item_id: itemId, condition: 'NORMAL' });
 

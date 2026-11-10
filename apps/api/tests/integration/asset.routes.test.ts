@@ -1474,8 +1474,9 @@ describe('Asset Routes & Security Matrix Integration Tests (Seam A)', () => {
         expect(body.total_count).toBe(1);
         expect(body.has_more).toBe(false);
 
-        // Strict projection: exactly id, name, asset_number, serial_number and, since T4, the reference context;
-        // since F004-T4 (#78), On Loan and the latest Loan Return's Condition
+        // Strict projection, the one place that pins a search row's exact fields (#78 retro): id, name,
+        // asset_number, serial_number and, since T4, the reference context; since F004-T4 (#78), On Loan
+        // and the latest Loan Return's Condition
         expect(Object.keys(body.items[0]).sort()).toEqual([
           'asset_number',
           'id',

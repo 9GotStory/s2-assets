@@ -21,26 +21,11 @@ describe('Recording a Due Date Extension (Seam A - F004-T5)', () => {
   const logLines: string[] = [];
 
   const { detailOf, assignmentOf } = assignmentHelpers(() => ({ api, admin, reader: readonly }));
-  const { registered, loanOf, whileHolding, isWaitingOnLoanLock } = loanHelpers(() => ({ api, custodian, reader: readonly }));
-
-  // A started Loan of `assetIds`, with its LoanItem ids by Asset.
-  const lent = async (assetIds: string[], overrides: Record<string, unknown> = {}) => {
-    const res = await api.post(
-      custodian,
-      '/loans',
-      {
-        assets: assetIds.map((asset_id) => ({ asset_id, condition: 'NORMAL' })),
-        borrower: { kind: 'EXTERNAL', contact_name: 'คุณผู้ยืมขอเลื่อน' },
-        loan_date: LOAN_DATE,
-        due_date: DUE,
-        ...overrides,
-      },
-      { 'x-retry-token': crypto.randomUUID() }
-    );
-    expect(res.statusCode).toBe(201);
-    const { loan_id: loanId, version, items } = res.json();
-    return { loanId: loanId as string, version: version as number, itemOf: Object.fromEntries(items.map(({ id, asset_id }: any) => [asset_id, id])) as Record<string, string> };
-  };
+  const { registered, loanOf, lent, returned, whileHolding, isWaitingOnLoanLock } = loanHelpers(() => ({ api, custodian, reader: readonly }), {
+    loanDate: LOAN_DATE,
+    dueDate: DUE,
+    contactName: 'คุณผู้ยืมขอเลื่อน',
+  });
 
   const extend = (loanId: string, payload: Record<string, unknown>, token: string = crypto.randomUUID(), actor: Actor = custodian) =>
     api.post(actor, `/loans/${loanId}/due-date-extensions`, payload, { 'x-retry-token': token });
@@ -52,16 +37,6 @@ describe('Recording a Due Date Extension (Seam A - F004-T5)', () => {
     items: itemIds.map((loan_item_id) => ({ loan_item_id })),
     ...overrides,
   });
-
-  const returned = async (loanId: string, itemIds: string[], returnDate: string) => {
-    const res = await api.post(
-      custodian,
-      `/loans/${loanId}/returns`,
-      { expected_version: (await loanOf(loanId)).version, return_date: returnDate, items: itemIds.map((loan_item_id) => ({ loan_item_id, condition: 'NORMAL' })) },
-      { 'x-retry-token': crypto.randomUUID() }
-    );
-    expect(res.statusCode).toBe(201);
-  };
 
   const extensionsOf = async (itemId: string) =>
     (await api.pool.query('SELECT id FROM loan_due_date_extensions WHERE loan_item_id = $1', [itemId])).rows;

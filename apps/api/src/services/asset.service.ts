@@ -19,10 +19,12 @@ import {
   type InitialAssignmentFacts,
   type InitialAssignmentInput,
 } from './assignment.service.ts';
+import { containsPattern } from './asset-lookups.ts';
 import { loanSearch, type AssetSearchLoanFacts } from './loan.service.ts';
+import { NotFoundError, StaleBeforeConflictError } from './service-errors.ts';
 import { ValidationError } from './validation-error.ts';
 
-export { ValidationError };
+export { NotFoundError, StaleBeforeConflictError, ValidationError };
 
 export interface AssetRecord {
   id: string;
@@ -125,38 +127,6 @@ export interface AssetServiceOptions {
   db: pg.Pool | any;
   // The current time; "today" for an Effective Date is its Asia/Bangkok date.
   clock?: () => Date;
-}
-
-export class NotFoundError extends Error {
-  statusCode: number;
-  code: string;
-
-  constructor(message: string = 'Asset not found') {
-    super(message);
-    this.name = 'NotFoundError';
-    this.statusCode = 404;
-    this.code = 'NOT_FOUND';
-  }
-}
-
-export class StaleBeforeConflictError extends Error {
-  statusCode: number;
-  code: string;
-  current_values?: Record<string, string | number | null>;
-  expected_values?: Record<string, string | number | null>;
-
-  constructor(
-    message: string = 'Current asset state differs from expected before values',
-    currentValues?: Record<string, string | number | null>,
-    expectedValues?: Record<string, string | number | null>
-  ) {
-    super(message);
-    this.name = 'StaleBeforeConflictError';
-    this.statusCode = 409;
-    this.code = 'STALE_BEFORE_CONFLICT';
-    this.current_values = currentValues;
-    this.expected_values = expectedValues;
-  }
 }
 
 export interface DuplicateCandidatesResult {
@@ -314,16 +284,6 @@ function refuseAssignmentFields(input: CorrectAssetInput): void {
       `The registry correction does not change Location, OrganizationUnit or Responsible Person; record an assignment action instead (${named.join(', ')})`
     );
   }
-}
-
-// A case-insensitive literal substring pattern for ILIKE ... ESCAPE '\'.
-export const containsPattern = (value: string): string =>
-  `%${value.replace(/\\/g, '\\\\').replace(/%/g, '\\%').replace(/_/g, '\\_')}%`;
-
-/** Whether an Asset is registered. */
-export async function assetExists(db: pg.Pool | any, assetId: string): Promise<boolean> {
-  const res = await db.query('SELECT 1 FROM assets WHERE id = $1', [assetId]);
-  return res.rows.length > 0;
 }
 
 export class AssetService {
