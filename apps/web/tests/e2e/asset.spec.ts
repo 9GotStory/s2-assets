@@ -3,9 +3,7 @@ import { createServer, type ViteDevServer } from 'vite';
 import * as path from 'node:path';
 import * as fs from 'node:fs';
 import { fileURLToPath } from 'node:url';
-import type { FastifyInstance } from 'fastify';
-import { PostgreSqlContainer, type StartedPostgreSqlContainer } from '../../../api/node_modules/@testcontainers/postgresql/build/index.js';
-import pg from '../../../api/node_modules/pg/lib/index.js';
+import { PostgreSqlContainer, pg, type FastifyInstance, type StartedPostgreSqlContainer } from '../../../api/tests/journey-deps.ts';
 import { runMigrator } from '../../../../packages/db/src/migrator.ts';
 import { buildApp } from '../../../api/src/app.ts';
 import { UserService } from '../../../api/src/services/user.service.ts';
@@ -1913,7 +1911,7 @@ test.describe.serial('Asset Registry Real SPA -> Composed API -> PostgreSQL Jour
       window.fetch = async (...args) => {
         const url = String(args[0]);
         if (url.includes('/auth/session-check') && location.pathname.includes('/assets/search')) {
-          const signal: AbortSignal | undefined = args[1]?.signal;
+          const signal = args[1]?.signal;
           return {
             ok: true,
             status: 200,
@@ -1965,7 +1963,7 @@ test.describe.serial('Asset Registry Real SPA -> Composed API -> PostgreSQL Jour
       window.fetch = async (...args) => {
         const url = String(args[0]);
         if (url.includes('/auth/session-check') && location.pathname.includes('/assets/')) {
-          const signal: AbortSignal | undefined = args[1]?.signal;
+          const signal = args[1]?.signal;
           return {
             ok: true,
             status: 200,
