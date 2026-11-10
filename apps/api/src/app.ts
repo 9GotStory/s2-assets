@@ -31,6 +31,8 @@ import { LoanReturnService } from './services/loan-return.service.ts';
 import { NotReturnedService } from './services/not-returned.service.ts';
 import { DueDateExtensionService } from './services/due-date-extension.service.ts';
 import { LoanService } from './services/loan.service.ts';
+import { LoanReadService } from './services/loan-read.service.ts';
+import { LoanCorrectionService } from './services/loan-correction.service.ts';
 import { AcquisitionService } from './services/acquisition.service.ts';
 import { EvidenceService } from './services/evidence.service.ts';
 
@@ -192,6 +194,7 @@ export async function buildApp(options: AppOptions = {}): Promise<FastifyInstanc
 
     const assetService = new AssetService({ db: dbClient, clock: options.clock });
     const loanService = new LoanService({ db: dbClient, clock: options.clock });
+    const loanReadService = new LoanReadService({ db: dbClient, clock: options.clock });
     const loanReturnService = new LoanReturnService({ db: dbClient, clock: options.clock });
     const notReturnedService = new NotReturnedService({ db: dbClient, clock: options.clock });
     const dueDateExtensionService = new DueDateExtensionService({ db: dbClient });
@@ -253,7 +256,7 @@ export async function buildApp(options: AppOptions = {}): Promise<FastifyInstanc
     await app.register(assetRoutes, {
       prefix: '/assets',
       assetService,
-      loanService,
+      loanReadService,
       capabilityService,
       db: dbClient,
       publicAppOrigin,
@@ -266,7 +269,15 @@ export async function buildApp(options: AppOptions = {}): Promise<FastifyInstanc
       bulkReassignmentService: new BulkReassignmentService({ db: dbClient, clock: options.clock }),
     });
 
-    await app.register(loanRoutes, { loanService, loanReturnService, notReturnedService, dueDateExtensionService, capabilityService });
+    await app.register(loanRoutes, {
+      loanService,
+      loanReadService,
+      loanReturnService,
+      notReturnedService,
+      dueDateExtensionService,
+      loanCorrectionService: new LoanCorrectionService({ db: dbClient, clock: options.clock }),
+      capabilityService,
+    });
 
     // Acquisition routes mounted under /acquisitions
     await app.register(acquisitionRoutes, {

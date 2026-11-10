@@ -4,7 +4,19 @@ import { useQuery } from '@tanstack/react-query';
 import { OverdueBadge, ReturnedLateBadge } from './LoanBadges';
 import { LoanStartForm, type LoanFormAsset } from './LoanStartForm';
 import { thaiDate } from './assignmentFacts';
-import { CONDITION_LABELS, NOT_RETURNED_LABEL, ON_LOAN_LABEL, START_LOAN_LABEL, borrowerText, loanReturnText, type AssetLoanItem, type AssetNotReturned, type OnLoan } from './loanFacts';
+import {
+  CONDITION_LABELS,
+  NOT_RETURNED_LABEL,
+  ON_LOAN_LABEL,
+  START_LOAN_LABEL,
+  VOIDED_LABEL,
+  borrowerText,
+  loanReturnText,
+  voidedStyle,
+  type AssetLoanItem,
+  type AssetNotReturned,
+  type OnLoan,
+} from './loanFacts';
 
 export interface LoanSectionProps {
   asset: LoanFormAsset;
@@ -141,8 +153,15 @@ export const LoanSection: React.FC<LoanSectionProps> = ({
         ) : (
           <ol data-testid="loan-history" style={{ listStyle: 'none', margin: 0, padding: 0 }}>
             {history.data.map((item) => (
-              <li key={item.id} style={{ borderTop: '1px solid #e5e7eb', padding: '0.75rem 0', fontSize: '0.875rem', color: '#374151' }}>
-                <div style={{ fontWeight: 500, color: '#111827' }}>{borrowerText(item.borrower)}</div>
+              <li key={item.id} style={{ borderTop: '1px solid #e5e7eb', padding: '0.75rem 0', fontSize: '0.875rem', color: '#374151', ...(item.is_voided ? voidedStyle : {}) }}>
+                <div style={{ fontWeight: 500, color: item.is_voided ? '#6b7280' : '#111827' }}>
+                  {borrowerText(item.borrower)}
+                  {item.is_voided && (
+                    <span data-testid="loan-history-voided" style={{ marginLeft: '0.375rem', color: '#b91c1c' }}>
+                      {VOIDED_LABEL}
+                    </span>
+                  )}
+                </div>
                 <div>
                   วันที่ยืม: <time dateTime={item.loan_date}>{thaiDate(item.loan_date)}</time> · กำหนดคืน:{' '}
                   <time dateTime={item.due_date}>{thaiDate(item.due_date)}</time>

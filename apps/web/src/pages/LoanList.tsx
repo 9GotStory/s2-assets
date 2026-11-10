@@ -4,7 +4,7 @@ import { QueryClient, QueryClientProvider, useQuery } from '@tanstack/react-quer
 import { OverdueBadge } from '../components/LoanBadges';
 import { entryLabel, fetchReferenceList, type ReferenceEntry } from '../components/ReferenceContextFields';
 import { thaiDate } from '../components/assignmentFacts';
-import { LOAN_STATUS_LABELS, borrowerText, loanStatusText, type Borrower, type LoanListRow, type LoanStatus } from '../components/loanFacts';
+import { LOAN_STATUS_LABELS, borrowerText, loanStatusText, voidedStyle, type Borrower, type LoanListRow, type LoanStatus } from '../components/loanFacts';
 
 const PAGE_SIZE = 25;
 
@@ -281,7 +281,7 @@ const LoanListContent: React.FC = () => {
                       </thead>
                       <tbody>
                         {page.items.map((loan) => (
-                          <tr key={loan.id} data-testid={`loan-row-${loan.id}`} style={{ borderBottom: '1px solid #e5e7eb' }}>
+                          <tr key={loan.id} data-testid={`loan-row-${loan.id}`} style={{ borderBottom: '1px solid #e5e7eb', ...(loan.is_voided ? voidedStyle : {}) }}>
                             <td style={{ ...cellStyle, fontWeight: 500 }}>{borrowerText(loan.borrower)}</td>
                             <td style={cellStyle}>
                               <time dateTime={loan.loan_date}>{thaiDate(loan.loan_date)}</time>

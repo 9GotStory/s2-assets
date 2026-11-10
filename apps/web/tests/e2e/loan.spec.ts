@@ -14,6 +14,7 @@ import { SessionService } from '../../../api/src/services/session.service.ts';
 import { AssetService } from '../../../api/src/services/asset.service.ts';
 import { ReferenceService } from '../../../api/src/services/reference.service.ts';
 import { LoanService } from '../../../api/src/services/loan.service.ts';
+import { LoanReadService } from '../../../api/src/services/loan-read.service.ts';
 import { LoanReturnService } from '../../../api/src/services/loan-return.service.ts';
 import { NotReturnedService } from '../../../api/src/services/not-returned.service.ts';
 import { AssignmentRecordingService } from '../../../api/src/services/assignment-recording.service.ts';
@@ -37,6 +38,7 @@ test.describe.serial('Loan journeys: Real SPA -> Composed API -> PostgreSQL (Sea
   let assetService: AssetService;
   let referenceService: ReferenceService;
   let loanService: LoanService;
+  let loanReadService: LoanReadService;
 
   let custodianUserId: string;
   let readonlyUserId: string;
@@ -65,6 +67,7 @@ test.describe.serial('Loan journeys: Real SPA -> Composed API -> PostgreSQL (Sea
     assetService = new AssetService({ db: pool });
     referenceService = new ReferenceService({ db: pool });
     loanService = new LoanService({ db: pool });
+    loanReadService = new LoanReadService({ db: pool });
 
     fastifyApp = await buildApp({
       db: pool,
@@ -599,7 +602,7 @@ test.describe.serial('Loan journeys: Real SPA -> Composed API -> PostgreSQL (Sea
     await expect(refused).toContainText('กล้อง E2E ถูกปิดระหว่างกรอก');
     await expect(refused).toContainText('ปิดโดยไม่ได้รับคืน');
     await expect(refused.getByRole('link', { name: 'ดูการยืม' })).toHaveAttribute('href', `/loans/${elsewhere.loan_id}`);
-    expect((await loanService.itemsOfAsset(raced.id))!.map(({ loan_id }) => loan_id)).toEqual([elsewhere.loan_id]);
+    expect((await loanReadService.itemsOfAsset(raced.id))!.map(({ loan_id }) => loan_id)).toEqual([elsewhere.loan_id]);
   });
 
   // F004-T2 (#76): a partial Loan Return with Condition, after which the returned Asset can be lent again.
@@ -626,7 +629,7 @@ test.describe.serial('Loan journeys: Real SPA -> Composed API -> PostgreSQL (Sea
       { kind: 'REASSIGNMENT', expected_assignment_version: assignmentVersion, location_id: reassignedTo.id, effective_date: yesterday() },
       { retryToken: crypto.randomUUID() }
     );
-    const loan = await loanService.read(loanId, { includePhone: false });
+    const loan = await loanReadService.read(loanId, { includePhone: false });
     const itemOf = (assetId: string) => loan!.items.find(({ asset }) => asset.id === assetId)!.id;
     const [damagedItem, stillOutItem] = [itemOf(damaged.id), itemOf(stillOut.id)];
 
@@ -719,5 +722,68 @@ test.describe.serial('Loan journeys: Real SPA -> Composed API -> PostgreSQL (Sea
     await expect(page.locator('#loan-status')).toContainText('คืนครบ');
     await expect(page.locator('#loan-status')).toContainText('คืนแล้ว 2 จาก 2 รายการ');
     await expect(page.locator('#loan-return-action')).toHaveCount(0);
+  });
+
+  // F004-T6 (#80): correcting a Loan from its page, up to voiding a Loan Return that never happened.
+  test('Journey F004-T6.1: a Custodian amends a Loan field and voids a Loan Return from the Loan page, and sees the correction and the item Outstanding again', async ({ page, context }) => {
+    const { asset } = await assetService.registerAsset(custodianUserId, { name: 'เครื่องฉาย E2E แก้ไขการยืม' } as any);
+    const started = await loanService.start(
+      custodianUserId,
+      {
+        assets: [{ asset_id: asset.id, condition: 'NORMAL' }],
+        borrower: { kind: 'EXTERNAL', contact_name: 'คุณผู้ยืม E2E แก้ไข' },
+        loan_date: daysAgo(3),
+        due_date: '2099-12-31',
+        remark: 'ยืมไปใช้ประชุม',
+      },
+      { retryToken: crypto.randomUUID() }
+    );
+    await new LoanReturnService({ db: pool }).record(
+      custodianUserId,
+      started.loan_id,
+      { expected_version: started.version, return_date: daysAgo(1), items: [{ loan_item_id: started.items[0].id, condition: 'NORMAL' }] },
+      { retryToken: crypto.randomUUID() }
+    );
+    const loanReturnId = (await loanReadService.read(started.loan_id, { includePhone: false }))!.items[0].loan_return!.id;
+    const item = page.locator('[data-testid="loan-item"]');
+
+    await loginAs(context, custodianUserId);
+    await page.goto(`${targetBaseUrl}/loans/${started.loan_id}`);
+    await expect(page.locator('#loan-status')).toContainText('คืนครบ');
+
+    // Amending a Loan field needs a reason, and the correction shows before and after.
+    await page.locator('#loan-amend-action').click();
+    await page.locator('#loan-amend-remark').fill('ยืมไปใช้อบรม');
+    await page.locator('#loan-amend-reason').fill('บันทึกวัตถุประสงค์ผิด');
+    await page.locator('#loan-amend-submit').click();
+    await expect(page.locator('#loan-amend-form')).toHaveCount(0);
+    const corrections = page.locator('#loan-corrections [data-testid="loan-correction"]');
+    await expect(corrections).toHaveCount(1);
+    await expect(corrections.first()).toContainText('บันทึกวัตถุประสงค์ผิด');
+    await expect(corrections.first()).toContainText('หมายเหตุ: ยืมไปใช้ประชุม แก้เป็น ยืมไปใช้อบรม');
+    await expect(corrections.first()).toContainText('custodian_loan');
+
+    // Voiding the Loan Return keeps it shown as voided, and the item is Outstanding again.
+    await page.locator(`#loan-return-${loanReturnId}-void-action`).click();
+    await page.locator('#loan-void-reason').fill('ผู้ยืมยังไม่ได้นำมาคืน บันทึกผิดรายการ');
+    await page.locator('#loan-void-submit').click();
+    await expect(page.locator('#loan-void-form')).toHaveCount(0);
+    await expect(page.locator(`[data-testid="loan-ending-voided-${loanReturnId}"]`)).toContainText('ยกเลิกแล้ว');
+    await expect(item.locator('[data-testid="loan-item-return"]')).toHaveCount(0);
+    await expect(item.locator('[data-testid="loan-item-outstanding"]')).toHaveText('ยังไม่คืน');
+    await expect(page.locator('#loan-status')).toContainText('ยังไม่คืน');
+    await expect(corrections).toHaveCount(2);
+    await expect(corrections.nth(1)).toContainText('ผู้ยืมยังไม่ได้นำมาคืน บันทึกผิดรายการ');
+
+    // The Asset is On Loan again.
+    await page.goto(`${targetBaseUrl}/assets/${asset.id}`);
+    await expect(page.locator('[data-testid="loan-on-loan"]')).toContainText('คุณผู้ยืม E2E แก้ไข');
+
+    // A Read-only User sees the corrections and no action.
+    await switchActor(page, context, readonlyUserId);
+    await page.goto(`${targetBaseUrl}/loans/${started.loan_id}`);
+    await expect(corrections).toHaveCount(2);
+    await expect(page.locator(`[data-testid="loan-ending-voided-${loanReturnId}"]`)).toBeVisible();
+    await expect(page.locator('main button')).toHaveCount(0);
   });
 });

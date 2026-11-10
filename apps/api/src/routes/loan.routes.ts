@@ -7,15 +7,19 @@ import { isCalendarDate } from '../services/assignment.service.ts';
 import { CapabilityService, isValidUuid } from '../services/capability.service.ts';
 import { hasStrictControlChars } from '../services/control-characters.ts';
 import { LoanItemsNotReturnableError, LoanReturnService, type RecordLoanReturnInput } from '../services/loan-return.service.ts';
+import { AssetOnAnotherLoanError, LoanCorrectionService, type CorrectLoanInput } from '../services/loan-correction.service.ts';
+import { LoanReadService } from '../services/loan-read.service.ts';
 import { AssetsNotLendableError, LoanItemsNotOutstandingError, LoanService, type StartLoanInput } from '../services/loan.service.ts';
 import { NotReturnedService, type RecordNotReturnedInput } from '../services/not-returned.service.ts';
 import { DueDateExtensionService, type RecordDueDateExtensionInput } from '../services/due-date-extension.service.ts';
 
 export interface LoanRoutesOptions {
   loanService: LoanService;
+  loanReadService: LoanReadService;
   loanReturnService: LoanReturnService;
   notReturnedService: NotReturnedService;
   dueDateExtensionService: DueDateExtensionService;
+  loanCorrectionService: LoanCorrectionService;
   capabilityService: CapabilityService;
 }
 
@@ -96,6 +100,40 @@ const RecordDueDateExtensionSchema = z
   })
   .strict();
 
+// #74 Q25: one fact, named by its kind and, below the Loan, its id.
+const CorrectionTargetSchema = z.discriminatedUnion('kind', [
+  z.object({ kind: z.literal('LOAN') }).strict(),
+  z.object({ kind: z.enum(['LOAN_ITEM', 'LOAN_RETURN', 'NOT_RETURNED', 'DUE_DATE_EXTENSION']), id: z.string() }).strict(),
+]);
+
+// An amendment names only the fields it changes; which ones a target takes, the service decides. A
+// Borrower is named whole, its phone number included, so leaving the phone out removes it (#74 Q24).
+const LoanCorrectionSchema = z
+  .object({
+    expected_version: z.number().int().min(1),
+    action: z.enum(['AMEND', 'VOID']),
+    target: CorrectionTargetSchema,
+    reason: z.string(),
+    changes: z
+      .object({
+        borrower: BorrowerSchema.optional(),
+        loan_date: z.string().optional(),
+        authorizer_person_id: z.string().nullable().optional(),
+        document_reference: z.string().nullable().optional(),
+        remark: z.string().nullable().optional(),
+        due_date: z.string().optional(),
+        condition: z.enum(['NORMAL', 'DAMAGED']).optional(),
+        condition_note: z.string().nullable().optional(),
+        return_date: z.string().optional(),
+        not_returned_date: z.string().optional(),
+        reason: z.string().optional(),
+      })
+      .strict()
+      .optional(),
+    retry_token: z.string().optional(),
+  })
+  .strict();
+
 // The Loan list's query: each filter narrows the list on its own, and a page is read as on the Asset list.
 // A repeated parameter arrives as an array and is refused.
 const LoanListQuerySchema = z
@@ -135,6 +173,9 @@ const refusalOf = (err: unknown) => {
   }
   if (err instanceof LoanItemsNotReturnableError || err instanceof LoanItemsNotOutstandingError) {
     return { ...errorBody(err.statusCode, err.code, err.message), items: err.items };
+  }
+  if (err instanceof AssetOnAnotherLoanError) {
+    return { ...errorBody(err.statusCode, err.code, err.message), asset: err.asset };
   }
   if (err instanceof StaleBeforeConflictError) {
     return {
@@ -177,7 +218,7 @@ const answerOfWriteOnLoan = async <T extends { retry_token?: string }>(
 };
 
 export const loanRoutes: FastifyPluginAsync<LoanRoutesOptions> = async (fastify, options) => {
-  const { loanService, loanReturnService, notReturnedService, dueDateExtensionService, capabilityService } = options;
+  const { loanService, loanReadService, loanReturnService, notReturnedService, dueDateExtensionService, loanCorrectionService, capabilityService } = options;
 
   /**
    * POST /loans
@@ -239,6 +280,19 @@ export const loanRoutes: FastifyPluginAsync<LoanRoutesOptions> = async (fastify,
   });
 
   /**
+   * POST /loans/:id/corrections
+   * Amends or voids one fact of a Loan recorded wrong, with a reason ("แก้ไขรายการที่บันทึกผิด",
+   * "ยกเลิกรายการ (บันทึกผิด)", F004-T6).
+   * Protected: requires 'loan:correct' capability (Asset Custodian, Administrator)
+   */
+  fastify.post('/loans/:id/corrections', { preHandler: [requireCapability('loan:correct')] }, async (request, reply) => {
+    const { statusCode, body } = await answerOfWriteOnLoan(request, LoanCorrectionSchema, (loanId, input, retryToken) =>
+      loanCorrectionService.correct(request.user!.id, loanId, input as CorrectLoanInput, { retryToken })
+    );
+    return reply.status(statusCode).send(body);
+  });
+
+  /**
    * GET /loans
    * The Loan list ("รายการยืม"), latest Loan Date first (F004-T3). It never carries a phone number,
    * and the logger names a request by its path, so a search by Borrower stays out of the logs (LR-15).
@@ -253,13 +307,14 @@ export const loanRoutes: FastifyPluginAsync<LoanRoutesOptions> = async (fastify,
     }
     const { borrower_person_id: personId, overdue, limit = 25, offset = 0, ...filters } = parsed.data;
     return reply.status(200).send(
-      await loanService.list({ ...filters, overdue: overdue === 'true', borrower_person_id: personId?.trim().toLowerCase(), limit, offset })
+      await loanReadService.list({ ...filters, overdue: overdue === 'true', borrower_person_id: personId?.trim().toLowerCase(), limit, offset })
     );
   });
 
   /**
    * GET /loans/:id
-   * One Loan with its items (F004-T1). The phone number goes only to holders of 'loan:record' (LR-15).
+   * One Loan with its items and corrections (F004-T1, T6). The phone number goes only to holders of
+   * 'loan:record' or 'loan:correct' (LR-15).
    * With ?return_date=YYYY-MM-DD, each Outstanding item also says where it goes back to on that date (F004-T2).
    * Protected: requires 'asset:view' capability, like the Assets it names
    */
@@ -274,11 +329,12 @@ export const loanRoutes: FastifyPluginAsync<LoanRoutesOptions> = async (fastify,
     }
 
     const canRecordLoan = await capabilityService.hasCapability(request.user!.id, 'loan:record');
-    const loan = await loanService.read(id.trim().toLowerCase(), { includePhone: canRecordLoan, returnDate });
+    const canCorrectLoan = await capabilityService.hasCapability(request.user!.id, 'loan:correct');
+    const loan = await loanReadService.read(id.trim().toLowerCase(), { includePhone: canRecordLoan || canCorrectLoan, returnDate });
     if (!loan) {
       return reply.status(404).send(errorBody(404, 'NOT_FOUND', 'Loan not found'));
     }
-    return reply.status(200).send({ ...loan, can_record_loan: canRecordLoan });
+    return reply.status(200).send({ ...loan, can_record_loan: canRecordLoan, can_correct_loan: canCorrectLoan });
   });
 
   /**
@@ -292,7 +348,7 @@ export const loanRoutes: FastifyPluginAsync<LoanRoutesOptions> = async (fastify,
       return reply.status(400).send(errorBody(400, 'INVALID_ID', 'Asset ID must be a valid UUID string'));
     }
 
-    const items = await loanService.itemsOfAsset(id.trim().toLowerCase());
+    const items = await loanReadService.itemsOfAsset(id.trim().toLowerCase());
     if (!items) {
       return reply.status(404).send(errorBody(404, 'NOT_FOUND', 'Asset not found'));
     }
