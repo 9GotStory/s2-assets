@@ -506,17 +506,20 @@ export async function lockLoanForWrite(
   return { loan, items };
 }
 
-/** The LoanItem ids a write names, in identifier order: 1 to 100 of them, well formed, each once. */
-export function normalizeLoanItemIds(items: { loan_item_id: string }[], write: string): string[] {
+/**
+ * The LoanItem ids a write names, in identifier order: 1 to MAX_ASSETS of them, well formed, each once.
+ * `subject` names the write in a refusal, such as "Not Returned".
+ */
+export function normalizeLoanItemIds(items: { loan_item_id: string }[], subject: string): string[] {
   if (items.length < 1 || items.length > MAX_ASSETS) {
-    throw new ValidationError(`${write} names 1 to ${MAX_ASSETS} items`);
+    throw new ValidationError(`${subject} names 1 to ${MAX_ASSETS} items`);
   }
   if (items.some(({ loan_item_id }) => !isValidUuid(loan_item_id))) {
     throw new ValidationError('loan_item_id must be a valid UUID');
   }
   const ids = items.map(({ loan_item_id }) => loan_item_id.trim().toLowerCase()).sort();
   if (new Set(ids).size !== ids.length) {
-    throw new ValidationError(`${write} names each item once`);
+    throw new ValidationError(`${subject} names each item once`);
   }
   return ids;
 }
