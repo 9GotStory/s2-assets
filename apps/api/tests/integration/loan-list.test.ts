@@ -390,6 +390,7 @@ describe('The Loan list and Overdue (Seam A - F004-T3)', () => {
           returned_count: 1,
           not_returned_count: 0,
           status: 'PARTIALLY_RETURNED',
+          is_voided: false,
           is_overdue: false,
         },
       ]);
@@ -427,6 +428,41 @@ describe('The Loan list and Overdue (Seam A - F004-T3)', () => {
     });
   });
 
+  describe('Loan Corrections (F004-T6)', () => {
+    const corrected = async (loanId: string, payload: Record<string, unknown>) => {
+      const res = await api.post(
+        custodian,
+        `/loans/${loanId}/corrections`,
+        { expected_version: (await loanOf(loanId)).version, reason: 'บันทึกผิด', ...payload },
+        { 'x-retry-token': crypto.randomUUID() }
+      );
+      expect(res.statusCode).toBe(201);
+    };
+
+    it('count no voided fact: a voided Loan stays listed with no status, and a voided item or Loan Return counts in nothing', async () => {
+      await atClock(async () => {
+        const tag = `T6-${crypto.randomUUID().slice(0, 8)}`;
+        const borrower = { kind: 'EXTERNAL', contact_name: `คุณ ${tag}` };
+        const voidedLoan = await lent(2, { borrower });
+        const voidedItem = await lent(2, { borrower });
+        const voidedReturn = await lent(2, { borrower });
+        await corrected(voidedLoan.loanId, { action: 'VOID', target: { kind: 'LOAN' } });
+        await returned(voidedItem.loanId, [voidedItem.itemIds[0]], '2026-11-05');
+        await corrected(voidedItem.loanId, { action: 'VOID', target: { kind: 'LOAN_ITEM', id: voidedItem.itemIds[1] } });
+        await returned(voidedReturn.loanId, voidedReturn.itemIds, '2026-11-05');
+        const returnId = (await loanOf(voidedReturn.loanId)).items[0].loan_return.id;
+        await corrected(voidedReturn.loanId, { action: 'VOID', target: { kind: 'LOAN_RETURN', id: returnId } });
+        now = new Date('2026-11-07T05:00:00Z');
+        const rows = Object.fromEntries((await list(`borrower_name=${tag}`)).items.map((row: any) => [row.id, row]));
+
+        expect(rows[voidedLoan.loanId]).toMatchObject({ status: null, is_voided: true, item_count: 0, is_overdue: false });
+        expect(rows[voidedItem.loanId]).toMatchObject({ status: 'RETURNED', is_voided: false, item_count: 1, returned_count: 1, is_overdue: false });
+        expect(rows[voidedReturn.loanId]).toMatchObject({ status: 'PARTIALLY_RETURNED', item_count: 2, returned_count: 1, is_overdue: true });
+        expect((await list(`overdue=true&borrower_name=${tag}`)).items.map(({ id }: any) => id)).toEqual([voidedReturn.loanId]);
+      });
+    });
+  });
+
   // The status and counts are derived twice, by the list's SQL and by the Loan page's reading of its
   // items, so the two must agree on every Loan the tests above built (F004-T3 retrospective).
   describe('the list and the Loan page', () => {
@@ -452,6 +488,7 @@ describe('The Loan list and Overdue (Seam A - F004-T3)', () => {
         expect(
           {
             status: row.status,
+            is_voided: row.is_voided,
             is_overdue: row.is_overdue,
             item_count: row.item_count,
             returned_count: row.returned_count,
@@ -460,6 +497,7 @@ describe('The Loan list and Overdue (Seam A - F004-T3)', () => {
           row.id
         ).toEqual({
           status: loan.status,
+          is_voided: loan.is_voided,
           is_overdue: loan.is_overdue,
           item_count: counted.length,
           returned_count: counted.filter(({ ending_kind }: any) => ending_kind === 'LOAN_RETURN').length,

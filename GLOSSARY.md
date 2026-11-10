@@ -138,7 +138,8 @@ not to the Asset.
 
 **Loan Correction** (แก้ไขรายการที่บันทึกผิด):
 A traceable fix to a Loan fact that was wrong as recorded, up to voiding a fact that never happened
-(ยกเลิกรายการ). It is not a business event.
+(ยกเลิกรายการ). It is not a business event. A voided fact stays shown as ยกเลิกแล้ว, struck through,
+and counts in no status; a voided Loan has no status at all.
 
 **Loan Conflict**:
 Two LoanItems of one Asset whose periods overlap, usually because a backdated Loan was recorded

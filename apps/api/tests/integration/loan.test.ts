@@ -105,6 +105,7 @@ describe('Starting a Loan (Seam A - F004-T1)', () => {
           id: expect.stringMatching(UUID),
           asset: { id: first, name: 'โน้ตบุ๊ก A', asset_number: null },
           due_date: DUE,
+          first_due_date: DUE,
           condition: 'NORMAL',
           condition_note: null,
           ending_kind: 'NONE',
@@ -112,12 +113,14 @@ describe('Starting a Loan (Seam A - F004-T1)', () => {
           is_overdue: false,
           loan_return: null,
           not_returned: null,
+          voided_endings: [],
           due_date_extensions: [],
         },
         {
           id: expect.stringMatching(UUID),
           asset: { id: second, name: 'โน้ตบุ๊ก B', asset_number: null },
           due_date: DUE,
+          first_due_date: DUE,
           condition: 'DAMAGED',
           condition_note: 'ฝาหลังบุบ',
           ending_kind: 'NONE',
@@ -125,6 +128,7 @@ describe('Starting a Loan (Seam A - F004-T1)', () => {
           is_overdue: false,
           loan_return: null,
           not_returned: null,
+          voided_endings: [],
           due_date_extensions: [],
         },
       ]);
@@ -161,22 +165,25 @@ describe('Starting a Loan (Seam A - F004-T1)', () => {
       return { assetId, loanId: res.json().loan_id as string, response: res };
     };
 
-    it('goes to a holder of loan:record and to no one else, and the field is left out', async () => {
+    it('goes to a holder of loan:record or loan:correct (F004-T6) and to no one else, and the field is left out', async () => {
       const { loanId } = await lentExternally();
 
-      expect((await loanOf(loanId, custodian)).borrower.phone).toBe(PHONE);
-      for (const reader of [readonly, admin]) {
-        const { borrower } = await loanOf(loanId, reader);
-        expect(borrower).toEqual({ kind: 'EXTERNAL', contact_name: 'คุณเบอร์โทร', organization_name: 'บริษัท ก' });
+      for (const holder of [custodian, admin]) {
+        expect((await loanOf(loanId, holder)).borrower.phone).toBe(PHONE);
       }
+      const { borrower } = await loanOf(loanId, readonly);
+      expect(borrower).toEqual({ kind: 'EXTERNAL', contact_name: 'คุณเบอร์โทร', organization_name: 'บริษัท ก' });
     });
 
-    it('is left out when loan:record alone is denied, even for a Custodian', async () => {
+    it('follows loan:record on its own, and is left out when both capabilities are denied, even for a Custodian', async () => {
       const { loanId } = await lentExternally();
 
-      await withCapabilityAnswer(api.app, 'loan:record', async () => false, async () => {
-        const { borrower } = await loanOf(loanId, custodian);
-        expect(borrower).not.toHaveProperty('phone');
+      await withCapabilityAnswer(api.app, 'loan:correct', async () => false, async () => {
+        expect((await loanOf(loanId, custodian)).borrower.phone).toBe(PHONE);
+        await withCapabilityAnswer(api.app, 'loan:record', async () => false, async () => {
+          const { borrower } = await loanOf(loanId, custodian);
+          expect(borrower).not.toHaveProperty('phone');
+        });
       });
     });
 

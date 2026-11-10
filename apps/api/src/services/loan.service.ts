@@ -108,7 +108,7 @@ const normalizePhone = (value: string | null | undefined): string | null => {
   return phone;
 };
 
-const normalizeBorrower = (borrower: BorrowerInput): LoanFacts['borrower'] => {
+export const normalizeBorrower = (borrower: BorrowerInput): LoanFacts['borrower'] => {
   if (borrower.kind === 'INTERNAL') {
     if (!isValidUuid(borrower.person_id)) {
       throw new ValidationError('borrower.person_id must name a Person Reference List entry');
@@ -166,7 +166,7 @@ const normalizeDates = (input: StartLoanInput, today: string): Pick<LoanFacts, '
   return { loan_date: loanDate, due_date: dueDate };
 };
 
-const normalizeAuthorizer = (value: string | null | undefined): string | null => {
+export const normalizeAuthorizer = (value: string | null | undefined): string | null => {
   if (value === undefined || value === null) {
     return null;
   }
@@ -398,6 +398,213 @@ export async function recordLoanReturns(
 export async function incrementLoanVersion(client: pg.PoolClient, loanId: string): Promise<number> {
   const res = await client.query('UPDATE loans SET version = version + 1 WHERE id = $1 RETURNING version', [loanId]);
   return res.rows[0].version;
+}
+
+// A Loan fact a Loan Correction names (#74 Q25). A Loan Return and a Not Returned are ending facts.
+export type LoanCorrectionTarget =
+  | { kind: 'LOAN' }
+  | { kind: 'LOAN_ITEM' | 'LOAN_RETURN' | 'NOT_RETURNED' | 'DUE_DATE_EXTENSION'; id: string };
+
+// The fields a correction compares and amends, by the names its record keeps, and each one's column.
+const AMENDABLE_COLUMNS = {
+  LOAN: {
+    borrower_kind: 'borrower_kind',
+    borrower_person_id: 'borrower_person_id',
+    borrower_contact_name: 'borrower_contact_name',
+    borrower_organization_name: 'borrower_organization_name',
+    borrower_phone: 'borrower_phone',
+    loan_date: 'loan_date',
+    authorizer_person_id: 'authorizer_person_id',
+    document_reference: 'document_reference',
+    remark: 'remark',
+  },
+  LOAN_ITEM: { due_date: 'due_date', condition: 'lending_condition', condition_note: 'lending_condition_note' },
+  LOAN_RETURN: { return_date: 'ending_date', condition: 'condition', condition_note: 'condition_note' },
+  NOT_RETURNED: { not_returned_date: 'ending_date', reason: 'reason' },
+  DUE_DATE_EXTENSION: {},
+} as const;
+
+const TARGET_TABLES = {
+  LOAN: 'loans',
+  LOAN_ITEM: 'loan_items',
+  LOAN_RETURN: 'loan_item_endings',
+  NOT_RETURNED: 'loan_item_endings',
+  DUE_DATE_EXTENSION: 'loan_due_date_extensions',
+} as const;
+
+// The column of a correction record that names a fact of each kind.
+const TARGET_COLUMNS = {
+  LOAN: 'loan_id',
+  LOAN_ITEM: 'loan_item_id',
+  LOAN_RETURN: 'loan_item_ending_id',
+  NOT_RETURNED: 'loan_item_ending_id',
+  DUE_DATE_EXTENSION: 'due_date_extension_id',
+} as const;
+
+// A Loan fact as a correction finds it, under its Loan's lock: its amendable fields, by the names the
+// correction record keeps, and the item it belongs to.
+export interface StoredLoanFact {
+  id: string;
+  is_voided: boolean;
+  // The LoanItem of an item-level fact, or null for the Loan.
+  loan_item_id: string | null;
+  fields: Record<string, string | null>;
+}
+
+const DATE = (column: string) => `to_char(${column}, 'YYYY-MM-DD')`;
+
+/** A fact of a Loan whose row the caller holds locked, or null when the Loan has no such fact. */
+export async function readStoredLoanFact(client: pg.PoolClient, loanId: string, target: LoanCorrectionTarget): Promise<StoredLoanFact | null> {
+  const select = {
+    LOAN: `SELECT l.id, l.is_voided, NULL::uuid AS loan_item_id, l.borrower_kind, l.borrower_person_id, l.borrower_contact_name,
+                  l.borrower_organization_name, l.borrower_phone, ${DATE('l.loan_date')} AS loan_date, l.authorizer_person_id,
+                  l.document_reference, l.remark
+           FROM loans l WHERE l.id = $1`,
+    LOAN_ITEM: `SELECT li.id, li.is_voided, li.id AS loan_item_id, ${DATE('li.due_date')} AS due_date, li.lending_condition AS condition,
+                       li.lending_condition_note AS condition_note
+                FROM loan_items li WHERE li.loan_id = $1 AND li.id = $2`,
+    LOAN_RETURN: `SELECT e.id, e.is_voided, e.loan_item_id, ${DATE('e.ending_date')} AS return_date, e.condition, e.condition_note
+                  FROM loan_item_endings e JOIN loan_items li ON li.id = e.loan_item_id
+                  WHERE li.loan_id = $1 AND e.id = $2 AND e.kind = 'LOAN_RETURN'`,
+    NOT_RETURNED: `SELECT e.id, e.is_voided, e.loan_item_id, ${DATE('e.ending_date')} AS not_returned_date, e.reason
+                   FROM loan_item_endings e JOIN loan_items li ON li.id = e.loan_item_id
+                   WHERE li.loan_id = $1 AND e.id = $2 AND e.kind = 'NOT_RETURNED'`,
+    DUE_DATE_EXTENSION: `SELECT x.id, x.is_voided, x.loan_item_id
+                         FROM loan_due_date_extensions x JOIN loan_items li ON li.id = x.loan_item_id
+                         WHERE li.loan_id = $1 AND x.id = $2`,
+  }[target.kind];
+  const res = await client.query(select, target.kind === 'LOAN' ? [loanId] : [loanId, target.id]);
+  if (res.rows.length === 0) {
+    return null;
+  }
+  const { id, is_voided, loan_item_id, ...fields } = res.rows[0];
+  return { id, is_voided, loan_item_id, fields };
+}
+
+/** Leaves the amended values on one fact, in the caller's transaction. `values` names fields as readStoredLoanFact does. */
+export async function amendLoanFact(client: pg.PoolClient, target: LoanCorrectionTarget, factId: string, values: Record<string, string | null>): Promise<void> {
+  const columns: Record<string, string> = AMENDABLE_COLUMNS[target.kind];
+  const fields = Object.keys(values);
+  if (fields.length === 0) {
+    return;
+  }
+  const assignments = fields.map((field, i) => `${columns[field]} = $${i + 2}`).join(', ');
+  await client.query(`UPDATE ${TARGET_TABLES[target.kind]} SET ${assignments} WHERE id = $1`, [factId, ...fields.map((field) => values[field])]);
+}
+
+// Each item's ending kind from its non-voided ending facts: a Loan Return wins over a Not Returned (#74).
+async function refreshEndingKinds(client: pg.PoolClient, itemIds: string[]): Promise<void> {
+  await client.query(
+    `UPDATE loan_items li SET ending_kind = CASE
+       WHEN EXISTS (SELECT 1 FROM loan_item_endings e WHERE e.loan_item_id = li.id AND e.kind = 'LOAN_RETURN' AND NOT e.is_voided) THEN 'LOAN_RETURN'
+       WHEN EXISTS (SELECT 1 FROM loan_item_endings e WHERE e.loan_item_id = li.id AND e.kind = 'NOT_RETURNED' AND NOT e.is_voided) THEN 'NOT_RETURNED'
+       ELSE 'NONE' END
+     WHERE li.id = ANY($1::uuid[])`,
+    [itemIds]
+  );
+}
+
+/**
+ * Voids one fact, in the caller's transaction. Voiding a Loan voids its items, and voiding an item voids
+ * every fact on it, so that nothing of it counts (#74 Q25). Each item touched gets its ending kind again.
+ */
+export async function voidLoanFact(client: pg.PoolClient, loanId: string, target: LoanCorrectionTarget, fact: StoredLoanFact): Promise<void> {
+  if (target.kind === 'DUE_DATE_EXTENSION') {
+    await client.query('UPDATE loan_due_date_extensions SET is_voided = true WHERE id = $1', [fact.id]);
+    return;
+  }
+  if (target.kind === 'LOAN_RETURN' || target.kind === 'NOT_RETURNED') {
+    await client.query('UPDATE loan_item_endings SET is_voided = true WHERE id = $1', [fact.id]);
+    await refreshEndingKinds(client, [fact.loan_item_id!]);
+    return;
+  }
+  let itemIds = [fact.id];
+  if (target.kind === 'LOAN') {
+    await client.query('UPDATE loans SET is_voided = true WHERE id = $1', [loanId]);
+    itemIds = (await client.query('UPDATE loan_items SET is_voided = true WHERE loan_id = $1 RETURNING id', [loanId])).rows.map(({ id }: any) => id);
+  } else {
+    await client.query('UPDATE loan_items SET is_voided = true WHERE id = $1', [fact.id]);
+  }
+  await client.query('UPDATE loan_item_endings SET is_voided = true WHERE loan_item_id = ANY($1::uuid[])', [itemIds]);
+  await client.query('UPDATE loan_due_date_extensions SET is_voided = true WHERE loan_item_id = ANY($1::uuid[])', [itemIds]);
+  await refreshEndingKinds(client, itemIds);
+}
+
+// Another Loan's item that keeps an Asset, Outstanding or Not Returned (LR-11, #74 Q21).
+export interface OtherLoanHolding {
+  loan_id: string;
+  ending_kind: 'NONE' | 'NOT_RETURNED';
+}
+
+/** The item of another Loan that keeps the Asset of `itemId`, or null. The caller holds the Asset locked. */
+export async function otherLoanHoldingAssetOf(client: pg.PoolClient, itemId: string): Promise<OtherLoanHolding | null> {
+  const res = await client.query(
+    `SELECT other.loan_id, other.ending_kind
+     FROM loan_items li
+     JOIN loan_items other ON other.asset_id = li.asset_id AND other.id <> li.id
+     WHERE li.id = $1 AND NOT other.is_voided AND other.ending_kind IN ('NONE', 'NOT_RETURNED')`,
+    [itemId]
+  );
+  return res.rows[0] ?? null;
+}
+
+/** The number of a Loan's non-voided items. */
+export async function countedItemsOf(client: pg.PoolClient, loanId: string): Promise<number> {
+  const res = await client.query('SELECT count(*)::int AS n FROM loan_items WHERE loan_id = $1 AND NOT is_voided', [loanId]);
+  return res.rows[0].n;
+}
+
+// A date rule of a Loan that a correction would break (#74: the date rules still hold afterwards).
+export type BrokenLoanDateRule =
+  | 'LOAN_DATE_AFTER_TODAY'
+  | 'DUE_DATE_BEFORE_LOAN_DATE'
+  | 'RETURN_DATE_BEFORE_LOAN_DATE'
+  | 'NOT_RETURNED_DATE_BEFORE_LOAN_DATE'
+  | 'ENDING_DATE_AFTER_TODAY'
+  | 'RETURN_DATE_BEFORE_NOT_RETURNED_DATE';
+
+/**
+ * The date rules a Loan breaks as it now stands in the caller's transaction, over its non-voided facts:
+ * the Loan Date is no later than today; every Due Date, Return Date and Not Returned date is not before
+ * the Loan Date, and no ending is after today; a Loan Return is not dated before its item's Not Returned.
+ */
+export async function brokenLoanDateRules(client: pg.PoolClient, loanId: string, today: string): Promise<BrokenLoanDateRule[]> {
+  const res = await client.query(
+    `WITH items AS (SELECT li.id, li.due_date FROM loan_items li WHERE li.loan_id = $1 AND NOT li.is_voided),
+          endings AS (SELECT e.loan_item_id, e.kind, e.ending_date FROM loan_item_endings e JOIN items ON items.id = e.loan_item_id WHERE NOT e.is_voided)
+     SELECT l.loan_date > $2::date AS "LOAN_DATE_AFTER_TODAY",
+            EXISTS (SELECT 1 FROM items WHERE items.due_date < l.loan_date)
+              OR EXISTS (SELECT 1 FROM loan_due_date_extensions x JOIN items ON items.id = x.loan_item_id
+                         WHERE NOT x.is_voided AND x.new_due_date < l.loan_date) AS "DUE_DATE_BEFORE_LOAN_DATE",
+            EXISTS (SELECT 1 FROM endings WHERE kind = 'LOAN_RETURN' AND ending_date < l.loan_date) AS "RETURN_DATE_BEFORE_LOAN_DATE",
+            EXISTS (SELECT 1 FROM endings WHERE kind = 'NOT_RETURNED' AND ending_date < l.loan_date) AS "NOT_RETURNED_DATE_BEFORE_LOAN_DATE",
+            EXISTS (SELECT 1 FROM endings WHERE ending_date > $2::date) AS "ENDING_DATE_AFTER_TODAY",
+            EXISTS (SELECT 1 FROM endings r JOIN endings n ON n.loan_item_id = r.loan_item_id AND n.kind = 'NOT_RETURNED'
+                    WHERE r.kind = 'LOAN_RETURN' AND r.ending_date < n.ending_date) AS "RETURN_DATE_BEFORE_NOT_RETURNED_DATE"
+     FROM loans l WHERE l.id = $1`,
+    [loanId, today]
+  );
+  return Object.entries(res.rows[0]).flatMap(([rule, broken]) => (broken ? [rule as BrokenLoanDateRule] : []));
+}
+
+/** Keeps one Loan Correction record, in the caller's transaction, and returns its id. */
+export async function recordLoanCorrection(
+  client: pg.PoolClient,
+  {
+    target,
+    factId,
+    action,
+    reason,
+    changes,
+    actorId,
+  }: { target: LoanCorrectionTarget; factId: string; action: 'AMENDED' | 'VOIDED'; reason: string; changes: unknown[]; actorId: string }
+): Promise<string> {
+  const res = await client.query(
+    `INSERT INTO loan_corrections (${TARGET_COLUMNS[target.kind]}, action, reason, changes, recorded_by)
+     VALUES ($1, $2, $3, $4::jsonb, $5) RETURNING id`,
+    [factId, action, reason, JSON.stringify(changes), actorId]
+  );
+  return res.rows[0].id;
 }
 
 /**

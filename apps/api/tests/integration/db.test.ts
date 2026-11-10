@@ -26,6 +26,7 @@ const MIGRATIONS = [
   '0009_loans',
   '0010_loan_item_endings',
   '0011_loan_due_date_extensions',
+  '0012_loan_corrections',
 ] as const;
 
 describe('Database Migrations Integration', () => {

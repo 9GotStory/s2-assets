@@ -2,7 +2,7 @@ import { entryLabel, type PermanentAssignment, type ReferenceEntry } from './Ref
 
 export type LoanCondition = 'NORMAL' | 'DAMAGED';
 
-// The phone number comes only to holders of 'loan:record', and only on the Loan page (LR-15).
+// The phone number comes only to holders of 'loan:record' or 'loan:correct', and only on the Loan page (LR-15).
 export type Borrower =
   | { kind: 'INTERNAL'; person: ReferenceEntry }
   | { kind: 'EXTERNAL'; contact_name: string; organization_name: string | null; phone?: string | null };
@@ -79,11 +79,40 @@ export interface AssetLoanItem {
   not_returned: NotReturned | null;
 }
 
+// An ending fact voided by a Loan Correction, shown struck through (F004-T6).
+export type VoidedEnding = ({ kind: 'LOAN_RETURN' } & Omit<LoanReturn, 'returned_after_due_date'>) | ({ kind: 'NOT_RETURNED' } & NotReturned);
+
+// The facts a Loan Correction names (F004-T6, #74 Q25).
+export type LoanCorrectionTarget =
+  | { kind: 'LOAN' }
+  | { kind: 'LOAN_ITEM' | 'LOAN_RETURN' | 'NOT_RETURNED' | 'DUE_DATE_EXTENSION'; id: string };
+
+// What a correction changed of one field. A Person entry comes by its current name, and the phone
+// number's change carries neither value (#74 Q24).
+export type LoanCorrectionField =
+  | { field: 'borrower_person_id' | 'authorizer_person_id'; before: ReferenceEntry | null; after: ReferenceEntry | null }
+  | { field: 'borrower_phone' }
+  | { field: string; before: string | null; after: string | null };
+
+// One Loan Correction (F004-T6): who, when, why, and the before and after.
+export interface LoanCorrection {
+  id: string;
+  target: { kind: LoanCorrectionTarget['kind']; id: string };
+  action: 'AMENDED' | 'VOIDED';
+  reason: string;
+  changes: LoanCorrectionField[];
+  recorded_by: string;
+  recorded_by_username: string | null;
+  recorded_at: string;
+}
+
 export interface LoanItem {
   id: string;
   asset: { id: string; name: string | null; asset_number: string | null };
   // The current Due Date, derived by the server from the item's Due Date Extensions.
   due_date: string;
+  // The Due Date as first recorded, which a Loan Correction amends (F004-T6).
+  first_due_date: string;
   condition: LoanCondition;
   condition_note: string | null;
   ending_kind: EndingKind;
@@ -91,6 +120,7 @@ export interface LoanItem {
   is_overdue: boolean;
   loan_return: LoanReturn | null;
   not_returned: NotReturned | null;
+  voided_endings: VoidedEnding[];
   due_date_extensions: DueDateExtension[];
   // Where an Outstanding or Not Returned item goes back to, when the Loan is read with a Return Date (#74 Q27).
   assignment_on_return_date?: PermanentAssignment;
@@ -110,11 +140,14 @@ export interface Loan {
   recorded_at: string;
   is_voided: boolean;
   version: number;
-  status: LoanStatus;
+  // Null for a voided Loan.
+  status: LoanStatus | null;
   is_overdue: boolean;
   items: LoanItem[];
-  // Whether the viewer holds 'loan:record' (F004-T2).
+  corrections: LoanCorrection[];
+  // Whether the viewer holds 'loan:record' (F004-T2) and 'loan:correct' (F004-T6).
   can_record_loan: boolean;
+  can_correct_loan: boolean;
 }
 
 // One row of the Loan list (GET /loans, F004-T3). It carries no phone number.
@@ -125,7 +158,9 @@ export interface LoanListRow {
   item_count: number;
   returned_count: number;
   not_returned_count: number;
-  status: LoanStatus;
+  // Null for a voided Loan.
+  status: LoanStatus | null;
+  is_voided: boolean;
   is_overdue: boolean;
 }
 
@@ -174,9 +209,19 @@ export const LOAN_STATUS_LABELS: Record<LoanStatus, string> = {
   CLOSED: 'ปิดแล้ว',
 };
 
-// The Loan's status as a page shows it: "ปิดแล้ว" says how many items did not come back (#74 Q22).
-export const loanStatusText = (status: LoanStatus, notReturnedCount: number): string =>
-  status === 'CLOSED' ? `${LOAN_STATUS_LABELS.CLOSED} (ไม่ได้รับคืน ${notReturnedCount} ชิ้น)` : LOAN_STATUS_LABELS[status];
+// A fact voided by a Loan Correction, which stays shown, struck through (GLOSSARY.md: Loan Correction).
+export const VOIDED_LABEL = 'ยกเลิกแล้ว';
+
+// The Loan's status as a page shows it: "ปิดแล้ว" says how many items did not come back (#74 Q22), and a
+// voided Loan has none.
+export const loanStatusText = (status: LoanStatus | null, notReturnedCount: number): string => {
+  if (status === null) {
+    return VOIDED_LABEL;
+  }
+  return status === 'CLOSED' ? `${LOAN_STATUS_LABELS.CLOSED} (ไม่ได้รับคืน ${notReturnedCount} ชิ้น)` : LOAN_STATUS_LABELS[status];
+};
+
+export const voidedStyle = { textDecoration: 'line-through', color: '#6b7280' } as const;
 
 // The UI's label for Not Returned (#74 Q30), and that of a Due Date Extension.
 export const NOT_RETURNED_LABEL = 'ปิดโดยไม่ได้รับคืน';

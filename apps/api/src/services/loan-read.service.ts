@@ -55,11 +55,16 @@ export interface DueDateExtension {
   is_voided: boolean;
 }
 
+// An ending fact voided by a Loan Correction: it stays shown, struck through, and counts in nothing (#74 Q25).
+export type VoidedEnding = ({ kind: 'LOAN_RETURN' } & Omit<LoanReturn, 'returned_after_due_date'>) | ({ kind: 'NOT_RETURNED' } & NotReturned);
+
 export interface LoanItem {
   id: string;
   asset: { id: string; name: string | null; asset_number: string | null };
   // The current Due Date: that of the latest Due Date Extension, or the Due Date as first recorded.
   due_date: string;
+  // The Due Date as first recorded, which a Loan Correction amends (#74 Q25).
+  first_due_date: string;
   condition: LoanCondition;
   condition_note: string | null;
   ending_kind: LoanEndingKind;
@@ -67,6 +72,8 @@ export interface LoanItem {
   is_overdue: boolean;
   loan_return: LoanReturn | null;
   not_returned: NotReturned | null;
+  // Oldest first.
+  voided_endings: VoidedEnding[];
   // Oldest first, a voided one among them.
   due_date_extensions: DueDateExtension[];
   // Where an Outstanding or Not Returned item goes back to, when the Loan is read with a Return Date (#74 Q27).
@@ -104,8 +111,27 @@ export interface AssetNotReturned {
 }
 
 // Derived from a Loan's non-voided items, and never stored (#74 Q1). CLOSED is "ปิดแล้ว": every item
-// has ended and at least one is Not Returned (#74 Q22).
+// has ended and at least one is Not Returned (#74 Q22). A voided Loan has none (#74 Q25).
 export type LoanStatus = 'OUTSTANDING' | 'PARTIALLY_RETURNED' | 'RETURNED' | 'CLOSED';
+
+// What a correction changed of one field. A Person entry is read by its current name (#50 Q20), and the
+// phone number's change keeps neither value (#74 Q24).
+export type LoanCorrectionField =
+  | { field: 'borrower_person_id' | 'authorizer_person_id'; before: ReferenceEntrySummary | null; after: ReferenceEntrySummary | null }
+  | { field: 'borrower_phone' }
+  | { field: string; before: string | null; after: string | null };
+
+// One Loan Correction of a Loan or a fact on it (#74 Q18, Q25): who, when, why, and the before and after.
+export interface LoanCorrection {
+  id: string;
+  target: { kind: 'LOAN' | 'LOAN_ITEM' | 'LOAN_RETURN' | 'NOT_RETURNED' | 'DUE_DATE_EXTENSION'; id: string };
+  action: 'AMENDED' | 'VOIDED';
+  reason: string;
+  changes: LoanCorrectionField[];
+  recorded_by: string;
+  recorded_by_username: string | null;
+  recorded_at: string;
+}
 
 export interface Loan {
   id: string;
@@ -119,10 +145,13 @@ export interface Loan {
   recorded_at: string;
   is_voided: boolean;
   version: number;
-  status: LoanStatus;
+  // Null for a voided Loan.
+  status: LoanStatus | null;
   // Whether any of its items is Overdue (#74 Q5).
   is_overdue: boolean;
   items: LoanItem[];
+  // Oldest first.
+  corrections: LoanCorrection[];
 }
 
 // One row of the Loan list (F004-T3). It carries no phone number, for anyone (LR-15).
@@ -133,7 +162,9 @@ export interface LoanListRow {
   item_count: number;
   returned_count: number;
   not_returned_count: number;
-  status: LoanStatus;
+  // Null for a voided Loan, which stays listed.
+  status: LoanStatus | null;
+  is_voided: boolean;
   is_overdue: boolean;
 }
 
@@ -312,8 +343,95 @@ export const loanSearch = {
     return (assetId) => ({ on_loan: onLoan.get(assetId) ?? null, latest_loan_return_condition: latestConditions.get(assetId) ?? null });
   },
 };
+// The voided ending facts of a Loan's items, by item, oldest first (#74 Q25).
+async function readVoidedEndingsOf(db: pg.Pool | any, loanId: string): Promise<Map<string, VoidedEnding[]>> {
+  const res = await db.query(
+    `SELECT e.id, e.loan_item_id, e.kind, to_char(e.ending_date, 'YYYY-MM-DD') AS ending_date, e.condition, e.condition_note, e.reason,
+            e.document_reference, e.remark, e.action_reference, e.recorded_by, u.username AS recorded_by_username, e.recorded_at
+     FROM loan_item_endings e
+     JOIN loan_items li ON li.id = e.loan_item_id
+     LEFT JOIN users u ON u.id = e.recorded_by
+     WHERE li.loan_id = $1 AND e.is_voided
+     ORDER BY e.recorded_at, e.id`,
+    [loanId]
+  );
+  const byItem = new Map<string, VoidedEnding[]>();
+  for (const row of res.rows) {
+    const common = {
+      id: row.id,
+      action_reference: row.action_reference,
+      recorded_by: row.recorded_by,
+      recorded_by_username: row.recorded_by_username ?? null,
+      recorded_at: new Date(row.recorded_at).toISOString(),
+    };
+    const ending: VoidedEnding =
+      row.kind === 'LOAN_RETURN'
+        ? {
+            kind: 'LOAN_RETURN',
+            ...common,
+            return_date: row.ending_date,
+            condition: row.condition,
+            condition_note: row.condition_note,
+            document_reference: row.document_reference,
+            remark: row.remark,
+          }
+        : { kind: 'NOT_RETURNED', ...common, not_returned_date: row.ending_date, reason: row.reason };
+    byItem.set(row.loan_item_id, [...(byItem.get(row.loan_item_id) ?? []), ending]);
+  }
+  return byItem;
+}
+
+const PERSON_FIELDS = new Set(['borrower_person_id', 'authorizer_person_id']);
+
+/** The corrections of a Loan and of every fact on it, oldest first, with each named Person by current name. */
+async function readCorrectionsOf(db: pg.Pool | any, loanId: string): Promise<LoanCorrection[]> {
+  const res = await db.query(
+    `SELECT c.id, c.action, c.reason, c.changes, c.recorded_by, u.username AS recorded_by_username, c.recorded_at,
+            coalesce(c.loan_id, c.loan_item_id, c.loan_item_ending_id, c.due_date_extension_id) AS target_id,
+            CASE WHEN c.loan_id IS NOT NULL THEN 'LOAN'
+                 WHEN c.loan_item_id IS NOT NULL THEN 'LOAN_ITEM'
+                 WHEN c.due_date_extension_id IS NOT NULL THEN 'DUE_DATE_EXTENSION'
+                 ELSE e.kind END AS target_kind
+     FROM loan_corrections c
+     LEFT JOIN loan_items li ON li.id = c.loan_item_id
+     LEFT JOIN loan_item_endings e ON e.id = c.loan_item_ending_id
+     LEFT JOIN loan_items ending_item ON ending_item.id = e.loan_item_id
+     LEFT JOIN loan_due_date_extensions x ON x.id = c.due_date_extension_id
+     LEFT JOIN loan_items extension_item ON extension_item.id = x.loan_item_id
+     LEFT JOIN users u ON u.id = c.recorded_by
+     WHERE $1 IN (c.loan_id, li.loan_id, ending_item.loan_id, extension_item.loan_id)
+     ORDER BY c.recorded_at, c.id`,
+    [loanId]
+  );
+  const personIds = [
+    ...new Set(
+      res.rows.flatMap(({ changes }: any) =>
+        changes.filter(({ field }: any) => PERSON_FIELDS.has(field)).flatMap(({ before, after }: any) => [before, after].filter(Boolean))
+      )
+    ),
+  ];
+  const persons = new Map<string, ReferenceEntrySummary>(
+    personIds.length > 0
+      ? (await db.query('SELECT id, name, is_active FROM persons WHERE id = ANY($1::uuid[])', [personIds])).rows.map((person: any) => [person.id, person])
+      : []
+  );
+  const personOf = (id: string | null) => (id ? (persons.get(id) ?? null) : null);
+  return res.rows.map((row: any) => ({
+    id: row.id,
+    target: { kind: row.target_kind, id: row.target_id },
+    action: row.action,
+    reason: row.reason,
+    changes: row.changes.map((change: any) =>
+      PERSON_FIELDS.has(change.field) ? { field: change.field, before: personOf(change.before), after: personOf(change.after) } : change
+    ),
+    recorded_by: row.recorded_by,
+    recorded_by_username: row.recorded_by_username ?? null,
+    recorded_at: new Date(row.recorded_at).toISOString(),
+  }));
+}
+
 /**
- * F004-T1 (#75) to T5 (#79): reading Loans. Only a read with a Return Date looks at an assignment fact.
+ * F004-T1 (#75) to T6 (#80): reading Loans. Only a read with a Return Date looks at an assignment fact.
  */
 export class LoanReadService {
   private readonly db: pg.Pool | any;
@@ -342,7 +460,7 @@ export class LoanReadService {
     const row = loanRes.rows[0];
     const itemsRes = await this.db.query(
       `SELECT li.id, li.asset_id, a.name AS asset_name, a.asset_number, to_char(${CURRENT_DUE_DATE}, 'YYYY-MM-DD') AS due_date,
-              li.lending_condition, li.lending_condition_note, li.ending_kind, li.is_voided,
+              to_char(li.due_date, 'YYYY-MM-DD') AS first_due_date, li.lending_condition, li.lending_condition_note, li.ending_kind, li.is_voided,
               ${itemIsOverdue('$2')} AS is_overdue, ${LOAN_RETURN_COLUMNS}, ${NOT_RETURNED_COLUMNS}
        FROM loan_items li
        JOIN assets a ON a.id = li.asset_id
@@ -371,6 +489,7 @@ export class LoanReadService {
           recorded_by_username: recorded_by_username ?? null,
           recorded_at: new Date(recorded_at).toISOString(),
         }));
+    const voidedEndings = await readVoidedEndingsOf(this.db, loanId);
     const assignments = returnDate
       ? await readAssignmentsAt(this.db, itemsRes.rows.filter(isReturnable).map((item: any) => item.asset_id), returnDate)
       : null;
@@ -388,12 +507,13 @@ export class LoanReadService {
       recorded_at: new Date(row.recorded_at).toISOString(),
       is_voided: row.is_voided,
       version: row.version,
-      status: statusOf(itemsRes.rows),
+      status: row.is_voided ? null : statusOf(itemsRes.rows),
       is_overdue: itemsRes.rows.some((item: any) => item.is_overdue),
       items: itemsRes.rows.map((item: any) => ({
         id: item.id,
         asset: { id: item.asset_id, name: item.asset_name, asset_number: item.asset_number },
         due_date: item.due_date,
+        first_due_date: item.first_due_date,
         condition: item.lending_condition,
         condition_note: item.lending_condition_note,
         ending_kind: item.ending_kind,
@@ -401,9 +521,11 @@ export class LoanReadService {
         is_overdue: item.is_overdue,
         loan_return: loanReturnOf(item),
         not_returned: notReturnedOfRow(item),
+        voided_endings: voidedEndings.get(item.id) ?? [],
         due_date_extensions: extensionsOf(item.id),
         assignment_on_return_date: assignments?.get(item.asset_id),
       })),
+      corrections: await readCorrectionsOf(this.db, loanId),
     };
   }
 
@@ -435,14 +557,15 @@ export class LoanReadService {
     }
     params.push(filters.limit, filters.offset);
 
-    // The status follows statusOf, over the same non-voided items.
+    // The status follows statusOf, over the same non-voided items, and a voided Loan has none.
     const res = await this.db.query(
       `WITH summarized AS (
          SELECT l.id, l.borrower_kind, l.borrower_person_id, l.borrower_contact_name, l.borrower_organization_name,
                 to_char(l.loan_date, 'YYYY-MM-DD') AS loan_date, l.loan_date AS sort_date, l.recorded_at,
                 borrower.name AS borrower_name, borrower.is_active AS borrower_is_active,
-                items.item_count, items.returned_count, items.not_returned_count, items.is_overdue,
-                CASE WHEN items.outstanding_count = 0 AND items.not_returned_count > 0 THEN 'CLOSED'
+                l.is_voided, items.item_count, items.returned_count, items.not_returned_count, items.is_overdue,
+                CASE WHEN l.is_voided THEN NULL
+                     WHEN items.outstanding_count = 0 AND items.not_returned_count > 0 THEN 'CLOSED'
                      WHEN items.returned_count = 0 THEN 'OUTSTANDING'
                      WHEN items.returned_count = items.item_count THEN 'RETURNED'
                      ELSE 'PARTIALLY_RETURNED' END AS status
@@ -485,6 +608,7 @@ export class LoanReadService {
         returned_count: row.returned_count,
         not_returned_count: row.not_returned_count,
         status: row.status,
+        is_voided: row.is_voided,
         is_overdue: row.is_overdue,
       }));
     return { items, limit: filters.limit, offset: filters.offset, total_count: totalCount, has_more: filters.offset + items.length < totalCount };
