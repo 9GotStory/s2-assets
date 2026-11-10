@@ -82,7 +82,7 @@ export interface ReassignmentFieldsProps {
   // form over many Assets, whose prior values differ.
   priorValues?: Record<AssignmentDimension, AssignmentValue> | null;
   // The Assets of the form that are On Loan, and who holds each.
-  onLoan?: OnLoanAsset[];
+  onLoanAssets?: OnLoanAsset[];
 }
 
 export interface OnLoanAsset {
@@ -112,14 +112,14 @@ const OnLoanNotice: React.FC<{ assets: OnLoanAsset[] }> = ({ assets }) => (
 );
 
 /** The fields of a Reassignment: its Effective Date, a new value for each dimension, and its notes. */
-export const ReassignmentFields: React.FC<ReassignmentFieldsProps> = ({ draft, isLocked, priorValues, onLoan = [] }) => {
+export const ReassignmentFields: React.FC<ReassignmentFieldsProps> = ({ draft, isLocked, priorValues, onLoanAssets = [] }) => {
   const { effectiveDate, setEffectiveDate, targets, setTargets, notes, setNotes, lists, listError, offerInactive } = draft;
   return (
     <fieldset disabled={isLocked} style={{ border: 'none', padding: 0, margin: '0 0 1rem 0' }}>
       <p data-testid="assignment-loan-note" style={{ margin: '0 0 0.75rem 0', fontSize: '0.8125rem', color: '#92400e' }}>
         การยืมชั่วคราวไม่ใช่การย้าย: บันทึกที่นี่เฉพาะเมื่อสถานที่ หน่วยงาน หรือผู้รับผิดชอบเปลี่ยนไปจริง
       </p>
-      {onLoan.length > 0 && <OnLoanNotice assets={onLoan} />}
+      {onLoanAssets.length > 0 && <OnLoanNotice assets={onLoanAssets} />}
       {listError && (
         <div role="alert" style={{ marginBottom: '0.75rem', fontSize: '0.8125rem', color: '#b91c1c' }}>
           {listError}

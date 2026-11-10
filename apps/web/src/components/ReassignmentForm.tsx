@@ -54,7 +54,7 @@ export const ReassignmentForm: React.FC<ReassignmentFormProps> = ({ save, timeli
           draft={draft}
           isLocked={isLocked}
           priorValues={priorValues}
-          onLoan={onLoan ? [{ id: save.assetId, label: 'ครุภัณฑ์นี้', onLoan }] : []}
+          onLoanAssets={onLoan ? [{ id: save.assetId, label: 'ครุภัณฑ์นี้', onLoan }] : []}
         />
       )}
     </AssignmentSaveForm>

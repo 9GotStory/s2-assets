@@ -2,7 +2,7 @@ import React, { useEffect, useState, useRef, useCallback } from 'react';
 import { useNavigate, Link } from 'react-router';
 import { AssetSelectionBar, SELECTION_MAX_ASSETS, type SelectedAsset } from '../components/AssetSelection';
 import { BulkReassignmentPanel, assetLabelOf } from '../components/BulkReassignmentPanel';
-import { OnLoanBadge, OverdueBadge } from '../components/LoanBadges';
+import { OnLoanBadge } from '../components/LoanBadges';
 import { LoanStartForm } from '../components/LoanStartForm';
 import { ON_LOAN_LABEL, type LoanCondition, type OnLoan } from '../components/loanFacts';
 import {
@@ -986,7 +986,6 @@ export const AssetSearch: React.FC = () => {
                         <td style={{ padding: '0.75rem 1rem', color: '#111827' }}>
                           {item.name || '(ไม่มีชื่อ - บันทึกข้อมูลย้อนหลัง)'}
                           {item.on_loan && <OnLoanBadge testId={`search-result-on-loan-${item.id}`} />}
-                          {item.on_loan?.is_overdue && <OverdueBadge testId={`search-result-overdue-${item.id}`} />}
                         </td>
                         <td style={{ padding: '0.75rem 1rem', color: '#6b7280' }}>
                           {item.serial_number || '-'}

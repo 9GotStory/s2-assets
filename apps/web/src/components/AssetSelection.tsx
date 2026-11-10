@@ -1,6 +1,6 @@
 import React from 'react';
 import { BULK_REASSIGNMENT_LABEL } from './assignmentFacts';
-import type { LoanCondition, OnLoan } from './loanFacts';
+import { START_LOAN_LABEL, type LoanCondition, type OnLoan } from './loanFacts';
 
 // #50 Q4, #74 Q9: as many as one Bulk Reassignment or one Loan takes.
 export const SELECTION_MAX_ASSETS = 100;
@@ -13,8 +13,6 @@ export interface SelectedAsset {
   on_loan: OnLoan | null;
   latest_loan_return_condition: LoanCondition | null;
 }
-
-export const LOAN_FROM_LIST_LABEL = 'บันทึกการยืม';
 
 export interface AssetSelectionBarProps {
   selectedCount: number;
@@ -64,7 +62,7 @@ export const AssetSelectionBar: React.FC<AssetSelectionBarProps> = ({
       )}
       {canRecordLoan && (
         <button type="button" id="loan-from-list-open" disabled={cannotOpen} onClick={onOpenLoan} style={actionStyle(cannotOpen)}>
-          {LOAN_FROM_LIST_LABEL}
+          {START_LOAN_LABEL}
         </button>
       )}
       {selectedCount > 0 && !isPanelOpen && (

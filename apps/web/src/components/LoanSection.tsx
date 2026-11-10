@@ -4,7 +4,7 @@ import { useQuery } from '@tanstack/react-query';
 import { OverdueBadge, ReturnedLateBadge } from './LoanBadges';
 import { LoanStartForm, type LoanFormAsset } from './LoanStartForm';
 import { thaiDate } from './assignmentFacts';
-import { CONDITION_LABELS, NOT_RETURNED_LABEL, ON_LOAN_LABEL, borrowerText, loanReturnText, type AssetLoanItem, type AssetNotReturned, type OnLoan } from './loanFacts';
+import { CONDITION_LABELS, NOT_RETURNED_LABEL, ON_LOAN_LABEL, START_LOAN_LABEL, borrowerText, loanReturnText, type AssetLoanItem, type AssetNotReturned, type OnLoan } from './loanFacts';
 
 export interface LoanSectionProps {
   asset: LoanFormAsset;
@@ -121,7 +121,7 @@ export const LoanSection: React.FC<LoanSectionProps> = ({
           onClick={() => setIsFormOpen(true)}
           style={{ padding: '0.5rem 1rem', backgroundColor: '#2563eb', color: '#ffffff', border: 'none', borderRadius: '6px', fontSize: '0.875rem', fontWeight: 500, cursor: 'pointer', marginBottom: '1rem' }}
         >
-          บันทึกการยืม
+          {START_LOAN_LABEL}
         </button>
       )}
 

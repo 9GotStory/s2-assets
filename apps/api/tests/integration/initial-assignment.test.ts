@@ -647,6 +647,8 @@ describe('Initial Assignment (Seam A - F003-T1)', () => {
         legacy_location_text: null,
         legacy_organization_unit_text: null,
         legacy_responsible_person_text: null,
+        on_loan: null,
+        latest_loan_return_condition: null,
       });
     });
 

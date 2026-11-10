@@ -442,14 +442,15 @@ const borrowerOf = (row: any, includePhone: boolean): Borrower =>
         ...(includePhone ? { phone: row.borrower_phone } : {}),
       };
 
-/** Who holds each of `assetIds` that is On Loan, by Asset. */
+/** Who holds each of `assetIds` that is On Loan, by Asset: its Outstanding item of the latest Loan (LR-11 allows one). */
 async function onLoanOfAssets(db: pg.Pool | any, assetIds: string[], today: string): Promise<Map<string, OnLoan>> {
   const res = await db.query(
-    `SELECT li.asset_id, to_char(${CURRENT_DUE_DATE}, 'YYYY-MM-DD') AS due_date, ${itemIsOverdue('$2')} AS is_overdue, ${LOAN_COLUMNS}
+    `SELECT DISTINCT ON (li.asset_id) li.asset_id, to_char(${CURRENT_DUE_DATE}, 'YYYY-MM-DD') AS due_date, ${itemIsOverdue('$2')} AS is_overdue, ${LOAN_COLUMNS}
      FROM loan_items li
      JOIN loans l ON l.id = li.loan_id
      ${LOAN_JOINS}
-     WHERE li.asset_id = ANY($1::uuid[]) AND ${ITEM_IS_OUTSTANDING}`,
+     WHERE li.asset_id = ANY($1::uuid[]) AND ${ITEM_IS_OUTSTANDING}
+     ORDER BY li.asset_id, l.loan_date DESC, l.recorded_at DESC, li.id DESC`,
     [assetIds, today]
   );
   return new Map(
