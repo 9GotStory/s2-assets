@@ -22,6 +22,13 @@ const writesTo = (tables, owner) => {
 };
 const WRITES_TO_LOAN_TABLES = writesTo('loans|loan_items|loan_item_endings', 'loan.service.ts');
 const WRITES_TO_ASSIGNMENT_CHANGES = writesTo('assignment_changes', 'assignment.service.ts');
+const apiSyntaxRule = (...guards) => ({ 'no-restricted-syntax': ['error', NO_PROMISED_REPLY, ...guards] });
+
+// An awaited expect, by its matcher, and whether it goes through .not.
+const matcher = (name) => `[expression.argument.callee.property.name='${name}']`;
+const NEGATED = "[expression.argument.callee.object.property.name='not']";
+const NOT_NEGATED = "[expression.argument.callee.object.property.name!='not']";
+const ABSENCE = `ExpressionStatement:matches(${matcher('toHaveCount')}[expression.argument.arguments.0.value=0]${NOT_NEGATED}, ${matcher('toBeHidden')}${NOT_NEGATED}, ${matcher('toBeVisible')}${NEGATED}, ${matcher('toBeAttached')}${NEGATED})`;
 
 export default tseslint.config(
   {
@@ -57,17 +64,15 @@ export default tseslint.config(
     // A FastifyReply is thenable: awaiting a Promise<FastifyReply> waits until the reply is sent and
     // yields undefined, so a helper that hands one back lets its route run on after a 403 (#51).
     files: ['apps/api/src/**/*.ts'],
-    rules: {
-      'no-restricted-syntax': ['error', NO_PROMISED_REPLY, WRITES_TO_LOAN_TABLES, WRITES_TO_ASSIGNMENT_CHANGES],
-    },
+    rules: apiSyntaxRule(WRITES_TO_LOAN_TABLES, WRITES_TO_ASSIGNMENT_CHANGES),
   },
   {
     files: ['apps/api/src/services/loan.service.ts'],
-    rules: { 'no-restricted-syntax': ['error', NO_PROMISED_REPLY, WRITES_TO_ASSIGNMENT_CHANGES] },
+    rules: apiSyntaxRule(WRITES_TO_ASSIGNMENT_CHANGES),
   },
   {
     files: ['apps/api/src/services/assignment.service.ts'],
-    rules: { 'no-restricted-syntax': ['error', NO_PROMISED_REPLY, WRITES_TO_LOAN_TABLES] },
+    rules: apiSyntaxRule(WRITES_TO_LOAN_TABLES),
   },
   {
     // #76: data kept across a key change shows one query's values under another's.
@@ -105,8 +110,7 @@ export default tseslint.config(
         },
         {
           // #76: the page has read nothing yet, so the absence holds whatever its facts say.
-          selector:
-            "ExpressionStatement[expression.argument.callee.property.name='goto'] + ExpressionStatement:matches([expression.argument.callee.property.name='toHaveCount'][expression.argument.arguments.0.value=0], [expression.argument.callee.property.name='toBeVisible'][expression.argument.callee.object.property.name='not'], [expression.argument.callee.property.name='toBeHidden'])",
+          selector: `ExpressionStatement${matcher('goto')} + ${ABSENCE}`,
           message: 'Assert what the loaded page shows before what it does not: right after goto, nothing is there yet (#76).',
         },
       ],

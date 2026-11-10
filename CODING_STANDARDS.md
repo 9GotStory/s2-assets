@@ -19,8 +19,7 @@ Only the isolating test showed it.
 
 Assert that an action or a field is absent in a state where an allowed actor sees it. In F004-T1
 (#75), a Read-only User's missing action was asserted on an Asset already On Loan, where nobody is
-offered it, and a 404 came from a URL no route serves. Neither test could fail. ESLint refuses an
-absence asserted right after `page.goto`, before the page has read anything; review catches the rest.
+offered it, and a 404 came from a URL no route serves. Neither test could fail.
 
 ## Helpers decide, handlers reply
 
@@ -56,5 +55,4 @@ existing feature stays beside that feature's journeys, as Journey T7.17 does in 
 In application code, SQL on an existing table stays in the module that owns the table, as
 `assignment.service.ts` owns `assignment_changes`; the feature's own file holds its rules and calls
 that module. A read may join another module's table to show or filter by its names; a write, a lock
-or a check that decides a rule goes through the owner. ESLint refuses a write to the Loan tables
-or `assignment_changes` outside its owner; review catches a lock or a check.
+or a check that decides a rule goes through the owner.
