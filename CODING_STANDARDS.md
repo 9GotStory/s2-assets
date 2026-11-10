@@ -21,6 +21,9 @@ Assert that an action or a field is absent in a state where an allowed actor see
 (#75), a Read-only User's missing action was asserted on an Asset already On Loan, where nobody is
 offered it, and a 404 came from a URL no route serves. Neither test could fail.
 
+A test that a value is absent searches for the whole value, such as the full phone number. In
+F004-T6 (#80), `not.toContain('090')` over JSON that holds UUIDs failed whenever a UUID held "090".
+
 ## Helpers decide, handlers reply
 
 A route helper returns a decision, such as a boolean or a result, and the route handler sends the
