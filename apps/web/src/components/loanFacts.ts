@@ -196,6 +196,9 @@ export const loanReturnText = ({ condition, condition_note: note }: Pick<LoanRet
 
 export const ON_LOAN_LABEL = 'กำลังถูกยืม';
 
+// The action that starts a Loan, from the Asset page or the Asset list.
+export const START_LOAN_LABEL = 'บันทึกการยืม';
+
 // Derived by the server from today's Asia/Bangkok date (F004-T3, #74 Q5).
 export const OVERDUE_LABEL = 'เกินกำหนด';
 export const RETURNED_LATE_LABEL = 'คืนเกินกำหนด';

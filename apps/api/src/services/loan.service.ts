@@ -345,10 +345,12 @@ const CURRENT_DUE_DATE = `coalesce((SELECT x.new_due_date FROM loan_due_date_ext
                                     WHERE x.loan_item_id = li.id AND NOT x.is_voided
                                     ORDER BY x.recorded_at DESC, x.new_due_date DESC LIMIT 1), li.due_date)`;
 
+// An Outstanding LoanItem, for a row aliased `li` (GLOSSARY.md: Outstanding).
+const ITEM_IS_OUTSTANDING = `li.ending_kind = 'NONE' AND NOT li.is_voided`;
+
 // LR-06, #74 Q5: an Outstanding LoanItem whose current Due Date is before today, for a row aliased `li`
 // and today's Asia/Bangkok date as the parameter `today`. An item due today is not Overdue.
-const itemIsOverdue = (today: string): string =>
-  `(li.ending_kind = 'NONE' AND NOT li.is_voided AND ${CURRENT_DUE_DATE} < ${today}::date)`;
+const itemIsOverdue = (today: string): string => `(${ITEM_IS_OUTSTANDING} AND ${CURRENT_DUE_DATE} < ${today}::date)`;
 
 const LOAN_COLUMNS = `l.id, l.borrower_kind, l.borrower_person_id, l.borrower_contact_name, l.borrower_organization_name,
        l.borrower_phone, to_char(l.loan_date, 'YYYY-MM-DD') AS loan_date, l.authorizer_person_id, l.document_reference, l.remark,
@@ -412,8 +414,6 @@ const loanReturnOf = (row: any): LoanReturn | null =>
       }
     : null;
 
-const isOutstanding = ({ ending_kind, is_voided }: Pick<LoanItem, 'ending_kind' | 'is_voided'>): boolean => ending_kind === 'NONE' && !is_voided;
-
 // An item a Loan Return can still end: Outstanding, or Not Returned and come back later (#74 Q21).
 const isReturnable = ({ ending_kind, is_voided }: Pick<LoanItem, 'ending_kind' | 'is_voided'>): boolean =>
   ending_kind !== 'LOAN_RETURN' && !is_voided;
@@ -441,6 +441,59 @@ const borrowerOf = (row: any, includePhone: boolean): Borrower =>
         organization_name: row.borrower_organization_name,
         ...(includePhone ? { phone: row.borrower_phone } : {}),
       };
+
+/** Who holds each of `assetIds` that is On Loan, by Asset: its Outstanding item of the latest Loan (LR-11 allows one). */
+async function onLoanOfAssets(db: pg.Pool | any, assetIds: string[], today: string): Promise<Map<string, OnLoan>> {
+  const res = await db.query(
+    `SELECT DISTINCT ON (li.asset_id) li.asset_id, to_char(${CURRENT_DUE_DATE}, 'YYYY-MM-DD') AS due_date, ${itemIsOverdue('$2')} AS is_overdue, ${LOAN_COLUMNS}
+     FROM loan_items li
+     JOIN loans l ON l.id = li.loan_id
+     ${LOAN_JOINS}
+     WHERE li.asset_id = ANY($1::uuid[]) AND ${ITEM_IS_OUTSTANDING}
+     ORDER BY li.asset_id, l.loan_date DESC, l.recorded_at DESC, li.id DESC`,
+    [assetIds, today]
+  );
+  return new Map(
+    res.rows.map((row: any): [string, OnLoan] => [
+      row.asset_id,
+      { loan_id: row.id, borrower: borrowerOf(row, false), due_date: row.due_date, is_overdue: row.is_overdue },
+    ])
+  );
+}
+
+/** The Condition of the latest Loan Return by Return Date of each of `assetIds` that has had one (#74 Q23). */
+async function latestLoanReturnConditionsOf(db: pg.Pool | any, assetIds: string[]): Promise<Map<string, LoanCondition>> {
+  const res = await db.query(
+    `SELECT DISTINCT ON (li.asset_id) li.asset_id, e.condition
+     FROM loan_item_endings e
+     JOIN loan_items li ON li.id = e.loan_item_id
+     WHERE li.asset_id = ANY($1::uuid[]) AND e.kind = 'LOAN_RETURN' AND NOT e.is_voided AND NOT li.is_voided
+     ORDER BY li.asset_id, e.ending_date DESC, e.recorded_at DESC, e.id DESC`,
+    [assetIds]
+  );
+  return new Map(res.rows.map((row: any): [string, LoanCondition] => [row.asset_id, row.condition]));
+}
+
+// What a row of the Asset search says of Loans (F004-T4). The latest Condition warns a new Loan from the
+// list as it does from the Asset page (#76 decision 4).
+export interface AssetSearchLoanFacts {
+  on_loan: OnLoan | null;
+  latest_loan_return_condition: LoanCondition | null;
+}
+
+/**
+ * The Asset search's view of Loans (F004-T4), as `assignmentSearch` is its view of assignments: a filter
+ * for a row aliased `a`, and what each result row says.
+ */
+export const loanSearch = {
+  // The Asset is On Loan: one of its LoanItems is Outstanding.
+  onLoanFilter: `EXISTS (SELECT 1 FROM loan_items li WHERE li.asset_id = a.id AND ${ITEM_IS_OUTSTANDING})`,
+  factsOf: async (db: pg.Pool | any, assetIds: string[], today: string): Promise<(assetId: string) => AssetSearchLoanFacts> => {
+    const onLoan = await onLoanOfAssets(db, assetIds, today);
+    const latestConditions = await latestLoanReturnConditionsOf(db, assetIds);
+    return (assetId) => ({ on_loan: onLoan.get(assetId) ?? null, latest_loan_return_condition: latestConditions.get(assetId) ?? null });
+  },
+};
 
 // A Loan under a write's lock.
 export interface LockedLoan {
@@ -961,23 +1014,12 @@ export class LoanService {
 
   /** The Condition of an Asset's latest Loan Return by Return Date, or null when it has had none (#74 Q23). */
   async latestLoanReturnConditionOf(assetId: string): Promise<LoanCondition | null> {
-    const res = await this.db.query(
-      `SELECT e.condition
-       FROM loan_item_endings e
-       JOIN loan_items li ON li.id = e.loan_item_id
-       WHERE li.asset_id = $1 AND e.kind = 'LOAN_RETURN' AND NOT e.is_voided AND NOT li.is_voided
-       ORDER BY e.ending_date DESC, e.recorded_at DESC, e.id DESC
-       LIMIT 1`,
-      [assetId]
-    );
-    return res.rows[0]?.condition ?? null;
+    return (await latestLoanReturnConditionsOf(this.db, [assetId])).get(assetId) ?? null;
   }
 
   /** Who holds an Asset, or null when it is not On Loan. */
   async onLoanOf(assetId: string): Promise<OnLoan | null> {
-    const items = await this.readItemsOfAsset(assetId);
-    const held = items.find(isOutstanding);
-    return held ? { loan_id: held.loan_id, borrower: held.borrower, due_date: held.due_date, is_overdue: held.is_overdue } : null;
+    return (await onLoanOfAssets(this.db, [assetId], bangkokDate(this.clock()))).get(assetId) ?? null;
   }
 
   /** The Not Returned that keeps an Asset from a new Loan, or null when there is none (#74 Q21). */

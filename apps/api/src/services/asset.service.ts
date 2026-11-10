@@ -19,6 +19,7 @@ import {
   type InitialAssignmentFacts,
   type InitialAssignmentInput,
 } from './assignment.service.ts';
+import { loanSearch, type AssetSearchLoanFacts } from './loan.service.ts';
 import { ValidationError } from './validation-error.ts';
 
 export { ValidationError };
@@ -262,7 +263,7 @@ export type SearchAssetField =
   | 'name'
   | (typeof LEGACY_TEXT_FIELDS)[number];
 
-export interface SearchAssetItem extends CurrentAssignment {
+export interface SearchAssetItem extends CurrentAssignment, AssetSearchLoanFacts {
   id: string;
   name: string | null;
   asset_number: string | null;
@@ -278,6 +279,8 @@ export interface SearchAssetInput {
   responsible_person_id?: string;
   // F003-T4 (#54): only Assets with at least one Assignment Conflict.
   has_assignment_conflict?: boolean;
+  // F004-T4 (#78): only Assets On Loan, "กำลังถูกยืม".
+  on_loan?: boolean;
   limit?: number | string;
   offset?: number | string;
 }
@@ -1915,6 +1918,9 @@ export class AssetService {
     if (input.has_assignment_conflict) {
       conditions.push(assignmentSearch.conflictFilter);
     }
+    if (input.on_loan) {
+      conditions.push(loanSearch.onLoanFilter);
+    }
     const whereClause = conditions.length > 0 ? `WHERE ${conditions.join(' AND ')}` : '';
 
     const limitParamIndex = params.length + 1;
@@ -1947,15 +1953,16 @@ export class AssetService {
     const res = await this.db.query(query, params);
 
     const totalCount = res.rows.length > 0 && res.rows[0].total_count != null ? Number(res.rows[0].total_count) : 0;
-    const items: SearchAssetItem[] = res.rows
-      .filter((row: any) => row.id != null)
-      .map((row: any) => ({
-        id: row.id,
-        name: row.name ?? null,
-        asset_number: row.asset_number ?? null,
-        serial_number: row.serial_number ?? null,
-        ...assignmentSearch.current(row),
-      }));
+    const rows = res.rows.filter((row: any) => row.id != null);
+    const loanFactsOf = await loanSearch.factsOf(this.db, rows.map((row: any) => row.id), this.today());
+    const items: SearchAssetItem[] = rows.map((row: any) => ({
+      id: row.id,
+      name: row.name ?? null,
+      asset_number: row.asset_number ?? null,
+      serial_number: row.serial_number ?? null,
+      ...assignmentSearch.current(row),
+      ...loanFactsOf(row.id),
+    }));
 
     const hasMore = parsedOffset + items.length < totalCount;
 

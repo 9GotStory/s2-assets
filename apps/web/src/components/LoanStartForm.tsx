@@ -5,7 +5,7 @@ import { LoanConditionFields } from './LoanConditionFields';
 import { LoanSaveForm } from './LoanSaveForm';
 import { entryLabel, fieldInputStyle, fieldLabelStyle, useReferenceLists } from './ReferenceContextFields';
 import { bangkokToday, isBeforeToday } from './assignmentFacts';
-import { NOT_RETURNED_LABEL, ON_LOAN_LABEL, assetLabel, type LoanCondition, type RefusedAsset } from './loanFacts';
+import { NOT_RETURNED_LABEL, ON_LOAN_LABEL, START_LOAN_LABEL, assetLabel, type LoanCondition, type RefusedAsset } from './loanFacts';
 
 export interface LoanFormAsset {
   id: string;
@@ -127,7 +127,7 @@ export const LoanStartForm: React.FC<LoanStartFormProps> = ({ assets, actorId, c
   return (
     <LoanSaveForm
       idPrefix="loan"
-      heading="บันทึกการยืม"
+      heading={START_LOAN_LABEL}
       saveUrl="/loans"
       csrfToken={csrfToken}
       requestError={requestError}

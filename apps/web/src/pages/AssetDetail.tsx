@@ -778,6 +778,7 @@ const AssetDetailContent: React.FC = () => {
           canCorrectAssignment={Boolean(assetData.can_correct_assignment && !isPermissionRevoked)}
           assignmentVersion={assetData.assignment_version ?? 0}
           hasAssignmentConflict={Boolean(assetData.has_assignment_conflict)}
+          onLoan={assetData.on_loan ?? null}
           isLegacy={isLegacy}
           csrfToken={csrfToken}
           onRecorded={async () => {

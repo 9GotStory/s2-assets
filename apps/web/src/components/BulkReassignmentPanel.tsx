@@ -1,6 +1,7 @@
 import React, { useRef, useState } from 'react';
 import { Link } from 'react-router';
 import { AssignmentConflictWarning } from './AssignmentConflictWarning';
+import type { SelectedAsset } from './AssetSelection';
 import { ReassignmentFields, useReassignmentDraft } from './ReassignmentFields';
 import {
   BULK_REASSIGNMENT_LABEL,
@@ -10,16 +11,6 @@ import {
   type AssignmentChange,
   type AssignmentConflict,
 } from './assignmentFacts';
-
-// #50 Q4: as many as the server takes in one Bulk Reassignment.
-export const BULK_REASSIGNMENT_MAX_ASSETS = 100;
-
-// A row chosen in the asset list.
-export interface BulkSelectedAsset {
-  id: string;
-  name: string | null;
-  asset_number: string | null;
-}
 
 // What the batch would do, at the assignment versions it was read at.
 interface BulkReassignmentPreview {
@@ -73,66 +64,8 @@ const recoveryButtonStyle: React.CSSProperties = {
 export const assetLabelOf = ({ name, asset_number }: { name: string | null; asset_number: string | null }, id: string): string =>
   name || asset_number || id;
 
-export interface BulkReassignmentBarProps {
-  selectedCount: number;
-  isPanelOpen: boolean;
-  onOpen: () => void;
-  onClear: () => void;
-}
-
-/** Above the asset list: how many rows are selected, and "ย้ายหลายรายการ". */
-export const BulkReassignmentBar: React.FC<BulkReassignmentBarProps> = ({ selectedCount, isPanelOpen, onOpen, onClear }) => {
-  const cannotOpen = selectedCount === 0 || isPanelOpen;
-  return (
-    <div
-      id="bulk-reassign-bar"
-      style={{ display: 'flex', alignItems: 'center', gap: '0.75rem', marginBottom: '1rem', fontSize: '0.875rem', color: '#374151' }}
-    >
-      <span id="bulk-reassign-count">
-        เลือกแล้ว {selectedCount} รายการ (ไม่เกิน {BULK_REASSIGNMENT_MAX_ASSETS})
-      </span>
-      <button
-        type="button"
-        id="bulk-reassign-open"
-        disabled={cannotOpen}
-        onClick={onOpen}
-        style={{
-          padding: '0.375rem 0.75rem',
-          backgroundColor: cannotOpen ? '#9ca3af' : '#2563eb',
-          color: '#ffffff',
-          border: 'none',
-          borderRadius: '4px',
-          fontSize: '0.875rem',
-          fontWeight: 500,
-          cursor: cannotOpen ? 'not-allowed' : 'pointer',
-        }}
-      >
-        {BULK_REASSIGNMENT_LABEL}
-      </button>
-      {selectedCount > 0 && !isPanelOpen && (
-        <button
-          type="button"
-          id="bulk-reassign-clear"
-          onClick={onClear}
-          style={{
-            padding: '0.375rem 0.75rem',
-            backgroundColor: '#ffffff',
-            color: '#4b5563',
-            border: '1px solid #d1d5db',
-            borderRadius: '4px',
-            fontSize: '0.875rem',
-            cursor: 'pointer',
-          }}
-        >
-          ล้างการเลือก
-        </button>
-      )}
-    </div>
-  );
-};
-
 export interface BulkReassignmentPanelProps {
-  selected: BulkSelectedAsset[];
+  selected: SelectedAsset[];
   actorId: string | null;
   csrfToken: string | null;
   // Leaves the panel with the selection as it is.
@@ -326,7 +259,11 @@ export const BulkReassignmentPanel: React.FC<BulkReassignmentPanelProps> = ({
 
       {stage.name === 'FORM' && (
         <>
-          <ReassignmentFields draft={draft} isLocked={isBusy} />
+          <ReassignmentFields
+            draft={draft}
+            isLocked={isBusy}
+            onLoanAssets={selected.flatMap(({ on_loan, ...asset }) => (on_loan ? [{ id: asset.id, label: assetLabelOf(asset, asset.id), onLoan: on_loan }] : []))}
+          />
           <div style={{ display: 'flex', gap: '0.75rem' }}>
             <button type="button" id="bulk-reassign-preview" disabled={isBusy} onClick={handlePreview} style={buttonStyle(true, isBusy)}>
               {isBusy ? 'กำลังตรวจสอบ...' : 'ตรวจสอบก่อนบันทึก'}
