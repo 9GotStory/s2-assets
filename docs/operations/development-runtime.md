@@ -92,9 +92,9 @@ the real state first and only adds what is missing:
 ~/dev/s2-assets-quadlet/scripts/dev-runtime-update.sh --sha <commit> [--no-backup]
 ```
 
-The commit must be on a branch of the workspace repository; fetch a commit made on GitHub
-(such as a pull request's merge) into a workspace branch first:
-`git fetch origin <branch>:<branch>`. The update:
+The commit must be on a branch or a remote-tracking branch of the workspace repository; fetch
+a commit made on GitHub (such as a pull request's merge) there first with `git fetch origin`.
+The update:
 
 1. backs up the database with `scripts/backup.sh` (custom format, mode 0600) to
    `~/.local/state/s2-assets-qdev/backups/s2_assets_qdev-<UTC>-<previous short SHA>.dump`.
