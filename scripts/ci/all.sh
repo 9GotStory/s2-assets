@@ -14,7 +14,8 @@
 #
 # A run takes about 12 minutes, past a 10-minute foreground command limit, so start it in the
 # background on its own. Leave the tree as it is until the table prints: e2e.sh copies the tree when
-# its job starts, so an edit made meanwhile reaches some jobs and not others.
+# its job starts, so an edit made meanwhile reaches some jobs and not others. When HEAD or the tree
+# at the end differs from the start, the run fails and says its results are void (#100).
 set -euo pipefail
 cd "$(dirname "$0")/../.."
 
@@ -26,6 +27,16 @@ while (($#)); do
   esac
 done
 log_dir=$(mktemp -d -t s2-assets-ci.XXXXXX)
+
+# HEAD, and the tree that `git add -A` would commit on it, staged in a scratch index.
+snapshot() {
+  local index="$log_dir/index"
+  cp -- "$(git rev-parse --git-path index)" "$index"
+  GIT_INDEX_FILE=$index git add -A
+  echo "HEAD $(git rev-parse --short HEAD), tree $(GIT_INDEX_FILE=$index git write-tree | cut -c1-12)"
+  rm -f -- "$index"
+}
+started_on=$(snapshot)
 
 status=0
 rows=()
@@ -52,8 +63,15 @@ run_job security 'no HIGH or CRITICAL finding|findings, or a failed scan' script
 
 # Each job logs the commit it tested as its first line.
 tested=$(sed -n 's/^quality\.sh: testing //p' "$log_dir/quality.log" | head -1)
+ended_on=$(snapshot)
 
 echo
+if [[ $ended_on != "$started_on" ]]; then
+  status=1
+  echo "all.sh: VOID: the run started on $started_on and ended on $ended_on, so the jobs below may"
+  echo 'have tested different code. Run it again and leave the tree alone until the table prints.'
+  echo
+fi
 echo "Results at ${tested:-an unknown commit}:"
 echo
 echo '| Job | Result | Detail |'
