@@ -612,9 +612,13 @@ describe('Loan Correction (Seam A - F004-T6)', () => {
       expect(res.body).not.toContain('คุณผู้ยืมแก้ไข');
       expect(await loanOf(loanId)).toEqual(before);
 
-      // Once that Loan has been dealt with, the void goes through.
+      // Once that Loan has been dealt with, the void goes through, confirming the Loan Conflict it opens (#74 Q25).
       await returned(next.loanId, [next.itemOf[assetId]], TODAY);
-      await voided(loanId, { kind: 'LOAN_RETURN', id: returnId });
+      const confirmed = await correct(
+        loanId,
+        await voiding(loanId, { kind: 'LOAN_RETURN', id: returnId }, { confirmed_conflicts: [{ conflicting_loan_item_id: next.itemOf[assetId] }] })
+      );
+      expect(confirmed.statusCode).toBe(201);
     });
 
     it('refuses it too when the other Loan ended Not Returned', async () => {

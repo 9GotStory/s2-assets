@@ -20,7 +20,8 @@ export const conflictBoxStyle: React.CSSProperties = {
   marginBottom: '1rem',
 };
 
-const actionStyle: React.CSSProperties = {
+// The confirm and back buttons of a conflict warning, Assignment or Loan.
+export const conflictActionStyle: React.CSSProperties = {
   padding: '0.375rem 0.75rem',
   borderRadius: '4px',
   fontSize: '0.8125rem',
@@ -51,7 +52,7 @@ export const AssignmentConflictWarning: React.FC<AssignmentConflictWarningProps>
         type="button"
         id="assignment-conflict-confirm"
         onClick={onConfirm}
-        style={{ ...actionStyle, backgroundColor: '#b45309', color: '#ffffff', border: 'none' }}
+        style={{ ...conflictActionStyle, backgroundColor: '#b45309', color: '#ffffff', border: 'none' }}
       >
         ยืนยันบันทึก
       </button>
@@ -59,7 +60,7 @@ export const AssignmentConflictWarning: React.FC<AssignmentConflictWarningProps>
         type="button"
         id="assignment-conflict-back"
         onClick={onBack}
-        style={{ ...actionStyle, backgroundColor: '#ffffff', color: '#92400e', border: '1px solid #f59e0b' }}
+        style={{ ...conflictActionStyle, backgroundColor: '#ffffff', color: '#92400e', border: '1px solid #f59e0b' }}
       >
         กลับไปแก้ไข
       </button>

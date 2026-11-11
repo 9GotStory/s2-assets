@@ -174,7 +174,8 @@ describe('On Loan on the Asset list (Seam A - F004-T4)', () => {
       await returned(first.loanId, [first.itemOf[assetId]], '2026-11-02', 'DAMAGED');
       expect((await rowOf(assetId)).latest_loan_return_condition).toBe('DAMAGED');
 
-      const second = await lent([assetId]);
+      // From the day of that Loan Return, so the two periods do not overlap (#74 Q20).
+      const second = await lent([assetId], { loan_date: '2026-11-02' });
       await returned(second.loanId, [second.itemOf[assetId]], '2026-11-03');
       expect((await rowOf(assetId)).latest_loan_return_condition).toBe('NORMAL');
       expect((await api.get(readonly, `/assets/${assetId}`)).json().latest_loan_return_condition).toBe('NORMAL');

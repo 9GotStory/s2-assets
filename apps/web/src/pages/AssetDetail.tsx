@@ -53,6 +53,8 @@ export interface AssetDetailResponse {
   latest_loan_return_condition?: LoanCondition | null;
   // F004-T5: the Not Returned that keeps the Asset from a new Loan.
   not_returned?: AssetNotReturned | null;
+  // F004-T7: whether any of the Asset's LoanItems is in a Loan Conflict.
+  has_loan_conflict?: boolean;
 }
 
 export const AssetDetail: React.FC = () => {
@@ -799,6 +801,7 @@ const AssetDetailContent: React.FC = () => {
           asset={{ ...asset, latest_loan_return_condition: assetData.latest_loan_return_condition ?? null }}
           onLoan={assetData.on_loan ?? null}
           notReturned={assetData.not_returned ?? null}
+          hasLoanConflict={assetData.has_loan_conflict === true}
           canRecordLoan={Boolean(assetData.can_record_loan && !isPermissionRevoked)}
           actorId={currentUser?.id ?? null}
           dataUpdatedAt={dataUpdatedAt}

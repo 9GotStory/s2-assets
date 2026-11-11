@@ -63,6 +63,24 @@ export interface OnLoan {
   is_overdue: boolean;
 }
 
+// A Loan Conflict as one LoanItem sees it: the other LoanItem of its Asset whose period overlaps (F004-T7).
+export interface LoanConflict {
+  loan_id: string;
+  loan_item_id: string;
+  loan_date: string;
+  // Null while the other item has no ending.
+  ending_date: string | null;
+}
+
+// A Loan Conflict a save would create, as the server's warning lists it. A new Loan's item has no id yet.
+export interface WarnedLoanConflict {
+  asset_id: string;
+  name: string | null;
+  asset_number: string | null;
+  loan_item_id: string | null;
+  conflicting: LoanConflict;
+}
+
 // One LoanItem of an Asset, with its Loan (GET /assets/:id/loans, F004-T1).
 export interface AssetLoanItem {
   id: string;
@@ -77,6 +95,7 @@ export interface AssetLoanItem {
   is_overdue: boolean;
   loan_return: LoanReturn | null;
   not_returned: NotReturned | null;
+  conflicts: LoanConflict[];
 }
 
 // An ending fact voided by a Loan Correction, shown struck through (F004-T6).
@@ -122,6 +141,7 @@ export interface LoanItem {
   not_returned: NotReturned | null;
   voided_endings: VoidedEnding[];
   due_date_extensions: DueDateExtension[];
+  conflicts: LoanConflict[];
   // Where an Outstanding or Not Returned item goes back to, when the Loan is read with a Return Date (#74 Q27).
   assignment_on_return_date?: PermanentAssignment;
 }
@@ -243,6 +263,10 @@ export const loanReturnText = ({ condition, condition_note: note }: Pick<LoanRet
   `สภาพเมื่อคืน: ${CONDITION_LABELS[condition]}${note ? ` (${note})` : ''}`;
 
 export const ON_LOAN_LABEL = 'กำลังถูกยืม';
+
+// A Loan Conflict, and the Loan list's filter for one (#74 Q20).
+export const LOAN_CONFLICT_LABEL = 'ช่วงยืมทับกัน';
+export const LOAN_CONFLICT_FILTER_LABEL = 'มี conflict ค้างตรวจ';
 
 // The action that starts a Loan, from the Asset page or the Asset list.
 export const START_LOAN_LABEL = 'บันทึกการยืม';
