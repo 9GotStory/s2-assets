@@ -257,13 +257,14 @@ describe('The Loan list and Overdue (Seam A - F004-T3)', () => {
       const latestRecorded = await lent(1, { borrower, loan_date: '2026-10-02' });
       const page = (query: string) => list(`borrower_name=${tag}&${query}`);
 
-      const first = await page('limit=3');
-      expect(first.items.map(({ id }: any) => id)).toEqual([latest.loanId, latestRecorded.loanId, middle.loanId]);
-      expect(first).toMatchObject({ limit: 3, offset: 0, total_count: 4, has_more: true });
+      // The two of 2026-10-02 fall on either side of a page break.
+      const first = await page('limit=2');
+      expect(first.items.map(({ id }: any) => id)).toEqual([latest.loanId, latestRecorded.loanId]);
+      expect(first).toMatchObject({ limit: 2, offset: 0, total_count: 4, has_more: true });
 
-      const last = await page('limit=3&offset=3');
-      expect(last.items.map(({ id }: any) => id)).toEqual([earliest.loanId]);
-      expect(last).toMatchObject({ limit: 3, offset: 3, total_count: 4, has_more: false });
+      const last = await page('limit=2&offset=2');
+      expect(last.items.map(({ id }: any) => id)).toEqual([middle.loanId, earliest.loanId]);
+      expect(last).toMatchObject({ limit: 2, offset: 2, total_count: 4, has_more: false });
 
       expect(await page('offset=10')).toEqual({ items: [], limit: 25, offset: 10, total_count: 4, has_more: false });
     });

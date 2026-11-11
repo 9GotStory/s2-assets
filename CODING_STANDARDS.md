@@ -24,6 +24,14 @@ offered it, and a 404 came from a URL no route serves. Neither test could fail.
 A test that a value is absent searches for the whole value, such as the full phone number. In
 F004-T6 (#80), `not.toContain('090')` over JSON that holds UUIDs failed whenever a UUID held "090".
 
+## An order test of a paged list splits a tie across a page break
+
+A list query orders twice: its `LIMIT … OFFSET` picks the page's rows by one `ORDER BY`, and an
+outer `ORDER BY` returns them. Tied rows on one page come back in order even when the first sort's
+tiebreak is broken, so the test cannot fail. Put the tied rows on either side of a page break, as
+`loan-list.test.ts` and `repair-list.test.ts` do. In F005-T3 (#101), both tests first kept their
+same-day pair on one page, and breaking the tiebreak left them green.
+
 ## Helpers decide, handlers reply
 
 A route helper returns a decision, such as a boolean or a result, and the route handler sends the
@@ -49,10 +57,13 @@ decision on the F005-T1 retro).
 A name, a phone number or a token is one line and refuses every control character
 (`hasStrictControlChars`). A new one is checked before it is trimmed, so a line break at its end is
 refused, not dropped. Free text, such as a document reference, a remark, a note or a reason, keeps
-tab and line breaks inside it and refuses the rest (`hasDisallowedControlChars`). A search term
-follows the rule of the field it searches: the Loan list's Borrower-name search refuses every
-control character (#77). The first review of F004-T1 (#75) read a Condition note as one line, and
-the second undid the fix.
+tab and line breaks inside it and refuses the rest (`hasDisallowedControlChars`). The first review
+of F004-T1 (#75) read a Condition note as one line, and the second undid the fix.
+
+A search term follows the rule of the field it searches: the Loan list's Borrower-name search
+refuses every control character (#77). A search over several fields follows the loosest of their
+rules: the Repair list's search reaches the free-text symptom or work, so it keeps tab and line
+breaks (#101).
 
 ## A feature's code gets its own files
 
