@@ -9,7 +9,7 @@ words only. Thai in parentheses is the term's label in the user interface.
 **Permanent Assignment** (สถานที่ หน่วยงาน และผู้รับผิดชอบ):
 Where an Asset belongs on a standing basis, in three independent dimensions: Location,
 OrganizationUnit and Responsible Person, any of which may be empty. It is separate from
-temporary custody (Loan) and from repair state.
+temporary custody (Loan) and from Repair Records.
 _Avoid_: reference context, custody, ownership
 
 **Current Assignment**:
@@ -80,7 +80,7 @@ means the list of Loans.
 
 **Temporary Custody** (การยืมชั่วคราว):
 Holding an Asset for a time with its return expected, which a Loan records. It is separate from
-Permanent Assignment and from repair state.
+Permanent Assignment and from Repair Records.
 
 **Outstanding** (ยังไม่คืน):
 A LoanItem that has neither a Loan Return nor a Not Returned ending.
@@ -146,6 +146,51 @@ Two LoanItems of one Asset whose periods overlap, usually because a backdated Lo
 later. A Loan Return and a new Loan on the same day are not one. The Loan list finds them with
 "มี conflict ค้างตรวจ", and one goes away once a Loan Correction removes the overlap.
 _Avoid_: double loan
+
+## Repair
+
+**Repair Record** (รายการซ่อม/บำรุงรักษา):
+A record that one Asset was taken out of use to be repaired (ซ่อม) or maintained (บำรุงรักษา),
+from its Repair Start to its Repair Outcome. It never changes a Permanent Assignment.
+_Avoid_: work order, repair ticket
+
+**Under Repair** (อยู่ระหว่างซ่อม / อยู่ระหว่างบำรุงรักษา):
+An Asset with a Repair Record that has no Repair Outcome yet, of either kind; what the business
+rules call having an Active Repair.
+_Avoid_: active repair, under maintenance
+
+**Repair Start** (ส่งซ่อม):
+The fact that an Asset went for repair or maintenance.
+
+**Start Date** (วันที่ส่งซ่อม):
+The Thai calendar day a Repair Record began.
+
+**Repair Outcome** (ผลการซ่อม):
+How a Repair Record ended: ใช้งานได้, or ซ่อมไม่ได้ (ใช้งานไม่ได้ for maintenance). ซ่อมไม่ได้ does not
+retire the Asset.
+_Avoid_: repair return, รับคืนจากซ่อม
+
+**Outcome Date** (วันที่ได้ผล):
+The Thai calendar day a Repair Record ended.
+
+**Repairer** (ผู้ซ่อม):
+Who did the work: an internal technician, or an external shop or technician known by name.
+_Avoid_: repair vendor
+
+**Repair Source** (ที่มา):
+The Loan Return, recorded ชำรุด, that led to a Repair Record, when there was one.
+
+**Repair Correction** (แก้ไขรายการที่บันทึกผิด):
+A traceable fix to a Repair fact that was wrong as recorded, up to voiding a fact that never
+happened (ยกเลิกรายการ). It is not a business event.
+
+**Repair Conflict** (ช่วงซ่อมทับกัน):
+A Repair Record whose period overlaps another Repair Record or a LoanItem of the same Asset,
+usually because a backdated fact was recorded later. Ending and starting on the same day is not
+one.
+
+**Next Recommended Maintenance Date** (วันที่แนะนำบำรุงรักษาครั้งถัดไป):
+A date noted with a Repair Outcome. Nothing is scheduled from it.
 
 ## Roles
 
