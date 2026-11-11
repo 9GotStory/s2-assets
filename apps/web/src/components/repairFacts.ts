@@ -52,6 +52,15 @@ export interface RepairRecord {
   assignment_on_outcome_date?: PermanentAssignment;
 }
 
+// A page of the Repair list (F005-T3).
+export interface RepairListPage {
+  items: RepairRecord[];
+  limit: number;
+  offset: number;
+  total_count: number;
+  has_more: boolean;
+}
+
 // The Repair Record that keeps an Asset Under Repair.
 export interface UnderRepair {
   repair_record_id: string;
@@ -81,6 +90,8 @@ export const costError = (cost: string): string | null =>
 
 export const REPAIR_SECTION_LABEL = 'การซ่อม/บำรุงรักษา';
 export const REPAIR_RECORD_LABEL = 'รายการซ่อม/บำรุงรักษา';
+// The Repair list's title, as the specification names the page (#98).
+export const REPAIR_LIST_LABEL = 'รายการซ่อม/บำรุงรักษา';
 export const REPAIR_START_LABEL = 'ส่งซ่อม';
 export const REPAIR_OUTCOME_LABEL = 'ผลการซ่อม';
 export const RECORD_REPAIR_OUTCOME_LABEL = 'บันทึกผลการซ่อม';
