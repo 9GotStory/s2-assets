@@ -20,10 +20,12 @@ import {
 } from '../services/assignment.service.ts';
 import { isValidUuid, CapabilityService } from '../services/capability.service.ts';
 import type { LoanReadService } from '../services/loan-read.service.ts';
+import type { RepairReadService } from '../services/repair-read.service.ts';
 
 export interface AssetRoutesOptions {
   assetService?: AssetService;
   loanReadService: LoanReadService;
+  repairReadService: RepairReadService;
   capabilityService?: CapabilityService;
   db?: any;
   publicAppOrigin?: string;
@@ -739,12 +741,14 @@ export const assetRoutes: FastifyPluginAsync<AssetRoutesOptions> = async (
       let canReassign = false;
       let canCorrectAssignment = false;
       let canRecordLoan = false;
+      let canRecordRepair = false;
       let canViewAcquisition = false;
       if (request.user && capabilityService) {
         canCorrect = await capabilityService.hasCapability(request.user.id, 'asset:correct');
         canReassign = await capabilityService.hasCapability(request.user.id, 'assignment:reassign');
         canCorrectAssignment = await capabilityService.hasCapability(request.user.id, 'assignment:correct');
         canRecordLoan = await capabilityService.hasCapability(request.user.id, 'loan:record');
+        canRecordRepair = await capabilityService.hasCapability(request.user.id, 'repair:record');
         canViewAcquisition = await capabilityService.hasCapability(request.user.id, 'acquisition:view');
       }
 
@@ -772,6 +776,9 @@ export const assetRoutes: FastifyPluginAsync<AssetRoutesOptions> = async (
         not_returned: await options.loanReadService.assetNotReturnedOf(id.trim().toLowerCase()),
         has_loan_conflict: await options.loanReadService.hasLoanConflict(id.trim().toLowerCase()),
         can_record_loan: canRecordLoan,
+        // F005-T1 (#99): the Repair Record that keeps the Asset Under Repair, and whether the viewer may send it.
+        under_repair: await options.repairReadService.underRepairOf(id.trim().toLowerCase()),
+        can_record_repair: canRecordRepair,
       });
     }
   );

@@ -6,8 +6,10 @@ import { AssetQrLabel } from '../components/AssetQrLabel';
 import { AssignmentSection } from '../components/AssignmentSection';
 import { EvidencePanel } from '../components/EvidencePanel';
 import { LoanSection } from '../components/LoanSection';
+import { RepairSection } from '../components/RepairSection';
 import { type CurrentAssignment } from '../components/ReferenceContextFields';
 import { type AssetNotReturned, type LoanCondition, type OnLoan } from '../components/loanFacts';
+import { type UnderRepair } from '../components/repairFacts';
 
 export interface AssetRecord {
   id: string;
@@ -55,6 +57,9 @@ export interface AssetDetailResponse {
   not_returned?: AssetNotReturned | null;
   // F004-T7: whether any of the Asset's LoanItems is in a Loan Conflict.
   has_loan_conflict?: boolean;
+  // F005-T1: the Repair Record that keeps the Asset Under Repair, and whether the viewer holds 'repair:record'.
+  under_repair?: UnderRepair | null;
+  can_record_repair?: boolean;
 }
 
 export const AssetDetail: React.FC = () => {
@@ -811,6 +816,24 @@ const AssetDetailContent: React.FC = () => {
             const refetchResult = await refetch();
             if (refetchResult.isError) {
               setRefreshError('บันทึกการยืมสำเร็จ แต่การดึงข้อมูลล่าสุดล้มเหลว กรุณากดปุ่มเพื่อโหลดข้อมูลใหม่');
+            }
+          }}
+          onPermissionRevoked={handlePermissionRevoked}
+        />
+
+        {/* Repair Records (F005-T1), apart from the assignment timeline and the Loans */}
+        <RepairSection
+          assetId={asset.id}
+          underRepair={assetData.under_repair ?? null}
+          canRecordRepair={Boolean(assetData.can_record_repair && !isPermissionRevoked)}
+          actorId={currentUser?.id ?? null}
+          dataUpdatedAt={dataUpdatedAt}
+          csrfToken={csrfToken}
+          onStarted={async () => {
+            setRefreshError(null);
+            const refetchResult = await refetch();
+            if (refetchResult.isError) {
+              setRefreshError('บันทึกการส่งซ่อมสำเร็จ แต่การดึงข้อมูลล่าสุดล้มเหลว กรุณากดปุ่มเพื่อโหลดข้อมูลใหม่');
             }
           }}
           onPermissionRevoked={handlePermissionRevoked}

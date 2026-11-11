@@ -1,4 +1,5 @@
 import { entryLabel, type PermanentAssignment, type ReferenceEntry } from './ReferenceContextFields';
+import type { RepairKind } from './repairFacts';
 
 export type LoanCondition = 'NORMAL' | 'DAMAGED';
 
@@ -207,6 +208,8 @@ export type RefusedAsset = { asset_id: string; name: string | null; asset_number
   | { reason: 'NOT_FOUND' }
   | { reason: 'ON_LOAN'; loan_id: string }
   | { reason: 'NOT_RETURNED'; loan_id: string }
+  // F005-T1 (#98 Q3): the Repair Record that keeps it, and its kind.
+  | { reason: 'UNDER_REPAIR'; repair_record_id: string; repair_kind: RepairKind }
 );
 
 // A LoanItem that has not ended (GLOSSARY.md: Outstanding).
