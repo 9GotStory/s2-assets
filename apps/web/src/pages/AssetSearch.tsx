@@ -4,7 +4,7 @@ import { AssetSelectionBar, SELECTION_MAX_ASSETS, type SelectedAsset } from '../
 import { BulkReassignmentPanel, assetLabelOf } from '../components/BulkReassignmentPanel';
 import { OnLoanBadge } from '../components/LoanBadges';
 import { LoanStartForm } from '../components/LoanStartForm';
-import { ON_LOAN_LABEL, type LoanCondition, type OnLoan } from '../components/loanFacts';
+import { ON_LOAN_LABEL, type OnLoan, type StartLoanWarning } from '../components/loanFacts';
 import {
   REFERENCE_DIMENSIONS,
   entryLabel,
@@ -24,9 +24,9 @@ export interface SearchAssetItem {
   legacy_location_text?: string | null;
   legacy_organization_unit_text?: string | null;
   legacy_responsible_person_text?: string | null;
-  // F004-T4 (#78): who holds it while On Loan, and the Condition of its latest Loan Return.
+  // F004-T4 (#78): who holds it while On Loan; F005-T2 (#100): its Start Loan warning.
   on_loan: OnLoan | null;
-  latest_loan_return_condition: LoanCondition | null;
+  start_loan_warning: StartLoanWarning | null;
 }
 
 export interface SearchAssetResult {
@@ -60,12 +60,12 @@ const NO_FILTERS: AssetListFilters = { location_id: '', organization_unit_id: ''
 // The rows chosen act through one of these, opened above the results.
 type SelectionPanel = 'REASSIGNMENT' | 'LOAN';
 
-const selectedAssetOf = ({ id, name, asset_number, on_loan, latest_loan_return_condition }: SearchAssetItem): SelectedAsset => ({
+const selectedAssetOf = ({ id, name, asset_number, on_loan, start_loan_warning }: SearchAssetItem): SelectedAsset => ({
   id,
   name,
   asset_number,
   on_loan,
-  latest_loan_return_condition,
+  start_loan_warning,
 });
 
 // The selection with each of its rows as `items` read it last, so that a form opened later shows the latest.

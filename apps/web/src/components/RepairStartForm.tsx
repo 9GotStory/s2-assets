@@ -2,11 +2,13 @@ import React, { useState } from 'react';
 import { Link } from 'react-router';
 import { AssignmentNoteFields, assignmentNotesPayload, type AssignmentNotes } from './AssignmentNoteFields';
 import { LoanSaveForm } from './LoanSaveForm';
+import { RepairOutcomeFields, emptyRepairOutcomeDraft, repairOutcomeDraftError, repairOutcomePayload, type RepairOutcomeDraft } from './RepairOutcomeFields';
 import { fieldInputStyle, fieldLabelStyle } from './ReferenceContextFields';
 import { bangkokToday } from './assignmentFacts';
 import { NOT_RETURNED_LABEL, ON_LOAN_LABEL } from './loanFacts';
 import {
   REPAIR_KIND_LABELS,
+  REPAIR_OUTCOME_LABEL,
   REPAIR_START_LABEL,
   UNDER_REPAIR_LABELS,
   UNDER_WARRANTY_LABELS,
@@ -46,8 +48,9 @@ const RefusedRepairStart: React.FC<{ asset: RepairStartRefusal }> = ({ asset }) 
 );
 
 /**
- * "ส่งซ่อม": sends one Asset for repair or maintenance (F005-T1). The server decides again everything
- * this form checks.
+ * "ส่งซ่อม": sends one Asset for repair or maintenance (F005-T1). Work already finished, on site or long
+ * ago, is recorded with its Repair Outcome in the same write, so the Asset is never Under Repair
+ * (F005-T2, #98 Q1, Q22). The server decides again everything this form checks.
  */
 export const RepairStartForm: React.FC<RepairStartFormProps> = ({ assetId, csrfToken, onStarted, onCancel, onPermissionRevoked }) => {
   const [repairKind, setRepairKind] = useState<RepairKind | ''>('');
@@ -59,6 +62,8 @@ export const RepairStartForm: React.FC<RepairStartFormProps> = ({ assetId, csrfT
   const [warrantyEndDate, setWarrantyEndDate] = useState('');
   const [cost, setCost] = useState('');
   const [notes, setNotes] = useState<AssignmentNotes>({ documentReference: '', remark: '' });
+  const [withOutcome, setWithOutcome] = useState(false);
+  const [outcome, setOutcome] = useState<RepairOutcomeDraft>(emptyRepairOutcomeDraft);
 
   const requestError = (): string | null => {
     if (repairKind === '') {
@@ -76,7 +81,10 @@ export const RepairStartForm: React.FC<RepairStartFormProps> = ({ assetId, csrfT
     if (symptomOrWork.trim() === '') {
       return 'กรุณากรอกอาการ/งานที่ทำ';
     }
-    return cost.trim() !== '' && !COST_PATTERN.test(cost.trim()) ? 'ค่าใช้จ่ายต้องเป็นจำนวนเงินบาทไม่ติดลบ ทศนิยมไม่เกิน 2 ตำแหน่ง' : null;
+    if (cost.trim() !== '' && !COST_PATTERN.test(cost.trim())) {
+      return 'ค่าใช้จ่ายต้องเป็นจำนวนเงินบาทไม่ติดลบ ทศนิยมไม่เกิน 2 ตำแหน่ง';
+    }
+    return withOutcome ? repairOutcomeDraftError(outcome, startDate) : null;
   };
 
   const requestBody = () => ({
@@ -89,6 +97,7 @@ export const RepairStartForm: React.FC<RepairStartFormProps> = ({ assetId, csrfT
     warranty_end_date: warrantyEndDate || null,
     cost: cost.trim() || null,
     ...assignmentNotesPayload(notes),
+    ...(withOutcome ? { outcome: repairOutcomePayload(outcome) } : {}),
   });
 
   return (
@@ -184,6 +193,17 @@ export const RepairStartForm: React.FC<RepairStartFormProps> = ({ assetId, csrfT
           </div>
 
           <AssignmentNoteFields idPrefix="repair" notes={notes} onChange={setNotes} />
+
+          <label style={{ display: 'block', margin: '1rem 0 0.75rem 0', fontSize: '0.875rem', fontWeight: 500, color: '#374151' }}>
+            <input type="checkbox" id="repair-with-outcome" checked={withOutcome} onChange={(e) => setWithOutcome(e.target.checked)} /> บันทึก{REPAIR_OUTCOME_LABEL}พร้อมกัน
+            (งานที่เสร็จแล้ว)
+          </label>
+          {withOutcome && (
+            <fieldset data-testid="repair-outcome-fields" style={{ border: '1px solid #e5e7eb', borderRadius: '6px', padding: '0.75rem', margin: 0 }}>
+              <legend style={{ fontSize: '0.875rem', fontWeight: 600, color: '#374151' }}>{REPAIR_OUTCOME_LABEL}</legend>
+              <RepairOutcomeFields idPrefix="repair" repairKind={repairKind} startDate={startDate} draft={outcome} onChange={setOutcome} />
+            </fieldset>
+          )}
         </fieldset>
       )}
     </LoanSaveForm>

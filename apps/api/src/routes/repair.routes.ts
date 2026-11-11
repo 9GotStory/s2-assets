@@ -2,18 +2,45 @@ import type { FastifyPluginAsync } from 'fastify';
 import { z } from 'zod';
 import { requireCapability } from '../middleware/authorization.ts';
 import { errorBody, parseWrite } from './write-request.ts';
-import { isValidUuid } from '../services/capability.service.ts';
+import { isCalendarDate } from '../services/assignment.service.ts';
+import { isValidUuid, type CapabilityService } from '../services/capability.service.ts';
 import { RepairReadService } from '../services/repair-read.service.ts';
-import { RepairService, RepairStartRefusedError, type StartRepairInput } from '../services/repair.service.ts';
-import { NotFoundError, RetryTokenConflictError } from '../services/service-errors.ts';
+import {
+  RepairOutcomeRefusedError,
+  RepairService,
+  RepairStartRefusedError,
+  type RecordRepairOutcomeInput,
+  type StartRepairInput,
+} from '../services/repair.service.ts';
+import { NotFoundError, RetryTokenConflictError, StaleBeforeConflictError } from '../services/service-errors.ts';
 import { ValidationError } from '../services/validation-error.ts';
 
 export interface RepairRoutesOptions {
   repairService: RepairService;
   repairReadService: RepairReadService;
+  capabilityService: CapabilityService;
 }
 
-// #98 Q22: what a Repair Start takes. Its Repair Outcome and Repair Source arrive with F005-T2 and T5.
+// #98 Q10, Q22: how a Repair Record ended. The record's one cost is set beside it.
+const repairOutcomeFields = {
+  outcome: z.enum(['USABLE', 'NOT_USABLE']),
+  outcome_date: z.string(),
+  note: z.string().nullable().optional(),
+  document_reference: z.string().nullable().optional(),
+  next_recommended_maintenance_date: z.string().nullable().optional(),
+};
+
+const RecordRepairOutcomeSchema = z
+  .object({
+    expected_version: z.number().int().min(1),
+    ...repairOutcomeFields,
+    cost: z.string().nullable().optional(),
+    retry_token: z.string().optional(),
+  })
+  .strict();
+
+// #98 Q22: what a Repair Start takes, with its Repair Outcome when both are recorded at once (Q1). Its
+// Repair Source arrives with F005-T5.
 const StartRepairSchema = z
   .object({
     asset_id: z.string(),
@@ -31,6 +58,7 @@ const StartRepairSchema = z
     cost: z.string().nullable().optional(),
     document_reference: z.string().nullable().optional(),
     remark: z.string().nullable().optional(),
+    outcome: z.object(repairOutcomeFields).strict().nullable().optional(),
     retry_token: z.string().optional(),
   })
   .strict();
@@ -40,6 +68,16 @@ const refusalOf = (err: unknown) => {
   if (err instanceof RepairStartRefusedError) {
     return { ...errorBody(err.statusCode, err.code, err.message), asset: err.asset };
   }
+  if (err instanceof RepairOutcomeRefusedError) {
+    return { ...errorBody(err.statusCode, err.code, err.message), record: err.record };
+  }
+  if (err instanceof StaleBeforeConflictError) {
+    return {
+      ...errorBody(err.statusCode, err.code, err.message),
+      current_values: err.current_values,
+      expected_values: err.expected_values,
+    };
+  }
   if (err instanceof RetryTokenConflictError || err instanceof NotFoundError || err instanceof ValidationError) {
     return errorBody(err.statusCode, err.code, err.message);
   }
@@ -47,7 +85,7 @@ const refusalOf = (err: unknown) => {
 };
 
 export const repairRoutes: FastifyPluginAsync<RepairRoutesOptions> = async (fastify, options) => {
-  const { repairService, repairReadService } = options;
+  const { repairService, repairReadService, capabilityService } = options;
 
   /**
    * POST /repairs
@@ -73,8 +111,40 @@ export const repairRoutes: FastifyPluginAsync<RepairRoutesOptions> = async (fast
   });
 
   /**
+   * POST /repairs/:id/outcome
+   * Records how a Repair Record ended ("บันทึกผลการซ่อม", F005-T2), against the version the client read.
+   * Protected: requires 'repair:record' capability (Asset Custodian)
+   */
+  fastify.post('/repairs/:id/outcome', { preHandler: [requireCapability('repair:record')] }, async (request, reply) => {
+    const { id } = request.params as { id: string };
+    if (!isValidUuid(id)) {
+      return reply.status(400).send(errorBody(400, 'INVALID_ID', 'Repair Record ID must be a valid UUID string'));
+    }
+    const write = parseWrite(RecordRepairOutcomeSchema, request);
+    if ('refusal' in write) {
+      return reply.status(400).send(write.refusal);
+    }
+
+    try {
+      const { retry_token: _retryToken, ...input } = write.data;
+      const recorded = await repairService.recordOutcome(request.user!.id, id.trim().toLowerCase(), input as RecordRepairOutcomeInput, {
+        retryToken: write.retryToken,
+      });
+      return reply.status(201).send(recorded);
+    } catch (err) {
+      const refusal = refusalOf(err);
+      if (!refusal) {
+        throw err;
+      }
+      return reply.status(refusal.statusCode).send(refusal);
+    }
+  });
+
+  /**
    * GET /repairs/:id
-   * One Repair Record (F005-T1). Every field goes to every reader, cost and Repairer included (#98 Q2).
+   * One Repair Record with its outcome (F005-T1, T2). Every field goes to every reader, cost and Repairer
+   * included (#98 Q2).
+   * With ?outcome_date=YYYY-MM-DD, it also says where the Asset goes back to on that date (F005-T2, MR-16).
    * Protected: requires 'asset:view' capability, like the Asset it names
    */
   fastify.get('/repairs/:id', { preHandler: [requireCapability('asset:view')] }, async (request, reply) => {
@@ -82,11 +152,16 @@ export const repairRoutes: FastifyPluginAsync<RepairRoutesOptions> = async (fast
     if (!isValidUuid(id)) {
       return reply.status(400).send(errorBody(400, 'INVALID_ID', 'Repair Record ID must be a valid UUID string'));
     }
-    const record = await repairReadService.read(id.trim().toLowerCase());
+    const { outcome_date: outcomeDate } = request.query as { outcome_date?: unknown };
+    if (outcomeDate !== undefined && (typeof outcomeDate !== 'string' || !isCalendarDate(outcomeDate))) {
+      return reply.status(400).send(errorBody(400, 'VALIDATION_FAILED', 'outcome_date must be a date (YYYY-MM-DD)'));
+    }
+    const record = await repairReadService.read(id.trim().toLowerCase(), { outcomeDate });
     if (!record) {
       return reply.status(404).send(errorBody(404, 'NOT_FOUND', 'Repair Record not found'));
     }
-    return reply.status(200).send(record);
+    const canRecordRepair = await capabilityService.hasCapability(request.user!.id, 'repair:record');
+    return reply.status(200).send({ ...record, can_record_repair: canRecordRepair });
   });
 
   /**

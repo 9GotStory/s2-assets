@@ -772,12 +772,14 @@ export const assetRoutes: FastifyPluginAsync<AssetRoutesOptions> = async (
         can_reassign: canReassign,
         can_correct_assignment: canCorrectAssignment,
         on_loan: await options.loanReadService.onLoanOf(id.trim().toLowerCase()),
-        latest_loan_return_condition: await options.loanReadService.latestLoanReturnConditionOf(id.trim().toLowerCase()),
+        start_loan_warning: await options.loanReadService.startLoanWarningOf(id.trim().toLowerCase()),
         not_returned: await options.loanReadService.assetNotReturnedOf(id.trim().toLowerCase()),
         has_loan_conflict: await options.loanReadService.hasLoanConflict(id.trim().toLowerCase()),
         can_record_loan: canRecordLoan,
         // F005-T1 (#99): the Repair Record that keeps the Asset Under Repair, and whether the viewer may send it.
         under_repair: await options.repairReadService.underRepairOf(id.trim().toLowerCase()),
+        // F005-T2 (#100): from the latest Repair Outcome that has one; nothing is scheduled from it.
+        next_recommended_maintenance_date: await options.repairReadService.nextRecommendedMaintenanceDateOf(id.trim().toLowerCase()),
         can_record_repair: canRecordRepair,
       });
     }

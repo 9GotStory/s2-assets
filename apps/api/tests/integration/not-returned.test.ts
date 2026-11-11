@@ -170,7 +170,7 @@ describe('Recording Not Returned (Seam A - F004-T5)', () => {
 
       const [item] = (await loanOf(loanId)).items;
       expect(item).toMatchObject({ ending_kind: 'NOT_RETURNED', loan_return: null });
-      expect((await detailOf(assetId)).latest_loan_return_condition).toBeNull();
+      expect((await detailOf(assetId)).start_loan_warning).toBeNull();
       const [row] = (await api.get(readonly, `/loans?borrower_name=${encodeURIComponent('คุณผู้ยืมไม่คืน')}&limit=100`)).json().items.filter(({ id }: any) => id === loanId);
       expect(row).toMatchObject({ returned_count: 0, not_returned_count: 1, item_count: 1 });
     });
@@ -365,7 +365,7 @@ describe('Recording Not Returned (Seam A - F004-T5)', () => {
         { kind: 'NOT_RETURNED', is_voided: false },
         { kind: 'LOAN_RETURN', is_voided: false },
       ]);
-      expect((await detailOf(assetId)).latest_loan_return_condition).toBe('DAMAGED');
+      expect((await detailOf(assetId)).start_loan_warning).toEqual({ source: 'LOAN_RETURN', date: '2026-11-03' });
     });
 
     it('refuses a Return Date before the Not Returned date, which takes a Loan Correction instead', async () => {

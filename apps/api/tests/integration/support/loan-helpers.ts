@@ -5,6 +5,9 @@ import type { Actor, ApiHarness } from './api-harness.ts';
 // A text one character past `length`.
 export const over = (length: number) => 'ก'.repeat(length + 1);
 
+// The tables whose rows the services lock for a write.
+type LockedTable = 'loans' | 'assets' | 'repair_records';
+
 // What a test file's Loans are, unless a call says otherwise.
 export interface LoanDefaults {
   loanDate: string;
@@ -85,7 +88,7 @@ export function loanHelpers(context: () => { api: ApiHarness; custodian: Actor; 
   };
 
   // How many writes wait on a row lock of `table`, as the services take it: `FROM <table> WHERE id … FOR UPDATE`.
-  const waitersOnLock = async (table: 'loans' | 'assets'): Promise<number> => {
+  const waitersOnLock = async (table: LockedTable): Promise<number> => {
     const res = await context().api.pool.query(
       `SELECT count(*)::int AS n FROM pg_stat_activity WHERE wait_event_type = 'Lock' AND query LIKE $1`,
       [`%FROM ${table} WHERE id%FOR UPDATE%`]
@@ -93,7 +96,7 @@ export function loanHelpers(context: () => { api: ApiHarness; custodian: Actor; 
     return res.rows[0].n;
   };
 
-  const untilWaiting = async (table: 'loans' | 'assets', count = 1): Promise<void> => {
+  const untilWaiting = async (table: LockedTable, count = 1): Promise<void> => {
     await expect.poll(() => waitersOnLock(table), { timeout: 10_000, interval: 50 }).toBeGreaterThanOrEqual(count);
   };
 
@@ -104,7 +107,7 @@ export function loanHelpers(context: () => { api: ApiHarness; custodian: Actor; 
    * writes settle, so a failing assertion leaves nothing locked or running for the tests after it.
    */
   const whileHolding = async <R>(
-    table: 'loans' | 'assets',
+    table: LockedTable,
     id: string,
     writes: () => Promise<R>[],
     queued: () => Promise<void> = () => untilWaiting(table)

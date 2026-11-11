@@ -1,14 +1,32 @@
 import pg from 'pg';
 import { assetExists } from './asset-lookups.ts';
+import { readAssignmentsAt, type PermanentAssignment } from './assignment.service.ts';
 
 export type RepairKind = 'REPAIR' | 'MAINTENANCE';
 export type RepairerKind = 'INTERNAL' | 'EXTERNAL';
 export type UnderWarranty = 'YES' | 'NO' | 'UNSPECIFIED';
+// ใช้งานได้, or ซ่อมไม่ได้ (ใช้งานไม่ได้ for maintenance): one value, labelled by the record's kind (#98 Q10, Q16).
+export type RepairOutcomeValue = 'USABLE' | 'NOT_USABLE';
 
 // Who did the work: an internal technician, or an external shop or technician, named when known (#98 Q9).
 export interface Repairer {
   kind: RepairerKind;
   name: string | null;
+}
+
+// How a Repair Record ended (F005-T2, #98 Q10, Q22).
+export interface RepairOutcome {
+  id: string;
+  outcome: RepairOutcomeValue;
+  outcome_date: string;
+  note: string | null;
+  document_reference: string | null;
+  next_recommended_maintenance_date: string | null;
+  // The record's cost before this outcome set it.
+  cost_before: string | null;
+  recorded_by: string;
+  recorded_by_username: string | null;
+  recorded_at: string;
 }
 
 // A Repair Record as every reader sees it: no field is withheld, cost and Repairer included (#98 Q2).
@@ -30,6 +48,8 @@ export interface RepairRecord {
   recorded_at: string;
   is_voided: boolean;
   version: number;
+  // Its non-voided Repair Outcome, or null while it has none.
+  outcome: RepairOutcome | null;
 }
 
 // The Repair Record that keeps an Asset Under Repair, and what the Asset page shows of it (#98 Q21).
@@ -45,10 +65,32 @@ const IS_UNDER_REPAIR = 'NOT r.is_voided AND NOT r.has_outcome';
 
 const RECORD_COLUMNS = `r.id, r.asset_id, a.name AS asset_name, a.asset_number, r.repair_kind, to_char(r.start_date, 'YYYY-MM-DD') AS start_date,
   r.repairer_kind, r.repairer_name, r.symptom_or_work, r.under_warranty, to_char(r.warranty_end_date, 'YYYY-MM-DD') AS warranty_end_date,
-  r.cost::text AS cost, r.document_reference, r.remark, r.recorded_by, u.username AS recorded_by_username, r.recorded_at, r.is_voided, r.version`;
+  r.cost::text AS cost, r.document_reference, r.remark, r.recorded_by, u.username AS recorded_by_username, r.recorded_at, r.is_voided, r.version,
+  o.id AS outcome_id, o.outcome, to_char(o.outcome_date, 'YYYY-MM-DD') AS outcome_date, o.note AS outcome_note,
+  o.document_reference AS outcome_document_reference, to_char(o.next_recommended_maintenance_date, 'YYYY-MM-DD') AS next_recommended_maintenance_date,
+  o.cost_before::text AS outcome_cost_before, o.recorded_by AS outcome_recorded_by, ou.username AS outcome_recorded_by_username, o.recorded_at AS outcome_recorded_at`;
 
+// A record has at most one non-voided Repair Outcome (repair_outcomes_one_per_record).
 const RECORD_JOINS = `JOIN assets a ON a.id = r.asset_id
-  LEFT JOIN users u ON u.id = r.recorded_by`;
+  LEFT JOIN users u ON u.id = r.recorded_by
+  LEFT JOIN repair_outcomes o ON o.repair_record_id = r.id AND NOT o.is_voided
+  LEFT JOIN users ou ON ou.id = o.recorded_by`;
+
+const outcomeOf = (row: any): RepairOutcome | null =>
+  row.outcome_id === null
+    ? null
+    : {
+        id: row.outcome_id,
+        outcome: row.outcome,
+        outcome_date: row.outcome_date,
+        note: row.outcome_note,
+        document_reference: row.outcome_document_reference,
+        next_recommended_maintenance_date: row.next_recommended_maintenance_date,
+        cost_before: row.outcome_cost_before,
+        recorded_by: row.outcome_recorded_by,
+        recorded_by_username: row.outcome_recorded_by_username ?? null,
+        recorded_at: new Date(row.outcome_recorded_at).toISOString(),
+      };
 
 const recordOf = (row: any): RepairRecord => ({
   id: row.id,
@@ -67,6 +109,7 @@ const recordOf = (row: any): RepairRecord => ({
   recorded_at: new Date(row.recorded_at).toISOString(),
   is_voided: row.is_voided,
   version: row.version,
+  outcome: outcomeOf(row),
 });
 
 /**
@@ -88,7 +131,10 @@ export async function underRepairOfAssets(db: pg.Pool | pg.PoolClient | any, ass
   );
 }
 
-/** F005-T1 (#99): reading Repair Records. Nothing here reads an assignment fact (RM-05). */
+/**
+ * F005-T1 (#99), T2 (#100): reading Repair Records and their outcomes. The only assignment read is where
+ * an Asset goes back to on an Outcome Date, which is shown and never stored (MR-16, MR-17).
+ */
 export class RepairReadService {
   private readonly db: pg.Pool | any;
 
@@ -96,10 +142,24 @@ export class RepairReadService {
     this.db = options.db;
   }
 
-  /** A Repair Record, or null when there is none. */
-  async read(repairRecordId: string): Promise<RepairRecord | null> {
+  /**
+   * A Repair Record, or null when there is none. With `outcomeDate`, it also says where its Asset goes
+   * back to on that date: the Permanent Assignment in effect then, in the Feature 003 order (#98 Q21).
+   */
+  async read(
+    repairRecordId: string,
+    { outcomeDate }: { outcomeDate?: string } = {}
+  ): Promise<(RepairRecord & { assignment_on_outcome_date?: PermanentAssignment }) | null> {
     const res = await this.db.query(`SELECT ${RECORD_COLUMNS} FROM repair_records r ${RECORD_JOINS} WHERE r.id = $1`, [repairRecordId]);
-    return res.rows.length > 0 ? recordOf(res.rows[0]) : null;
+    if (res.rows.length === 0) {
+      return null;
+    }
+    const record = recordOf(res.rows[0]);
+    if (outcomeDate === undefined) {
+      return record;
+    }
+    const assignments = await readAssignmentsAt(this.db, [record.asset.id], outcomeDate);
+    return { ...record, assignment_on_outcome_date: assignments.get(record.asset.id)! };
   }
 
   /** The Repair Records of an Asset, newest Start Date first, or null when there is no such Asset. */
@@ -114,6 +174,23 @@ export class RepairReadService {
       [assetId]
     );
     return res.rows.map(recordOf);
+  }
+
+  /**
+   * The Asset's Next Recommended Maintenance Date: that of its latest non-voided Repair Outcome, by
+   * Outcome Date then Recorded At, that has one (#98 Q7). Nothing is scheduled from it.
+   */
+  async nextRecommendedMaintenanceDateOf(assetId: string): Promise<string | null> {
+    const res = await this.db.query(
+      `SELECT to_char(o.next_recommended_maintenance_date, 'YYYY-MM-DD') AS next_date
+       FROM repair_outcomes o
+       JOIN repair_records r ON r.id = o.repair_record_id
+       WHERE r.asset_id = $1 AND NOT r.is_voided AND NOT o.is_voided AND o.next_recommended_maintenance_date IS NOT NULL
+       ORDER BY o.outcome_date DESC, o.recorded_at DESC, o.id DESC
+       LIMIT 1`,
+      [assetId]
+    );
+    return res.rows[0]?.next_date ?? null;
   }
 
   /** The Repair Record that keeps an Asset Under Repair, or null when it is not. */
