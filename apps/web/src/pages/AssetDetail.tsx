@@ -6,8 +6,10 @@ import { AssetQrLabel } from '../components/AssetQrLabel';
 import { AssignmentSection } from '../components/AssignmentSection';
 import { EvidencePanel } from '../components/EvidencePanel';
 import { LoanSection } from '../components/LoanSection';
+import { RepairSection } from '../components/RepairSection';
 import { type CurrentAssignment } from '../components/ReferenceContextFields';
-import { type AssetNotReturned, type LoanCondition, type OnLoan } from '../components/loanFacts';
+import { type AssetNotReturned, type OnLoan, type StartLoanWarning } from '../components/loanFacts';
+import { type UnderRepair } from '../components/repairFacts';
 
 export interface AssetRecord {
   id: string;
@@ -49,12 +51,17 @@ export interface AssetDetailResponse {
   // F004-T1: who holds the Asset, and whether the viewer holds 'loan:record'.
   on_loan?: OnLoan | null;
   can_record_loan?: boolean;
-  // F004-T2: the Condition of the Asset's latest Loan Return.
-  latest_loan_return_condition?: LoanCondition | null;
+  // F005-T2: why a new Loan of the Asset warns, from its latest Loan Return or Repair Outcome (#98 Q20).
+  start_loan_warning?: StartLoanWarning | null;
   // F004-T5: the Not Returned that keeps the Asset from a new Loan.
   not_returned?: AssetNotReturned | null;
   // F004-T7: whether any of the Asset's LoanItems is in a Loan Conflict.
   has_loan_conflict?: boolean;
+  // F005-T1: the Repair Record that keeps the Asset Under Repair, and whether the viewer holds 'repair:record'.
+  under_repair?: UnderRepair | null;
+  can_record_repair?: boolean;
+  // F005-T2: from the Asset's latest Repair Outcome that has one.
+  next_recommended_maintenance_date?: string | null;
 }
 
 export const AssetDetail: React.FC = () => {
@@ -798,7 +805,7 @@ const AssetDetailContent: React.FC = () => {
 
         {/* Loans (F004-T1), apart from the assignment timeline */}
         <LoanSection
-          asset={{ ...asset, latest_loan_return_condition: assetData.latest_loan_return_condition ?? null }}
+          asset={{ ...asset, start_loan_warning: assetData.start_loan_warning ?? null }}
           onLoan={assetData.on_loan ?? null}
           notReturned={assetData.not_returned ?? null}
           hasLoanConflict={assetData.has_loan_conflict === true}
@@ -811,6 +818,25 @@ const AssetDetailContent: React.FC = () => {
             const refetchResult = await refetch();
             if (refetchResult.isError) {
               setRefreshError('บันทึกการยืมสำเร็จ แต่การดึงข้อมูลล่าสุดล้มเหลว กรุณากดปุ่มเพื่อโหลดข้อมูลใหม่');
+            }
+          }}
+          onPermissionRevoked={handlePermissionRevoked}
+        />
+
+        {/* Repair Records (F005-T1), apart from the assignment timeline and the Loans */}
+        <RepairSection
+          assetId={asset.id}
+          underRepair={assetData.under_repair ?? null}
+          nextRecommendedMaintenanceDate={assetData.next_recommended_maintenance_date ?? null}
+          canRecordRepair={Boolean(assetData.can_record_repair && !isPermissionRevoked)}
+          actorId={currentUser?.id ?? null}
+          dataUpdatedAt={dataUpdatedAt}
+          csrfToken={csrfToken}
+          onStarted={async () => {
+            setRefreshError(null);
+            const refetchResult = await refetch();
+            if (refetchResult.isError) {
+              setRefreshError('บันทึกการส่งซ่อมสำเร็จ แต่การดึงข้อมูลล่าสุดล้มเหลว กรุณากดปุ่มเพื่อโหลดข้อมูลใหม่');
             }
           }}
           onPermissionRevoked={handlePermissionRevoked}

@@ -1,6 +1,6 @@
 import pg from 'pg';
 import { isValidUuid } from './capability.service.ts';
-import { hasDisallowedControlChars } from './control-characters.ts';
+import { hasDisallowedControlChars, hasStrictControlChars } from './control-characters.ts';
 import { findUnassignableEntry } from './reference.service.ts';
 import { ValidationError } from './validation-error.ts';
 
@@ -205,6 +205,18 @@ export function normalizeText(value: unknown, field: string, maxLength: number, 
   }
   return text.length > 0 ? text : null;
 }
+
+// One line of text: trimmed, blank as none, bounded, and with no control character, even at its ends.
+export const normalizeLine = (value: string | null | undefined, field: string, maxLength: number): string | null => {
+  if (hasStrictControlChars(value ?? '')) {
+    throw new ValidationError(`${field} must not contain control characters`);
+  }
+  const text = value?.trim() ?? '';
+  if (text.length > maxLength) {
+    throw new ValidationError(`${field} must be at most ${maxLength} characters`);
+  }
+  return text.length > 0 ? text : null;
+};
 
 /** Validates and normalizes optional dimension values: ids must be UUIDs; Legacy text is kept as recorded. */
 export function normalizeAssignment(input: AssignmentInput, label: string = ''): AssignmentValues {

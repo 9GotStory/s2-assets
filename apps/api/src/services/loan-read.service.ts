@@ -1,6 +1,7 @@
 import pg from 'pg';
 import { assetExists, containsPattern } from './asset-lookups.ts';
 import { bangkokDate, readAssignmentsAt, type PermanentAssignment, type ReferenceEntrySummary } from './assignment.service.ts';
+import { latestRepairOutcomesOf, type RepairKind } from './repair-read.service.ts';
 
 // The reads of Loans: the Loan page, the Loan list, an Asset's Loans and the Asset search's view of them.
 // Every write to the Loan tables stays in loan.service.ts (#76); this module writes nothing (#80).
@@ -387,24 +388,54 @@ async function onLoanOfAssets(db: pg.Pool | any, assetIds: string[], today: stri
   );
 }
 
-/** The Condition of the latest Loan Return by Return Date of each of `assetIds` that has had one (#74 Q23). */
-async function latestLoanReturnConditionsOf(db: pg.Pool | any, assetIds: string[]): Promise<Map<string, LoanCondition>> {
+// Why the Start Loan form warns about an Asset, with the date of the fact that says so (#98 Q20): its
+// latest Loan Return was ชำรุด, or its latest Repair Outcome was ซ่อมไม่ได้ / ใช้งานไม่ได้. It blocks nothing.
+export type StartLoanWarning =
+  | { source: 'LOAN_RETURN'; date: string }
+  | { source: 'REPAIR_OUTCOME'; date: string; repair_record_id: string; repair_kind: RepairKind };
+
+// The latest non-voided Loan Return of each of `assetIds` that has had one, by Return Date then Recorded At.
+async function latestLoanReturnsOf(db: pg.Pool | any, assetIds: string[]): Promise<Map<string, { return_date: string; condition: LoanCondition }>> {
   const res = await db.query(
-    `SELECT DISTINCT ON (li.asset_id) li.asset_id, e.condition
+    `SELECT DISTINCT ON (li.asset_id) li.asset_id, to_char(e.ending_date, 'YYYY-MM-DD') AS return_date, e.condition
      FROM loan_item_endings e
      JOIN loan_items li ON li.id = e.loan_item_id
      WHERE li.asset_id = ANY($1::uuid[]) AND e.kind = 'LOAN_RETURN' AND NOT e.is_voided AND NOT li.is_voided
      ORDER BY li.asset_id, e.ending_date DESC, e.recorded_at DESC, e.id DESC`,
     [assetIds]
   );
-  return new Map(res.rows.map((row: any): [string, LoanCondition] => [row.asset_id, row.condition]));
+  return new Map(res.rows.map((row: any) => [row.asset_id, { return_date: row.return_date, condition: row.condition }]));
 }
 
-// What a row of the Asset search says of Loans (F004-T4). The latest Condition warns a new Loan from the
-// list as it does from the Asset page (#76 decision 4).
+/**
+ * The Start Loan warning of each of `assetIds` that has one (#98 Q20, replacing #74 Q23). It reads the
+ * later of the Asset's last Loan Return and its last Repair Outcome, each by date then Recorded At; on
+ * one date the Repair Outcome counts as later, because a repair follows the return that caused it.
+ */
+async function startLoanWarningsOf(db: pg.Pool | any, assetIds: string[]): Promise<Map<string, StartLoanWarning>> {
+  const loanReturns = await latestLoanReturnsOf(db, assetIds);
+  const repairOutcomes = await latestRepairOutcomesOf(db, assetIds);
+  const warnings = new Map<string, StartLoanWarning>();
+  for (const assetId of assetIds) {
+    const loanReturn = loanReturns.get(assetId);
+    const repairOutcome = repairOutcomes.get(assetId);
+    if (repairOutcome && (!loanReturn || repairOutcome.outcome_date >= loanReturn.return_date)) {
+      if (repairOutcome.outcome === 'NOT_USABLE') {
+        const { outcome_date: date, repair_record_id, repair_kind } = repairOutcome;
+        warnings.set(assetId, { source: 'REPAIR_OUTCOME', date, repair_record_id, repair_kind });
+      }
+    } else if (loanReturn?.condition === 'DAMAGED') {
+      warnings.set(assetId, { source: 'LOAN_RETURN', date: loanReturn.return_date });
+    }
+  }
+  return warnings;
+}
+
+// What a row of the Asset search says of Loans (F004-T4). Its Start Loan warning warns a new Loan from
+// the list as it does from the Asset page (#76 decision 4, #98 Q20).
 export interface AssetSearchLoanFacts {
   on_loan: OnLoan | null;
-  latest_loan_return_condition: LoanCondition | null;
+  start_loan_warning: StartLoanWarning | null;
 }
 
 /**
@@ -416,8 +447,8 @@ export const loanSearch = {
   onLoanFilter: `EXISTS (SELECT 1 FROM loan_items li WHERE li.asset_id = a.id AND ${ITEM_IS_OUTSTANDING})`,
   factsOf: async (db: pg.Pool | any, assetIds: string[], today: string): Promise<(assetId: string) => AssetSearchLoanFacts> => {
     const onLoan = await onLoanOfAssets(db, assetIds, today);
-    const latestConditions = await latestLoanReturnConditionsOf(db, assetIds);
-    return (assetId) => ({ on_loan: onLoan.get(assetId) ?? null, latest_loan_return_condition: latestConditions.get(assetId) ?? null });
+    const warnings = await startLoanWarningsOf(db, assetIds);
+    return (assetId) => ({ on_loan: onLoan.get(assetId) ?? null, start_loan_warning: warnings.get(assetId) ?? null });
   },
 };
 // The voided ending facts of a Loan's items, by item, oldest first (#74 Q25).
@@ -733,9 +764,9 @@ export class LoanReadService {
     return (await assetExists(this.db, assetId)) ? this.readItemsOfAsset(assetId) : null;
   }
 
-  /** The Condition of an Asset's latest Loan Return by Return Date, or null when it has had none (#74 Q23). */
-  async latestLoanReturnConditionOf(assetId: string): Promise<LoanCondition | null> {
-    return (await latestLoanReturnConditionsOf(this.db, [assetId])).get(assetId) ?? null;
+  /** The Start Loan warning of an Asset, or null when it has none (#98 Q20). */
+  async startLoanWarningOf(assetId: string): Promise<StartLoanWarning | null> {
+    return (await startLoanWarningsOf(this.db, [assetId])).get(assetId) ?? null;
   }
 
   /** Whether any LoanItem of an Asset is in a Loan Conflict (#74 Q20). */

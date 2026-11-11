@@ -23,6 +23,7 @@ import {
 import { loanConflictCheck, normalizeConfirmedConflicts, withConfirmedConflicts, type ConfirmedLoanConflictInput } from './loan-conflict.ts';
 import type { LoanCondition } from './loan-read.service.ts';
 import { isSelectablePerson } from './reference.service.ts';
+import { underRepairOfAssets, type RepairKind } from './repair-read.service.ts';
 import { commitOnce } from './retryable-write.ts';
 import { NotFoundError } from './service-errors.ts';
 import { ValidationError } from './validation-error.ts';
@@ -77,6 +78,28 @@ export class AssetOnAnotherLoanError extends Error {
   constructor(asset: HeldAsset) {
     super(`${asset.name ?? asset.asset_number ?? asset.asset_id} is now held by another Loan: deal with that Loan first`);
     this.name = 'AssetOnAnotherLoanError';
+    this.asset = asset;
+  }
+}
+
+// The Asset of a Loan Return whose void would put it On Loan while it is Under Repair, and its Repair Record.
+export interface AssetUnderRepair {
+  asset_id: string;
+  name: string | null;
+  asset_number: string | null;
+  repair_record_id: string;
+  repair_kind: RepairKind;
+}
+
+/** Voiding a Loan Return would make an Asset Under Repair On Loan again. Nothing is saved (#98 Q19, RM-07). */
+export class AssetUnderRepairError extends Error {
+  statusCode = 409;
+  code = 'ASSET_UNDER_REPAIR';
+  asset: AssetUnderRepair;
+
+  constructor(asset: AssetUnderRepair) {
+    super(`${asset.name ?? asset.asset_number ?? asset.asset_id} is Under Repair: deal with its Repair Record first`);
+    this.name = 'AssetUnderRepairError';
     this.asset = asset;
   }
 }
@@ -240,11 +263,11 @@ export class LoanCorrectionService {
   }
 
   // Voiding a Loan Return puts its item back in LR-11's count, Outstanding or Not Returned, so another
-  // Loan must not hold its Asset now. The Assets are locked.
+  // Loan must not hold its Asset now, and it must not be Under Repair (#98 Q19). The Assets are locked.
   private async assertAssetFree(client: pg.PoolClient, itemId: string, items: { id: string; asset_id: string; name: string | null; asset_number: string | null }[]) {
+    const { asset_id, name, asset_number } = items.find(({ id }) => id === itemId)!;
     const holding = await otherLoanHoldingAssetOf(client, itemId);
     if (holding) {
-      const { asset_id, name, asset_number } = items.find(({ id }) => id === itemId)!;
       throw new AssetOnAnotherLoanError({
         asset_id,
         name,
@@ -252,6 +275,10 @@ export class LoanCorrectionService {
         loan_id: holding.loan_id,
         reason: holding.ending_kind === 'NONE' ? 'ON_LOAN' : 'NOT_RETURNED',
       });
+    }
+    const repair = (await underRepairOfAssets(client, [asset_id])).get(asset_id);
+    if (repair) {
+      throw new AssetUnderRepairError({ asset_id, name, asset_number, repair_record_id: repair.repair_record_id, repair_kind: repair.repair_kind });
     }
   }
 

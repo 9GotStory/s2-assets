@@ -1,6 +1,13 @@
 import { entryLabel, type PermanentAssignment, type ReferenceEntry } from './ReferenceContextFields';
+import type { RepairKind } from './repairFacts';
 
 export type LoanCondition = 'NORMAL' | 'DAMAGED';
+
+// Why the Start Loan form warns about an Asset, with the date of the fact that says so (#98 Q20): its
+// latest Loan Return was ชำรุด, or its latest Repair Outcome was not usable. It blocks nothing.
+export type StartLoanWarning =
+  | { source: 'LOAN_RETURN'; date: string }
+  | { source: 'REPAIR_OUTCOME'; date: string; repair_record_id: string; repair_kind: RepairKind };
 
 // The phone number comes only to holders of 'loan:record' or 'loan:correct', and only on the Loan page (LR-15).
 export type Borrower =
@@ -207,6 +214,8 @@ export type RefusedAsset = { asset_id: string; name: string | null; asset_number
   | { reason: 'NOT_FOUND' }
   | { reason: 'ON_LOAN'; loan_id: string }
   | { reason: 'NOT_RETURNED'; loan_id: string }
+  // F005-T1 (#98 Q3): the Repair Record that keeps it, and its kind.
+  | { reason: 'UNDER_REPAIR'; repair_record_id: string; repair_kind: RepairKind }
 );
 
 // A LoanItem that has not ended (GLOSSARY.md: Outstanding).

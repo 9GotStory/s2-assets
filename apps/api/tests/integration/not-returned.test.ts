@@ -20,7 +20,7 @@ describe('Recording Not Returned (Seam A - F004-T5)', () => {
   const logLines: string[] = [];
 
   const { entries, detailOf, assignmentOf } = assignmentHelpers(() => ({ api, admin, reader: readonly }));
-  const { registered, loanOf, start, lent, whileHolding, isWaitingOnLoanLock } = loanHelpers(() => ({ api, custodian, reader: readonly }), {
+  const { registered, loanOf, start, lent, whileHolding } = loanHelpers(() => ({ api, custodian, reader: readonly }), {
     loanDate: LOAN_DATE,
     dueDate: DUE,
     contactName: 'คุณผู้ยืมไม่คืน',
@@ -170,7 +170,7 @@ describe('Recording Not Returned (Seam A - F004-T5)', () => {
 
       const [item] = (await loanOf(loanId)).items;
       expect(item).toMatchObject({ ending_kind: 'NOT_RETURNED', loan_return: null });
-      expect((await detailOf(assetId)).latest_loan_return_condition).toBeNull();
+      expect((await detailOf(assetId)).start_loan_warning).toBeNull();
       const [row] = (await api.get(readonly, `/loans?borrower_name=${encodeURIComponent('คุณผู้ยืมไม่คืน')}&limit=100`)).json().items.filter(({ id }: any) => id === loanId);
       expect(row).toMatchObject({ returned_count: 0, not_returned_count: 1, item_count: 1 });
     });
@@ -365,7 +365,7 @@ describe('Recording Not Returned (Seam A - F004-T5)', () => {
         { kind: 'NOT_RETURNED', is_voided: false },
         { kind: 'LOAN_RETURN', is_voided: false },
       ]);
-      expect((await detailOf(assetId)).latest_loan_return_condition).toBe('DAMAGED');
+      expect((await detailOf(assetId)).start_loan_warning).toEqual({ source: 'LOAN_RETURN', date: '2026-11-03' });
     });
 
     it('refuses a Return Date before the Not Returned date, which takes a Loan Correction instead', async () => {
@@ -450,21 +450,14 @@ describe('Recording Not Returned (Seam A - F004-T5)', () => {
       const { loanId, itemOf } = await lent([high, middle, low]);
       const payload = await body(loanId, [itemOf[high]]);
 
-      const { atLoan } = await whileHolding('loans', loanId, async () => {
-        const pending = close(loanId, payload, crypto.randomUUID());
-        await expect.poll(isWaitingOnLoanLock, { timeout: 10_000, interval: 50 }).toBe(true);
-        return { atLoan: pending };
-      });
-      expect((await atLoan).statusCode).toBe(201);
+      const [atLoan] = await whileHolding('loans', loanId, () => [close(loanId, payload, crypto.randomUUID())]);
+      expect(atLoan.statusCode).toBe(201);
 
       const later = await lent([await registered(), await registered()]);
       const [laterLow, laterHigh] = Object.keys(later.itemOf).sort();
-      const { atAsset } = await whileHolding('assets', laterLow, async () => {
-        const pending = close(later.loanId, await body(later.loanId, [later.itemOf[laterHigh]]));
-        await expect.poll(async () => (await api.pool.query(`SELECT count(*)::int AS n FROM pg_stat_activity WHERE wait_event_type = 'Lock' AND query LIKE '%FROM assets%FOR UPDATE%'`)).rows[0].n > 0, { timeout: 10_000, interval: 50 }).toBe(true);
-        return { atAsset: pending };
-      });
-      expect((await atAsset).statusCode).toBe(201);
+      const laterPayload = await body(later.loanId, [later.itemOf[laterHigh]]);
+      const [atAsset] = await whileHolding('assets', laterLow, () => [close(later.loanId, laterPayload)]);
+      expect(atAsset.statusCode).toBe(201);
     });
 
     it('ends concurrent closures of one item with one fact, and the rest refused', async () => {

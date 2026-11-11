@@ -20,7 +20,7 @@ describe('Recording a Loan Return (Seam A - F004-T2)', () => {
   const logLines: string[] = [];
 
   const { entry, entries, detailOf, assignmentOf } = assignmentHelpers(() => ({ api, admin, reader: readonly }));
-  const { registered, loanOf, start, lent, whileHolding, isWaitingOnLoanLock } = loanHelpers(() => ({ api, custodian, reader: readonly }), {
+  const { registered, loanOf, start, lent, whileHolding, untilWaiting } = loanHelpers(() => ({ api, custodian, reader: readonly }), {
     loanDate: LOAN_DATE,
     dueDate: DUE,
   });
@@ -386,14 +386,14 @@ describe('Recording a Loan Return (Seam A - F004-T2)', () => {
 
     it('is on the Asset page: none before any Loan Return, then that of the latest', async () => {
       const assetId = await registered();
-      expect((await detailOf(assetId)).latest_loan_return_condition).toBeNull();
+      expect((await detailOf(assetId)).start_loan_warning).toBeNull();
 
       await returned(assetId, 'DAMAGED', '2026-11-03');
-      expect((await detailOf(assetId)).latest_loan_return_condition).toBe('DAMAGED');
+      expect((await detailOf(assetId)).start_loan_warning).toEqual({ source: 'LOAN_RETURN', date: '2026-11-03' });
 
       // Lent again on the day it came back, so the two periods do not overlap (#74 Q20).
       await returned(assetId, 'NORMAL', '2026-11-04', '2026-11-03');
-      expect((await detailOf(assetId)).latest_loan_return_condition).toBe('NORMAL');
+      expect((await detailOf(assetId)).start_loan_warning).toBeNull();
     });
 
     it('goes by the Return Date, not by the order of recording', async () => {
@@ -403,7 +403,7 @@ describe('Recording a Loan Return (Seam A - F004-T2)', () => {
       // Until its Loan Return is recorded, the earlier Loan's period is open and overlaps the later one (#74 Q20).
       await returned(assetId, 'DAMAGED', '2026-10-05', '2026-10-01', { confirmed_conflicts: [{ conflicting_loan_item_id: later.itemId }] });
 
-      expect((await detailOf(assetId)).latest_loan_return_condition).toBe('NORMAL');
+      expect((await detailOf(assetId)).start_loan_warning).toBeNull();
     });
 
     it('does not block a new Loan of the Asset', async () => {
@@ -417,11 +417,11 @@ describe('Recording a Loan Return (Seam A - F004-T2)', () => {
       const assetId = await registered();
       await returned(assetId, 'NORMAL', '2026-11-03');
       const later = await returned(assetId, 'DAMAGED', '2026-11-04', '2026-11-03');
-      expect((await detailOf(assetId)).latest_loan_return_condition).toBe('DAMAGED');
+      expect((await detailOf(assetId)).start_loan_warning).toEqual({ source: 'LOAN_RETURN', date: '2026-11-04' });
 
       await api.pool.query(`UPDATE loan_item_endings SET is_voided = true WHERE loan_item_id = $1`, [later.itemId]);
 
-      expect((await detailOf(assetId)).latest_loan_return_condition).toBe('NORMAL');
+      expect((await detailOf(assetId)).start_loan_warning).toBeNull();
     });
   });
 
@@ -674,14 +674,12 @@ describe('Recording a Loan Return (Seam A - F004-T2)', () => {
       const { loanId, itemOf } = await lent([assetId]);
       const payload = await body(loanId, [itemOf[assetId]]);
 
-      const { write } = await whileHolding('loans', loanId, async () => {
-        const pending = record(loanId, payload);
-        await expect.poll(isWaitingOnLoanLock, { timeout: 10_000, interval: 50 }).toBe(true);
+      const [write] = await whileHolding('loans', loanId, () => [record(loanId, payload)], async () => {
+        await untilWaiting('loans');
         expect(await isLocked('assets', assetId)).toBe(false);
-        return { write: pending };
       });
 
-      expect((await write).statusCode).toBe(201);
+      expect(write.statusCode).toBe(201);
     });
 
     it('then locks all of the Loan\'s Assets in identifier order, even those it does not return', async () => {
@@ -689,16 +687,14 @@ describe('Recording a Loan Return (Seam A - F004-T2)', () => {
       const { loanId, itemOf } = await lent([high, middle, low]);
       const payload = await body(loanId, [itemOf[high]]);
 
-      const { write } = await whileHolding('assets', middle, async () => {
-        const pending = record(loanId, payload);
+      const [write] = await whileHolding('assets', middle, () => [record(loanId, payload)], async () => {
         // The write stops at the Asset held: the Loan and the Asset before it are locked, the one after it is not.
         await expect.poll(() => isLocked('assets', low), { timeout: 10_000, interval: 50 }).toBe(true);
         expect(await isLocked('loans', loanId)).toBe(true);
         expect(await isLocked('assets', high)).toBe(false);
-        return { write: pending };
       });
 
-      expect((await write).statusCode).toBe(201);
+      expect(write.statusCode).toBe(201);
     });
 
     it('ends concurrent Loan Returns of one item with one fact, and the rest refused', async () => {

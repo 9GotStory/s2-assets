@@ -165,20 +165,20 @@ describe('On Loan on the Asset list (Seam A - F004-T4)', () => {
     });
   });
 
-  describe('each row carries the Condition of its latest Loan Return (#76 decision 4, #78)', () => {
-    it('is that of the latest Loan Return by Return Date, and null before any', async () => {
+  describe('each row carries the Start Loan warning of its latest Loan Return (#76 decision 4, #78, #98 Q20)', () => {
+    it('follows the latest Loan Return by Return Date, and is null before any', async () => {
       const assetId = await registered();
-      expect((await rowOf(assetId)).latest_loan_return_condition).toBeNull();
+      expect((await rowOf(assetId)).start_loan_warning).toBeNull();
 
       const first = await lent([assetId]);
       await returned(first.loanId, [first.itemOf[assetId]], '2026-11-02', 'DAMAGED');
-      expect((await rowOf(assetId)).latest_loan_return_condition).toBe('DAMAGED');
+      expect((await rowOf(assetId)).start_loan_warning).toEqual({ source: 'LOAN_RETURN', date: '2026-11-02' });
 
       // From the day of that Loan Return, so the two periods do not overlap (#74 Q20).
       const second = await lent([assetId], { loan_date: '2026-11-02' });
       await returned(second.loanId, [second.itemOf[assetId]], '2026-11-03');
-      expect((await rowOf(assetId)).latest_loan_return_condition).toBe('NORMAL');
-      expect((await api.get(readonly, `/assets/${assetId}`)).json().latest_loan_return_condition).toBe('NORMAL');
+      expect((await rowOf(assetId)).start_loan_warning).toBeNull();
+      expect((await api.get(readonly, `/assets/${assetId}`)).json().start_loan_warning).toBeNull();
     });
   });
 });

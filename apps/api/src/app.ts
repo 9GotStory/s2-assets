@@ -17,6 +17,7 @@ import { healthRoutes } from './routes/health.routes.ts';
 import { assetRoutes } from './routes/asset.routes.ts';
 import { assignmentRoutes } from './routes/assignment.routes.ts';
 import { loanRoutes } from './routes/loan.routes.ts';
+import { repairRoutes } from './routes/repair.routes.ts';
 import { acquisitionRoutes } from './routes/acquisition.routes.ts';
 import { evidenceRoutes } from './routes/evidence.routes.ts';
 import { referenceRoutes } from './routes/reference.routes.ts';
@@ -33,6 +34,8 @@ import { DueDateExtensionService } from './services/due-date-extension.service.t
 import { LoanService } from './services/loan.service.ts';
 import { LoanReadService } from './services/loan-read.service.ts';
 import { LoanCorrectionService } from './services/loan-correction.service.ts';
+import { RepairReadService } from './services/repair-read.service.ts';
+import { RepairService } from './services/repair.service.ts';
 import { AcquisitionService } from './services/acquisition.service.ts';
 import { EvidenceService } from './services/evidence.service.ts';
 
@@ -196,6 +199,7 @@ export async function buildApp(options: AppOptions = {}): Promise<FastifyInstanc
     const loanService = new LoanService({ db: dbClient, clock: options.clock });
     const loanReadService = new LoanReadService({ db: dbClient, clock: options.clock });
     const loanReturnService = new LoanReturnService({ db: dbClient, clock: options.clock });
+    const repairReadService = new RepairReadService({ db: dbClient });
     const notReturnedService = new NotReturnedService({ db: dbClient, clock: options.clock });
     const dueDateExtensionService = new DueDateExtensionService({ db: dbClient });
     const acquisitionService = new AcquisitionService({ db: dbClient });
@@ -257,6 +261,7 @@ export async function buildApp(options: AppOptions = {}): Promise<FastifyInstanc
       prefix: '/assets',
       assetService,
       loanReadService,
+      repairReadService,
       capabilityService,
       db: dbClient,
       publicAppOrigin,
@@ -276,6 +281,12 @@ export async function buildApp(options: AppOptions = {}): Promise<FastifyInstanc
       notReturnedService,
       dueDateExtensionService,
       loanCorrectionService: new LoanCorrectionService({ db: dbClient, clock: options.clock }),
+      capabilityService,
+    });
+
+    await app.register(repairRoutes, {
+      repairService: new RepairService({ db: dbClient, clock: options.clock }),
+      repairReadService,
       capabilityService,
     });
 

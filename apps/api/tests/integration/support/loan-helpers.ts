@@ -5,6 +5,9 @@ import type { Actor, ApiHarness } from './api-harness.ts';
 // A text one character past `length`.
 export const over = (length: number) => 'ก'.repeat(length + 1);
 
+// The tables whose rows the services lock for a write.
+type LockedTable = 'loans' | 'assets' | 'repair_records';
+
 // What a test file's Loans are, unless a call says otherwise.
 export interface LoanDefaults {
   loanDate: string;
@@ -84,25 +87,51 @@ export function loanHelpers(context: () => { api: ApiHarness; custodian: Actor; 
     expect(res.statusCode).toBe(201);
   };
 
-  // Runs `work` while a row is held locked, and lets the lock go however `work` ends, so that a
-  // failing assertion cannot leave the row locked for the tests after it.
-  const whileHolding = async <T>(table: 'loans' | 'assets', id: string, work: () => Promise<T>): Promise<T> => {
-    const { api } = context();
-    const holder = await api.pool.connect();
+  // How many writes wait on a row lock of `table`, as the services take it: `FROM <table> WHERE id … FOR UPDATE`.
+  const waitersOnLock = async (table: LockedTable): Promise<number> => {
+    const res = await context().api.pool.query(
+      `SELECT count(*)::int AS n FROM pg_stat_activity WHERE wait_event_type = 'Lock' AND query LIKE $1`,
+      [`%FROM ${table} WHERE id%FOR UPDATE%`]
+    );
+    return res.rows[0].n;
+  };
+
+  const untilWaiting = async (table: LockedTable, count = 1): Promise<void> => {
+    await expect.poll(() => waitersOnLock(table), { timeout: 10_000, interval: 50 }).toBeGreaterThanOrEqual(count);
+  };
+
+  /**
+   * Holds the row `id` of `table` locked, starts `writes`, and runs `queued` under the lock: by default it
+   * waits until a write stops at a lock of `table`. The lock goes before the writes are awaited, so a test
+   * cannot wait on a write that waits on the lock it holds. However `queued` ends, the lock goes and the
+   * writes settle, so a failing assertion leaves nothing locked or running for the tests after it.
+   */
+  const whileHolding = async <R>(
+    table: LockedTable,
+    id: string,
+    writes: () => Promise<R>[],
+    queued: () => Promise<void> = () => untilWaiting(table)
+  ): Promise<R[]> => {
+    const holder = await context().api.pool.connect();
+    let pending: Promise<R>[] = [];
+    let failure: { error: unknown } | null = null;
     try {
       await holder.query('BEGIN');
       await holder.query(`SELECT 1 FROM ${table} WHERE id = $1 FOR UPDATE`, [id]);
-      return await work();
+      pending = writes();
+      await queued();
+    } catch (error) {
+      failure = { error };
     } finally {
       await holder.query('COMMIT');
       holder.release();
     }
+    if (failure) {
+      await Promise.allSettled(pending);
+      throw failure.error;
+    }
+    return Promise.all(pending);
   };
 
-  const isWaitingOnLoanLock = async (): Promise<boolean> => {
-    const res = await context().api.pool.query(`SELECT count(*)::int AS n FROM pg_stat_activity WHERE wait_event_type = 'Lock' AND query LIKE '%FROM loans WHERE id%FOR UPDATE%'`);
-    return res.rows[0].n > 0;
-  };
-
-  return { registered, loanOf, start, lent, returned, closedNotReturned, whileHolding, isWaitingOnLoanLock };
+  return { registered, loanOf, start, lent, returned, closedNotReturned, whileHolding, untilWaiting };
 }

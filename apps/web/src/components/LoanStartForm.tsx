@@ -4,15 +4,16 @@ import { AssignmentNoteFields, assignmentNotesPayload, type AssignmentNotes } fr
 import { LoanConditionFields } from './LoanConditionFields';
 import { LoanSaveForm } from './LoanSaveForm';
 import { entryLabel, fieldInputStyle, fieldLabelStyle, useReferenceLists } from './ReferenceContextFields';
-import { bangkokToday, isBeforeToday } from './assignmentFacts';
-import { NOT_RETURNED_LABEL, ON_LOAN_LABEL, START_LOAN_LABEL, assetLabel, type LoanCondition, type RefusedAsset } from './loanFacts';
+import { bangkokToday, isBeforeToday, thaiDate } from './assignmentFacts';
+import { NOT_RETURNED_LABEL, ON_LOAN_LABEL, START_LOAN_LABEL, assetLabel, type LoanCondition, type RefusedAsset, type StartLoanWarning } from './loanFacts';
+import { REPAIR_OUTCOME_LABELS, UNDER_REPAIR_LABELS } from './repairFacts';
 
 export interface LoanFormAsset {
   id: string;
   name: string | null;
   asset_number: string | null;
-  // The Condition of its latest Loan Return, which warns and never blocks (#74 Q23).
-  latest_loan_return_condition?: LoanCondition | null;
+  // Why a new Loan of it warns, from its latest Loan Return or Repair Outcome; it never blocks (#98 Q20).
+  start_loan_warning?: StartLoanWarning | null;
 }
 
 export interface LoanStartFormProps {
@@ -27,6 +28,7 @@ export interface LoanStartFormProps {
 type ItemDraft = { condition: LoanCondition; note: string };
 
 const fieldStyle: React.CSSProperties = { marginBottom: '0.75rem' };
+const warningStyle: React.CSSProperties = { marginTop: '0.375rem', fontSize: '0.8125rem', color: '#92400e' };
 
 const RefusedAssets: React.FC<{ assets: RefusedAsset[] }> = ({ assets }) => (
   <>
@@ -35,9 +37,13 @@ const RefusedAssets: React.FC<{ assets: RefusedAsset[] }> = ({ assets }) => (
       {assets.map((asset) => (
         <li key={asset.asset_id}>
           {asset.name ?? asset.asset_number ?? asset.asset_id}:{' '}
-          {asset.reason === 'NOT_FOUND' ? (
-            'ไม่พบครุภัณฑ์'
-          ) : (
+          {asset.reason === 'NOT_FOUND' && 'ไม่พบครุภัณฑ์'}
+          {asset.reason === 'UNDER_REPAIR' && (
+            <>
+              {UNDER_REPAIR_LABELS[asset.repair_kind]} <Link to={`/repairs/${asset.repair_record_id}`}>ดูรายการซ่อม</Link>
+            </>
+          )}
+          {(asset.reason === 'ON_LOAN' || asset.reason === 'NOT_RETURNED') && (
             <>
               {asset.reason === 'ON_LOAN' ? ON_LOAN_LABEL : NOT_RETURNED_LABEL} <Link to={`/loans/${asset.loan_id}`}>ดูการยืม</Link>
             </>
@@ -222,9 +228,15 @@ export const LoanStartForm: React.FC<LoanStartFormProps> = ({ assets, actorId, c
                 note={note}
                 onChange={(change) => setItemDraft(asset.id, change)}
               >
-                {asset.latest_loan_return_condition === 'DAMAGED' && (
-                  <div data-testid={`loan-damaged-warning-${asset.id}`} style={{ marginTop: '0.375rem', fontSize: '0.8125rem', color: '#92400e' }}>
+                {asset.start_loan_warning?.source === 'LOAN_RETURN' && (
+                  <div data-testid={`loan-damaged-warning-${asset.id}`} style={warningStyle}>
                     คืนครั้งล่าสุดสภาพชำรุด กรุณาตรวจสอบก่อนให้ยืม
+                  </div>
+                )}
+                {asset.start_loan_warning?.source === 'REPAIR_OUTCOME' && (
+                  <div data-testid={`loan-repair-outcome-warning-${asset.id}`} style={warningStyle}>
+                    ผลการซ่อมล่าสุด {REPAIR_OUTCOME_LABELS[asset.start_loan_warning.repair_kind].NOT_USABLE} เมื่อ{' '}
+                    <time dateTime={asset.start_loan_warning.date}>{thaiDate(asset.start_loan_warning.date)}</time> กรุณาตรวจสอบก่อนให้ยืม
                   </div>
                 )}
               </LoanConditionFields>

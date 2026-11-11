@@ -180,6 +180,7 @@ test.describe.serial('Asset Registry Real SPA -> Composed API -> PostgreSQL Jour
   const sectionsHaveRead = async (page: any) => {
     await expect(page.locator('[data-testid^="assignment-timeline"]')).toBeVisible();
     await expect(page.locator('[data-testid^="loan-history"]')).toBeVisible();
+    await expect(page.locator('[data-testid^="repair-history"]')).toBeVisible();
     await expect(page.locator('[data-testid="evidence-table"], [data-testid="no-evidence-message"]')).toBeVisible();
   };
 
