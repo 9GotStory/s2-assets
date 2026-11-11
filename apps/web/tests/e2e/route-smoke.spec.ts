@@ -163,7 +163,8 @@ test.describe.serial('Route smoke: Real SPA -> Composed API -> PostgreSQL (Seam 
       await page.goto(`${targetBaseUrl}${row.url(fixtures)}`);
 
       await expect(page.getByRole('heading', { level: 1, name: row.heading(fixtures), exact: true })).toBeVisible();
-      await page.waitForLoadState('networkidle');
+      // Once nothing shows as loading, a failed read has shown its alert.
+      await expect(page.locator('[aria-busy="true"]')).toHaveCount(0);
       await expect(page.getByRole('alert')).toHaveCount(0);
     });
   }
