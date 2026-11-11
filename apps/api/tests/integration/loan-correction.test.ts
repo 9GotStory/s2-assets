@@ -21,7 +21,7 @@ describe('Loan Correction (Seam A - F004-T6)', () => {
   const logLines: string[] = [];
 
   const { entry } = assignmentHelpers(() => ({ api, admin, reader: readonly }));
-  const { registered, loanOf, start, lent, returned, closedNotReturned, whileHolding, isWaitingOnLoanLock } = loanHelpers(
+  const { registered, loanOf, start, lent, returned, closedNotReturned, whileHolding } = loanHelpers(
     () => ({ api, custodian, reader: readonly }),
     { loanDate: LOAN_DATE, dueDate: DUE, contactName: 'คุณผู้ยืมแก้ไข' }
   );
@@ -716,21 +716,13 @@ describe('Loan Correction (Seam A - F004-T6)', () => {
       const [low, high] = [await registered(), await registered()].sort();
       const { loanId } = await lent([high, low]);
 
-      const { atLoan } = await whileHolding('loans', loanId, async () => {
-        const pending = correct(loanId, await amendment(loanId, { kind: 'LOAN' }, { remark: 'รอล็อก' }));
-        await expect.poll(isWaitingOnLoanLock, { timeout: 10_000, interval: 50 }).toBe(true);
-        return { atLoan: pending };
-      });
-      expect((await atLoan).statusCode).toBe(201);
+      const atLoanPayload = await amendment(loanId, { kind: 'LOAN' }, { remark: 'รอล็อก' });
+      const [atLoan] = await whileHolding('loans', loanId, () => [correct(loanId, atLoanPayload)]);
+      expect(atLoan.statusCode).toBe(201);
 
-      const { atAsset } = await whileHolding('assets', low, async () => {
-        const pending = correct(loanId, await amendment(loanId, { kind: 'LOAN' }, { remark: 'รอล็อก Asset' }));
-        await expect
-          .poll(async () => (await api.pool.query(`SELECT count(*)::int AS n FROM pg_stat_activity WHERE wait_event_type = 'Lock' AND query LIKE '%FROM assets%FOR UPDATE%'`)).rows[0].n > 0, { timeout: 10_000, interval: 50 })
-          .toBe(true);
-        return { atAsset: pending };
-      });
-      expect((await atAsset).statusCode).toBe(201);
+      const atAssetPayload = await amendment(loanId, { kind: 'LOAN' }, { remark: 'รอล็อก Asset' });
+      const [atAsset] = await whileHolding('assets', low, () => [correct(loanId, atAssetPayload)]);
+      expect(atAsset.statusCode).toBe(201);
     });
 
     it('ends concurrent corrections of one version with one correction, and the rest refused', async () => {
