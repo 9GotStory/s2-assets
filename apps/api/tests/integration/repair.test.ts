@@ -163,7 +163,8 @@ describe('Repair Start (Seam A - F005-T1)', () => {
       }
 
       const assetId = await registered();
-      for (const cost of ['-1', '-0.01', '1.234', '01', '1e3', '1,500', 'abc', '10000000000']) {
+      // A cost is one line: a line break or tab at its end is refused, not trimmed away.
+      for (const cost of ['-1', '-0.01', '1.234', '01', '1e3', '1,500', 'abc', '10000000000', '1500\n', '\t12']) {
         const res = await send(base(assetId, { cost }));
         expect(res.statusCode).toBe(400);
       }

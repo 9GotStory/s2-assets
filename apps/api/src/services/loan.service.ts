@@ -1,12 +1,12 @@
 import pg from 'pg';
 import { isValidUuid } from './capability.service.ts';
-import { hasStrictControlChars } from './control-characters.ts';
 import {
   DOCUMENT_REFERENCE_MAX_LENGTH,
   REMARK_MAX_LENGTH,
   bangkokDate,
   isCalendarDate,
   lockAssetsInIdentifierOrder,
+  normalizeLine,
   normalizeText,
 } from './assignment.service.ts';
 import { loanConflictCheck, normalizeConfirmedConflicts, withConfirmedConflicts, type ConfirmedLoanConflictInput } from './loan-conflict.ts';
@@ -93,18 +93,6 @@ interface LoanFacts {
   document_reference: string | null;
   remark: string | null;
 }
-
-// One line of text: trimmed, blank as none, bounded, and with no control character, even at its ends.
-export const normalizeLine = (value: string | null | undefined, field: string, maxLength: number): string | null => {
-  if (hasStrictControlChars(value ?? '')) {
-    throw new ValidationError(`${field} must not contain control characters`);
-  }
-  const text = value?.trim() ?? '';
-  if (text.length > maxLength) {
-    throw new ValidationError(`${field} must be at most ${maxLength} characters`);
-  }
-  return text.length > 0 ? text : null;
-};
 
 const normalizePhone = (value: string | null | undefined): string | null => {
   const phone = normalizeLine(value, 'borrower.phone', PHONE_MAX_LENGTH);
@@ -543,7 +531,7 @@ export async function voidLoanFact(client: pg.PoolClient, loanId: string, target
 // The Loan whose item keeps an Asset from a new Loan and from a Repair Start: Outstanding or Not Returned.
 export interface LoanHoldingAsset {
   loan_id: string;
-  ending_kind: 'NONE' | 'NOT_RETURNED';
+  reason: 'ON_LOAN' | 'NOT_RETURNED';
 }
 
 /**
@@ -556,7 +544,9 @@ export async function loansHoldingAssets(client: pg.PoolClient, assetIds: string
      WHERE asset_id = ANY($1::uuid[]) AND NOT is_voided AND ending_kind IN ('NONE', 'NOT_RETURNED')`,
     [assetIds]
   );
-  return new Map(res.rows.map(({ asset_id, loan_id, ending_kind }: any): [string, LoanHoldingAsset] => [asset_id, { loan_id, ending_kind }]));
+  return new Map(
+    res.rows.map(({ asset_id, loan_id, ending_kind }: any): [string, LoanHoldingAsset] => [asset_id, { loan_id, reason: ending_kind === 'NONE' ? 'ON_LOAN' : 'NOT_RETURNED' }])
+  );
 }
 
 // Another Loan's item that keeps an Asset, Outstanding or Not Returned (LR-11, #74 Q21).
@@ -667,7 +657,7 @@ export class LoanService {
       const { name, asset_number } = asset;
       const held = heldBy.get(assetId);
       if (held) {
-        return [{ asset_id: assetId, name, asset_number, reason: held.ending_kind === 'NONE' ? 'ON_LOAN' : 'NOT_RETURNED', loan_id: held.loan_id }];
+        return [{ asset_id: assetId, name, asset_number, ...held }];
       }
       const repair = underRepair.get(assetId);
       if (repair) {

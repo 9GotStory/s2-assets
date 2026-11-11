@@ -1,7 +1,8 @@
 import pg from 'pg';
-import { DOCUMENT_REFERENCE_MAX_LENGTH, REMARK_MAX_LENGTH, bangkokDate, isCalendarDate, lockAssetsInIdentifierOrder, normalizeText } from './assignment.service.ts';
+import { DOCUMENT_REFERENCE_MAX_LENGTH, REMARK_MAX_LENGTH, bangkokDate, isCalendarDate, lockAssetsInIdentifierOrder, normalizeLine, normalizeText } from './assignment.service.ts';
 import { isValidUuid } from './capability.service.ts';
-import { loansHoldingAssets, normalizeLine } from './loan.service.ts';
+import { hasStrictControlChars } from './control-characters.ts';
+import { loansHoldingAssets } from './loan.service.ts';
 import { underRepairOfAssets, type RepairKind, type RepairerKind, type UnderWarranty } from './repair-read.service.ts';
 import { commitOnce } from './retryable-write.ts';
 import { NotFoundError } from './service-errors.ts';
@@ -65,14 +66,19 @@ interface RepairStartFacts {
   remark: string | null;
 }
 
+// A cost is one line, so a control character is refused before trimming, even at its ends.
 const normalizeCost = (value: string | null | undefined): string | null => {
-  if (value === undefined || value === null || value.trim() === '') {
+  if (hasStrictControlChars(value ?? '')) {
+    throw new ValidationError('cost must not contain control characters');
+  }
+  const cost = value?.trim() ?? '';
+  if (cost === '') {
     return null;
   }
-  if (!COST_PATTERN.test(value.trim())) {
+  if (!COST_PATTERN.test(cost)) {
     throw new ValidationError('cost must be baht, not negative, with at most two decimals');
   }
-  return value.trim();
+  return cost;
 };
 
 const normalizeFacts = (input: StartRepairInput, today: string): RepairStartFacts => {
@@ -124,7 +130,7 @@ export class RepairService {
 
   // Locks the Asset, the lock a Loan start takes, and refuses it while a Loan holds it or it is Under
   // Repair (RM-07, DR-16, #98 Q3, Q15). A Repair Start and a Loan start of one Asset therefore serialize.
-  private async assertSendable(client: pg.PoolClient, assetId: string): Promise<void> {
+  private async assertRepairMayStart(client: pg.PoolClient, assetId: string): Promise<void> {
     const [asset] = await lockAssetsInIdentifierOrder(client, [assetId]);
     if (!asset) {
       throw new NotFoundError('Asset not found');
@@ -132,7 +138,7 @@ export class RepairService {
     const { name, asset_number } = asset;
     const held = (await loansHoldingAssets(client, [assetId])).get(assetId);
     if (held) {
-      throw new RepairStartRefusedError({ asset_id: assetId, name, asset_number, reason: held.ending_kind === 'NONE' ? 'ON_LOAN' : 'NOT_RETURNED', loan_id: held.loan_id });
+      throw new RepairStartRefusedError({ asset_id: assetId, name, asset_number, ...held });
     }
     const repair = (await underRepairOfAssets(client, [assetId])).get(assetId);
     if (repair) {
@@ -146,7 +152,7 @@ export class RepairService {
       this.db,
       { actorId, operation: 'repair:start', retryToken, payload: { version: 1, ...facts }, explicitContinuation: false },
       async (client) => {
-        await this.assertSendable(client, facts.asset_id);
+        await this.assertRepairMayStart(client, facts.asset_id);
         const res = await client.query(
           `INSERT INTO repair_records (asset_id, repair_kind, start_date, repairer_kind, repairer_name, symptom_or_work, under_warranty,
                                        warranty_end_date, cost, document_reference, remark, recorded_by)
