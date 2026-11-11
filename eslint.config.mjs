@@ -12,17 +12,29 @@ const NO_PROMISED_REPLY = {
     'A FastifyReply is thenable, so awaiting it yields undefined. Return a decision (such as a boolean) and let the route handler send the reply.',
 };
 
-// SQL text that writes one of these tables, as a string or in a template.
-const writesTo = (tables, owner) => {
-  const sql = `\\b(INSERT INTO|UPDATE|DELETE FROM)\\s+(${tables})\\b`;
-  return {
-    selector: `:matches(Literal[value=/${sql}/], TemplateElement[value.raw=/${sql}/])`,
-    message: `Write this table through ${owner}, the module that owns it (#76).`,
-  };
-};
-const WRITES_TO_LOAN_TABLES = writesTo('loans|loan_\\w+', 'loan.service.ts');
+// SQL text, as a string or in a template, that matches this pattern.
+const sqlText = (sql, message, flags = '') => ({
+  selector: `:matches(Literal[value=/${sql}/${flags}], TemplateElement[value.raw=/${sql}/${flags}])`,
+  message,
+});
+const writesTo = (tables, owner) =>
+  sqlText(`\\b(INSERT INTO|UPDATE|DELETE FROM)\\s+(${tables})\\b`, `Write this table through ${owner}, the module that owns it (#76).`);
+// #100: a rule that reads another feature's facts belongs to that feature's read module. The table
+// follows FROM, JOIN or USING, or the earlier tables of a comma join, in either case. A name built
+// with ${…} or a Kysely builder call goes unseen.
+const readsFrom = (tables, owners) =>
+  sqlText(
+    `\\b(FROM|JOIN|USING)\\s+(\\w+(\\s+(AS\\s+)?\\w+)?\\s*,\\s*)*(${tables})\\b`,
+    `Read this table through ${owners}, the modules that own it (#100).`,
+    'i'
+  );
+const LOAN_TABLES = 'loans|loan_\\w+';
+const REPAIR_TABLES = 'repair_\\w+';
+const WRITES_TO_LOAN_TABLES = writesTo(LOAN_TABLES, 'loan.service.ts');
 const WRITES_TO_ASSIGNMENT_CHANGES = writesTo('assignment_changes', 'assignment.service.ts');
-const WRITES_TO_REPAIR_TABLES = writesTo('repair_\\w+', 'repair.service.ts');
+const WRITES_TO_REPAIR_TABLES = writesTo(REPAIR_TABLES, 'repair.service.ts');
+const READS_LOAN_TABLES = readsFrom(LOAN_TABLES, 'services/loan*.ts');
+const READS_REPAIR_TABLES = readsFrom(REPAIR_TABLES, 'services/repair*.ts');
 const apiSyntaxRule = (...guards) => ({ 'no-restricted-syntax': ['error', NO_PROMISED_REPLY, ...guards] });
 
 // An awaited expect, by its matcher, and whether it goes through .not.
@@ -65,19 +77,33 @@ export default tseslint.config(
     // A FastifyReply is thenable: awaiting a Promise<FastifyReply> waits until the reply is sent and
     // yields undefined, so a helper that hands one back lets its route run on after a 403 (#51).
     files: ['apps/api/src/**/*.ts'],
-    rules: apiSyntaxRule(WRITES_TO_LOAN_TABLES, WRITES_TO_ASSIGNMENT_CHANGES, WRITES_TO_REPAIR_TABLES),
+    rules: apiSyntaxRule(
+      WRITES_TO_LOAN_TABLES,
+      WRITES_TO_ASSIGNMENT_CHANGES,
+      WRITES_TO_REPAIR_TABLES,
+      READS_LOAN_TABLES,
+      READS_REPAIR_TABLES
+    ),
+  },
+  {
+    files: ['apps/api/src/services/loan*.ts'],
+    rules: apiSyntaxRule(WRITES_TO_LOAN_TABLES, WRITES_TO_ASSIGNMENT_CHANGES, WRITES_TO_REPAIR_TABLES, READS_REPAIR_TABLES),
   },
   {
     files: ['apps/api/src/services/loan.service.ts'],
-    rules: apiSyntaxRule(WRITES_TO_ASSIGNMENT_CHANGES, WRITES_TO_REPAIR_TABLES),
+    rules: apiSyntaxRule(WRITES_TO_ASSIGNMENT_CHANGES, WRITES_TO_REPAIR_TABLES, READS_REPAIR_TABLES),
   },
   {
     files: ['apps/api/src/services/assignment.service.ts'],
-    rules: apiSyntaxRule(WRITES_TO_LOAN_TABLES, WRITES_TO_REPAIR_TABLES),
+    rules: apiSyntaxRule(WRITES_TO_LOAN_TABLES, WRITES_TO_REPAIR_TABLES, READS_LOAN_TABLES, READS_REPAIR_TABLES),
+  },
+  {
+    files: ['apps/api/src/services/repair*.ts'],
+    rules: apiSyntaxRule(WRITES_TO_LOAN_TABLES, WRITES_TO_ASSIGNMENT_CHANGES, WRITES_TO_REPAIR_TABLES, READS_LOAN_TABLES),
   },
   {
     files: ['apps/api/src/services/repair.service.ts'],
-    rules: apiSyntaxRule(WRITES_TO_LOAN_TABLES, WRITES_TO_ASSIGNMENT_CHANGES),
+    rules: apiSyntaxRule(WRITES_TO_LOAN_TABLES, WRITES_TO_ASSIGNMENT_CHANGES, READS_LOAN_TABLES),
   },
   {
     // #76: data kept across a key change shows one query's values under another's.

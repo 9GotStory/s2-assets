@@ -4,6 +4,7 @@ import { startApiHarness, type Actor, type ApiHarness } from './support/api-harn
 import { assignmentHelpers, at } from './support/assignment-helpers.ts';
 import { withCapabilityAnswer } from './support/capability-helpers.ts';
 import { loanHelpers, over } from './support/loan-helpers.ts';
+import { lockHelpers } from './support/lock-helpers.ts';
 import { repairHelpers } from './support/repair-helpers.ts';
 
 const TODAY = '2026-11-11';
@@ -18,7 +19,8 @@ describe('Repair Outcome (Seam A - F005-T2)', () => {
   let now = new Date('2026-11-11T05:00:00Z');
 
   const { entry, entries, detailOf, assignmentOf } = assignmentHelpers(() => ({ api, admin, reader: readonly }));
-  const { registered, start: startLoan, lent, returned, whileHolding, untilWaiting } = loanHelpers(() => ({ api, custodian, reader: readonly }), {
+  const { whileHolding, untilWaiting } = lockHelpers(() => ({ api }));
+  const { registered, start: startLoan, lent, returned } = loanHelpers(() => ({ api, custodian, reader: readonly }), {
     loanDate: TODAY,
     dueDate: '2026-11-30',
   });
