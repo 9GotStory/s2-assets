@@ -1762,22 +1762,9 @@ describe('AssetService Integration Tests (Seam A - Core Service & Transactions)'
       expect(full.total_count).toBe(4);
       expect(full.items.map((i) => i.id)).toEqual([idC, idA, idB, idD]);
 
-      // Public items must have strictly id, name, asset_number, serial_number, the T4 reference context,
-      // and NO internal sort keys
-      expect(Object.keys(full.items[0]).sort()).toEqual(
-        [
-          'asset_number',
-          'id',
-          'legacy_location_text',
-          'legacy_organization_unit_text',
-          'legacy_responsible_person_text',
-          'location',
-          'name',
-          'organization_unit',
-          'responsible_person',
-          'serial_number',
-        ].sort()
-      );
+      // Each item carries its own fields and NO internal sort keys. asset.routes.test.ts pins a row's exact
+      // fields (#78 retro).
+      expect(full.items[0]).toMatchObject({ id: idC, name: expect.any(String) });
       expect((full.items[0] as any).recorded_at).toBeUndefined();
 
       // Page 1: limit 2, offset 0 -> [idC, idA]

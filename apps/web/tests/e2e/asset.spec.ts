@@ -3,9 +3,7 @@ import { createServer, type ViteDevServer } from 'vite';
 import * as path from 'node:path';
 import * as fs from 'node:fs';
 import { fileURLToPath } from 'node:url';
-import type { FastifyInstance } from 'fastify';
-import { PostgreSqlContainer, type StartedPostgreSqlContainer } from '../../../api/node_modules/@testcontainers/postgresql/build/index.js';
-import pg from '../../../api/node_modules/pg/lib/index.js';
+import { PostgreSqlContainer, pg, type FastifyInstance, type StartedPostgreSqlContainer } from '../../../api/tests/journey-deps.ts';
 import { runMigrator } from '../../../../packages/db/src/migrator.ts';
 import { buildApp } from '../../../api/src/app.ts';
 import { UserService } from '../../../api/src/services/user.service.ts';
@@ -175,6 +173,14 @@ test.describe.serial('Asset Registry Real SPA -> Composed API -> PostgreSQL Jour
   const switchActor = async (page: any, context: any, userId: string) => {
     await page.goto('about:blank');
     await loginAs(page, context, userId);
+  };
+
+  // An Asset page's sections read once its detail appears. A revocation while one is in flight answers
+  // that read 403, and the page starts re-verifying before the journey means it to.
+  const sectionsHaveRead = async (page: any) => {
+    await expect(page.locator('[data-testid^="assignment-timeline"]')).toBeVisible();
+    await expect(page.locator('[data-testid^="loan-history"]')).toBeVisible();
+    await expect(page.locator('[data-testid="evidence-table"], [data-testid="no-evidence-message"]')).toBeVisible();
   };
 
   test('Journey 1: minimal ordinary registration -> linked detail/history view', async ({ page, context }) => {
@@ -1227,9 +1233,9 @@ test.describe.serial('Asset Registry Real SPA -> Composed API -> PostgreSQL Jour
     await expect(page.locator('#asset-detail-heading')).toBeVisible();
     await expect(page.locator('#asset-correction-form')).toBeVisible();
 
-    // 4. Downgrade user in PostgreSQL: remove ADMINISTRATOR, grant READ_ONLY (retains asset:view, loses asset:correct)
-    await pool.query('DELETE FROM user_roles WHERE user_id = $1', [userId]);
-    await pool.query("INSERT INTO user_roles (user_id, role_id) VALUES ($1, 'READ_ONLY')", [userId]);
+    // 4. Downgrade user in PostgreSQL: ADMINISTRATOR becomes READ_ONLY in one statement, so that no
+    // read of the open page finds the user without asset:view (retains asset:view, loses asset:correct)
+    await pool.query("UPDATE user_roles SET role_id = 'READ_ONLY' WHERE user_id = $1", [userId]);
 
     // 5. Fill out and submit correction form -> Fastify returns 403 Forbidden
     await page.locator('#asset-correction-form input#name').fill('เครื่องแม่ข่าย Downgraded Name');
@@ -1905,7 +1911,7 @@ test.describe.serial('Asset Registry Real SPA -> Composed API -> PostgreSQL Jour
       window.fetch = async (...args) => {
         const url = String(args[0]);
         if (url.includes('/auth/session-check') && location.pathname.includes('/assets/search')) {
-          const signal: AbortSignal | undefined = args[1]?.signal;
+          const signal = args[1]?.signal;
           return {
             ok: true,
             status: 200,
@@ -1957,7 +1963,7 @@ test.describe.serial('Asset Registry Real SPA -> Composed API -> PostgreSQL Jour
       window.fetch = async (...args) => {
         const url = String(args[0]);
         if (url.includes('/auth/session-check') && location.pathname.includes('/assets/')) {
-          const signal: AbortSignal | undefined = args[1]?.signal;
+          const signal = args[1]?.signal;
           return {
             ok: true,
             status: 200,
@@ -2365,6 +2371,7 @@ test.describe.serial('Asset Registry Real SPA -> Composed API -> PostgreSQL Jour
     await expect(page.locator('#asset-correction-form')).toBeVisible();
 
     // Now remove ALL roles in PostgreSQL so subsequent GET /assets/:id returns 403
+    await sectionsHaveRead(page);
     await pool.query('DELETE FROM user_roles WHERE user_id = $1', [deniedUserId]);
 
     const reauth1Started = createDeferred();
@@ -2454,9 +2461,9 @@ test.describe.serial('Asset Registry Real SPA -> Composed API -> PostgreSQL Jour
     await expect(page.locator('#asset-detail-heading')).toBeVisible();
     await expect(page.locator('#asset-correction-form')).toBeVisible();
 
-    // Downgrade user in PostgreSQL to READ_ONLY (retains asset:view, loses asset:correct)
-    await pool.query('DELETE FROM user_roles WHERE user_id = $1', [permUserId]);
-    await pool.query("INSERT INTO user_roles (user_id, role_id) VALUES ($1, 'READ_ONLY')", [permUserId]);
+    // Downgrade user in PostgreSQL to READ_ONLY in one statement, so that no read of the open page
+    // finds the user without asset:view (retains asset:view, loses asset:correct)
+    await pool.query("UPDATE user_roles SET role_id = 'READ_ONLY' WHERE user_id = $1", [permUserId]);
 
     const perm1Started = createDeferred();
     const perm1Release = createDeferred();
@@ -3813,11 +3820,7 @@ test.describe.serial('Asset Registry Real SPA -> Composed API -> PostgreSQL Jour
 
     // Now revoke ASSET_CUSTODIAN in PostgreSQL and set READ_ONLY
     await pool.query(
-      `DELETE FROM user_roles WHERE user_id = $1 AND role_id = 'ASSET_CUSTODIAN'`,
-      [custodianUserId]
-    );
-    await pool.query(
-      `INSERT INTO user_roles (user_id, role_id) VALUES ($1, 'READ_ONLY')`,
+      `UPDATE user_roles SET role_id = 'READ_ONLY' WHERE user_id = $1 AND role_id = 'ASSET_CUSTODIAN'`,
       [custodianUserId]
     );
 
@@ -3837,11 +3840,7 @@ test.describe.serial('Asset Registry Real SPA -> Composed API -> PostgreSQL Jour
     } finally {
       // Restore role in DB
       await pool.query(
-        `DELETE FROM user_roles WHERE user_id = $1 AND role_id = 'READ_ONLY'`,
-        [custodianUserId]
-      );
-      await pool.query(
-        `INSERT INTO user_roles (user_id, role_id) VALUES ($1, 'ASSET_CUSTODIAN')`,
+        `UPDATE user_roles SET role_id = 'ASSET_CUSTODIAN' WHERE user_id = $1 AND role_id = 'READ_ONLY'`,
         [custodianUserId]
       );
     }
@@ -4136,6 +4135,7 @@ test.describe.serial('Asset Registry Real SPA -> Composed API -> PostgreSQL Jour
 
     // 7. Verify Asset 2 no longer lists this evidence
     await page.goto(`${targetBaseUrl}/assets/${ast2Id}`);
+    await expect(page.locator('[data-testid="no-evidence-message"]')).toBeVisible();
     await expect(page.locator(`[data-testid="evidence-row-${evId}"]`)).not.toBeVisible();
 
     // 8. Verify Acquisition still lists the surviving evidence
@@ -4215,6 +4215,7 @@ test.describe.serial('Asset Registry Real SPA -> Composed API -> PostgreSQL Jour
     await expect(page.locator('[data-testid="add-evidence-btn"]')).toBeVisible();
 
     // Revoke role in DB
+    await sectionsHaveRead(page);
     await pool.query(`DELETE FROM user_roles WHERE user_id = '${tempUserId}'`);
 
     // Click add evidence and attempt submit

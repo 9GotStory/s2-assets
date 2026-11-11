@@ -251,7 +251,7 @@ export function bangkokDate(instant: Date): string {
 const DATE_PATTERN = /^(\d{4})-(\d{2})-(\d{2})$/;
 
 // A YYYY-MM-DD date of the Gregorian calendar from year 1, which PostgreSQL stores as given.
-const isCalendarDate = (value: string): boolean => {
+export const isCalendarDate = (value: string): boolean => {
   const match = DATE_PATTERN.exec(value);
   if (!match) {
     return false;
@@ -563,22 +563,30 @@ export async function readCurrentAssignment(
 }
 
 /**
- * The Permanent Assignment in effect on an Effective Date: each dimension's latest fact at or before
- * it, facts of unknown date included (they come first). A fact recorded now follows every fact on
- * its own date, so these are its prior values.
+ * The Permanent Assignment of each named Asset in effect on a date, by Asset id: each dimension's
+ * latest fact at or before it, facts of unknown date included (they come first). A fact recorded now
+ * follows every fact on its own date, so these are its prior values.
  */
+export async function readAssignmentsAt(
+  client: pg.PoolClient | pg.Pool,
+  assetIds: string[],
+  date: string
+): Promise<Map<string, PermanentAssignment>> {
+  const res = await client.query(
+    `SELECT a.id AS asset_id, ${ASSIGNMENT_COLUMNS}
+     FROM assets a ${assignmentJoins('a', '(e.effective_date IS NULL OR e.effective_date <= $2::date)')}
+     WHERE a.id = ANY($1::uuid[])`,
+    [assetIds, date]
+  );
+  return new Map(res.rows.map((row: any) => [row.asset_id, permanentAssignmentOf(row)]));
+}
+
 async function readAssignmentAt(
   client: pg.PoolClient | pg.Pool,
   assetId: string,
   effectiveDate: string
 ): Promise<PermanentAssignment> {
-  const res = await client.query(
-    `SELECT ${ASSIGNMENT_COLUMNS}
-     FROM assets a ${assignmentJoins('a', '(e.effective_date IS NULL OR e.effective_date <= $2::date)')}
-     WHERE a.id = $1`,
-    [assetId, effectiveDate]
-  );
-  return permanentAssignmentOf(res.rows[0]);
+  return (await readAssignmentsAt(client, [assetId], effectiveDate)).get(assetId)!;
 }
 
 // One side of a change row selected by readAssignmentTimeline.

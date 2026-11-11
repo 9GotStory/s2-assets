@@ -6,9 +6,9 @@
 # units, applies pending migrations, starts the API and Web and runs verify.
 #   scripts/dev-runtime-update.sh --sha <commit> [--no-backup]
 # The commit may be abbreviated (7 or more hex digits); it is resolved after the fetch. The
-# runtime checkout fetches from the workspace repository, so a commit made on GitHub, such as
-# a pull request's merge, is fetched into a workspace branch first:
-#   git fetch origin <branch>:<branch>
+# runtime checkout fetches the workspace repository's branches and remote-tracking branches,
+# so a commit made on GitHub, such as a pull request's merge, needs only a `git fetch` in the
+# workspace first.
 # Migrations only move forward: rolling back after a new migration ran means restoring the
 # backup taken here (docs/operations/development-runtime.md).
 set -Eeuo pipefail
@@ -33,11 +33,11 @@ done
   || die "the runtime is not installed: use scripts/dev-runtime-install.sh --sha <commit>"
 [[ -z $(git -C "$SRC" status --porcelain --untracked-files=no) ]] \
   || die "$SRC has modified tracked files: make changes in your workspace and commit them instead"
-git -C "$SRC" fetch --quiet origin
+git -C "$SRC" fetch --quiet origin '+refs/heads/*:refs/remotes/origin/*' '+refs/remotes/origin/*:refs/remotes/workspace/*'
 full=$(git -C "$SRC" rev-parse --verify --quiet "$SHA^{commit}") \
-  || die "commit $SHA is not on a branch of the workspace repository, or names more than one commit:
-commit it in the workspace first, fetch a commit made on GitHub into a workspace branch
-(git fetch origin <branch>:<branch>), or give more digits"
+  || die "commit $SHA is not in the workspace repository, or names more than one commit:
+commit it in the workspace first, fetch a commit made on GitHub there (git fetch origin),
+or give more digits"
 SHA=$full
 require_sha "$SHA"
 git -C "$SRC" cat-file -e "$SHA:scripts/dev-runtime-install.sh" 2>/dev/null \

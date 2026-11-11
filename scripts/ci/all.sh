@@ -11,6 +11,10 @@
 # directory. The output ends with a Markdown table of the results, and the exit status is non-zero
 # when any job failed. Each job takes the host's job lock itself (common.sh), so this script sources
 # nothing from there: holding the lock here would leave the first job waiting for it.
+#
+# A run takes about 12 minutes, past a 10-minute foreground command limit, so start it in the
+# background on its own. Leave the tree as it is until the table prints: e2e.sh copies the tree when
+# its job starts, so an edit made meanwhile reaches some jobs and not others.
 set -euo pipefail
 cd "$(dirname "$0")/../.."
 

@@ -635,12 +635,10 @@ describe('Initial Assignment (Seam A - F003-T1)', () => {
       expect(second).toMatchObject({ total_count: 2, has_more: false });
       expect(second.items.map((item: any) => item.id)).toEqual([a1]);
 
-      // Each result carries its Current Assignment for display.
-      expect(first.items[0]).toEqual({
+      // Each result carries its Current Assignment for display. asset.routes.test.ts pins the row's exact fields.
+      expect(first.items[0]).toMatchObject({
         id: a2,
         name: 'ค้นหามิติ 2',
-        asset_number: null,
-        serial_number: null,
         location: { id: room.id, name: 'ห้องค้นหาปัจจุบัน', is_active: true },
         organization_unit: null,
         responsible_person: { id: person.id, name: 'บุคคลค้นหาปัจจุบัน', is_active: true },

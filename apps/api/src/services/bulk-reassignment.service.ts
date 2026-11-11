@@ -18,7 +18,7 @@ import {
   type ReassignmentFacts,
   type ReassignmentInput,
 } from './assignment.service.ts';
-import { commitOnce, rollbackQuietly } from './assignment-write.ts';
+import { commitOnce, rollbackQuietly } from './retryable-write.ts';
 import { ValidationError } from './validation-error.ts';
 
 // #50 Q4: as many as a bulk registration (Feature 002 D4).

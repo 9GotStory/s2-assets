@@ -16,6 +16,7 @@ import { systemRoutes } from './routes/system.routes.ts';
 import { healthRoutes } from './routes/health.routes.ts';
 import { assetRoutes } from './routes/asset.routes.ts';
 import { assignmentRoutes } from './routes/assignment.routes.ts';
+import { loanRoutes } from './routes/loan.routes.ts';
 import { acquisitionRoutes } from './routes/acquisition.routes.ts';
 import { evidenceRoutes } from './routes/evidence.routes.ts';
 import { referenceRoutes } from './routes/reference.routes.ts';
@@ -26,6 +27,12 @@ import { AssetService } from './services/asset.service.ts';
 import { AssignmentRecordingService } from './services/assignment-recording.service.ts';
 import { BulkReassignmentService } from './services/bulk-reassignment.service.ts';
 import { AssignmentCorrectionService } from './services/assignment-correction.service.ts';
+import { LoanReturnService } from './services/loan-return.service.ts';
+import { NotReturnedService } from './services/not-returned.service.ts';
+import { DueDateExtensionService } from './services/due-date-extension.service.ts';
+import { LoanService } from './services/loan.service.ts';
+import { LoanReadService } from './services/loan-read.service.ts';
+import { LoanCorrectionService } from './services/loan-correction.service.ts';
 import { AcquisitionService } from './services/acquisition.service.ts';
 import { EvidenceService } from './services/evidence.service.ts';
 
@@ -186,6 +193,11 @@ export async function buildApp(options: AppOptions = {}): Promise<FastifyInstanc
     const capabilityService = new CapabilityService({ db: dbClient });
 
     const assetService = new AssetService({ db: dbClient, clock: options.clock });
+    const loanService = new LoanService({ db: dbClient, clock: options.clock });
+    const loanReadService = new LoanReadService({ db: dbClient, clock: options.clock });
+    const loanReturnService = new LoanReturnService({ db: dbClient, clock: options.clock });
+    const notReturnedService = new NotReturnedService({ db: dbClient, clock: options.clock });
+    const dueDateExtensionService = new DueDateExtensionService({ db: dbClient });
     const acquisitionService = new AcquisitionService({ db: dbClient });
     const evidenceService = new EvidenceService({ db: dbClient, capabilityService });
 
@@ -244,6 +256,7 @@ export async function buildApp(options: AppOptions = {}): Promise<FastifyInstanc
     await app.register(assetRoutes, {
       prefix: '/assets',
       assetService,
+      loanReadService,
       capabilityService,
       db: dbClient,
       publicAppOrigin,
@@ -254,6 +267,16 @@ export async function buildApp(options: AppOptions = {}): Promise<FastifyInstanc
       assignmentRecordingService: new AssignmentRecordingService({ db: dbClient, clock: options.clock }),
       assignmentCorrectionService: new AssignmentCorrectionService({ db: dbClient, clock: options.clock }),
       bulkReassignmentService: new BulkReassignmentService({ db: dbClient, clock: options.clock }),
+    });
+
+    await app.register(loanRoutes, {
+      loanService,
+      loanReadService,
+      loanReturnService,
+      notReturnedService,
+      dueDateExtensionService,
+      loanCorrectionService: new LoanCorrectionService({ db: dbClient, clock: options.clock }),
+      capabilityService,
     });
 
     // Acquisition routes mounted under /acquisitions

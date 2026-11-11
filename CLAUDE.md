@@ -75,22 +75,25 @@ with `/code-review` → `/pr` → `/retro`.
 
 `.github/workflows/ci.yml` defines the checks, and its `ci-gate` job names the jobs that must
 pass. On a pull request, CI also runs `git diff --check` and `scripts/check-glossary.sh` against
-the base. Locally, run each job through its script in `scripts/ci/`, `security-scan.sh` included,
-before pushing, so that a finding reaches the Product Owner with the ticket's other decisions.
+the base. Before pushing, run them all locally with `scripts/ci/all.sh --base <base>`, which runs
+each job's script in `scripts/ci/`, `security-scan.sh` included, and those two checks, so that a
+finding reaches the Product Owner with the ticket's other decisions.
 To run one test file or a typecheck, use the same scripts:
 `scripts/ci/integration.sh tests/integration/<file>`, `scripts/ci/e2e.sh tests/e2e/<spec>`,
-`scripts/ci/quality.sh --quick`.
+`scripts/ci/quality.sh --quick`. Before the full run, run every integration file that calls a
+route or names a response field the change touches (`grep -l` over `apps/api/tests/integration`):
+earlier tests pin those shapes and their data.
 When CI does not run on a pull request, run each job locally and record each job's exact result
 in the pull request: that record is the pull request's check. A change
-that touches only documentation needs only `git diff --check <base>...HEAD`, where `<base>` is the
-integration-branch commit the task started from.
+that touches only documentation needs only `git diff --check <base>...HEAD`. In both, `<base>` is
+the integration-branch commit the task started from.
 
 ## Agent skills
 
 ### Issue tracker
 
-GitHub Issues of `9GotStory/s2-assets`, through the `gh` CLI. See `docs/agents/issue-tracker.md`,
-also for pull request bodies.
+GitHub Issues of `9GotStory/s2-assets`, through the `gh` CLI. See `docs/agents/issue-tracker.md`
+whenever the Product Owner decides something, and for pull request bodies.
 
 ### Triage labels
 
@@ -138,7 +141,8 @@ databases and container tooling before relying on it:
 - **Verification against real invariants.** Tests put business invariants before implementation
   details and never weaken or redefine accepted business semantics. PostgreSQL transaction and
   concurrency semantics that matter in production are verified against real PostgreSQL, not
-  database mocks alone. Size verification to the scope: lint, typecheck, unit, integration,
+  database mocks alone. A test first seen green is not done: break the code it covers and watch it
+  go red. Size verification to the scope: lint, typecheck, unit, integration,
   browser/E2E, migration, security or container checks as they apply.
 
 ## Runtimes

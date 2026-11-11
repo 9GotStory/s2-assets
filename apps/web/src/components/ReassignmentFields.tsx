@@ -1,5 +1,7 @@
 import React, { useState } from 'react';
+import { Link } from 'react-router';
 import { AssignmentNoteFields, assignmentNotesPayload, type AssignmentNotes } from './AssignmentNoteFields';
+import { ON_LOAN_LABEL, borrowerText, type OnLoan } from './loanFacts';
 import {
   REFERENCE_DIMENSIONS,
   entryLabel,
@@ -79,16 +81,45 @@ export interface ReassignmentFieldsProps {
   // The value of each dimension on the chosen date, null while it cannot be read. Leave it out for a
   // form over many Assets, whose prior values differ.
   priorValues?: Record<AssignmentDimension, AssignmentValue> | null;
+  // The Assets of the form that are On Loan, and who holds each.
+  onLoanAssets?: OnLoanAsset[];
 }
 
+export interface OnLoanAsset {
+  id: string;
+  label: string;
+  onLoan: OnLoan;
+}
+
+/**
+ * MR-14, MR-19, #74 Q26: which Assets are On Loan and with whom, and that a Reassignment leaves their
+ * Loans as they are. A notice only: it blocks nothing.
+ */
+const OnLoanNotice: React.FC<{ assets: OnLoanAsset[] }> = ({ assets }) => (
+  <div data-testid="assignment-on-loan-notice" style={{ margin: '0 0 0.75rem 0', padding: '0.5rem 0.75rem', fontSize: '0.8125rem', color: '#92400e', backgroundColor: '#fef3c7', borderRadius: '6px' }}>
+    <ul style={{ margin: 0, paddingLeft: '1.25rem' }}>
+      {assets.map(({ id, label, onLoan }) => (
+        <li key={id} data-testid={`assignment-on-loan-${id}`}>
+          {label} {ON_LOAN_LABEL}โดย {borrowerText(onLoan.borrower)}{' '}
+          <Link to={`/loans/${onLoan.loan_id}`} style={{ color: '#2563eb', textDecoration: 'underline' }}>
+            ดูการยืม
+          </Link>
+        </li>
+      ))}
+    </ul>
+    <p style={{ margin: '0.25rem 0 0 0' }}>การย้ายไม่เปลี่ยนผู้ยืมหรือการยืมนี้ เมื่อได้รับคืนให้บันทึกการคืนในหน้าการยืม</p>
+  </div>
+);
+
 /** The fields of a Reassignment: its Effective Date, a new value for each dimension, and its notes. */
-export const ReassignmentFields: React.FC<ReassignmentFieldsProps> = ({ draft, isLocked, priorValues }) => {
+export const ReassignmentFields: React.FC<ReassignmentFieldsProps> = ({ draft, isLocked, priorValues, onLoanAssets = [] }) => {
   const { effectiveDate, setEffectiveDate, targets, setTargets, notes, setNotes, lists, listError, offerInactive } = draft;
   return (
     <fieldset disabled={isLocked} style={{ border: 'none', padding: 0, margin: '0 0 1rem 0' }}>
       <p data-testid="assignment-loan-note" style={{ margin: '0 0 0.75rem 0', fontSize: '0.8125rem', color: '#92400e' }}>
         การยืมชั่วคราวไม่ใช่การย้าย: บันทึกที่นี่เฉพาะเมื่อสถานที่ หน่วยงาน หรือผู้รับผิดชอบเปลี่ยนไปจริง
       </p>
+      {onLoanAssets.length > 0 && <OnLoanNotice assets={onLoanAssets} />}
       {listError && (
         <div role="alert" style={{ marginBottom: '0.75rem', fontSize: '0.8125rem', color: '#b91c1c' }}>
           {listError}

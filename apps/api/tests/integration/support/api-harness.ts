@@ -1,10 +1,12 @@
 import * as path from 'node:path';
+import { setTimeout as delay } from 'node:timers/promises';
 import { fileURLToPath } from 'node:url';
 import { PostgreSqlContainer } from '@testcontainers/postgresql';
 import pg from 'pg';
 import type { FastifyInstance, LightMyRequestResponse } from 'fastify';
 import { runMigrator } from '../../../../../packages/db/src/migrator.ts';
 import { buildApp } from '../../../src/app.ts';
+import type { AppLoggerOptions } from '../../../src/plugins/logger.ts';
 import type { Role } from '../../../src/services/capability.service.ts';
 import { SessionService } from '../../../src/services/session.service.ts';
 import { UserService } from '../../../src/services/user.service.ts';
@@ -14,6 +16,7 @@ const { Pool } = pg;
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
 const migrationFolder = path.resolve(__dirname, '../../../../../packages/db/src/migrations');
+const POOL_END_TIMEOUT_MS = 5_000;
 
 export type Actor = { id: string; cookie: string; csrf: string };
 
@@ -32,7 +35,7 @@ export interface ApiHarness {
  * Seam A's composed application over a disposable PostgreSQL, migrated to the latest schema. Call it
  * in `beforeAll` with a 120-second timeout, and `close` it in `afterAll`.
  */
-export async function startApiHarness(options: { clock?: () => Date } = {}): Promise<ApiHarness> {
+export async function startApiHarness(options: { clock?: () => Date; logger?: AppLoggerOptions } = {}): Promise<ApiHarness> {
   const container = await new PostgreSqlContainer('postgres:18.6-alpine').start();
   const databaseUrl = container.getConnectionUri();
   const { error } = await runMigrator({ command: 'latest', databaseUrl, migrationFolder });
@@ -45,7 +48,7 @@ export async function startApiHarness(options: { clock?: () => Date } = {}): Pro
   const app = await buildApp({
     db: pool,
     cookieSecret: 'test-secret-at-least-32-chars-long-api-harness',
-    logger: false,
+    logger: options.logger ?? false,
     clock: options.clock,
   });
   const passwordHash = await UserService.hashPassword('Password123!');
@@ -86,7 +89,9 @@ export async function startApiHarness(options: { clock?: () => Date } = {}): Pro
     get: (actor, url) => app.inject({ method: 'GET', url, headers: { cookie: actor.cookie } }),
     close: async () => {
       await app.close();
-      await pool.end();
+      // pool.end() waits for every checked-out connection, so one left behind by a failing test would
+      // hang the file instead of letting it fail. Stopping the container drops that connection.
+      await Promise.race([pool.end(), delay(POOL_END_TIMEOUT_MS, undefined, { ref: false })]);
       await container.stop();
     },
   };

@@ -19,9 +19,13 @@ import {
   type InitialAssignmentFacts,
   type InitialAssignmentInput,
 } from './assignment.service.ts';
+import { containsPattern } from './asset-lookups.ts';
+import { loanSearch, type AssetSearchLoanFacts } from './loan-read.service.ts';
+import { canonicalJson } from './canonical-json.ts';
+import { NotFoundError, RetryTokenConflictError, StaleBeforeConflictError } from './service-errors.ts';
 import { ValidationError } from './validation-error.ts';
 
-export { ValidationError };
+export { NotFoundError, RetryTokenConflictError, StaleBeforeConflictError, ValidationError, canonicalJson };
 
 export interface AssetRecord {
   id: string;
@@ -126,38 +130,6 @@ export interface AssetServiceOptions {
   clock?: () => Date;
 }
 
-export class NotFoundError extends Error {
-  statusCode: number;
-  code: string;
-
-  constructor(message: string = 'Asset not found') {
-    super(message);
-    this.name = 'NotFoundError';
-    this.statusCode = 404;
-    this.code = 'NOT_FOUND';
-  }
-}
-
-export class StaleBeforeConflictError extends Error {
-  statusCode: number;
-  code: string;
-  current_values?: Record<string, string | number | null>;
-  expected_values?: Record<string, string | number | null>;
-
-  constructor(
-    message: string = 'Current asset state differs from expected before values',
-    currentValues?: Record<string, string | number | null>,
-    expectedValues?: Record<string, string | number | null>
-  ) {
-    super(message);
-    this.name = 'StaleBeforeConflictError';
-    this.statusCode = 409;
-    this.code = 'STALE_BEFORE_CONFLICT';
-    this.current_values = currentValues;
-    this.expected_values = expectedValues;
-  }
-}
-
 export interface DuplicateCandidatesResult {
   candidates: AssetRecord[];
   total_count: number;
@@ -225,35 +197,6 @@ export class BulkDuplicateCandidateWarningError extends Error {
   }
 }
 
-export class RetryTokenConflictError extends Error {
-  statusCode: number;
-  code: string;
-
-  constructor(message: string = 'Retry token payload mismatch') {
-    super(message);
-    this.name = 'RetryTokenConflictError';
-    this.statusCode = 409;
-    this.code = 'RETRY_TOKEN_PAYLOAD_MISMATCH';
-  }
-}
-
-/**
- * Deterministically serializes values with recursively sorted keys.
- */
-export function canonicalJson(obj: unknown): string {
-  if (obj === null || typeof obj !== 'object') {
-    return JSON.stringify(obj);
-  }
-  if (Array.isArray(obj)) {
-    return `[${obj.map((item) => canonicalJson(item)).join(',')}]`;
-  }
-  const record = obj as Record<string, unknown>;
-  const keys = Object.keys(record)
-    .filter((k) => record[k] !== undefined)
-    .sort();
-  return `{${keys.map((k) => `${JSON.stringify(k)}:${canonicalJson(record[k])}`).join(',')}}`;
-}
-
 // T4 (#25): each legacy reference text is searched on its own, keeping the dimensions distinct.
 export type SearchAssetField =
   | 'stable_id'
@@ -262,7 +205,7 @@ export type SearchAssetField =
   | 'name'
   | (typeof LEGACY_TEXT_FIELDS)[number];
 
-export interface SearchAssetItem extends CurrentAssignment {
+export interface SearchAssetItem extends CurrentAssignment, AssetSearchLoanFacts {
   id: string;
   name: string | null;
   asset_number: string | null;
@@ -278,6 +221,8 @@ export interface SearchAssetInput {
   responsible_person_id?: string;
   // F003-T4 (#54): only Assets with at least one Assignment Conflict.
   has_assignment_conflict?: boolean;
+  // F004-T4 (#78): only Assets On Loan, "กำลังถูกยืม".
+  on_loan?: boolean;
   limit?: number | string;
   offset?: number | string;
 }
@@ -312,10 +257,6 @@ function refuseAssignmentFields(input: CorrectAssetInput): void {
     );
   }
 }
-
-// A case-insensitive literal substring pattern for ILIKE ... ESCAPE '\'.
-const containsPattern = (value: string): string =>
-  `%${value.replace(/\\/g, '\\\\').replace(/%/g, '\\%').replace(/_/g, '\\_')}%`;
 
 export class AssetService {
   private db: any;
@@ -1909,6 +1850,9 @@ export class AssetService {
     if (input.has_assignment_conflict) {
       conditions.push(assignmentSearch.conflictFilter);
     }
+    if (input.on_loan) {
+      conditions.push(loanSearch.onLoanFilter);
+    }
     const whereClause = conditions.length > 0 ? `WHERE ${conditions.join(' AND ')}` : '';
 
     const limitParamIndex = params.length + 1;
@@ -1941,15 +1885,16 @@ export class AssetService {
     const res = await this.db.query(query, params);
 
     const totalCount = res.rows.length > 0 && res.rows[0].total_count != null ? Number(res.rows[0].total_count) : 0;
-    const items: SearchAssetItem[] = res.rows
-      .filter((row: any) => row.id != null)
-      .map((row: any) => ({
-        id: row.id,
-        name: row.name ?? null,
-        asset_number: row.asset_number ?? null,
-        serial_number: row.serial_number ?? null,
-        ...assignmentSearch.current(row),
-      }));
+    const rows = res.rows.filter((row: any) => row.id != null);
+    const loanFactsOf = await loanSearch.factsOf(this.db, rows.map((row: any) => row.id), this.today());
+    const items: SearchAssetItem[] = rows.map((row: any) => ({
+      id: row.id,
+      name: row.name ?? null,
+      asset_number: row.asset_number ?? null,
+      serial_number: row.serial_number ?? null,
+      ...assignmentSearch.current(row),
+      ...loanFactsOf(row.id),
+    }));
 
     const hasMore = parsedOffset + items.length < totalCount;
 

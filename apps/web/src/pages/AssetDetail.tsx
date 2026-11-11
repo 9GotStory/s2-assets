@@ -5,7 +5,9 @@ import { AssetCorrectionForm } from '../components/AssetCorrectionForm';
 import { AssetQrLabel } from '../components/AssetQrLabel';
 import { AssignmentSection } from '../components/AssignmentSection';
 import { EvidencePanel } from '../components/EvidencePanel';
+import { LoanSection } from '../components/LoanSection';
 import { type CurrentAssignment } from '../components/ReferenceContextFields';
+import { type AssetNotReturned, type LoanCondition, type OnLoan } from '../components/loanFacts';
 
 export interface AssetRecord {
   id: string;
@@ -44,6 +46,15 @@ export interface AssetDetailResponse {
   can_correct?: boolean;
   can_reassign?: boolean;
   can_correct_assignment?: boolean;
+  // F004-T1: who holds the Asset, and whether the viewer holds 'loan:record'.
+  on_loan?: OnLoan | null;
+  can_record_loan?: boolean;
+  // F004-T2: the Condition of the Asset's latest Loan Return.
+  latest_loan_return_condition?: LoanCondition | null;
+  // F004-T5: the Not Returned that keeps the Asset from a new Loan.
+  not_returned?: AssetNotReturned | null;
+  // F004-T7: whether any of the Asset's LoanItems is in a Loan Conflict.
+  has_loan_conflict?: boolean;
 }
 
 export const AssetDetail: React.FC = () => {
@@ -769,6 +780,7 @@ const AssetDetailContent: React.FC = () => {
           canCorrectAssignment={Boolean(assetData.can_correct_assignment && !isPermissionRevoked)}
           assignmentVersion={assetData.assignment_version ?? 0}
           hasAssignmentConflict={Boolean(assetData.has_assignment_conflict)}
+          onLoan={assetData.on_loan ?? null}
           isLegacy={isLegacy}
           csrfToken={csrfToken}
           onRecorded={async () => {
@@ -782,6 +794,26 @@ const AssetDetailContent: React.FC = () => {
             const refetchResult = await refetch();
             return refetchResult.isError ? null : (refetchResult.data?.assignment_version ?? null);
           }}
+        />
+
+        {/* Loans (F004-T1), apart from the assignment timeline */}
+        <LoanSection
+          asset={{ ...asset, latest_loan_return_condition: assetData.latest_loan_return_condition ?? null }}
+          onLoan={assetData.on_loan ?? null}
+          notReturned={assetData.not_returned ?? null}
+          hasLoanConflict={assetData.has_loan_conflict === true}
+          canRecordLoan={Boolean(assetData.can_record_loan && !isPermissionRevoked)}
+          actorId={currentUser?.id ?? null}
+          dataUpdatedAt={dataUpdatedAt}
+          csrfToken={csrfToken}
+          onStarted={async () => {
+            setRefreshError(null);
+            const refetchResult = await refetch();
+            if (refetchResult.isError) {
+              setRefreshError('บันทึกการยืมสำเร็จ แต่การดึงข้อมูลล่าสุดล้มเหลว กรุณากดปุ่มเพื่อโหลดข้อมูลใหม่');
+            }
+          }}
+          onPermissionRevoked={handlePermissionRevoked}
         />
 
         {/* QR Code and Minimal Printing Panel (T8) */}
