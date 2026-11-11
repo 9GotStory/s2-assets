@@ -51,6 +51,10 @@ if [[ $BACKUP == yes ]]; then
   BACKUP_DB_USER=$DB_NAME "$SRC/scripts/backup.sh" "$DB_CTR" "$DB_NAME" "$dest" \
     || die "backup failed: nothing was changed"
   note "database backup written to $dest"
+  # The installer repeats it under its ready summary, where a reader of the run's last lines sees it.
+  export DEV_RUNTIME_BACKUP=$dest
+else
+  export DEV_RUNTIME_BACKUP='none (--no-backup)'
 fi
 note "stopping $WEB and $API"
 systemctl --user stop "$WEB" "$API"

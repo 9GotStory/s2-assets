@@ -256,3 +256,7 @@ s2-assets development runtime is ready:
   Logs:                 journalctl --user -u $API -f   (and $WEB, $DB)
   Promote a new commit: $SRC/scripts/dev-runtime-update.sh --sha <commit>
 EOF
+# Set by dev-runtime-update.sh: the backup taken before this promotion.
+if [[ -n ${DEV_RUNTIME_BACKUP:-} ]]; then
+  echo "  Database backup:      $DEV_RUNTIME_BACKUP"
+fi
