@@ -6,6 +6,7 @@ import { ReasonField } from './OutstandingItemFields';
 import { entryLabel, fieldInputStyle, fieldLabelStyle, useReferenceLists } from './ReferenceContextFields';
 import { CORRECTION_LABELS, bangkokToday } from './assignmentFacts';
 import { NOT_RETURNED_LABEL, ON_LOAN_LABEL, VOIDED_COUNTS_IN_NOTHING, type Loan, type LoanCondition, type LoanCorrectionTarget } from './loanFacts';
+import { UNDER_REPAIR_LABELS, type RepairKind } from './repairFacts';
 
 export interface LoanCorrectionFormProps {
   loan: Loan;
@@ -47,6 +48,14 @@ const AssetOnAnotherLoan: React.FC<{ asset: { name: string | null; asset_number:
   </>
 );
 
+// Voiding a Loan Return refused because its Asset is Under Repair (#98 Q19).
+const AssetUnderRepair: React.FC<{ asset: { name: string | null; asset_number: string | null; asset_id: string; repair_record_id: string; repair_kind: RepairKind } }> = ({ asset }) => (
+  <>
+    ยกเลิกไม่ได้ เพราะ {asset.name ?? asset.asset_number ?? asset.asset_id} {UNDER_REPAIR_LABELS[asset.repair_kind]} ต้องจัดการรายการซ่อมนั้นก่อน{' '}
+    <Link to={`/repairs/${asset.repair_record_id}`}>ดูรายการซ่อม</Link>
+  </>
+);
+
 /** "ยกเลิกรายการ (บันทึกผิด)": a fact that never happened. It stays shown, struck through, and counts in nothing (#74 Q25). */
 export const LoanVoidForm: React.FC<LoanCorrectionFormProps> = ({ loan, target, targetLabel, csrfToken, onRecorded, onRefresh, onCancel, onPermissionRevoked }) => {
   const [reason, setReason] = useState('');
@@ -59,7 +68,12 @@ export const LoanVoidForm: React.FC<LoanCorrectionFormProps> = ({ loan, target, 
       csrfToken={csrfToken}
       requestError={() => (reason.trim() === '' ? 'กรุณาระบุเหตุผลที่ยกเลิกรายการ' : null)}
       requestBody={() => ({ expected_version: expectedVersion, action: 'VOID', target, reason })}
-      refusedList={(body) => (body?.code === 'ASSET_ON_ANOTHER_LOAN' ? <AssetOnAnotherLoan asset={body.asset} /> : null)}
+      refusedList={(body) => {
+        if (body?.code === 'ASSET_ON_ANOTHER_LOAN') {
+          return <AssetOnAnotherLoan asset={body.asset} />;
+        }
+        return body?.code === 'ASSET_UNDER_REPAIR' ? <AssetUnderRepair asset={body.asset} /> : null;
+      }}
       forbiddenMessage="คุณไม่มีสิทธิ์แก้ไขรายการยืม"
       refusedMessage="ไม่สามารถยกเลิกรายการได้"
       onSaved={onRecorded}

@@ -12,6 +12,7 @@ import {
 import { loanConflictCheck, normalizeConfirmedConflicts, withConfirmedConflicts, type ConfirmedLoanConflictInput } from './loan-conflict.ts';
 import { CURRENT_DUE_DATE, type LoanCondition, type LoanEndingKind } from './loan-read.service.ts';
 import { isSelectablePerson } from './reference.service.ts';
+import { underRepairOfAssets, type RepairKind } from './repair-read.service.ts';
 import { commitOnce } from './retryable-write.ts';
 import { NotFoundError, StaleBeforeConflictError } from './service-errors.ts';
 import { ValidationError } from './validation-error.ts';
@@ -63,6 +64,8 @@ export type RefusedAsset = { asset_id: string; name: string | null; asset_number
   | { reason: 'NOT_FOUND' }
   | { reason: 'ON_LOAN'; loan_id: string }
   | { reason: 'NOT_RETURNED'; loan_id: string }
+  // F005-T1 (#98 Q3): the Repair Record without a Repair Outcome, and its kind.
+  | { reason: 'UNDER_REPAIR'; repair_record_id: string; repair_kind: RepairKind }
 );
 
 /** A Loan names Assets that cannot be lent. Nothing is saved, and the answer names each one and why. */
@@ -92,7 +95,7 @@ interface LoanFacts {
 }
 
 // One line of text: trimmed, blank as none, bounded, and with no control character, even at its ends.
-const normalizeLine = (value: string | null | undefined, field: string, maxLength: number): string | null => {
+export const normalizeLine = (value: string | null | undefined, field: string, maxLength: number): string | null => {
   if (hasStrictControlChars(value ?? '')) {
     throw new ValidationError(`${field} must not contain control characters`);
   }
@@ -537,6 +540,25 @@ export async function voidLoanFact(client: pg.PoolClient, loanId: string, target
   await refreshEndingKinds(client, itemIds);
 }
 
+// The Loan whose item keeps an Asset from a new Loan and from a Repair Start: Outstanding or Not Returned.
+export interface LoanHoldingAsset {
+  loan_id: string;
+  ending_kind: 'NONE' | 'NOT_RETURNED';
+}
+
+/**
+ * The Loan that holds each of `assetIds`, by Asset: its item is Outstanding (LR-11), or ended Not Returned,
+ * which keeps the Asset out whatever the date (#74 Q21, #98 Q3). The caller holds the Assets locked.
+ */
+export async function loansHoldingAssets(client: pg.PoolClient, assetIds: string[]): Promise<Map<string, LoanHoldingAsset>> {
+  const res = await client.query(
+    `SELECT asset_id, loan_id, ending_kind FROM loan_items
+     WHERE asset_id = ANY($1::uuid[]) AND NOT is_voided AND ending_kind IN ('NONE', 'NOT_RETURNED')`,
+    [assetIds]
+  );
+  return new Map(res.rows.map(({ asset_id, loan_id, ending_kind }: any): [string, LoanHoldingAsset] => [asset_id, { loan_id, ending_kind }]));
+}
+
 // Another Loan's item that keeps an Asset, Outstanding or Not Returned (LR-11, #74 Q21).
 export interface OtherLoanHolding {
   loan_id: string;
@@ -630,28 +652,28 @@ export class LoanService {
     this.clock = options.clock ?? (() => new Date());
   }
 
-  // Locks the Assets, in identifier order, and refuses the Loan if any of them cannot be lent (LR-11).
+  // Locks the Assets, in identifier order, and refuses the Loan if any of them cannot be lent (LR-11, LR-12).
   private async assertLendable(client: pg.PoolClient, assetIds: string[]): Promise<void> {
     const locked = new Map((await lockAssetsInIdentifierOrder(client, assetIds)).map((asset) => [asset.id, asset]));
-    // An Asset whose LoanItem ended Not Returned stays out of a new Loan, whatever its date (#74 Q21).
-    const heldRes = await client.query(
-      `SELECT asset_id, loan_id, ending_kind FROM loan_items
-       WHERE asset_id = ANY($1::uuid[]) AND NOT is_voided AND ending_kind IN ('NONE', 'NOT_RETURNED')`,
-      [assetIds]
-    );
-    const heldBy = new Map<string, { loan_id: string; ending_kind: LoanEndingKind }>(heldRes.rows.map((row: any) => [row.asset_id, row]));
+    const heldBy = await loansHoldingAssets(client, assetIds);
+    // An Asset Under Repair stays out of a new Loan, whatever the Loan Date and of either kind (#98 Q3, Q15).
+    const underRepair = await underRepairOfAssets(client, assetIds);
 
     const refused = assetIds.flatMap((assetId): RefusedAsset[] => {
       const asset = locked.get(assetId);
       if (!asset) {
         return [{ asset_id: assetId, name: null, asset_number: null, reason: 'NOT_FOUND' }];
       }
+      const { name, asset_number } = asset;
       const held = heldBy.get(assetId);
-      if (!held) {
-        return [];
+      if (held) {
+        return [{ asset_id: assetId, name, asset_number, reason: held.ending_kind === 'NONE' ? 'ON_LOAN' : 'NOT_RETURNED', loan_id: held.loan_id }];
       }
-      const reason = held.ending_kind === 'NONE' ? 'ON_LOAN' : 'NOT_RETURNED';
-      return [{ asset_id: assetId, name: asset.name, asset_number: asset.asset_number, reason, loan_id: held.loan_id }];
+      const repair = underRepair.get(assetId);
+      if (repair) {
+        return [{ asset_id: assetId, name, asset_number, reason: 'UNDER_REPAIR', repair_record_id: repair.repair_record_id, repair_kind: repair.repair_kind }];
+      }
+      return [];
     });
     if (refused.length > 0) {
       throw new AssetsNotLendableError(refused);

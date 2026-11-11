@@ -45,6 +45,16 @@ export const repositoryProxyConfig: Record<string, ProxyOptions> = {
       }
     },
   },
+  // F005-T1 (#99): Repair Records; a Repair Record page is the SPA route /repairs/:id.
+  '/repairs': {
+    target: 'http://api:3000',
+    changeOrigin: true,
+    bypass: (req) => {
+      if (req.headers.accept?.includes('text/html')) {
+        return '/index.html';
+      }
+    },
+  },
   // T4 (#25): reference lists; the maintenance page is the SPA route /admin/references.
   '/references': {
     target: 'http://api:3000',

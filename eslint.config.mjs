@@ -22,6 +22,7 @@ const writesTo = (tables, owner) => {
 };
 const WRITES_TO_LOAN_TABLES = writesTo('loans|loan_\\w+', 'loan.service.ts');
 const WRITES_TO_ASSIGNMENT_CHANGES = writesTo('assignment_changes', 'assignment.service.ts');
+const WRITES_TO_REPAIR_TABLES = writesTo('repair_\\w+', 'repair.service.ts');
 const apiSyntaxRule = (...guards) => ({ 'no-restricted-syntax': ['error', NO_PROMISED_REPLY, ...guards] });
 
 // An awaited expect, by its matcher, and whether it goes through .not.
@@ -64,15 +65,19 @@ export default tseslint.config(
     // A FastifyReply is thenable: awaiting a Promise<FastifyReply> waits until the reply is sent and
     // yields undefined, so a helper that hands one back lets its route run on after a 403 (#51).
     files: ['apps/api/src/**/*.ts'],
-    rules: apiSyntaxRule(WRITES_TO_LOAN_TABLES, WRITES_TO_ASSIGNMENT_CHANGES),
+    rules: apiSyntaxRule(WRITES_TO_LOAN_TABLES, WRITES_TO_ASSIGNMENT_CHANGES, WRITES_TO_REPAIR_TABLES),
   },
   {
     files: ['apps/api/src/services/loan.service.ts'],
-    rules: apiSyntaxRule(WRITES_TO_ASSIGNMENT_CHANGES),
+    rules: apiSyntaxRule(WRITES_TO_ASSIGNMENT_CHANGES, WRITES_TO_REPAIR_TABLES),
   },
   {
     files: ['apps/api/src/services/assignment.service.ts'],
-    rules: apiSyntaxRule(WRITES_TO_LOAN_TABLES),
+    rules: apiSyntaxRule(WRITES_TO_LOAN_TABLES, WRITES_TO_REPAIR_TABLES),
+  },
+  {
+    files: ['apps/api/src/services/repair.service.ts'],
+    rules: apiSyntaxRule(WRITES_TO_LOAN_TABLES, WRITES_TO_ASSIGNMENT_CHANGES),
   },
   {
     // #76: data kept across a key change shows one query's values under another's.

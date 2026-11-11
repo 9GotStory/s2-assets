@@ -6,6 +6,7 @@ import { LoanSaveForm } from './LoanSaveForm';
 import { entryLabel, fieldInputStyle, fieldLabelStyle, useReferenceLists } from './ReferenceContextFields';
 import { bangkokToday, isBeforeToday } from './assignmentFacts';
 import { NOT_RETURNED_LABEL, ON_LOAN_LABEL, START_LOAN_LABEL, assetLabel, type LoanCondition, type RefusedAsset } from './loanFacts';
+import { UNDER_REPAIR_LABELS } from './repairFacts';
 
 export interface LoanFormAsset {
   id: string;
@@ -35,9 +36,13 @@ const RefusedAssets: React.FC<{ assets: RefusedAsset[] }> = ({ assets }) => (
       {assets.map((asset) => (
         <li key={asset.asset_id}>
           {asset.name ?? asset.asset_number ?? asset.asset_id}:{' '}
-          {asset.reason === 'NOT_FOUND' ? (
-            'ไม่พบครุภัณฑ์'
-          ) : (
+          {asset.reason === 'NOT_FOUND' && 'ไม่พบครุภัณฑ์'}
+          {asset.reason === 'UNDER_REPAIR' && (
+            <>
+              {UNDER_REPAIR_LABELS[asset.repair_kind]} <Link to={`/repairs/${asset.repair_record_id}`}>ดูรายการซ่อม</Link>
+            </>
+          )}
+          {(asset.reason === 'ON_LOAN' || asset.reason === 'NOT_RETURNED') && (
             <>
               {asset.reason === 'ON_LOAN' ? ON_LOAN_LABEL : NOT_RETURNED_LABEL} <Link to={`/loans/${asset.loan_id}`}>ดูการยืม</Link>
             </>
