@@ -47,12 +47,18 @@ const SMOKE: Record<string, { url: (f: Fixtures) => string; heading: (f: Fixture
   '/loans/:id': { url: (f) => `/loans/${f.loanId}`, heading: () => 'การยืม' },
   '/repairs': { url: () => '/repairs', heading: () => 'รายการซ่อม/บำรุงรักษา' },
   '/repairs/:id': { url: (f) => `/repairs/${f.repairRecordId}`, heading: () => 'รายการซ่อม/บำรุงรักษา' },
-  '/admin/references': { skip: 'reference administration: asset:correct' },
+  // Every registry viewer reads the Reference Lists; maintaining them is reference:maintain.
+  '/admin/references': { url: () => '/admin/references', heading: () => 'รายการข้อมูลอ้างอิง (Reference Lists)' },
 };
 
 // The paths router.tsx declares, read from its text: importing it builds a browser router, which needs a window.
-const routerPaths = (): string[] =>
-  [...fs.readFileSync(path.resolve(webRoot, 'src/router.tsx'), 'utf8').matchAll(/^\s*path: '([^']+)',$/gm)].map(([, routePath]) => routePath);
+// A `path:` written in another shape is not read, so the count of `path:` keys catches it.
+const routerPaths = (): string[] => {
+  const source = fs.readFileSync(path.resolve(webRoot, 'src/router.tsx'), 'utf8');
+  const paths = [...source.matchAll(/^\s*path: '([^']+)',$/gm)].map(([, routePath]) => routePath);
+  expect(paths, 'every `path:` in router.tsx is one line of the form   path: \'/x\',').toHaveLength((source.match(/\bpath:/g) ?? []).length);
+  return paths;
+};
 
 // Every page a Read-only User can read renders its heading with no error, through the real SPA and API.
 test.describe.serial('Route smoke: Real SPA -> Composed API -> PostgreSQL (Seam B)', () => {
@@ -159,12 +165,34 @@ test.describe.serial('Route smoke: Real SPA -> Composed API -> PostgreSQL (Seam 
     test(`Route smoke: a Read-only User opens ${routePath} and sees its heading with no error`, async ({ page, context }) => {
       const session = await sessionService.createSession(readonlyUserId);
       await context.addCookies([{ name: 'session', value: session.token, url: targetBaseUrl }]);
+      // Every read the page makes, and the status each answered with once it has.
+      const reads: { url: string; status?: number }[] = [];
+      page.on('request', (request) => {
+        if (['fetch', 'xhr'].includes(request.resourceType())) {
+          reads.push({ url: request.url() });
+        }
+      });
+      page.on('requestfinished', async (request) => {
+        const read = reads.find(({ url, status }) => url === request.url() && status === undefined);
+        if (read) read.status = (await request.response())?.status() ?? 0;
+      });
+      page.on('requestfailed', (request) => {
+        const read = reads.find(({ url, status }) => url === request.url() && status === undefined);
+        if (!read) return;
+        // A page cancels a read it no longer needs, as when an effect runs again; that read did not fail.
+        if (request.failure()?.errorText === 'net::ERR_ABORTED') {
+          reads.splice(reads.indexOf(read), 1);
+        } else {
+          read.status = 0;
+        }
+      });
 
       await page.goto(`${targetBaseUrl}${row.url(fixtures)}`);
 
       await expect(page.getByRole('heading', { level: 1, name: row.heading(fixtures), exact: true })).toBeVisible();
-      // Once nothing shows as loading, a failed read has shown its alert.
-      await expect(page.locator('[aria-busy="true"]')).toHaveCount(0);
+      await expect.poll(() => reads.filter(({ status }) => status === undefined).length).toBe(0);
+      // A read that failed or was refused; 0 is one that never got an answer.
+      expect(reads.filter(({ status }) => status === 0 || status! >= 400)).toEqual([]);
       await expect(page.getByRole('alert')).toHaveCount(0);
     });
   }
