@@ -13,15 +13,21 @@ const NO_PROMISED_REPLY = {
 };
 
 // SQL text, as a string or in a template, that matches this pattern.
-const sqlText = (sql, message) => ({
-  selector: `:matches(Literal[value=/${sql}/], TemplateElement[value.raw=/${sql}/])`,
+const sqlText = (sql, message, flags = '') => ({
+  selector: `:matches(Literal[value=/${sql}/${flags}], TemplateElement[value.raw=/${sql}/${flags}])`,
   message,
 });
 const writesTo = (tables, owner) =>
   sqlText(`\\b(INSERT INTO|UPDATE|DELETE FROM)\\s+(${tables})\\b`, `Write this table through ${owner}, the module that owns it (#76).`);
-// #100: a rule that reads another feature's facts belongs to that feature's read module.
+// #100: a rule that reads another feature's facts belongs to that feature's read module. The table
+// follows FROM, JOIN or USING, or the earlier tables of a comma join, in either case. A name built
+// with ${…} or a Kysely builder call goes unseen.
 const readsFrom = (tables, owners) =>
-  sqlText(`\\b(FROM|JOIN)\\s+(${tables})\\b`, `Read this table through ${owners}, the modules that own it (#100).`);
+  sqlText(
+    `\\b(FROM|JOIN|USING)\\s+(\\w+(\\s+(AS\\s+)?\\w+)?\\s*,\\s*)*(${tables})\\b`,
+    `Read this table through ${owners}, the modules that own it (#100).`,
+    'i'
+  );
 const LOAN_TABLES = 'loans|loan_\\w+';
 const REPAIR_TABLES = 'repair_\\w+';
 const WRITES_TO_LOAN_TABLES = writesTo(LOAN_TABLES, 'loan.service.ts');

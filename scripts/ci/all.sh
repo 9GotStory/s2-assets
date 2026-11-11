@@ -15,7 +15,8 @@
 # A run takes about 12 minutes, past a 10-minute foreground command limit, so start it in the
 # background on its own. Leave the tree as it is until the table prints: e2e.sh copies the tree when
 # its job starts, so an edit made meanwhile reaches some jobs and not others. When HEAD or the tree
-# at the end differs from the start, the run fails and says its results are void (#100).
+# at the end differs from the start, or git cannot tell, the run fails and says its results are void
+# (#100). It compares the two ends only: an edit undone before the run ends goes unseen.
 set -euo pipefail
 cd "$(dirname "$0")/../.."
 
@@ -28,12 +29,16 @@ while (($#)); do
 done
 log_dir=$(mktemp -d -t s2-assets-ci.XXXXXX)
 
-# HEAD, and the tree that `git add -A` would commit on it, staged in a scratch index.
+# HEAD, and the tree that `git add -A` would commit on it, staged in a scratch index. Prints nothing
+# when a step fails: a command substitution runs without errexit, so each step is chained.
 snapshot() {
-  local index="$log_dir/index"
-  cp -- "$(git rev-parse --git-path index)" "$index"
-  GIT_INDEX_FILE=$index git add -A
-  echo "HEAD $(git rev-parse --short HEAD), tree $(GIT_INDEX_FILE=$index git write-tree | cut -c1-12)"
+  local index="$log_dir/index" head tree
+  cp -- "$(git rev-parse --git-path index)" "$index" &&
+    GIT_INDEX_FILE=$index git add -A &&
+    head=$(git rev-parse --short HEAD) &&
+    tree=$(GIT_INDEX_FILE=$index git write-tree) &&
+    [[ -n $head && -n $tree ]] &&
+    echo "HEAD $head, tree ${tree:0:12}"
   rm -f -- "$index"
 }
 started_on=$(snapshot)
@@ -66,9 +71,10 @@ tested=$(sed -n 's/^quality\.sh: testing //p' "$log_dir/quality.log" | head -1)
 ended_on=$(snapshot)
 
 echo
-if [[ $ended_on != "$started_on" ]]; then
+if [[ -z $started_on || $ended_on != "$started_on" ]]; then
   status=1
-  echo "all.sh: VOID: the run started on $started_on and ended on $ended_on, so the jobs below may"
+  echo "all.sh: VOID: the run started on ${started_on:-a tree git could not read} and ended on" \
+    "${ended_on:-a tree git could not read}, so the jobs below may"
   echo 'have tested different code. Run it again and leave the tree alone until the table prints.'
   echo
 fi

@@ -65,5 +65,6 @@ existing feature stays beside that feature's journeys, as Journey T7.17 does in 
 
 In application code, SQL on an existing table stays in the module that owns the table, as
 `assignment.service.ts` owns `assignment_changes`; the feature's own file holds its rules and calls
-that module. A read may join another module's table to show or filter by its names; a write, a lock
-or a check that decides a rule goes through the owner.
+that module. A read of another module's table goes through that module's read functions too, as
+`loan-read.service.ts` reads Repair Outcomes through `latestRepairOutcomesOf` (#100). For the Loan
+and Repair tables, the guards in `eslint.config.mjs` hold this for SQL text that names the table.
