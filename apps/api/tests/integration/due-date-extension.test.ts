@@ -21,7 +21,7 @@ describe('Recording a Due Date Extension (Seam A - F004-T5)', () => {
   const logLines: string[] = [];
 
   const { detailOf, assignmentOf } = assignmentHelpers(() => ({ api, admin, reader: readonly }));
-  const { registered, loanOf, lent, returned, closedNotReturned, whileHolding, isWaitingOnLoanLock } = loanHelpers(() => ({ api, custodian, reader: readonly }), {
+  const { registered, loanOf, lent, returned, closedNotReturned, whileHolding } = loanHelpers(() => ({ api, custodian, reader: readonly }), {
     loanDate: LOAN_DATE,
     dueDate: DUE,
     contactName: 'คุณผู้ยืมขอเลื่อน',
@@ -336,21 +336,14 @@ describe('Recording a Due Date Extension (Seam A - F004-T5)', () => {
       const { loanId, itemOf } = await lent([assetId]);
       const payload = await body(loanId, [itemOf[assetId]]);
 
-      const { atLoan } = await whileHolding('loans', loanId, async () => {
-        const pending = extend(loanId, payload);
-        await expect.poll(isWaitingOnLoanLock, { timeout: 10_000, interval: 50 }).toBe(true);
-        return { atLoan: pending };
-      });
-      expect((await atLoan).statusCode).toBe(201);
+      const [atLoan] = await whileHolding('loans', loanId, () => [extend(loanId, payload)]);
+      expect(atLoan.statusCode).toBe(201);
 
       const later = await lent([await registered(), await registered()]);
       const [laterLow, laterHigh] = Object.keys(later.itemOf).sort();
-      const { atAsset } = await whileHolding('assets', laterLow, async () => {
-        const pending = extend(later.loanId, await body(later.loanId, [later.itemOf[laterHigh]]));
-        await expect.poll(async () => (await api.pool.query(`SELECT count(*)::int AS n FROM pg_stat_activity WHERE wait_event_type = 'Lock' AND query LIKE '%FROM assets%FOR UPDATE%'`)).rows[0].n > 0, { timeout: 10_000, interval: 50 }).toBe(true);
-        return { atAsset: pending };
-      });
-      expect((await atAsset).statusCode).toBe(201);
+      const laterPayload = await body(later.loanId, [later.itemOf[laterHigh]]);
+      const [atAsset] = await whileHolding('assets', laterLow, () => [extend(later.loanId, laterPayload)]);
+      expect(atAsset.statusCode).toBe(201);
     });
 
     it('ends concurrent extensions against one version with one write, and the rest refused', async () => {

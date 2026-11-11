@@ -17,7 +17,7 @@ describe('Repair Start (Seam A - F005-T1)', () => {
   let now = new Date('2026-11-11T05:00:00Z');
 
   const { entries, detailOf, assignmentOf } = assignmentHelpers(() => ({ api, admin, reader: readonly }));
-  const { registered, loanOf, start: startLoan, lent, returned, closedNotReturned, whileHolding } = loanHelpers(
+  const { registered, loanOf, start: startLoan, lent, returned, closedNotReturned, whileHolding, untilWaiting } = loanHelpers(
     () => ({ api, custodian, reader: readonly }),
     { loanDate: TODAY, dueDate: '2026-11-30' }
   );
@@ -487,13 +487,6 @@ describe('Repair Start (Seam A - F005-T1)', () => {
   });
 
   describe('concurrency', () => {
-    const waitingOnAssetLock = async (): Promise<number> => {
-      const res = await api.pool.query(
-        `SELECT count(*)::int AS n FROM pg_stat_activity WHERE wait_event_type = 'Lock' AND query LIKE '%FROM assets WHERE id = ANY%FOR UPDATE%'`
-      );
-      return res.rows[0].n;
-    };
-
     it('ends concurrent Repair Starts for one Asset with exactly one Repair Record, and the others name it', async () => {
       const assetId = await registered();
 
@@ -511,13 +504,8 @@ describe('Repair Start (Seam A - F005-T1)', () => {
       for (let round = 0; round < 5; round++) {
         const assetId = await registered();
 
-        const writes = await whileHolding('assets', assetId, async () => {
-          const pending = [send(base(assetId)), startLoan([assetId])];
-          // Both wait on the Asset row, so neither has read the other's fact yet.
-          await expect.poll(waitingOnAssetLock, { timeout: 10_000, interval: 50 }).toBe(2);
-          return pending;
-        });
-        const [repair, loan] = await Promise.all(writes);
+        // Both wait on the Asset row, so neither has read the other's fact yet.
+        const [repair, loan] = await whileHolding('assets', assetId, () => [send(base(assetId)), startLoan([assetId])], () => untilWaiting('assets', 2));
 
         expect([repair.statusCode, loan.statusCode].sort()).toEqual([201, 409]);
         if (repair.statusCode === 201) {

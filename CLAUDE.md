@@ -66,8 +66,8 @@ with `/code-review` → `/pr` → `/retro`.
   pass, merge it yourself:
   - run `gh pr merge <n> --repo 9GotStory/s2-assets --merge --match-head-commit <headRefOid>`
     as a standalone command;
-  - then fetch and confirm that the merge commit's second parent is `<headRefOid>` and that
-    `git diff --stat <merge>^1 <merge>` lists exactly the pull request's files.
+  - then run `scripts/dev/verify-merge.sh <n>`, which fetches and confirms that the merge
+    commit's second parent is `<headRefOid>` and that it changes exactly the pull request's files.
 
   A feature the Product Owner has not accepted goes into `main` only on their word.
 

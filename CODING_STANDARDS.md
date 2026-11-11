@@ -38,9 +38,11 @@ It lets through any name that already exists, so review judges whether new code 
 name for a new concept. In F003-T1, the first draft typed the Current Assignment with Feature
 002's `AssetReferenceContext`.
 
-A new concept that a user sees, such as a status, a label or an action, gets its `GLOSSARY.md`
-entry in the same change. In F004-T5 (#79), the Loan status "ปิดแล้ว" reached its pull request
-with no entry, and neither review round flagged it.
+A new concept that a user sees, such as a status, an action or a domain term, gets its
+`GLOSSARY.md` entry in the same change. In F004-T5 (#79), the Loan status "ปิดแล้ว" reached its
+pull request with no entry, and neither review round flagged it. A form field's label, such as
+"ค่าใช้จ่าย" or "เอกสารอ้างอิง", needs no entry of its own unless it names a domain term (#99, PO
+decision on the F005-T1 retro).
 
 ## A text field's kind decides its control characters
 
