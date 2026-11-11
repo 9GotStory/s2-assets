@@ -152,10 +152,12 @@ describe('The Repair list (Seam A - F005-T3)', () => {
       expect(await idsOf(`search=${encodeURIComponent(`belt-${tag}`)}`)).toEqual([bySymptom]);
       expect(await idsOf(`search=${encodeURIComponent(`100%_${tag}`)}`)).toEqual([literal]);
       expect(await idsOf(`search=${encodeURIComponent(`  Shop-${tag}  `)}`)).toEqual([byName]);
+      // The symptom or work is free text, so a search keeps the line breaks inside it.
+      expect(await idsOf(`search=${encodeURIComponent(`สายพาน\nแล้ว Belt-${tag}`)}`)).toEqual([bySymptom]);
       expect(await idsOf(`search=Other-${tag}`)).toEqual([]);
     });
 
-    it('refuse a value they do not know, and a blank or multi-line search', async () => {
+    it('refuse a value they do not know, a blank search, and one with a control character free text refuses', async () => {
       for (const query of [
         'has_outcome=',
         'has_outcome=1',
@@ -168,8 +170,8 @@ describe('The Repair list (Seam A - F005-T3)', () => {
         'search=',
         'search=%20%20',
         'search=%00',
-        'search=%E0%B8%81%0A',
-        'search=%E0%B8%81%09%E0%B8%82',
+        'search=%E0%B8%81%1B%E0%B8%82',
+        'search=%E0%B8%81%7F',
         `search=${'a'.repeat(4097)}`,
       ]) {
         const res = await api.get(readonly, `/repairs?${query}`);

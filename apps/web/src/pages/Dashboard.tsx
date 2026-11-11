@@ -1,5 +1,6 @@
 import React, { useEffect, useState } from 'react';
 import { useNavigate, Link } from 'react-router';
+import { REPAIR_LIST_LABEL, REPAIR_SECTION_LABEL } from '../components/repairFacts';
 
 export interface SafeUser {
   id: string;
@@ -478,7 +479,7 @@ export const Dashboard: React.FC = () => {
               color: '#374151',
             }}
           >
-            การซ่อม/บำรุงรักษา
+            {REPAIR_SECTION_LABEL}
           </h2>
           <p style={{ margin: '0 0 1rem 0', fontSize: '0.875rem', color: '#4b5563' }}>
             ดูว่าครุภัณฑ์ใดอยู่ระหว่างซ่อมหรือบำรุงรักษา ใครเป็นผู้ซ่อม และแต่ละงานได้ผลอย่างไร
@@ -498,7 +499,7 @@ export const Dashboard: React.FC = () => {
                 fontWeight: 500,
               }}
             >
-              รายการซ่อม/บำรุงรักษา
+              {REPAIR_LIST_LABEL}
             </Link>
           </div>
         </section>

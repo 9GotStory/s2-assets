@@ -90,6 +90,8 @@ export const costError = (cost: string): string | null =>
 
 export const REPAIR_SECTION_LABEL = 'การซ่อม/บำรุงรักษา';
 export const REPAIR_RECORD_LABEL = 'รายการซ่อม/บำรุงรักษา';
+// The Repair list's title, as the specification names the page (#98).
+export const REPAIR_LIST_LABEL = 'รายการซ่อม/บำรุงรักษา';
 export const REPAIR_START_LABEL = 'ส่งซ่อม';
 export const REPAIR_OUTCOME_LABEL = 'ผลการซ่อม';
 export const RECORD_REPAIR_OUTCOME_LABEL = 'บันทึกผลการซ่อม';

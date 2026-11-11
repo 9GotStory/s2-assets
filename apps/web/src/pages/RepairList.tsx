@@ -7,8 +7,8 @@ import {
   OUTCOME_DATE_LABEL,
   REPAIRER_KIND_LABELS,
   REPAIR_KIND_LABELS,
+  REPAIR_LIST_LABEL,
   REPAIR_OUTCOME_LABELS,
-  REPAIR_RECORD_LABEL,
   UNDER_REPAIR_LABELS,
   repairerText,
   type RepairKind,
@@ -122,7 +122,7 @@ const RepairListContent: React.FC = () => {
         <Link to="/dashboard" id="back-dashboard-link" style={{ color: '#4b5563', textDecoration: 'none', fontSize: '0.875rem', fontWeight: 500 }}>
           ← กลับสู่แดชบอร์ด
         </Link>
-        <h1 style={{ fontSize: '1.5rem', fontWeight: 700, color: '#111827', margin: '1rem 0 1.5rem 0' }}>{REPAIR_RECORD_LABEL}</h1>
+        <h1 style={{ fontSize: '1.5rem', fontWeight: 700, color: '#111827', margin: '1rem 0 1.5rem 0' }}>{REPAIR_LIST_LABEL}</h1>
 
         {repairs.isError && !isSignedOut && (
           <div role="alert" id="repair-list-error" style={{ padding: '0.75rem 1rem', marginBottom: '1.5rem', borderRadius: '6px', backgroundColor: '#fee2e2', color: '#991b1b', fontSize: '0.875rem' }}>
@@ -214,8 +214,8 @@ const RepairListContent: React.FC = () => {
                     id="repair-filter-search"
                     type="text"
                     value={draft.search}
-                    // A symptom or work is at most 2000 characters, as a remark (#99).
-                    maxLength={2000}
+                    // The server takes a search of at most 4096 bytes, which holds 1365 Thai characters.
+                    maxLength={1000}
                     onChange={(e) => setDraftField('search', e.target.value)}
                     style={inputStyle}
                   />
@@ -246,7 +246,7 @@ const RepairListContent: React.FC = () => {
               </div>
             )}
             {page && (
-              <section aria-label={REPAIR_RECORD_LABEL} id="repair-list-region">
+              <section aria-label={REPAIR_LIST_LABEL} id="repair-list-region">
                 <div id="repair-list-count" style={{ marginBottom: '1rem', fontSize: '0.875rem', color: '#6b7280' }}>
                   {page.total_count > 0
                     ? `พบ ${page.total_count} รายการ (แสดง ${page.offset + 1} - ${Math.min(page.offset + page.items.length, page.total_count)})`

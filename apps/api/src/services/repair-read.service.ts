@@ -54,7 +54,7 @@ export interface RepairRecord {
 
 // What the Repair list is narrowed by (F005-T3, #98 Q21); every filter given applies.
 export interface RepairListFilters {
-  // Without one, the records still away; with one, those that ended.
+  // Whether the record has a Repair Outcome. How a voided record lists arrives with F005-T6 (#104).
   has_outcome?: boolean;
   repair_kind?: RepairKind;
   outcome?: RepairOutcomeValue;

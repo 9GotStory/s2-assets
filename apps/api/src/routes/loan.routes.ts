@@ -1,6 +1,7 @@
 import type { FastifyPluginAsync, FastifyRequest } from 'fastify';
 import { z } from 'zod';
 import { requireCapability } from '../middleware/authorization.ts';
+import { invalidQueryBody, pageQueryFields } from './list-query.ts';
 import { errorBody, parseWrite } from './write-request.ts';
 import { NotFoundError, RetryTokenConflictError, StaleBeforeConflictError, ValidationError } from '../services/asset.service.ts';
 import { isCalendarDate } from '../services/assignment.service.ts';
@@ -159,18 +160,7 @@ const LoanListQuerySchema = z
       .refine((name) => name.length > 0, 'must not be blank')
       .optional(),
     borrower_person_id: z.string().refine(isValidUuid, 'must be a valid UUID').optional(),
-    limit: z
-      .string()
-      .regex(/^[1-9]\d*$/, 'must be a canonical positive integer')
-      .transform(Number)
-      .refine((limit) => limit <= 100, 'must be between 1 and 100')
-      .optional(),
-    offset: z
-      .string()
-      .regex(/^(0|[1-9]\d*)$/, 'must be a canonical non-negative integer')
-      .transform(Number)
-      .refine((offset) => offset <= 2147483647, 'must be between 0 and 2147483647')
-      .optional(),
+    ...pageQueryFields,
   })
   .strict();
 
@@ -313,8 +303,7 @@ export const loanRoutes: FastifyPluginAsync<LoanRoutesOptions> = async (fastify,
     reply.header('Cache-Control', 'no-store');
     const parsed = LoanListQuerySchema.safeParse(request.query ?? {});
     if (!parsed.success) {
-      const issues = parsed.error.issues.map((issue) => `${issue.path.join('.') || 'query'}: ${issue.message}`).join(', ');
-      return reply.status(400).send(errorBody(400, 'VALIDATION_FAILED', `Invalid query: ${issues}`));
+      return reply.status(400).send(invalidQueryBody(parsed.error));
     }
     const { borrower_person_id: personId, overdue, has_loan_conflict: hasLoanConflict, limit = 25, offset = 0, ...filters } = parsed.data;
     return reply.status(200).send(
