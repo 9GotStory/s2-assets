@@ -1,5 +1,5 @@
 import pg from 'pg';
-import { assetExists } from './asset-lookups.ts';
+import { assetExists, containsPattern } from './asset-lookups.ts';
 import { readAssignmentsAt, type PermanentAssignment } from './assignment.service.ts';
 
 export type RepairKind = 'REPAIR' | 'MAINTENANCE';
@@ -50,6 +50,27 @@ export interface RepairRecord {
   version: number;
   // Its non-voided Repair Outcome, or null while it has none.
   outcome: RepairOutcome | null;
+}
+
+// What the Repair list is narrowed by (F005-T3, #98 Q21); every filter given applies.
+export interface RepairListFilters {
+  // Without one, the records still away; with one, those that ended.
+  has_outcome?: boolean;
+  repair_kind?: RepairKind;
+  outcome?: RepairOutcomeValue;
+  repairer_kind?: RepairerKind;
+  // A text in the Repairer name or in the symptom or work, in any case, matched literally.
+  search?: string;
+  limit: number;
+  offset: number;
+}
+
+export interface RepairList {
+  items: RepairRecord[];
+  limit: number;
+  offset: number;
+  total_count: number;
+  has_more: boolean;
 }
 
 // The Repair Record that keeps an Asset Under Repair, and what the Asset page shows of it (#98 Q21).
@@ -200,6 +221,55 @@ export class RepairReadService {
       [assetId]
     );
     return res.rows.map(recordOf);
+  }
+
+  /** The Repair Records that pass every filter given, newest Start Date first, a page at a time as the Asset list. */
+  async list(filters: RepairListFilters): Promise<RepairList> {
+    const params: unknown[] = [];
+    const conditions: string[] = [];
+    const where = (condition: (param: string) => string, value: unknown) => {
+      params.push(value);
+      conditions.push(condition(`$${params.length}`));
+    };
+    if (filters.has_outcome !== undefined) {
+      conditions.push(filters.has_outcome ? 'r.has_outcome' : 'NOT r.has_outcome');
+    }
+    if (filters.repair_kind !== undefined) {
+      where((param) => `r.repair_kind = ${param}`, filters.repair_kind);
+    }
+    if (filters.outcome !== undefined) {
+      where((param) => `o.outcome = ${param}`, filters.outcome);
+    }
+    if (filters.repairer_kind !== undefined) {
+      where((param) => `r.repairer_kind = ${param}`, filters.repairer_kind);
+    }
+    if (filters.search !== undefined) {
+      where((param) => `(r.repairer_name ILIKE ${param} ESCAPE '\\' OR r.symptom_or_work ILIKE ${param} ESCAPE '\\')`, containsPattern(filters.search));
+    }
+    params.push(filters.limit, filters.offset);
+
+    // The count joins the page, so a page past the end still says how many records pass.
+    const res = await this.db.query(
+      `WITH filtered AS (
+         SELECT ${RECORD_COLUMNS}, r.start_date AS sort_date
+         FROM repair_records r ${RECORD_JOINS}
+         ${conditions.length > 0 ? `WHERE ${conditions.join(' AND ')}` : ''}
+       ),
+       counted AS (SELECT count(*)::int AS total_count FROM filtered),
+       paged AS (
+         SELECT * FROM filtered
+         ORDER BY sort_date DESC, recorded_at DESC, id DESC
+         LIMIT $${params.length - 1} OFFSET $${params.length}
+       )
+       SELECT p.*, c.total_count
+       FROM counted c
+       LEFT JOIN paged p ON true
+       ORDER BY p.sort_date DESC, p.recorded_at DESC, p.id DESC`,
+      params
+    );
+    const totalCount: number = res.rows[0]?.total_count ?? 0;
+    const items: RepairRecord[] = res.rows.filter((row: any) => row.id !== null).map(recordOf);
+    return { items, limit: filters.limit, offset: filters.offset, total_count: totalCount, has_more: filters.offset + items.length < totalCount };
   }
 
   /**

@@ -4,6 +4,7 @@ import { requireCapability } from '../middleware/authorization.ts';
 import { errorBody, parseWrite } from './write-request.ts';
 import { isCalendarDate } from '../services/assignment.service.ts';
 import { isValidUuid, type CapabilityService } from '../services/capability.service.ts';
+import { hasStrictControlChars } from '../services/control-characters.ts';
 import { RepairReadService } from '../services/repair-read.service.ts';
 import {
   RepairOutcomeRefusedError,
@@ -60,6 +61,37 @@ const StartRepairSchema = z
     remark: z.string().nullable().optional(),
     outcome: z.object(repairOutcomeFields).strict().nullable().optional(),
     retry_token: z.string().optional(),
+  })
+  .strict();
+
+// The Repair list's query (#98 Q21): each filter narrows the list on its own, and a page is read as on the
+// Asset list. A repeated parameter arrives as an array and is refused.
+const RepairListQuerySchema = z
+  .object({
+    has_outcome: z.enum(['true', 'false']).optional(),
+    repair_kind: z.enum(['REPAIR', 'MAINTENANCE']).optional(),
+    outcome: z.enum(['USABLE', 'NOT_USABLE']).optional(),
+    repairer_kind: z.enum(['INTERNAL', 'EXTERNAL']).optional(),
+    // The search box is one line, so a control character, even at an end, can match none (CODING_STANDARDS.md).
+    search: z
+      .string()
+      .refine((text) => !hasStrictControlChars(text), 'must not contain control characters')
+      .refine((text) => Buffer.byteLength(text, 'utf8') <= 4096, 'must be at most 4096 bytes')
+      .transform((text) => text.trim())
+      .refine((text) => text.length > 0, 'must not be blank')
+      .optional(),
+    limit: z
+      .string()
+      .regex(/^[1-9]\d*$/, 'must be a canonical positive integer')
+      .transform(Number)
+      .refine((limit) => limit <= 100, 'must be between 1 and 100')
+      .optional(),
+    offset: z
+      .string()
+      .regex(/^(0|[1-9]\d*)$/, 'must be a canonical non-negative integer')
+      .transform(Number)
+      .refine((offset) => offset <= 2147483647, 'must be between 0 and 2147483647')
+      .optional(),
   })
   .strict();
 
@@ -138,6 +170,25 @@ export const repairRoutes: FastifyPluginAsync<RepairRoutesOptions> = async (fast
       }
       return reply.status(refusal.statusCode).send(refusal);
     }
+  });
+
+  /**
+   * GET /repairs
+   * The Repair list ("รายการซ่อม/บำรุงรักษา"), newest Start Date first (F005-T3). The logger names a
+   * request by its path, so a search stays out of the logs.
+   * Protected: requires 'asset:view' capability, like a Repair Record
+   */
+  fastify.get('/repairs', { preHandler: [requireCapability('asset:view')] }, async (request, reply) => {
+    reply.header('Cache-Control', 'no-store');
+    const parsed = RepairListQuerySchema.safeParse(request.query ?? {});
+    if (!parsed.success) {
+      const issues = parsed.error.issues.map((issue) => `${issue.path.join('.') || 'query'}: ${issue.message}`).join(', ');
+      return reply.status(400).send(errorBody(400, 'VALIDATION_FAILED', `Invalid query: ${issues}`));
+    }
+    const { has_outcome: hasOutcome, limit = 25, offset = 0, ...filters } = parsed.data;
+    return reply
+      .status(200)
+      .send(await repairReadService.list({ ...filters, has_outcome: hasOutcome === undefined ? undefined : hasOutcome === 'true', limit, offset }));
   });
 
   /**

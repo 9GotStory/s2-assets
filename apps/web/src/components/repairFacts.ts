@@ -52,6 +52,15 @@ export interface RepairRecord {
   assignment_on_outcome_date?: PermanentAssignment;
 }
 
+// A page of the Repair list (F005-T3).
+export interface RepairListPage {
+  items: RepairRecord[];
+  limit: number;
+  offset: number;
+  total_count: number;
+  has_more: boolean;
+}
+
 // The Repair Record that keeps an Asset Under Repair.
 export interface UnderRepair {
   repair_record_id: string;
