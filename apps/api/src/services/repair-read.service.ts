@@ -131,6 +131,32 @@ export async function underRepairOfAssets(db: pg.Pool | pg.PoolClient | any, ass
   );
 }
 
+// An Asset's latest Repair Outcome, as the Start Loan warning reads it (#98 Q20).
+export interface LatestRepairOutcome {
+  repair_record_id: string;
+  repair_kind: RepairKind;
+  outcome: RepairOutcomeValue;
+  outcome_date: string;
+}
+
+/** The latest non-voided Repair Outcome of each of `assetIds` that has one, by Outcome Date then Recorded At. */
+export async function latestRepairOutcomesOf(db: pg.Pool | pg.PoolClient | any, assetIds: string[]): Promise<Map<string, LatestRepairOutcome>> {
+  const res = await db.query(
+    `SELECT DISTINCT ON (r.asset_id) r.asset_id, r.id, r.repair_kind, o.outcome, to_char(o.outcome_date, 'YYYY-MM-DD') AS outcome_date
+     FROM repair_outcomes o
+     JOIN repair_records r ON r.id = o.repair_record_id
+     WHERE r.asset_id = ANY($1::uuid[]) AND NOT o.is_voided AND NOT r.is_voided
+     ORDER BY r.asset_id, o.outcome_date DESC, o.recorded_at DESC, o.id DESC`,
+    [assetIds]
+  );
+  return new Map(
+    res.rows.map((row: any): [string, LatestRepairOutcome] => [
+      row.asset_id,
+      { repair_record_id: row.id, repair_kind: row.repair_kind, outcome: row.outcome, outcome_date: row.outcome_date },
+    ])
+  );
+}
+
 /**
  * F005-T1 (#99), T2 (#100): reading Repair Records and their outcomes. The only assignment read is where
  * an Asset goes back to on an Outcome Date, which is shown and never stored (MR-16, MR-17).

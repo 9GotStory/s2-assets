@@ -4,7 +4,7 @@ import { LoanSaveForm } from './LoanSaveForm';
 import { REFERENCE_DIMENSIONS, fieldInputStyle, fieldLabelStyle, type PermanentAssignment } from './ReferenceContextFields';
 import { RepairOutcomeFields, emptyRepairOutcomeDraft, repairOutcomeDraftError, repairOutcomePayload, type RepairOutcomeDraft } from './RepairOutcomeFields';
 import { valueText } from './assignmentFacts';
-import { RECORD_REPAIR_OUTCOME_LABEL, type RepairRecord } from './repairFacts';
+import { RECORD_REPAIR_OUTCOME_LABEL, costError, type RepairOutcomeRefusal, type RepairRecord } from './repairFacts';
 
 export interface RepairOutcomeFormProps {
   record: RepairRecord;
@@ -16,10 +16,7 @@ export interface RepairOutcomeFormProps {
   onPermissionRevoked?: (statusCode?: number) => void;
 }
 
-// As the server takes it: baht, not negative, with at most two decimals.
-const COST_PATTERN = /^(0|[1-9]\d{0,9})(\.\d{1,2})?$/;
-
-const REFUSAL_LABELS: Record<'VOIDED' | 'HAS_OUTCOME', string> = {
+const REFUSAL_LABELS: Record<RepairOutcomeRefusal['reason'], string> = {
   VOIDED: 'รายการนี้ถูกยกเลิกแล้ว',
   HAS_OUTCOME: 'รายการนี้บันทึกผลการซ่อมแล้ว',
 };
@@ -56,10 +53,7 @@ export const RepairOutcomeForm: React.FC<RepairOutcomeFormProps> = ({ record, cs
   });
 
   const requestError = (): string | null => {
-    if (cost.trim() !== '' && !COST_PATTERN.test(cost.trim())) {
-      return 'ค่าใช้จ่ายต้องเป็นจำนวนเงินบาทไม่ติดลบ ทศนิยมไม่เกิน 2 ตำแหน่ง';
-    }
-    return repairOutcomeDraftError(draft, record.start_date);
+    return costError(cost) ?? repairOutcomeDraftError(draft, record.start_date);
   };
 
   const requestBody = () => ({
@@ -78,7 +72,7 @@ export const RepairOutcomeForm: React.FC<RepairOutcomeFormProps> = ({ record, cs
       csrfToken={csrfToken}
       requestError={requestError}
       requestBody={requestBody}
-      refusedList={(body) => (body?.code === 'REPAIR_OUTCOME_REFUSED' ? <>ไม่ได้บันทึกผลการซ่อม เพราะ{REFUSAL_LABELS[body.record.reason as 'VOIDED' | 'HAS_OUTCOME']}</> : null)}
+      refusedList={(body) => (body?.code === 'REPAIR_OUTCOME_REFUSED' ? <>ไม่ได้บันทึกผลการซ่อม เพราะ{REFUSAL_LABELS[(body.record as RepairOutcomeRefusal).reason]}</> : null)}
       forbiddenMessage="คุณไม่มีสิทธิ์บันทึกผลการซ่อม"
       refusedMessage="ไม่สามารถบันทึกผลการซ่อมได้"
       onSaved={onRecorded}

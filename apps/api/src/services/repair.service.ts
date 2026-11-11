@@ -45,7 +45,8 @@ export interface RecordRepairOutcomeInput extends RepairOutcomeInput {
   cost?: string | null;
 }
 
-export interface StartedRepair {
+// What a Repair write answers: the record it wrote and the version a later write must expect.
+export interface RepairRecordVersion {
   repair_record_id: string;
   version: number;
 }
@@ -128,6 +129,13 @@ const normalizeCost = (value: string | null | undefined): string | null => {
   return cost;
 };
 
+// #98 Q4: an Outcome Date is not before its record's Start Date. Dates compare as text in YYYY-MM-DD.
+const assertOutcomeNotBeforeStart = (outcomeDate: string, startDate: string): void => {
+  if (outcomeDate < startDate) {
+    throw new ValidationError('outcome_date must not be before the Start Date');
+  }
+};
+
 // #98 Q4, Q7: the Outcome Date is no later than today, and a Next Recommended Maintenance Date is after it.
 const normalizeOutcome = (input: RepairOutcomeInput, today: string): RepairOutcomeFacts => {
   if (!isCalendarDate(input.outcome_date)) {
@@ -172,8 +180,8 @@ const normalizeFacts = (input: StartRepairInput, today: string): RepairStartFact
     throw new ValidationError('symptom_or_work is required');
   }
   const outcome = input.outcome ? normalizeOutcome(input.outcome, today) : null;
-  if (outcome && outcome.outcome_date < input.start_date) {
-    throw new ValidationError('outcome.outcome_date must not be before start_date');
+  if (outcome) {
+    assertOutcomeNotBeforeStart(outcome.outcome_date, input.start_date);
   }
   return {
     asset_id: input.asset_id.trim().toLowerCase(),
@@ -265,7 +273,7 @@ export class RepairService {
     }
   }
 
-  async start(actorId: string, input: StartRepairInput, { retryToken }: { retryToken: string }): Promise<StartedRepair> {
+  async start(actorId: string, input: StartRepairInput, { retryToken }: { retryToken: string }): Promise<RepairRecordVersion> {
     const { outcome, ...facts } = normalizeFacts(input, bangkokDate(this.clock()));
     // A Repair Start without an outcome keeps the fingerprint it had before the outcome existed.
     const payload = { version: 1, ...facts, ...(outcome ? { outcome } : {}) };
@@ -314,7 +322,7 @@ export class RepairService {
     repairRecordId: string,
     input: RecordRepairOutcomeInput,
     { retryToken }: { retryToken: string }
-  ): Promise<StartedRepair> {
+  ): Promise<RepairRecordVersion> {
     const today = bangkokDate(this.clock());
     const facts = {
       expected_version: input.expected_version,
@@ -329,9 +337,7 @@ export class RepairService {
         if (record.is_voided || record.has_outcome) {
           throw new RepairOutcomeRefusedError({ repair_record_id: repairRecordId, reason: record.is_voided ? 'VOIDED' : 'HAS_OUTCOME' });
         }
-        if (facts.outcome_date < record.start_date) {
-          throw new ValidationError('outcome_date must not be before the Start Date');
-        }
+        assertOutcomeNotBeforeStart(facts.outcome_date, record.start_date);
 
         await insertOutcome(client, { repairRecordId, facts, costBefore: record.cost, actorId });
         const res = await client.query(

@@ -66,6 +66,19 @@ export type RepairStartRefusal = { asset_id: string; name: string | null; asset_
   | { reason: 'UNDER_REPAIR'; repair_record_id: string; repair_kind: RepairKind }
 );
 
+// Why the server refused a Repair Outcome.
+export interface RepairOutcomeRefusal {
+  repair_record_id: string;
+  reason: 'VOIDED' | 'HAS_OUTCOME';
+}
+
+// As the server takes a cost: baht, not negative, with at most two decimals (#98 Q8).
+const COST_PATTERN = /^(0|[1-9]\d{0,9})(\.\d{1,2})?$/;
+
+// Why a cost as typed cannot be sent, or null when it can (none is fine).
+export const costError = (cost: string): string | null =>
+  cost.trim() !== '' && !COST_PATTERN.test(cost.trim()) ? 'ค่าใช้จ่ายต้องเป็นจำนวนเงินบาทไม่ติดลบ ทศนิยมไม่เกิน 2 ตำแหน่ง' : null;
+
 export const REPAIR_SECTION_LABEL = 'การซ่อม/บำรุงรักษา';
 export const REPAIR_RECORD_LABEL = 'รายการซ่อม/บำรุงรักษา';
 export const REPAIR_START_LABEL = 'ส่งซ่อม';

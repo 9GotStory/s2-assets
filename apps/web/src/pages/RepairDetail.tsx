@@ -3,7 +3,7 @@ import { Link, useNavigate, useParams } from 'react-router';
 import { QueryClient, QueryClientProvider, useQuery } from '@tanstack/react-query';
 import { RepairOutcomeForm } from '../components/RepairOutcomeForm';
 import { thaiDate } from '../components/assignmentFacts';
-import { assetLabel } from '../components/loanFacts';
+import { VOIDED_LABEL, assetLabel } from '../components/loanFacts';
 import {
   NEXT_RECOMMENDED_MAINTENANCE_DATE_LABEL,
   OUTCOME_DATE_LABEL,
@@ -117,6 +117,13 @@ const RepairDetailContent: React.FC = () => {
   }
 
   const { asset, repair_kind: repairKind, start_date: startDate, repairer, symptom_or_work: symptomOrWork, under_warranty: underWarranty, warranty_end_date: warrantyEndDate, cost, document_reference: documentReference, remark, recorded_by: recordedBy, recorded_by_username: recordedByUsername, recorded_at: recordedAt, is_voided: isVoided, outcome } = record.data;
+  // In GLOSSARY.md terms only: a voided record keeps nobody's Asset, and one with its outcome shows it.
+  const statusText = (): string => {
+    if (isVoided) {
+      return VOIDED_LABEL;
+    }
+    return outcome ? `${REPAIR_OUTCOME_LABEL}: ${REPAIR_OUTCOME_LABELS[repairKind][outcome.outcome]}` : UNDER_REPAIR_LABELS[repairKind];
+  };
   // A voided record, or one that has its outcome, takes no other; the server would refuse it.
   const mayRecordOutcome = canRecordRepair && !isVoided && outcome === null;
 
@@ -133,7 +140,7 @@ const RepairDetailContent: React.FC = () => {
         <dl style={{ display: 'grid', gridTemplateColumns: 'max-content 1fr', gap: '0.75rem 1.5rem', margin: '0 0 1rem 0', fontSize: '0.9375rem', backgroundColor: '#f9fafb', padding: '1.25rem', borderRadius: '6px' }}>
           <dt style={termStyle}>สถานะ:</dt>
           <dd id="repair-status" style={valueStyle}>
-            {outcome ? `บันทึกผลแล้ว: ${REPAIR_OUTCOME_LABELS[repairKind][outcome.outcome]}` : UNDER_REPAIR_LABELS[repairKind]}
+            {statusText()}
           </dd>
           <dt style={termStyle}>ครุภัณฑ์:</dt>
           <dd style={valueStyle}>

@@ -246,7 +246,7 @@ test.describe.serial('Repair journeys: Real SPA -> Composed API -> PostgreSQL (S
     await page.locator('#repair-outcome-submit').click();
 
     await expect(page.locator('#repair-outcome-value')).toHaveText('ใช้งานได้');
-    await expect(page.locator('#repair-status')).toHaveText('บันทึกผลแล้ว: ใช้งานได้');
+    await expect(page.locator('#repair-status')).toHaveText('ผลการซ่อม: ใช้งานได้');
     await expect(page.locator('#repair-outcome-note')).toHaveText('เปลี่ยนสายแพจอ');
     await expect(page.locator('#repair-outcome-document-reference')).toHaveText('ใบแจ้งหนี้ 9/2569');
     await expect(page.locator('#repair-cost')).toHaveText('350.00 บาท');

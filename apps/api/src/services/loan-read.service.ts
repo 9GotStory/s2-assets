@@ -1,7 +1,7 @@
 import pg from 'pg';
 import { assetExists, containsPattern } from './asset-lookups.ts';
 import { bangkokDate, readAssignmentsAt, type PermanentAssignment, type ReferenceEntrySummary } from './assignment.service.ts';
-import type { RepairKind } from './repair-read.service.ts';
+import { latestRepairOutcomesOf, type RepairKind } from './repair-read.service.ts';
 
 // The reads of Loans: the Loan page, the Loan list, an Asset's Loans and the Asset search's view of them.
 // Every write to the Loan tables stays in loan.service.ts (#76); this module writes nothing (#80).
@@ -394,43 +394,41 @@ export type StartLoanWarning =
   | { source: 'LOAN_RETURN'; date: string }
   | { source: 'REPAIR_OUTCOME'; date: string; repair_record_id: string; repair_kind: RepairKind };
 
-/**
- * The Start Loan warning of each of `assetIds` that has one (#98 Q20, replacing #74 Q23). It reads the
- * later, by date then Recorded At, of the Asset's last non-voided Loan Return and last non-voided Repair
- * Outcome; on one date the Repair Outcome counts as later, because a repair follows the return that
- * caused it.
- */
-async function startLoanWarningsOf(db: pg.Pool | any, assetIds: string[]): Promise<Map<string, StartLoanWarning>> {
+// The latest non-voided Loan Return of each of `assetIds` that has had one, by Return Date then Recorded At.
+async function latestLoanReturnsOf(db: pg.Pool | any, assetIds: string[]): Promise<Map<string, { return_date: string; condition: LoanCondition }>> {
   const res = await db.query(
-    `SELECT asset_id, source, to_char(fact_date, 'YYYY-MM-DD') AS date, warns, repair_record_id, repair_kind
-     FROM (
-       SELECT DISTINCT ON (asset_id) *
-       FROM (
-         SELECT li.asset_id, 'LOAN_RETURN' AS source, e.ending_date AS fact_date, 0 AS same_day_order, e.recorded_at, e.id,
-                e.condition = 'DAMAGED' AS warns, NULL::uuid AS repair_record_id, NULL::varchar AS repair_kind
-         FROM loan_item_endings e
-         JOIN loan_items li ON li.id = e.loan_item_id
-         WHERE li.asset_id = ANY($1::uuid[]) AND e.kind = 'LOAN_RETURN' AND NOT e.is_voided AND NOT li.is_voided
-         UNION ALL
-         SELECT r.asset_id, 'REPAIR_OUTCOME', o.outcome_date, 1, o.recorded_at, o.id,
-                o.outcome = 'NOT_USABLE', r.id, r.repair_kind
-         FROM repair_outcomes o
-         JOIN repair_records r ON r.id = o.repair_record_id
-         WHERE r.asset_id = ANY($1::uuid[]) AND NOT o.is_voided AND NOT r.is_voided
-       ) fact
-       ORDER BY asset_id, fact_date DESC, same_day_order DESC, recorded_at DESC, id DESC
-     ) latest
-     WHERE warns`,
+    `SELECT DISTINCT ON (li.asset_id) li.asset_id, to_char(e.ending_date, 'YYYY-MM-DD') AS return_date, e.condition
+     FROM loan_item_endings e
+     JOIN loan_items li ON li.id = e.loan_item_id
+     WHERE li.asset_id = ANY($1::uuid[]) AND e.kind = 'LOAN_RETURN' AND NOT e.is_voided AND NOT li.is_voided
+     ORDER BY li.asset_id, e.ending_date DESC, e.recorded_at DESC, e.id DESC`,
     [assetIds]
   );
-  return new Map(
-    res.rows.map((row: any): [string, StartLoanWarning] => [
-      row.asset_id,
-      row.source === 'LOAN_RETURN'
-        ? { source: 'LOAN_RETURN', date: row.date }
-        : { source: 'REPAIR_OUTCOME', date: row.date, repair_record_id: row.repair_record_id, repair_kind: row.repair_kind },
-    ])
-  );
+  return new Map(res.rows.map((row: any) => [row.asset_id, { return_date: row.return_date, condition: row.condition }]));
+}
+
+/**
+ * The Start Loan warning of each of `assetIds` that has one (#98 Q20, replacing #74 Q23). It reads the
+ * later of the Asset's last Loan Return and its last Repair Outcome, each by date then Recorded At; on
+ * one date the Repair Outcome counts as later, because a repair follows the return that caused it.
+ */
+async function startLoanWarningsOf(db: pg.Pool | any, assetIds: string[]): Promise<Map<string, StartLoanWarning>> {
+  const loanReturns = await latestLoanReturnsOf(db, assetIds);
+  const repairOutcomes = await latestRepairOutcomesOf(db, assetIds);
+  const warnings = new Map<string, StartLoanWarning>();
+  for (const assetId of assetIds) {
+    const loanReturn = loanReturns.get(assetId);
+    const repairOutcome = repairOutcomes.get(assetId);
+    if (repairOutcome && (!loanReturn || repairOutcome.outcome_date >= loanReturn.return_date)) {
+      if (repairOutcome.outcome === 'NOT_USABLE') {
+        const { outcome_date: date, repair_record_id, repair_kind } = repairOutcome;
+        warnings.set(assetId, { source: 'REPAIR_OUTCOME', date, repair_record_id, repair_kind });
+      }
+    } else if (loanReturn?.condition === 'DAMAGED') {
+      warnings.set(assetId, { source: 'LOAN_RETURN', date: loanReturn.return_date });
+    }
+  }
+  return warnings;
 }
 
 // What a row of the Asset search says of Loans (F004-T4). Its Start Loan warning warns a new Loan from

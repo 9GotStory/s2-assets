@@ -12,6 +12,7 @@ import {
   REPAIR_START_LABEL,
   UNDER_REPAIR_LABELS,
   UNDER_WARRANTY_LABELS,
+  costError,
   type RepairKind,
   type RepairStartRefusal,
   type RepairerKind,
@@ -27,9 +28,6 @@ export interface RepairStartFormProps {
 }
 
 const fieldStyle: React.CSSProperties = { marginBottom: '0.75rem' };
-
-// As the server takes it: baht, not negative, with at most two decimals.
-const COST_PATTERN = /^(0|[1-9]\d{0,9})(\.\d{1,2})?$/;
 
 // A refused Repair Start names the Loan or the Repair Record that keeps the Asset (#98 Q3).
 const RefusedRepairStart: React.FC<{ asset: RepairStartRefusal }> = ({ asset }) => (
@@ -81,10 +79,7 @@ export const RepairStartForm: React.FC<RepairStartFormProps> = ({ assetId, csrfT
     if (symptomOrWork.trim() === '') {
       return 'กรุณากรอกอาการ/งานที่ทำ';
     }
-    if (cost.trim() !== '' && !COST_PATTERN.test(cost.trim())) {
-      return 'ค่าใช้จ่ายต้องเป็นจำนวนเงินบาทไม่ติดลบ ทศนิยมไม่เกิน 2 ตำแหน่ง';
-    }
-    return withOutcome ? repairOutcomeDraftError(outcome, startDate) : null;
+    return costError(cost) ?? (withOutcome ? repairOutcomeDraftError(outcome, startDate) : null);
   };
 
   const requestBody = () => ({
