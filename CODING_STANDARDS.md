@@ -51,8 +51,16 @@ A name, a phone number or a token is one line and refuses every control characte
 refused, not dropped. Free text, such as a document reference, a remark, a note or a reason, keeps
 tab and line breaks inside it and refuses the rest (`hasDisallowedControlChars`). A search term
 follows the rule of the field it searches: the Loan list's Borrower-name search refuses every
-control character (#77). The first review of F004-T1 (#75) read a Condition note as one line, and
-the second undid the fix.
+control character (#77). A search over several fields follows the loosest of their rules: the
+Repair list's search reaches the free-text symptom or work, so it keeps tab and line breaks (#101).
+The first review of F004-T1 (#75) read a Condition note as one line, and the second undid the fix.
+
+## An order test of a paged list splits a tie across a page break
+
+A paged list sorts each page and then the rows again, so an order test whose tied rows share one page
+passes with the page's tiebreak broken. Put the tied rows on either side of a page break, as
+`loan-list.test.ts` and `repair-list.test.ts` do. In F005-T3 (#101), both tests first kept their
+same-day pair on one page, and breaking the tiebreak left them green.
 
 ## A feature's code gets its own files
 
