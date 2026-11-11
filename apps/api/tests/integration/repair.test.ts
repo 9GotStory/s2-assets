@@ -4,6 +4,7 @@ import { startApiHarness, type Actor, type ApiHarness } from './support/api-harn
 import { assignmentHelpers, type Entry } from './support/assignment-helpers.ts';
 import { withCapabilityAnswer } from './support/capability-helpers.ts';
 import { loanHelpers, over } from './support/loan-helpers.ts';
+import { repairHelpers } from './support/repair-helpers.ts';
 
 const TODAY = '2026-11-11';
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/;
@@ -22,40 +23,7 @@ describe('Repair Start (Seam A - F005-T1)', () => {
     { loanDate: TODAY, dueDate: '2026-11-30' }
   );
 
-  // A valid Repair Start of `assetId`, of kind ซ่อม by an internal Repairer, unless `overrides` says otherwise.
-  const base = (assetId: string, overrides: Record<string, unknown> = {}) => ({
-    asset_id: assetId,
-    repair_kind: 'REPAIR',
-    start_date: TODAY,
-    repairer: { kind: 'INTERNAL' },
-    symptom_or_work: 'เปิดไม่ติด',
-    ...overrides,
-  });
-
-  const send = (payload: Record<string, unknown>, token: string = crypto.randomUUID(), actor: Actor = custodian) =>
-    api.post(actor, '/repairs', payload, { 'x-retry-token': token });
-
-  // An Asset sent for repair, and its Repair Record's id.
-  const sent = async (assetId: string, overrides: Record<string, unknown> = {}): Promise<string> => {
-    const res = await send(base(assetId, overrides));
-    expect(res.statusCode).toBe(201);
-    return res.json().repair_record_id;
-  };
-
-  const recordOf = async (repairRecordId: string, actor: Actor = readonly) => {
-    const res = await api.get(actor, `/repairs/${repairRecordId}`);
-    expect(res.statusCode).toBe(200);
-    return res.json();
-  };
-
-  const recordsOf = async (assetId: string) => {
-    const res = await api.get(readonly, `/assets/${assetId}/repairs`);
-    expect(res.statusCode).toBe(200);
-    return res.json().records;
-  };
-
-  // F005-T1 records no Repair Outcome: this stands in for the one F005-T2 records, through its stored summary.
-  const outcomeStandIn = (repairRecordId: string) => api.pool.query('UPDATE repair_records SET has_outcome = true WHERE id = $1', [repairRecordId]);
+  const { base, send, sent, recordOf, recordsOf, ended } = repairHelpers(() => ({ api, custodian, reader: readonly }), { startDate: TODAY });
 
   beforeAll(async () => {
     api = await startApiHarness({ clock: () => now });
@@ -110,6 +78,8 @@ describe('Repair Start (Seam A - F005-T1)', () => {
         recorded_at: expect.any(String),
         is_voided: false,
         version: 1,
+        outcome: null,
+        can_record_repair: false,
       });
       expect(Date.parse(record.recorded_at)).toBeGreaterThanOrEqual(before - 1000);
       expect(Date.parse(record.recorded_at)).toBeLessThanOrEqual(Date.now());
@@ -293,19 +263,16 @@ describe('Repair Start (Seam A - F005-T1)', () => {
     });
 
     it('is derived on read: a record with an outcome, or a voided one, leaves the Asset not Under Repair', async () => {
-      const [ended, voided] = [await registered(), await registered()];
-      await outcomeStandIn(await sent(ended));
+      const [withOutcome, voided] = [await registered(), await registered()];
+      await ended(await sent(withOutcome));
       await api.pool.query('UPDATE repair_records SET is_voided = true WHERE id = $1', [await sent(voided)]);
 
-      expect((await detailOf(ended)).under_repair).toBeNull();
+      expect((await detailOf(withOutcome)).under_repair).toBeNull();
       expect((await detailOf(voided)).under_repair).toBeNull();
     });
 
-    it('stores no outcome on any record this ticket creates', async () => {
-      const repairRecordId = await sent(await registered());
-
-      const res = await api.pool.query('SELECT has_outcome FROM repair_records WHERE id = $1', [repairRecordId]);
-      expect(res.rows).toEqual([{ has_outcome: false }]);
+    it('stores no outcome on a Repair Start without one', async () => {
+      expect((await recordOf(await sent(await registered()))).outcome).toBeNull();
     });
 
     it("lists the Asset's Repair Records, newest Start Date first, and an Asset with none as empty", async () => {
@@ -313,14 +280,15 @@ describe('Repair Start (Seam A - F005-T1)', () => {
       expect(await recordsOf(assetId)).toEqual([]);
 
       const oldest = await sent(assetId, { start_date: '2024-03-01' });
-      await outcomeStandIn(oldest);
+      await ended(oldest);
       const newest = await sent(assetId, { start_date: '2026-10-01' });
-      await outcomeStandIn(newest);
+      await ended(newest);
       const middle = await sent(assetId, { start_date: '2025-06-01', repair_kind: 'MAINTENANCE' });
 
       const records = await recordsOf(assetId);
       expect(records.map(({ id }: any) => id)).toEqual([newest, middle, oldest]);
-      expect(records[1]).toEqual(await recordOf(middle));
+      const { can_record_repair: _canRecordRepair, ...middleRecord } = await recordOf(middle);
+      expect(records[1]).toEqual(middleRecord);
     });
 
     it('answers the records of an Asset that does not exist with 404, and a malformed id with 400', async () => {
@@ -417,7 +385,7 @@ describe('Repair Start (Seam A - F005-T1)', () => {
 
     it('lends an Asset again once it is not Under Repair', async () => {
       const assetId = await registered();
-      await outcomeStandIn(await sent(assetId));
+      await ended(await sent(assetId));
 
       expect((await startLoan([assetId])).statusCode).toBe(201);
     });
@@ -461,7 +429,7 @@ describe('Repair Start (Seam A - F005-T1)', () => {
 
       it('is accepted once the Asset is not Under Repair', async () => {
         const { assetId, loanId, repairRecordId } = await repairingAfterLoan('เครื่องซ่อมจบแล้ว');
-        await outcomeStandIn(repairRecordId);
+        await ended(repairRecordId);
 
         const res = await voidLoanReturn(loanId);
 

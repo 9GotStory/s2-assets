@@ -287,6 +287,7 @@ export async function buildApp(options: AppOptions = {}): Promise<FastifyInstanc
     await app.register(repairRoutes, {
       repairService: new RepairService({ db: dbClient, clock: options.clock }),
       repairReadService,
+      capabilityService,
     });
 
     // Acquisition routes mounted under /acquisitions

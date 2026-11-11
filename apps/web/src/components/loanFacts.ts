@@ -3,6 +3,12 @@ import type { RepairKind } from './repairFacts';
 
 export type LoanCondition = 'NORMAL' | 'DAMAGED';
 
+// Why the Start Loan form warns about an Asset, with the date of the fact that says so (#98 Q20): its
+// latest Loan Return was ชำรุด, or its latest Repair Outcome was not usable. It blocks nothing.
+export type StartLoanWarning =
+  | { source: 'LOAN_RETURN'; date: string }
+  | { source: 'REPAIR_OUTCOME'; date: string; repair_record_id: string; repair_kind: RepairKind };
+
 // The phone number comes only to holders of 'loan:record' or 'loan:correct', and only on the Loan page (LR-15).
 export type Borrower =
   | { kind: 'INTERNAL'; person: ReferenceEntry }

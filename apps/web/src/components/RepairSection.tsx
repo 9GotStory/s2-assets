@@ -4,7 +4,11 @@ import { useQuery } from '@tanstack/react-query';
 import { RepairStartForm } from './RepairStartForm';
 import { thaiDate } from './assignmentFacts';
 import {
+  NEXT_RECOMMENDED_MAINTENANCE_DATE_LABEL,
+  OUTCOME_DATE_LABEL,
   REPAIR_KIND_LABELS,
+  REPAIR_OUTCOME_LABEL,
+  REPAIR_OUTCOME_LABELS,
   REPAIR_SECTION_LABEL,
   REPAIR_START_LABEL,
   UNDER_REPAIR_LABELS,
@@ -16,6 +20,8 @@ import {
 export interface RepairSectionProps {
   assetId: string;
   underRepair: UnderRepair | null;
+  // From the Asset's latest Repair Outcome that has one; nothing is scheduled from it (#98 Q7).
+  nextRecommendedMaintenanceDate: string | null;
   // Whether the viewer holds 'repair:record'.
   canRecordRepair: boolean;
   actorId: string | null;
@@ -27,12 +33,14 @@ export interface RepairSectionProps {
 }
 
 /**
- * Whether the Asset is Under Repair and its Repair Records (F005-T1), apart from the assignment timeline
- * and from "การยืม": a Repair Record never changes a Permanent Assignment (RM-05).
+ * Whether the Asset is Under Repair, its Next Recommended Maintenance Date and its Repair Records with
+ * their outcomes (F005-T1, T2), apart from the assignment timeline and from "การยืม": a Repair Record
+ * never changes a Permanent Assignment (RM-05).
  */
 export const RepairSection: React.FC<RepairSectionProps> = ({
   assetId,
   underRepair,
+  nextRecommendedMaintenanceDate,
   canRecordRepair,
   actorId,
   dataUpdatedAt,
@@ -94,6 +102,15 @@ export const RepairSection: React.FC<RepairSectionProps> = ({
         </dl>
       )}
 
+      {nextRecommendedMaintenanceDate && (
+        <p data-testid="repair-next-maintenance-date" style={{ margin: '0 0 1rem 0', fontSize: '0.9375rem', color: '#374151' }}>
+          {NEXT_RECOMMENDED_MAINTENANCE_DATE_LABEL}:{' '}
+          <time dateTime={nextRecommendedMaintenanceDate} style={{ fontWeight: 600 }}>
+            {thaiDate(nextRecommendedMaintenanceDate)}
+          </time>
+        </p>
+      )}
+
       {mayStart && isFormOpen && (
         <RepairStartForm
           assetId={assetId}
@@ -140,6 +157,21 @@ export const RepairSection: React.FC<RepairSectionProps> = ({
                 <div>
                   วันที่ส่งซ่อม: <time dateTime={record.start_date}>{thaiDate(record.start_date)}</time>
                 </div>
+                {record.outcome && (
+                  <div data-testid={`repair-history-outcome-${record.id}`}>
+                    {REPAIR_OUTCOME_LABEL}: {REPAIR_OUTCOME_LABELS[record.repair_kind][record.outcome.outcome]} · {OUTCOME_DATE_LABEL}:{' '}
+                    <time dateTime={record.outcome.outcome_date}>{thaiDate(record.outcome.outcome_date)}</time>
+                    {record.outcome.next_recommended_maintenance_date && (
+                      <>
+                        {' '}
+                        · {NEXT_RECOMMENDED_MAINTENANCE_DATE_LABEL}:{' '}
+                        <time dateTime={record.outcome.next_recommended_maintenance_date}>{thaiDate(record.outcome.next_recommended_maintenance_date)}</time>
+                      </>
+                    )}
+                    {record.outcome.note && <div style={{ whiteSpace: 'pre-line' }}>หมายเหตุของผล: {record.outcome.note}</div>}
+                    {record.outcome.document_reference && <div style={{ whiteSpace: 'pre-line' }}>เอกสารอ้างอิงของผล: {record.outcome.document_reference}</div>}
+                  </div>
+                )}
                 <div style={{ whiteSpace: 'pre-line' }}>
                   อาการ/งานที่ทำ: {record.symptom_or_work}{' '}
                   <Link to={`/repairs/${record.id}`} style={{ color: '#2563eb', textDecoration: 'underline' }}>
