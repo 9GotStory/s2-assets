@@ -1,10 +1,7 @@
 import React from 'react';
 import { Link } from 'react-router';
-import { thaiDate } from './assignmentFacts';
+import { periodText } from './assignmentFacts';
 import { REPAIR_CONFLICT_LABEL, REPAIR_KIND_LABELS, conflictingIdOf, type RepairConflict } from './repairFacts';
-
-// A period from its start to its end, or still open.
-export const periodText = (start: string, end: string | null): string => `${thaiDate(start)} – ${end ? thaiDate(end) : 'ยังไม่สิ้นสุด'}`;
 
 /** The other side of a Repair Conflict: what it is, its period, and a link to it. */
 export const RepairConflictSide: React.FC<{ conflicting: RepairConflict; newTab?: boolean }> = ({ conflicting, newTab = false }) => {

@@ -20,9 +20,12 @@ export interface WarnedAsset {
   asset_number: string | null;
 }
 
-/** What a warning names each of `assetIds` by: each Asset's name and number, null for one not found. */
-export async function warnedAssetsOf(db: pg.Pool | any, assetIds: string[]): Promise<(assetId: string) => WarnedAsset> {
+/**
+ * Reads what a warning names each of `assetIds` by, and returns the lookup of one of them: its name and
+ * number, null for one not found.
+ */
+export async function warnedAssetLookup(db: pg.Pool | any, assetIds: string[]): Promise<(assetId: string) => WarnedAsset> {
   const res = await db.query('SELECT id, name, asset_number FROM assets WHERE id = ANY($1::uuid[])', [assetIds]);
-  const found = new Map<string, { name: string | null; asset_number: string | null }>(res.rows.map(({ id, name, asset_number }: any) => [id, { name, asset_number }]));
-  return (assetId) => ({ asset_id: assetId, name: found.get(assetId)?.name ?? null, asset_number: found.get(assetId)?.asset_number ?? null });
+  const found = new Map<string, WarnedAsset>(res.rows.map(({ id, name, asset_number }: any) => [id, { asset_id: id, name, asset_number }]));
+  return (assetId) => found.get(assetId) ?? { asset_id: assetId, name: null, asset_number: null };
 }

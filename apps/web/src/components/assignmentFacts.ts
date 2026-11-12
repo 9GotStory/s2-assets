@@ -84,6 +84,9 @@ const THAI_DATE = new Intl.DateTimeFormat('th-TH', { dateStyle: 'long', timeZone
 // A calendar date (YYYY-MM-DD) in Thai.
 export const thaiDate = (date: string): string => THAI_DATE.format(new Date(`${date}T00:00:00Z`));
 
+// A period from its start to its end, or still open: a Loan Conflict's or a Repair Conflict's other side.
+export const periodText = (start: string, end: string | null): string => `${thaiDate(start)} – ${end ? thaiDate(end) : 'ยังไม่สิ้นสุด'}`;
+
 export const dimensionLabel = (dimension: AssignmentDimension): string =>
   REFERENCE_DIMENSIONS.find(({ entryField }) => entryField === dimension)!.label;
 

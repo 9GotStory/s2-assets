@@ -521,13 +521,13 @@ describe('Repair Conflict (Seam A - F005-T7)', () => {
     });
 
     it('a Loan Correction reads what was there before it after the Asset lock, so an overlap a queued Repair Correction opened is not new to it', async () => {
-      const { loan, repairRecordId } = await repairedAfterLoan();
+      const { assetId, loan, repairRecordId } = await repairedAfterLoan();
       const moveStart = await repairCorrectionOf(repairRecordId, RECORD, { start_date: '2026-10-15' }, { confirmed_conflicts: [{ conflicting_loan_item_id: loan.loanItemId }] });
       const remark = await loanCorrectionOf(loan.loanId, { kind: 'LOAN' }, { remark: 'แก้หมายเหตุ' });
 
       const [moved, amended] = await whileHolding(
         'assets',
-        (await loanOf(loan.loanId)).items[0].asset.id,
+        assetId,
         () => [repairCorrection(repairRecordId, moveStart), untilWaiting('assets', 1).then(() => loanCorrection(loan.loanId, remark))],
         () => untilWaiting('assets', 2)
       );

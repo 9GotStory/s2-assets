@@ -1,8 +1,9 @@
 import React from 'react';
 import { Link } from 'react-router';
 import { conflictActionStyle, conflictBoxStyle } from './AssignmentConflictWarning';
+import { periodText } from './assignmentFacts';
 import { LOAN_CONFLICT_LABEL, type LoanConflict, type WarnedLoanConflict } from './loanFacts';
-import { RepairConflictSide, periodText } from './RepairConflicts';
+import { RepairConflictSide } from './RepairConflicts';
 import { REPAIR_CONFLICT_LABEL, conflictingIdOf, type WarnedRepairConflict } from './repairFacts';
 
 // The other item's period: from its Loan Date to its ending, or still open.

@@ -1,5 +1,5 @@
 import pg from 'pg';
-import { warnedAssetsOf } from './asset-lookups.ts';
+import { warnedAssetLookup } from './asset-lookups.ts';
 import type { ConfirmedConflicts } from './conflict-confirmation.ts';
 import { conflictingIdOf, readRepairConflictsOfAssets, type RepairConflict, type RepairRecordConflict } from './repair-read.service.ts';
 
@@ -51,7 +51,7 @@ export async function repairConflictCheck(client: pg.PoolClient, assetId: string
       if (created.every(({ conflicting }) => seen.has(otherKey(conflicting)))) {
         return;
       }
-      const named = await warnedAssetsOf(client, [assetId]);
+      const named = await warnedAssetLookup(client, [assetId]);
       throw new RepairConflictWarningError(
         created.map(({ conflicting }) => ({
           ...named(assetId),

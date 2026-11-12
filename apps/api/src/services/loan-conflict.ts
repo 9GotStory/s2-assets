@@ -1,5 +1,5 @@
 import pg from 'pg';
-import { warnedAssetsOf } from './asset-lookups.ts';
+import { warnedAssetLookup } from './asset-lookups.ts';
 import type { ConfirmedConflicts } from './conflict-confirmation.ts';
 import { readLoanConflictsOfAssets, type LoanConflict, type LoanItemConflict } from './loan-read.service.ts';
 import { conflictingIdOf, readRepairConflictsOfAssets, type ConflictingRepairRecord, type RepairRecordConflict } from './repair-read.service.ts';
@@ -74,7 +74,7 @@ export async function loanConflictCheck(client: pg.PoolClient, assetIds: string[
       ) {
         return;
       }
-      const named = await warnedAssetsOf(client, assetIds);
+      const named = await warnedAssetLookup(client, assetIds);
       throw new LoanConflictWarningError(
         created.map(({ asset_id, loan_item_id, conflicting }) => ({
           ...named(asset_id),
