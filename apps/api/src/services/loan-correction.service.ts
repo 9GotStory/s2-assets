@@ -20,7 +20,8 @@ import {
   type LoanCorrectionTarget,
   type StoredLoanFact,
 } from './loan.service.ts';
-import { loanConflictCheck, normalizeConfirmedConflicts, withConfirmedConflicts, type ConfirmedConflictInput } from './loan-conflict.ts';
+import { normalizeConfirmedConflicts, withConfirmedConflicts, type ConfirmedConflictInput } from './conflict-confirmation.ts';
+import { loanConflictCheck } from './loan-conflict.ts';
 import type { LoanCondition } from './loan-read.service.ts';
 import { isSelectablePerson } from './reference.service.ts';
 import { underRepairOfAssets, type RepairKind } from './repair-read.service.ts';

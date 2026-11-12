@@ -1,7 +1,7 @@
 import pg from 'pg';
-import { assetNamesOf } from './asset-lookups.ts';
-import type { ConfirmedConflicts } from './loan-conflict.ts';
-import { readRepairConflictsOfAssets, type RepairConflict, type RepairRecordConflict } from './repair-read.service.ts';
+import { warnedAssetsOf } from './asset-lookups.ts';
+import type { ConfirmedConflicts } from './conflict-confirmation.ts';
+import { conflictingIdOf, readRepairConflictsOfAssets, type RepairConflict, type RepairRecordConflict } from './repair-read.service.ts';
 
 // A Repair Conflict a Repair write would create, as its warning lists it: the written record, which a
 // Repair Start has no id for yet because nothing is saved, its Asset, and the other Repair Record or LoanItem.
@@ -30,8 +30,7 @@ export class RepairConflictWarningError extends Error {
 }
 
 // The other side of a Repair Conflict, by its kind and id.
-const otherKey = (conflicting: RepairConflict): string =>
-  `${conflicting.kind}:${conflicting.kind === 'LOAN_ITEM' ? conflicting.loan_item_id : conflicting.repair_record_id}`;
+const otherKey = (conflicting: RepairConflict): string => `${conflicting.kind}:${conflictingIdOf(conflicting)}`;
 
 const pairKey = ({ repair_record, conflicting }: RepairRecordConflict): string => `${repair_record.repair_record_id}:${otherKey(conflicting)}`;
 
@@ -52,12 +51,10 @@ export async function repairConflictCheck(client: pg.PoolClient, assetId: string
       if (created.every(({ conflicting }) => seen.has(otherKey(conflicting)))) {
         return;
       }
-      const asset = (await assetNamesOf(client, [assetId])).get(assetId);
+      const named = await warnedAssetsOf(client, [assetId]);
       throw new RepairConflictWarningError(
         created.map(({ conflicting }) => ({
-          asset_id: assetId,
-          name: asset?.name ?? null,
-          asset_number: asset?.asset_number ?? null,
+          ...named(assetId),
           // A new record's id does not outlive the refusal.
           repair_record_id: isNewRecord ? null : repairRecordId,
           conflicting,

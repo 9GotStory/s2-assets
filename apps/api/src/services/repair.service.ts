@@ -2,7 +2,7 @@ import pg from 'pg';
 import { DOCUMENT_REFERENCE_MAX_LENGTH, REMARK_MAX_LENGTH, bangkokDate, isCalendarDate, lockAssetsInIdentifierOrder, normalizeLine, normalizeText } from './assignment.service.ts';
 import { isValidUuid } from './capability.service.ts';
 import { hasStrictControlChars } from './control-characters.ts';
-import { normalizeConfirmedConflicts, withConfirmedConflicts, type ConfirmedConflictInput } from './loan-conflict.ts';
+import { normalizeConfirmedConflicts, withConfirmedConflicts, type ConfirmedConflictInput } from './conflict-confirmation.ts';
 import { loanReturnsOf } from './loan-return-read.ts';
 import { loansHoldingAssets } from './loan.service.ts';
 import { underRepairOfAssets, type RepairKind, type RepairOutcomeValue, type RepairerKind, type UnderWarranty } from './repair-read.service.ts';
@@ -546,6 +546,7 @@ export class RepairService {
   /**
    * F005-T2 (#100): how a Repair Record ended. The Asset is no longer Under Repair; ซ่อมไม่ได้ does not
    * retire it (RM-11, DR-17). The record keeps one cost, which this write may change (#98 Q22).
+   * F005-T7: it only ends a period that was open, so it creates no Repair Conflict and asks for no confirmation.
    */
   async recordOutcome(
     actorId: string,

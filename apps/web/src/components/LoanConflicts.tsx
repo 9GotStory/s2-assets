@@ -1,14 +1,12 @@
 import React from 'react';
 import { Link } from 'react-router';
 import { conflictActionStyle, conflictBoxStyle } from './AssignmentConflictWarning';
-import { thaiDate } from './assignmentFacts';
 import { LOAN_CONFLICT_LABEL, type LoanConflict, type WarnedLoanConflict } from './loanFacts';
-import { RepairConflictSide } from './RepairConflicts';
-import { REPAIR_CONFLICT_LABEL, type WarnedRepairConflict } from './repairFacts';
+import { RepairConflictSide, periodText } from './RepairConflicts';
+import { REPAIR_CONFLICT_LABEL, conflictingIdOf, type WarnedRepairConflict } from './repairFacts';
 
 // The other item's period: from its Loan Date to its ending, or still open.
-const periodText = ({ loan_date: loanDate, ending_date: endingDate }: LoanConflict): string =>
-  `${thaiDate(loanDate)} – ${endingDate ? thaiDate(endingDate) : 'ยังไม่สิ้นสุด'}`;
+const loanPeriodText = ({ loan_date: loanDate, ending_date: endingDate }: LoanConflict): string => periodText(loanDate, endingDate);
 
 /**
  * F004-T7 (#81): the Loan Conflicts of one LoanItem, each with the other Loan. The mark goes away by
@@ -19,7 +17,7 @@ export const LoanConflictMarks: React.FC<{ conflicts: LoanConflict[]; testId: st
     <ul data-testid={testId} style={{ margin: '0.25rem 0', paddingLeft: '1.25rem', color: '#92400e', fontWeight: 500 }}>
       {conflicts.map((conflict) => (
         <li key={conflict.loan_item_id} data-testid={`${testId}-${conflict.loan_item_id}`}>
-          {LOAN_CONFLICT_LABEL}กับการยืม {periodText(conflict)}{' '}
+          {LOAN_CONFLICT_LABEL}กับการยืม {loanPeriodText(conflict)}{' '}
           <Link to={`/loans/${conflict.loan_id}`} style={{ color: '#2563eb', textDecoration: 'underline' }}>
             ดูการยืม
           </Link>
@@ -56,14 +54,14 @@ export const ConflictWarning: React.FC<ConflictWarningProps> = ({ conflicts, rep
     <ul style={{ margin: '0.5rem 0', paddingLeft: '1.25rem' }}>
       {conflicts.map(({ asset_id: assetId, name, asset_number: assetNumber, conflicting }) => (
         <li key={`${assetId}-${conflicting.loan_item_id}`}>
-          {name ?? assetNumber ?? assetId}: ทับกับการยืม {periodText(conflicting)}{' '}
+          {name ?? assetNumber ?? assetId}: ทับกับการยืม {loanPeriodText(conflicting)}{' '}
           <Link to={`/loans/${conflicting.loan_id}`} target="_blank" rel="noreferrer">
             ดูการยืม
           </Link>
         </li>
       ))}
       {repairConflicts.map(({ asset_id: assetId, name, asset_number: assetNumber, conflicting }) => (
-        <li key={`${assetId}-${conflicting.kind === 'LOAN_ITEM' ? conflicting.loan_item_id : conflicting.repair_record_id}`}>
+        <li key={`${assetId}-${conflictingIdOf(conflicting)}`}>
           {name ?? assetNumber ?? assetId}: {REPAIR_CONFLICT_LABEL}กับ<RepairConflictSide conflicting={conflicting} newTab />
         </li>
       ))}

@@ -85,6 +85,9 @@ export type RepairConflict =
   | { kind: 'REPAIR_RECORD'; repair_record_id: string; repair_kind: RepairKind; start_date: string; outcome_date: string | null }
   | { kind: 'LOAN_ITEM'; loan_id: string; loan_item_id: string; loan_date: string; ending_date: string | null };
 
+// The id of a Repair Conflict's other side, a LoanItem or a Repair Record.
+export const conflictingIdOf = (conflicting: RepairConflict): string => (conflicting.kind === 'LOAN_ITEM' ? conflicting.loan_item_id : conflicting.repair_record_id);
+
 // A Repair Conflict a save would create, as the server's warning lists it: of a Repair write, with the
 // other Repair Record or LoanItem; of a Loan write, with the Repair Record.
 export interface WarnedRepairConflict {

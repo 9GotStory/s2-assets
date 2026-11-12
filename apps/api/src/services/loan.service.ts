@@ -9,7 +9,8 @@ import {
   normalizeLine,
   normalizeText,
 } from './assignment.service.ts';
-import { loanConflictCheck, normalizeConfirmedConflicts, withConfirmedConflicts, type ConfirmedConflictInput } from './loan-conflict.ts';
+import { normalizeConfirmedConflicts, withConfirmedConflicts, type ConfirmedConflictInput } from './conflict-confirmation.ts';
+import { loanConflictCheck } from './loan-conflict.ts';
 import { CURRENT_DUE_DATE, type LoanCondition, type LoanEndingKind } from './loan-read.service.ts';
 import { isSelectablePerson } from './reference.service.ts';
 import { underRepairOfAssets, type RepairKind } from './repair-read.service.ts';

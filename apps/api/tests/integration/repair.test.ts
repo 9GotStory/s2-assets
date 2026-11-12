@@ -554,6 +554,8 @@ describe('Repair Start (Seam A - F005-T1)', () => {
       const detail = await detailOf(assetId);
       expect(detail.current_assignment.location).toMatchObject({ id: roomB.id });
       expect(detail.has_assignment_conflict).toBe(false);
+      // A Reassignment raises no Repair Conflict either (F005-T7, #98 Q11).
+      expect(detail.has_repair_conflict).toBe(false);
       expect(detail.under_repair).toMatchObject({ repair_record_id: repairRecordId });
       expect(await recordOf(repairRecordId)).toEqual(record);
     });

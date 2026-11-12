@@ -13,8 +13,16 @@ export async function assetExists(db: pg.Pool | any, assetId: string): Promise<b
   return res.rows.length > 0;
 }
 
-/** What a warning names each of `assetIds` by, by Asset. */
-export async function assetNamesOf(db: pg.Pool | any, assetIds: string[]): Promise<Map<string, { name: string | null; asset_number: string | null }>> {
+// An Asset as a warning names it.
+export interface WarnedAsset {
+  asset_id: string;
+  name: string | null;
+  asset_number: string | null;
+}
+
+/** What a warning names each of `assetIds` by: each Asset's name and number, null for one not found. */
+export async function warnedAssetsOf(db: pg.Pool | any, assetIds: string[]): Promise<(assetId: string) => WarnedAsset> {
   const res = await db.query('SELECT id, name, asset_number FROM assets WHERE id = ANY($1::uuid[])', [assetIds]);
-  return new Map(res.rows.map(({ id, name, asset_number }: any) => [id, { name, asset_number }]));
+  const found = new Map<string, { name: string | null; asset_number: string | null }>(res.rows.map(({ id, name, asset_number }: any) => [id, { name, asset_number }]));
+  return (assetId) => ({ asset_id: assetId, name: found.get(assetId)?.name ?? null, asset_number: found.get(assetId)?.asset_number ?? null });
 }

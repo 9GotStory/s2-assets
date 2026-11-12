@@ -1,9 +1,8 @@
 import pg from 'pg';
-import { assetNamesOf } from './asset-lookups.ts';
-import { isValidUuid } from './capability.service.ts';
+import { warnedAssetsOf } from './asset-lookups.ts';
+import type { ConfirmedConflicts } from './conflict-confirmation.ts';
 import { readLoanConflictsOfAssets, type LoanConflict, type LoanItemConflict } from './loan-read.service.ts';
-import { readRepairConflictsOfAssets, type ConflictingRepairRecord, type RepairRecordConflict } from './repair-read.service.ts';
-import { ValidationError } from './validation-error.ts';
+import { conflictingIdOf, readRepairConflictsOfAssets, type ConflictingRepairRecord, type RepairRecordConflict } from './repair-read.service.ts';
 
 // A Loan Conflict a write would create, as its warning lists it: the written item, which a new Loan
 // has no id for yet because nothing is saved, its Asset, and the other item.
@@ -46,51 +45,11 @@ export class LoanConflictWarningError extends Error {
   }
 }
 
-// What a request confirms: the other side of each conflict its warning named, as the user saw it, a
-// LoanItem or a Repair Record (F005-T7).
-export type ConfirmedConflictInput = { conflicting_loan_item_id: string } | { conflicting_repair_record_id: string };
-
-// The confirmed other sides, well formed and each once, in identifier order.
-export interface ConfirmedConflicts {
-  loanItemIds: string[];
-  repairRecordIds: string[];
-}
-
-const normalizedIds = (ids: string[], field: string): string[] => {
-  if (ids.some((id) => !isValidUuid(id))) {
-    throw new ValidationError(`confirmed_conflicts[].${field} must be a valid UUID`);
-  }
-  return [...new Set(ids.map((id) => id.trim().toLowerCase()))].sort();
-};
-
-/** The LoanItems and Repair Records a request confirms as the other side of a conflict. */
-export function normalizeConfirmedConflicts(confirmed: ConfirmedConflictInput[] | undefined): ConfirmedConflicts {
-  const all = confirmed ?? [];
-  return {
-    loanItemIds: normalizedIds(all.flatMap((c) => ('conflicting_loan_item_id' in c ? [c.conflicting_loan_item_id] : [])), 'conflicting_loan_item_id'),
-    repairRecordIds: normalizedIds(all.flatMap((c) => ('conflicting_repair_record_id' in c ? [c.conflicting_repair_record_id] : [])), 'conflicting_repair_record_id'),
-  };
-}
-
-/**
- * A write's retry payload with what it confirms. An unconfirmed request keeps the payload it had before
- * confirmation existed, and one that confirms only LoanItems the payload it had before Repair Conflicts
- * existed, so their fingerprints are unchanged (#74 Q20).
- */
-export function withConfirmedConflicts<Payload extends object>(payload: Payload, { loanItemIds, repairRecordIds }: ConfirmedConflicts): Payload {
-  return {
-    ...payload,
-    ...(loanItemIds.length > 0 ? { confirmed_conflicts: loanItemIds } : {}),
-    ...(repairRecordIds.length > 0 ? { confirmed_repair_record_conflicts: repairRecordIds } : {}),
-  };
-}
-
 // A conflict of the written Loan, by the two LoanItems that overlap.
 const pairKey = ({ loan_item_id, conflicting }: LoanItemConflict): string => `${loan_item_id}:${conflicting.loan_item_id}`;
 
 // A Repair Conflict between a Repair Record and a LoanItem, by the two of them.
-const repairPairKey = ({ repair_record, conflicting }: RepairRecordConflict): string =>
-  `${repair_record.repair_record_id}:${conflicting.kind === 'LOAN_ITEM' ? conflicting.loan_item_id : conflicting.repair_record_id}`;
+const repairPairKey = ({ repair_record, conflicting }: RepairRecordConflict): string => `${repair_record.repair_record_id}:${conflictingIdOf(conflicting)}`;
 
 /**
  * Reads the Loan Conflicts and Repair Conflicts of a write's Assets before it, and checks the write's
@@ -115,8 +74,7 @@ export async function loanConflictCheck(client: pg.PoolClient, assetIds: string[
       ) {
         return;
       }
-      const assetOf = await assetNamesOf(client, assetIds);
-      const named = (assetId: string) => ({ asset_id: assetId, name: assetOf.get(assetId)?.name ?? null, asset_number: assetOf.get(assetId)?.asset_number ?? null });
+      const named = await warnedAssetsOf(client, assetIds);
       throw new LoanConflictWarningError(
         created.map(({ asset_id, loan_item_id, conflicting }) => ({
           ...named(asset_id),

@@ -2,6 +2,7 @@ import * as crypto from 'node:crypto';
 import { describe, it, expect, beforeAll, afterAll } from 'vitest';
 import { startApiHarness, type Actor, type ApiHarness } from './support/api-harness.ts';
 import { loanHelpers } from './support/loan-helpers.ts';
+import { lockHelpers } from './support/lock-helpers.ts';
 import { repairHelpers } from './support/repair-helpers.ts';
 
 // Today is 2026-11-12 in Asia/Bangkok.
@@ -19,6 +20,7 @@ describe('Repair Conflict (Seam A - F005-T7)', () => {
     loanDate: TODAY,
     dueDate: '2026-11-30',
   });
+  const { whileHolding, untilWaiting } = lockHelpers(() => ({ api }));
   const { base, send, sent, recordOf, recordsOf, ended } = repairHelpers(() => ({ api, custodian, reader: readonly }), { startDate: TODAY });
 
   // A Loan of `assetId` from `loanDate`, returned on `returnDate`, and its LoanItem.
@@ -471,6 +473,86 @@ describe('Repair Conflict (Seam A - F005-T7)', () => {
       expect(cleared.statusCode).toBe(201);
       expect((await recordOf(repairRecordId)).conflicts).toEqual([]);
       expect(await listed('has_repair_conflict=true')).not.toContain(repairRecordId);
+    });
+  });
+
+  // Each write reads the Repair Conflicts under the Asset lock that every Loan and Repair write takes, so
+  // one queued at the Asset first is seen (CODING_STANDARDS.md, a rule read under a lock).
+  describe('lock order', () => {
+    it('a Repair Start sees a Loan Correction queued at the Asset first, and warns about the overlap it opened', async () => {
+      const assetId = await registered();
+      const loan = await lentAndReturned(assetId, '2026-10-10', '2026-10-12');
+      const target = { kind: 'LOAN_RETURN', id: (await loanOf(loan.loanId)).items[0].loan_return.id };
+      const moveReturn = await loanCorrectionOf(loan.loanId, target, { return_date: '2026-10-20' });
+
+      const [moved, warned] = await whileHolding(
+        'assets',
+        assetId,
+        () => [
+          loanCorrection(loan.loanId, moveReturn),
+          untilWaiting('assets', 1).then(() => send(base(assetId, { start_date: '2026-10-15', outcome: { outcome: 'USABLE', outcome_date: '2026-10-18' } }))),
+        ],
+        () => untilWaiting('assets', 2)
+      );
+
+      expect(moved.statusCode).toBe(201);
+      expect(warned.statusCode).toBe(409);
+      expect(warned.json().repair_conflicts.map(({ conflicting }: any) => conflicting.loan_item_id)).toEqual([loan.loanItemId]);
+    });
+
+    it('a Repair Correction reads what was there before it after the Asset lock, so an overlap a queued Loan Correction opened is not new to it', async () => {
+      const assetId = await registered();
+      const loan = await lentAndReturned(assetId, '2026-10-10', '2026-10-12');
+      const repairRecordId = await sent(assetId, { start_date: '2026-10-15', outcome: { outcome: 'USABLE', outcome_date: '2026-10-18' } });
+      const target = { kind: 'LOAN_RETURN', id: (await loanOf(loan.loanId)).items[0].loan_return.id };
+      const moveReturn = await loanCorrectionOf(loan.loanId, target, { return_date: '2026-10-20' }, { confirmed_conflicts: [{ conflicting_repair_record_id: repairRecordId }] });
+      const remark = await repairCorrectionOf(repairRecordId, RECORD, { remark: 'แก้หมายเหตุ' });
+
+      const [moved, amended] = await whileHolding(
+        'assets',
+        assetId,
+        () => [loanCorrection(loan.loanId, moveReturn), untilWaiting('assets', 1).then(() => repairCorrection(repairRecordId, remark))],
+        () => untilWaiting('assets', 2)
+      );
+
+      expect(moved.statusCode).toBe(201);
+      expect(amended.statusCode).toBe(201);
+      expect((await recordOf(repairRecordId)).conflicts).toHaveLength(1);
+    });
+
+    it('a Loan Correction reads what was there before it after the Asset lock, so an overlap a queued Repair Correction opened is not new to it', async () => {
+      const { loan, repairRecordId } = await repairedAfterLoan();
+      const moveStart = await repairCorrectionOf(repairRecordId, RECORD, { start_date: '2026-10-15' }, { confirmed_conflicts: [{ conflicting_loan_item_id: loan.loanItemId }] });
+      const remark = await loanCorrectionOf(loan.loanId, { kind: 'LOAN' }, { remark: 'แก้หมายเหตุ' });
+
+      const [moved, amended] = await whileHolding(
+        'assets',
+        (await loanOf(loan.loanId)).items[0].asset.id,
+        () => [repairCorrection(repairRecordId, moveStart), untilWaiting('assets', 1).then(() => loanCorrection(loan.loanId, remark))],
+        () => untilWaiting('assets', 2)
+      );
+
+      expect(moved.statusCode).toBe(201);
+      expect(amended.statusCode).toBe(201);
+      expect((await recordOf(repairRecordId)).conflicts).toHaveLength(1);
+    });
+
+    it('a Loan start sees a Repair Start queued at the Asset first, and warns about the Repair Conflict', async () => {
+      const assetId = await registered();
+
+      const [started, warned] = await whileHolding(
+        'assets',
+        assetId,
+        () => [
+          send(base(assetId, { start_date: '2026-10-01', outcome: { outcome: 'USABLE', outcome_date: '2026-10-10' } })),
+          untilWaiting('assets', 1).then(() => startLoan([assetId], { loan_date: '2026-10-05', due_date: '2026-10-25' })),
+        ],
+        () => untilWaiting('assets', 2)
+      );
+
+      expect(started.statusCode).toBe(201);
+      expect(warned.statusCode).toBe(409);
+      expect(warned.json()).toMatchObject({ code: 'REPAIR_CONFLICTS_FOUND', repair_conflicts: [{ conflicting: { repair_record_id: started.json().repair_record_id } }] });
     });
   });
 });

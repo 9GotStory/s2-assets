@@ -87,6 +87,9 @@ export interface ConflictingLoanItem {
 /** A Repair Conflict as one Repair Record sees it: the other Repair Record or LoanItem whose period overlaps its own. */
 export type RepairConflict = ConflictingRepairRecord | ConflictingLoanItem;
 
+/** The id of a Repair Conflict's other side, a LoanItem or a Repair Record. */
+export const conflictingIdOf = (conflicting: RepairConflict): string => (conflicting.kind === 'LOAN_ITEM' ? conflicting.loan_item_id : conflicting.repair_record_id);
+
 /** A Repair Conflict of one Repair Record, with the record and its Asset. */
 export interface RepairRecordConflict {
   asset_id: string;

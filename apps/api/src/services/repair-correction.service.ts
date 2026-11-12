@@ -1,7 +1,7 @@
 import pg from 'pg';
 import { DOCUMENT_REFERENCE_MAX_LENGTH, REMARK_MAX_LENGTH, bangkokDate, isCalendarDate, normalizeLine, normalizeText } from './assignment.service.ts';
 import { isValidUuid } from './capability.service.ts';
-import { normalizeConfirmedConflicts, withConfirmedConflicts, type ConfirmedConflictInput } from './loan-conflict.ts';
+import { normalizeConfirmedConflicts, withConfirmedConflicts, type ConfirmedConflictInput } from './conflict-confirmation.ts';
 import { repairConflictCheck } from './repair-conflict.ts';
 import { type RepairKind, type RepairOutcomeValue, type RepairerKind, type UnderWarranty } from './repair-read.service.ts';
 import {
