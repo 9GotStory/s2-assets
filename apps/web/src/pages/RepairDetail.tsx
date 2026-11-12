@@ -3,7 +3,7 @@ import { Link, useNavigate, useParams } from 'react-router';
 import { QueryClient, QueryClientProvider, useQuery } from '@tanstack/react-query';
 import { RepairOutcomeForm } from '../components/RepairOutcomeForm';
 import { thaiDate } from '../components/assignmentFacts';
-import { VOIDED_LABEL, assetLabel } from '../components/loanFacts';
+import { CONDITION_LABELS, VOIDED_LABEL, assetLabel, voidedStyle } from '../components/loanFacts';
 import {
   NEXT_RECOMMENDED_MAINTENANCE_DATE_LABEL,
   OUTCOME_DATE_LABEL,
@@ -12,6 +12,7 @@ import {
   REPAIR_OUTCOME_LABEL,
   REPAIR_OUTCOME_LABELS,
   REPAIR_RECORD_LABEL,
+  REPAIR_SOURCE_LABEL,
   UNDER_REPAIR_LABELS,
   UNDER_WARRANTY_LABELS,
   costText,
@@ -116,7 +117,7 @@ const RepairDetailContent: React.FC = () => {
     );
   }
 
-  const { asset, repair_kind: repairKind, start_date: startDate, repairer, symptom_or_work: symptomOrWork, under_warranty: underWarranty, warranty_end_date: warrantyEndDate, cost, document_reference: documentReference, remark, recorded_by: recordedBy, recorded_by_username: recordedByUsername, recorded_at: recordedAt, is_voided: isVoided, outcome } = record.data;
+  const { asset, repair_kind: repairKind, start_date: startDate, repairer, symptom_or_work: symptomOrWork, under_warranty: underWarranty, warranty_end_date: warrantyEndDate, cost, document_reference: documentReference, remark, repair_source: repairSource, recorded_by: recordedBy, recorded_by_username: recordedByUsername, recorded_at: recordedAt, is_voided: isVoided, outcome } = record.data;
   // In GLOSSARY.md terms only: a voided record keeps nobody's Asset, and one with its outcome shows it.
   const statusText = (): string => {
     if (isVoided) {
@@ -184,6 +185,27 @@ const RepairDetailContent: React.FC = () => {
           <dt style={termStyle}>หมายเหตุ:</dt>
           <dd id="repair-remark" style={{ ...valueStyle, whiteSpace: 'pre-line' }}>
             {orNone(remark)}
+          </dd>
+          {/* A Loan Return voided later stays cited, struck through: nothing cascades (#98 Q5). */}
+          <dt style={termStyle}>{REPAIR_SOURCE_LABEL}:</dt>
+          <dd id="repair-source" style={valueStyle}>
+            {repairSource ? (
+              <>
+                <span style={repairSource.is_voided ? voidedStyle : undefined}>
+                  การคืนสภาพ{CONDITION_LABELS[repairSource.condition]} วันที่ <time dateTime={repairSource.return_date}>{thaiDate(repairSource.return_date)}</time>
+                </span>
+                {repairSource.is_voided && (
+                  <span data-testid="repair-source-voided" style={{ marginLeft: '0.375rem', fontWeight: 600, color: '#b91c1c' }}>
+                    {VOIDED_LABEL}
+                  </span>
+                )}{' '}
+                <Link to={`/loans/${repairSource.loan_id}`} id="repair-source-loan-link" style={{ color: '#2563eb', textDecoration: 'underline' }}>
+                  ดูการยืม
+                </Link>
+              </>
+            ) : (
+              <span style={noneStyle}>ไม่มี</span>
+            )}
           </dd>
           <dt style={termStyle}>ผู้บันทึก:</dt>
           <dd id="repair-recorded-by" style={valueStyle}>

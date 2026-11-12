@@ -105,6 +105,8 @@ describe('Recording a Loan Return (Seam A - F004-T2)', () => {
         recorded_by: custodian.id,
         recorded_by_username: 'custodian_return',
         returned_after_due_date: false,
+        // No Repair Record cites either (F005-T5).
+        repair_records: [],
       };
       expect(loan.items.map(({ ending_kind, loan_return }: any) => ({ ending_kind, loan_return }))).toEqual([
         { ending_kind: 'LOAN_RETURN', loan_return: { id: expect.stringMatching(UUID), condition: 'NORMAL', condition_note: null, recorded_at: expect.any(String), ...shared } },

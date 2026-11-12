@@ -2,6 +2,7 @@ import pg from 'pg';
 import { DOCUMENT_REFERENCE_MAX_LENGTH, REMARK_MAX_LENGTH, bangkokDate, isCalendarDate, lockAssetsInIdentifierOrder, normalizeLine, normalizeText } from './assignment.service.ts';
 import { isValidUuid } from './capability.service.ts';
 import { hasStrictControlChars } from './control-characters.ts';
+import { loanReturnsOf } from './loan-return-read.ts';
 import { loansHoldingAssets } from './loan.service.ts';
 import { underRepairOfAssets, type RepairKind, type RepairOutcomeValue, type RepairerKind, type UnderWarranty } from './repair-read.service.ts';
 import { commitOnce } from './retryable-write.ts';
@@ -26,6 +27,8 @@ export interface StartRepairInput {
   cost?: string | null;
   document_reference?: string | null;
   remark?: string | null;
+  // The Loan Return recorded ชำรุด that led to it, when there was one (F005-T5, LR-13, RM-08, #98 Q5).
+  repair_source?: { loan_return_id: string } | null;
   // Work finished in one visit, or an old repair, is recorded with its outcome in one write (#98 Q1, Q22).
   outcome?: RepairOutcomeInput | null;
 }
@@ -70,6 +73,26 @@ export class RepairStartRefusedError extends Error {
   }
 }
 
+// Why a Loan Return cannot be a Repair Source: it must be a non-voided Loan Return of a LoanItem of the
+// same Asset, recorded ชำรุด (#98). An id that names no Loan Return, a Not Returned among them, is NOT_LOAN_RETURN.
+export interface RepairSourceRefusal {
+  loan_return_id: string;
+  reason: 'NOT_LOAN_RETURN' | 'VOIDED' | 'OTHER_ASSET' | 'NOT_DAMAGED';
+}
+
+/** A Repair Start cites a Repair Source it cannot have. Nothing is saved, and the answer says why. */
+export class RepairSourceRefusedError extends Error {
+  statusCode = 409;
+  code = 'REPAIR_SOURCE_REFUSED';
+  repair_source: RepairSourceRefusal;
+
+  constructor(repairSource: RepairSourceRefusal) {
+    super(`The Loan Return cannot be the Repair Source: ${repairSource.reason}`);
+    this.name = 'RepairSourceRefusedError';
+    this.repair_source = repairSource;
+  }
+}
+
 // Why a Repair Record cannot take a Repair Outcome.
 export interface RepairOutcomeRefusal {
   repair_record_id: string;
@@ -111,6 +134,7 @@ interface RepairStartFacts {
   cost: string | null;
   document_reference: string | null;
   remark: string | null;
+  repair_source_loan_return_id: string | null;
   outcome: RepairOutcomeFacts | null;
 }
 
@@ -179,6 +203,10 @@ const normalizeFacts = (input: StartRepairInput, today: string): RepairStartFact
   if (symptomOrWork === null) {
     throw new ValidationError('symptom_or_work is required');
   }
+  const sourceId = input.repair_source?.loan_return_id ?? null;
+  if (sourceId !== null && !isValidUuid(sourceId)) {
+    throw new ValidationError('repair_source.loan_return_id must be a valid UUID');
+  }
   const outcome = input.outcome ? normalizeOutcome(input.outcome, today) : null;
   if (outcome) {
     assertOutcomeNotBeforeStart(outcome.outcome_date, input.start_date);
@@ -195,6 +223,7 @@ const normalizeFacts = (input: StartRepairInput, today: string): RepairStartFact
     cost: normalizeCost(input.cost),
     document_reference: normalizeText(input.document_reference, 'document_reference', DOCUMENT_REFERENCE_MAX_LENGTH, ''),
     remark: normalizeText(input.remark, 'remark', REMARK_MAX_LENGTH, ''),
+    repair_source_loan_return_id: sourceId?.trim().toLowerCase() ?? null,
     outcome,
   };
 };
@@ -273,19 +302,32 @@ export class RepairService {
     }
   }
 
+  // #98: a Repair Source is a non-voided Loan Return of a LoanItem of the same Asset, recorded ชำรุด. The
+  // Asset is locked, as a Loan Correction voiding that Loan Return locks it, so the check holds until commit.
+  private async assertRepairSource(client: pg.PoolClient, assetId: string, loanReturnId: string): Promise<void> {
+    const cited = (await loanReturnsOf(client, [loanReturnId])).get(loanReturnId);
+    const reason = !cited ? 'NOT_LOAN_RETURN' : cited.asset_id !== assetId ? 'OTHER_ASSET' : cited.is_voided ? 'VOIDED' : cited.condition !== 'DAMAGED' ? 'NOT_DAMAGED' : null;
+    if (reason) {
+      throw new RepairSourceRefusedError({ loan_return_id: loanReturnId, reason });
+    }
+  }
+
   async start(actorId: string, input: StartRepairInput, { retryToken }: { retryToken: string }): Promise<RepairRecordVersion> {
-    const { outcome, ...facts } = normalizeFacts(input, bangkokDate(this.clock()));
-    // A Repair Start without an outcome keeps the fingerprint it had before the outcome existed.
-    const payload = { version: 1, ...facts, ...(outcome ? { outcome } : {}) };
+    const { outcome, repair_source_loan_return_id: sourceId, ...facts } = normalizeFacts(input, bangkokDate(this.clock()));
+    // A Repair Start without an outcome or a Repair Source keeps the fingerprint it had before either existed.
+    const payload = { version: 1, ...facts, ...(outcome ? { outcome } : {}), ...(sourceId ? { repair_source_loan_return_id: sourceId } : {}) };
     return commitOnce(
       this.db,
       { actorId, operation: 'repair:start', retryToken, payload, explicitContinuation: false },
       async (client) => {
         await this.assertRepairMayStart(client, facts.asset_id);
+        if (sourceId) {
+          await this.assertRepairSource(client, facts.asset_id, sourceId);
+        }
         const res = await client.query(
           `INSERT INTO repair_records (asset_id, repair_kind, start_date, repairer_kind, repairer_name, symptom_or_work, under_warranty,
-                                       warranty_end_date, cost, document_reference, remark, has_outcome, recorded_by)
-           VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13)
+                                       warranty_end_date, cost, document_reference, remark, repair_source_loan_return_id, has_outcome, recorded_by)
+           VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14)
            RETURNING id, version`,
           [
             facts.asset_id,
@@ -299,6 +341,7 @@ export class RepairService {
             facts.cost,
             facts.document_reference,
             facts.remark,
+            sourceId,
             outcome !== null,
             actorId,
           ]

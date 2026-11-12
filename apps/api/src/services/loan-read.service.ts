@@ -1,7 +1,7 @@
 import pg from 'pg';
 import { assetExists, containsPattern } from './asset-lookups.ts';
 import { bangkokDate, readAssignmentsAt, type PermanentAssignment, type ReferenceEntrySummary } from './assignment.service.ts';
-import { latestRepairOutcomesOf, type RepairKind } from './repair-read.service.ts';
+import { latestRepairOutcomesOf, repairRecordsCiting, type CitingRepairRecord, type RepairKind } from './repair-read.service.ts';
 
 // The reads of Loans: the Loan page, the Loan list, an Asset's Loans and the Asset search's view of them.
 // Every write to the Loan tables stays in loan.service.ts (#76); this module writes nothing (#80).
@@ -26,6 +26,8 @@ export interface LoanReturn {
   recorded_at: string;
   // "คืนเกินกำหนด": the Return Date is after the item's current Due Date, derived on read (#74 Q5).
   returned_after_due_date: boolean;
+  // On the Loan page only: the Repair Records that cite it as their Repair Source (F005-T5, #98 Q5).
+  repair_records?: CitingRepairRecord[];
 }
 
 // The ending of a LoanItem whose Asset did not come back ("ปิดโดยไม่ได้รับคืน", #74 Q11, Q21). It is
@@ -598,6 +600,15 @@ export class LoanReadService {
           recorded_at: new Date(recorded_at).toISOString(),
         }));
     const voidedEndings = await readVoidedEndingsOf(this.db, loanId);
+    const loanReturnIds = [
+      ...itemsRes.rows.map(({ return_id }: any) => return_id).filter(Boolean),
+      ...[...voidedEndings.values()].flat().flatMap((ending) => (ending.kind === 'LOAN_RETURN' ? [ending.id] : [])),
+    ];
+    const citing = await repairRecordsCiting(this.db, loanReturnIds);
+    const withRepairRecords = <T extends { id: string }>(loanReturn: T): T & { repair_records: CitingRepairRecord[] } => ({
+      ...loanReturn,
+      repair_records: citing.get(loanReturn.id) ?? [],
+    });
     const conflicts = conflictsByItem(await readLoanConflictsOfAssets(this.db, [...new Set<string>(itemsRes.rows.map(({ asset_id }: any) => asset_id))]));
     const assignments = returnDate
       ? await readAssignmentsAt(this.db, itemsRes.rows.filter(isReturnable).map((item: any) => item.asset_id), returnDate)
@@ -628,9 +639,9 @@ export class LoanReadService {
         ending_kind: item.ending_kind,
         is_voided: item.is_voided,
         is_overdue: item.is_overdue,
-        loan_return: loanReturnOf(item),
+        loan_return: item.return_id ? withRepairRecords(loanReturnOf(item)!) : null,
         not_returned: notReturnedOfRow(item),
-        voided_endings: voidedEndings.get(item.id) ?? [],
+        voided_endings: (voidedEndings.get(item.id) ?? []).map((ending) => (ending.kind === 'LOAN_RETURN' ? withRepairRecords(ending) : ending)),
         due_date_extensions: extensionsOf(item.id),
         conflicts: conflicts.get(item.id) ?? [],
         assignment_on_return_date: assignments?.get(item.asset_id),

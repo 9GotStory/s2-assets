@@ -75,6 +75,7 @@ describe('Repair Start (Seam A - F005-T1)', () => {
         cost: '1500.50',
         document_reference: 'ใบเสนอราคา 12/2569',
         remark: 'รับเครื่องคืนภายในสัปดาห์',
+        repair_source: null,
         recorded_by: custodian.id,
         recorded_by_username: 'custodian_repair',
         recorded_at: expect.any(String),

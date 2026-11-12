@@ -1,4 +1,4 @@
-// What the API answers about Repair Records (F005-T1, T2), and their labels from GLOSSARY.md (#98 Q14).
+// What the API answers about Repair Records (F005-T1, T2, T5), and their labels from GLOSSARY.md (#98 Q14).
 
 import type { PermanentAssignment } from './ReferenceContextFields';
 
@@ -27,6 +27,23 @@ export interface RepairOutcome {
   recorded_at: string;
 }
 
+// The Loan Return recorded ชำรุด that led to a Repair Record, as it stands now (F005-T5, #98 Q5).
+export interface RepairSource {
+  loan_return_id: string;
+  loan_id: string;
+  return_date: string;
+  condition: 'NORMAL' | 'DAMAGED';
+  is_voided: boolean;
+}
+
+// A Repair Record as the Loan page lists it beside the Loan Return it cites (F005-T5).
+export interface CitingRepairRecord {
+  id: string;
+  repair_kind: RepairKind;
+  start_date: string;
+  is_voided: boolean;
+}
+
 export interface RepairRecord {
   id: string;
   asset: { id: string; name: string | null; asset_number: string | null };
@@ -40,6 +57,7 @@ export interface RepairRecord {
   cost: string | null;
   document_reference: string | null;
   remark: string | null;
+  repair_source: RepairSource | null;
   recorded_by: string;
   recorded_by_username: string | null;
   recorded_at: string;
@@ -75,6 +93,19 @@ export type RepairStartRefusal = { asset_id: string; name: string | null; asset_
   | { reason: 'UNDER_REPAIR'; repair_record_id: string; repair_kind: RepairKind }
 );
 
+// Why the server refused a Repair Source (F005-T5).
+export interface RepairSourceRefusal {
+  loan_return_id: string;
+  reason: 'NOT_LOAN_RETURN' | 'VOIDED' | 'OTHER_ASSET' | 'NOT_DAMAGED';
+}
+
+export const REPAIR_SOURCE_REFUSAL_LABELS: Record<RepairSourceRefusal['reason'], string> = {
+  NOT_LOAN_RETURN: 'ไม่พบการคืนที่อ้างถึง',
+  VOIDED: 'การคืนนั้นยกเลิกแล้ว',
+  OTHER_ASSET: 'การคืนนั้นเป็นของครุภัณฑ์อื่น',
+  NOT_DAMAGED: 'การคืนนั้นไม่ได้บันทึกสภาพชำรุด',
+};
+
 // Why the server refused a Repair Outcome.
 export interface RepairOutcomeRefusal {
   repair_record_id: string;
@@ -93,6 +124,8 @@ export const REPAIR_RECORD_LABEL = 'รายการซ่อม/บำรุ�
 // The Repair list's title, as the specification names the page (#98).
 export const REPAIR_LIST_LABEL = 'รายการซ่อม/บำรุงรักษา';
 export const REPAIR_START_LABEL = 'ส่งซ่อม';
+// GLOSSARY.md: Repair Source (ที่มา).
+export const REPAIR_SOURCE_LABEL = 'ที่มา';
 export const REPAIR_OUTCOME_LABEL = 'ผลการซ่อม';
 export const RECORD_REPAIR_OUTCOME_LABEL = 'บันทึกผลการซ่อม';
 export const OUTCOME_DATE_LABEL = 'วันที่ได้ผล';

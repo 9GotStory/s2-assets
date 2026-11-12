@@ -8,6 +8,7 @@ import { LoanAmendForm, LoanVoidForm } from '../components/LoanCorrectionForms';
 import { LoanCorrectionList, correctionTargetText } from '../components/LoanCorrectionList';
 import { LoanReturnForm } from '../components/LoanReturnForm';
 import { NotReturnedForm } from '../components/NotReturnedForm';
+import { RepairStartForm } from '../components/RepairStartForm';
 import { entryLabel } from '../components/ReferenceContextFields';
 import { CORRECTION_LABELS, thaiDate } from '../components/assignmentFacts';
 import {
@@ -27,6 +28,7 @@ import {
   type Loan,
   type LoanCorrectionTarget,
 } from '../components/loanFacts';
+import { REPAIR_KIND_LABELS, REPAIR_START_LABEL, type CitingRepairRecord } from '../components/repairFacts';
 
 const THAI_DATE_TIME = new Intl.DateTimeFormat('th-TH', { dateStyle: 'long', timeStyle: 'short', timeZone: 'Asia/Bangkok' });
 
@@ -59,8 +61,9 @@ const noneStyle: React.CSSProperties = { color: '#9ca3af' };
 
 const orNone = (value: string | null): React.ReactNode => value ?? <span style={noneStyle}>ไม่ระบุ</span>;
 
-// The writes on a Loan, one form open at a time: a recording, or a correction of one fact (F004-T6).
-type LoanForm = 'return' | 'extension' | 'not-returned' | { correction: 'AMEND' | 'VOID'; target: LoanCorrectionTarget };
+// The writes on a Loan, one form open at a time: a recording, a correction of one fact (F004-T6), or a
+// send for repair from one Loan Return (F005-T5).
+type LoanForm = 'return' | 'extension' | 'not-returned' | { correction: 'AMEND' | 'VOID'; target: LoanCorrectionTarget } | { repairFrom: string };
 
 const actionStyle: React.CSSProperties = {
   padding: '0.5rem 1rem',
@@ -92,6 +95,21 @@ const VoidedMark: React.FC<{ testId: string }> = ({ testId }) => (
   </span>
 );
 
+// The Repair Records that cite a Loan Return as their Repair Source, each linked (F005-T5, RM-08).
+const CitingRepairRecords: React.FC<{ records: CitingRepairRecord[] | undefined; testId: string }> = ({ records, testId }) =>
+  records && records.length > 0 ? (
+    <ul data-testid={testId} style={{ margin: '0.25rem 0', paddingLeft: '1.25rem', color: '#4b5563' }}>
+      {records.map((record) => (
+        <li key={record.id}>
+          <Link to={`/repairs/${record.id}`} style={{ color: '#2563eb', textDecoration: 'underline', ...(record.is_voided ? voidedStyle : {}) }}>
+            {REPAIR_START_LABEL}แล้ว: {REPAIR_KIND_LABELS[record.repair_kind]} วันที่ส่งซ่อม <time dateTime={record.start_date}>{thaiDate(record.start_date)}</time>
+          </Link>
+          {record.is_voided && <VoidedMark testId={`loan-repair-record-voided-${record.id}`} />}
+        </li>
+      ))}
+    </ul>
+  ) : null;
+
 const LoanDetailContent: React.FC = () => {
   const { id } = useParams<{ id: string }>();
   const navigate = useNavigate();
@@ -113,6 +131,7 @@ const LoanDetailContent: React.FC = () => {
   // The write forms need this session's CSRF token, and a correction's Person lists the user.
   const canRecordLoan = loan.data?.can_record_loan === true;
   const canCorrectLoan = loan.data?.can_correct_loan === true;
+  const canRecordRepair = loan.data?.can_record_repair === true;
   const session = useQuery<{ csrfToken: string | null; userId: string | null } | null>({
     queryKey: ['loan-session', id],
     queryFn: async ({ signal }) => {
@@ -123,7 +142,7 @@ const LoanDetailContent: React.FC = () => {
       const body = await res.json();
       return { csrfToken: body.csrfToken ?? null, userId: body.user?.id ?? null };
     },
-    enabled: canRecordLoan || canCorrectLoan,
+    enabled: canRecordLoan || canCorrectLoan || canRecordRepair,
   });
 
   const isSignedOut = loan.error?.status === 401;
@@ -188,7 +207,8 @@ const LoanDetailContent: React.FC = () => {
       void loan.refetch();
     },
   };
-  const openCorrection = typeof openForm === 'object' && openForm !== null ? openForm : null;
+  const openCorrection = typeof openForm === 'object' && openForm !== null && 'correction' in openForm ? openForm : null;
+  const repairFrom = typeof openForm === 'object' && openForm !== null && 'repairFrom' in openForm ? openForm.repairFrom : null;
   const correctionProps = (target: LoanCorrectionTarget) => ({
     ...formProps,
     target,
@@ -368,7 +388,26 @@ const LoanDetailContent: React.FC = () => {
                   {item.loan_return.document_reference && <div>เอกสารอ้างอิงการคืน: {item.loan_return.document_reference}</div>}
                   {item.loan_return.remark && <div>หมายเหตุการคืน: {item.loan_return.remark}</div>}
                   <div>ผู้บันทึกการคืน: {item.loan_return.recorded_by_username ?? item.loan_return.recorded_by}</div>
+                  <CitingRepairRecords records={item.loan_return.repair_records} testId={`loan-return-repair-records-${item.loan_return.id}`} />
                   {correctionActions(`loan-return-${item.loan_return.id}`, { kind: 'LOAN_RETURN', id: item.loan_return.id })}
+                  {/* "ส่งซ่อม" from a Loan Return recorded ชำรุด: nothing is saved until the form is (#98 Q5). */}
+                  {canRecordRepair && openForm === null && item.loan_return.condition === 'DAMAGED' && (
+                    <button type="button" id={`loan-return-${item.loan_return.id}-repair-action`} onClick={() => setOpenForm({ repairFrom: item.loan_return!.id })} style={{ ...secondaryActionStyle, marginTop: '0.375rem' }}>
+                      {REPAIR_START_LABEL}
+                    </button>
+                  )}
+                  {canRecordRepair && repairFrom === item.loan_return.id && (
+                    <div style={{ marginTop: '0.75rem' }}>
+                      <RepairStartForm
+                        assetId={item.asset.id}
+                        repairSource={{ loanReturnId: item.loan_return.id, returnDate: item.loan_return.return_date, conditionNote: item.loan_return.condition_note }}
+                        csrfToken={formProps.csrfToken}
+                        onStarted={formProps.onRecorded}
+                        onCancel={formProps.onCancel}
+                        onPermissionRevoked={formProps.onPermissionRevoked}
+                      />
+                    </div>
+                  )}
                 </div>
               ) : (
                 isOutstanding(item) && (
@@ -392,6 +431,7 @@ const LoanDetailContent: React.FC = () => {
                     )}
                   </span>
                   <VoidedMark testId={`loan-ending-voided-mark-${ending.id}`} />
+                  {ending.kind === 'LOAN_RETURN' && <CitingRepairRecords records={ending.repair_records} testId={`loan-return-repair-records-${ending.id}`} />}
                 </div>
               ))}
             </li>
