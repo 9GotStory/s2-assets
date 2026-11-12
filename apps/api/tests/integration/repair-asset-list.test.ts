@@ -122,8 +122,13 @@ describe('Under Repair on the Asset list (Seam A - F005-T4)', () => {
 
     it('needs asset:search, as the On Loan filter does', async () => {
       await sent(await registered('ไม่ควรเห็นในผลค้นหาซ่อม'), { repairer: { kind: 'EXTERNAL', name: 'ร้านที่ไม่ควรเห็น' } });
+      const query = `/assets/search?field=name&value=${encodeURIComponent('ไม่ควรเห็นในผลค้นหาซ่อม')}&under_repair=true`;
+      // The same request with the capability does answer both.
+      const allowed = await api.get(readonly, query);
+      expect(allowed.body).toContain('ไม่ควรเห็นในผลค้นหาซ่อม');
+      expect(allowed.body).toContain('ร้านที่ไม่ควรเห็น');
 
-      const denied = await withCapabilityAnswer(api.app, 'asset:search', async () => false, () => api.get(readonly, '/assets/search?under_repair=true'));
+      const denied = await withCapabilityAnswer(api.app, 'asset:search', async () => false, () => api.get(readonly, query));
       expect(denied.statusCode).toBe(403);
       expect(denied.body).not.toContain('ไม่ควรเห็นในผลค้นหาซ่อม');
       expect(denied.body).not.toContain('ร้านที่ไม่ควรเห็น');
