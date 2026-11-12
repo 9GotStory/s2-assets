@@ -4,6 +4,7 @@ import { ReassignmentFields, useReassignmentDraft } from './ReassignmentFields';
 import { REFERENCE_DIMENSIONS } from './ReferenceContextFields';
 import { KIND_LABELS, effectiveDateError, valuesAt, type AssignmentEvent } from './assignmentFacts';
 import type { OnLoan } from './loanFacts';
+import type { UnderRepair } from './repairFacts';
 
 export interface ReassignmentFormProps {
   save: AssignmentSaveProps;
@@ -12,13 +13,15 @@ export interface ReassignmentFormProps {
   actorId: string | null;
   // Who holds the Asset while it is On Loan (F004-T4).
   onLoan?: OnLoan | null;
+  // The Repair Record that keeps the Asset Under Repair (F005-T4).
+  underRepair?: UnderRepair | null;
 }
 
 /**
  * "ย้าย / เปลี่ยนผู้รับผิดชอบ": one real change of an Asset's Permanent Assignment, effective today or
  * earlier. The server derives the prior values and decides every rule; this form previews them.
  */
-export const ReassignmentForm: React.FC<ReassignmentFormProps> = ({ save, timeline, actorId, onLoan }) => {
+export const ReassignmentForm: React.FC<ReassignmentFormProps> = ({ save, timeline, actorId, onLoan, underRepair }) => {
   const draft = useReassignmentDraft(actorId);
   const { effectiveDate, requested, requestFields } = draft;
 
@@ -55,6 +58,7 @@ export const ReassignmentForm: React.FC<ReassignmentFormProps> = ({ save, timeli
           isLocked={isLocked}
           priorValues={priorValues}
           onLoanAssets={onLoan ? [{ id: save.assetId, label: 'ครุภัณฑ์นี้', onLoan }] : []}
+          underRepairAssets={underRepair ? [{ id: save.assetId, label: 'ครุภัณฑ์นี้', underRepair }] : []}
         />
       )}
     </AssignmentSaveForm>

@@ -2,6 +2,7 @@ import React, { useState } from 'react';
 import { Link } from 'react-router';
 import { AssignmentNoteFields, assignmentNotesPayload, type AssignmentNotes } from './AssignmentNoteFields';
 import { ON_LOAN_LABEL, borrowerText, type OnLoan } from './loanFacts';
+import { UNDER_REPAIR_LABELS, repairerText, type UnderRepair } from './repairFacts';
 import {
   REFERENCE_DIMENSIONS,
   entryLabel,
@@ -83,12 +84,20 @@ export interface ReassignmentFieldsProps {
   priorValues?: Record<AssignmentDimension, AssignmentValue> | null;
   // The Assets of the form that are On Loan, and who holds each.
   onLoanAssets?: OnLoanAsset[];
+  // The Assets of the form that are Under Repair, and with which Repairer.
+  underRepairAssets?: UnderRepairAsset[];
 }
 
 export interface OnLoanAsset {
   id: string;
   label: string;
   onLoan: OnLoan;
+}
+
+export interface UnderRepairAsset {
+  id: string;
+  label: string;
+  underRepair: UnderRepair;
 }
 
 /**
@@ -111,8 +120,28 @@ const OnLoanNotice: React.FC<{ assets: OnLoanAsset[] }> = ({ assets }) => (
   </div>
 );
 
+/**
+ * MR-14, MR-19, #98 Q11: which Assets are Under Repair, of which kind and with which Repairer, and that a
+ * Reassignment leaves their Repair Records as they are. A notice only: it blocks nothing.
+ */
+const UnderRepairNotice: React.FC<{ assets: UnderRepairAsset[] }> = ({ assets }) => (
+  <div data-testid="assignment-under-repair-notice" style={{ margin: '0 0 0.75rem 0', padding: '0.5rem 0.75rem', fontSize: '0.8125rem', color: '#3730a3', backgroundColor: '#e0e7ff', borderRadius: '6px' }}>
+    <ul style={{ margin: 0, paddingLeft: '1.25rem' }}>
+      {assets.map(({ id, label, underRepair }) => (
+        <li key={id} data-testid={`assignment-under-repair-${id}`}>
+          {label} {UNDER_REPAIR_LABELS[underRepair.repair_kind]} ผู้ซ่อม {repairerText(underRepair.repairer)}{' '}
+          <Link to={`/repairs/${underRepair.repair_record_id}`} style={{ color: '#2563eb', textDecoration: 'underline' }}>
+            ดูรายการซ่อม
+          </Link>
+        </li>
+      ))}
+    </ul>
+    <p style={{ margin: '0.25rem 0 0 0' }}>การย้ายไม่เปลี่ยนรายการซ่อมนี้ และไม่ใช่การรับของคืน เมื่อได้รับคืนให้บันทึกผลการซ่อมในหน้ารายการซ่อม</p>
+  </div>
+);
+
 /** The fields of a Reassignment: its Effective Date, a new value for each dimension, and its notes. */
-export const ReassignmentFields: React.FC<ReassignmentFieldsProps> = ({ draft, isLocked, priorValues, onLoanAssets = [] }) => {
+export const ReassignmentFields: React.FC<ReassignmentFieldsProps> = ({ draft, isLocked, priorValues, onLoanAssets = [], underRepairAssets = [] }) => {
   const { effectiveDate, setEffectiveDate, targets, setTargets, notes, setNotes, lists, listError, offerInactive } = draft;
   return (
     <fieldset disabled={isLocked} style={{ border: 'none', padding: 0, margin: '0 0 1rem 0' }}>
@@ -120,6 +149,7 @@ export const ReassignmentFields: React.FC<ReassignmentFieldsProps> = ({ draft, i
         การยืมชั่วคราวไม่ใช่การย้าย: บันทึกที่นี่เฉพาะเมื่อสถานที่ หน่วยงาน หรือผู้รับผิดชอบเปลี่ยนไปจริง
       </p>
       {onLoanAssets.length > 0 && <OnLoanNotice assets={onLoanAssets} />}
+      {underRepairAssets.length > 0 && <UnderRepairNotice assets={underRepairAssets} />}
       {listError && (
         <div role="alert" style={{ marginBottom: '0.75rem', fontSize: '0.8125rem', color: '#b91c1c' }}>
           {listError}

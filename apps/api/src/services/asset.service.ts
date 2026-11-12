@@ -21,6 +21,7 @@ import {
 } from './assignment.service.ts';
 import { containsPattern } from './asset-lookups.ts';
 import { loanSearch, type AssetSearchLoanFacts } from './loan-read.service.ts';
+import { repairSearch, type AssetSearchRepairFacts } from './repair-read.service.ts';
 import { canonicalJson } from './canonical-json.ts';
 import { NotFoundError, RetryTokenConflictError, StaleBeforeConflictError } from './service-errors.ts';
 import { ValidationError } from './validation-error.ts';
@@ -205,7 +206,7 @@ export type SearchAssetField =
   | 'name'
   | (typeof LEGACY_TEXT_FIELDS)[number];
 
-export interface SearchAssetItem extends CurrentAssignment, AssetSearchLoanFacts {
+export interface SearchAssetItem extends CurrentAssignment, AssetSearchLoanFacts, AssetSearchRepairFacts {
   id: string;
   name: string | null;
   asset_number: string | null;
@@ -223,6 +224,8 @@ export interface SearchAssetInput {
   has_assignment_conflict?: boolean;
   // F004-T4 (#78): only Assets On Loan, "กำลังถูกยืม".
   on_loan?: boolean;
+  // F005-T4 (#102): only Assets Under Repair, of either kind.
+  under_repair?: boolean;
   limit?: number | string;
   offset?: number | string;
 }
@@ -1853,6 +1856,9 @@ export class AssetService {
     if (input.on_loan) {
       conditions.push(loanSearch.onLoanFilter);
     }
+    if (input.under_repair) {
+      conditions.push(repairSearch.underRepairFilter);
+    }
     const whereClause = conditions.length > 0 ? `WHERE ${conditions.join(' AND ')}` : '';
 
     const limitParamIndex = params.length + 1;
@@ -1887,6 +1893,7 @@ export class AssetService {
     const totalCount = res.rows.length > 0 && res.rows[0].total_count != null ? Number(res.rows[0].total_count) : 0;
     const rows = res.rows.filter((row: any) => row.id != null);
     const loanFactsOf = await loanSearch.factsOf(this.db, rows.map((row: any) => row.id), this.today());
+    const repairFactsOf = await repairSearch.factsOf(this.db, rows.map((row: any) => row.id));
     const items: SearchAssetItem[] = rows.map((row: any) => ({
       id: row.id,
       name: row.name ?? null,
@@ -1894,6 +1901,7 @@ export class AssetService {
       serial_number: row.serial_number ?? null,
       ...assignmentSearch.current(row),
       ...loanFactsOf(row.id),
+      ...repairFactsOf(row.id),
     }));
 
     const hasMore = parsedOffset + items.length < totalCount;

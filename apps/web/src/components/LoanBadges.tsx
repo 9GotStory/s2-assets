@@ -1,7 +1,7 @@
 import React from 'react';
 import { ON_LOAN_LABEL, OVERDUE_LABEL, RETURNED_LATE_LABEL, VOIDED_LABEL } from './loanFacts';
 
-const badgeStyle: React.CSSProperties = {
+export const badgeStyle: React.CSSProperties = {
   display: 'inline-block',
   padding: '0.125rem 0.5rem',
   marginLeft: '0.375rem',

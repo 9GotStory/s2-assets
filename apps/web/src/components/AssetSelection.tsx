@@ -1,6 +1,7 @@
 import React from 'react';
 import { BULK_REASSIGNMENT_LABEL } from './assignmentFacts';
 import { START_LOAN_LABEL, type OnLoan, type StartLoanWarning } from './loanFacts';
+import type { UnderRepair } from './repairFacts';
 
 // #50 Q4, #74 Q9: as many as one Bulk Reassignment or one Loan takes.
 export const SELECTION_MAX_ASSETS = 100;
@@ -11,6 +12,7 @@ export interface SelectedAsset {
   name: string | null;
   asset_number: string | null;
   on_loan: OnLoan | null;
+  under_repair: UnderRepair | null;
   start_loan_warning: StartLoanWarning | null;
 }
 
