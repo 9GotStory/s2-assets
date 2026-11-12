@@ -54,11 +54,14 @@ run_job() {
   "$@" >"$log" 2>&1 || { result=failed; status=1; }
   # vitest and Playwright colour their summary lines.
   detail=$(sed -E 's/\x1b\[[0-9;]*m//g' "$log" | grep -E "$pattern" | sed -E 's/^ +//; s/ +/ /g; s/ \| /, /g' | awk 'NR > 1 { printf "; " } { printf "%s", $0 }' || true)
-  # #102 retro: a failure the host caused names its cause, so a rerun is not mistaken for a fix.
+  # #102 retro: a failed job names the signs of a host cause its log shows, so a rerun is not mistaken
+  # for a fix; a hook timeout can also be a hang in the code.
   if [[ $result == failed ]]; then
     local causes
     causes=$(grep -ohiE 'disk quota exceeded|no space left on device|hook timed out in [0-9]+ms' "$log" | sort -fu | paste -sd ',' - | sed 's/,/, /g' || true)
-    [[ -n $causes ]] && detail="${detail:+$detail; }host: $causes"
+    if [[ -n $causes ]]; then
+      detail="${detail:+$detail; }log shows: $causes"
+    fi
   fi
   rows+=("| \`$*\` | $result | ${detail:-no result line in the log} |")
   echo "all.sh: $name: $result"
