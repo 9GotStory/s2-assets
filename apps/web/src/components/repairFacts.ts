@@ -190,6 +190,8 @@ export const REPAIR_KIND_LABELS: Record<RepairKind, string> = { REPAIR: 'ซ่�
 
 // Under Repair reads by the record's kind (#98 Q14).
 export const UNDER_REPAIR_LABELS: Record<RepairKind, string> = { REPAIR: 'อยู่ระหว่างซ่อม', MAINTENANCE: 'อยู่ระหว่างบำรุงรักษา' };
+// The Asset list's filter, which takes either kind (F005-T4, GLOSSARY.md).
+export const UNDER_REPAIR_FILTER_LABEL = 'อยู่ระหว่างซ่อม / อยู่ระหว่างบำรุงรักษา';
 
 // A Repair Outcome reads by the record's kind: ซ่อมไม่ได้ for ซ่อม, ใช้งานไม่ได้ for บำรุงรักษา (#98 Q10, Q16).
 export const REPAIR_OUTCOME_LABELS: Record<RepairKind, Record<RepairOutcomeValue, string>> = {

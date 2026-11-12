@@ -790,6 +790,7 @@ const AssetDetailContent: React.FC = () => {
           assignmentVersion={assetData.assignment_version ?? 0}
           hasAssignmentConflict={Boolean(assetData.has_assignment_conflict)}
           onLoan={assetData.on_loan ?? null}
+          underRepair={assetData.under_repair ?? null}
           isLegacy={isLegacy}
           csrfToken={csrfToken}
           onRecorded={async () => {

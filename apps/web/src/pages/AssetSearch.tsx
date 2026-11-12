@@ -5,6 +5,8 @@ import { BulkReassignmentPanel, assetLabelOf } from '../components/BulkReassignm
 import { OnLoanBadge } from '../components/LoanBadges';
 import { LoanStartForm } from '../components/LoanStartForm';
 import { ON_LOAN_LABEL, type OnLoan, type StartLoanWarning } from '../components/loanFacts';
+import { UnderRepairBadge } from '../components/RepairBadges';
+import { UNDER_REPAIR_FILTER_LABEL, type UnderRepair } from '../components/repairFacts';
 import {
   REFERENCE_DIMENSIONS,
   entryLabel,
@@ -27,6 +29,8 @@ export interface SearchAssetItem {
   // F004-T4 (#78): who holds it while On Loan; F005-T2 (#100): its Start Loan warning.
   on_loan: OnLoan | null;
   start_loan_warning: StartLoanWarning | null;
+  // F005-T4 (#102): the Repair Record that keeps it Under Repair.
+  under_repair: UnderRepair | null;
 }
 
 export interface SearchAssetResult {
@@ -52,19 +56,27 @@ export type SearchFieldType =
 
 // T4 (#25): one exact entry per dimension, '' for any; the server combines them with AND. F003-T4
 // (#54): has_assignment_conflict is 'true' to list only Assets with an Assignment Conflict, '' for any.
-// F004-T4 (#78): on_loan likewise, for "กำลังถูกยืม".
-export type AssetListFilters = Record<ReferenceIdField | 'has_assignment_conflict' | 'on_loan', string>;
+// F004-T4 (#78): on_loan likewise, for "กำลังถูกยืม"; F005-T4 (#102): under_repair, for Under Repair.
+export type AssetListFilters = Record<ReferenceIdField | 'has_assignment_conflict' | 'on_loan' | 'under_repair', string>;
 
-const NO_FILTERS: AssetListFilters = { location_id: '', organization_unit_id: '', responsible_person_id: '', has_assignment_conflict: '', on_loan: '' };
+const NO_FILTERS: AssetListFilters = {
+  location_id: '',
+  organization_unit_id: '',
+  responsible_person_id: '',
+  has_assignment_conflict: '',
+  on_loan: '',
+  under_repair: '',
+};
 
 // The rows chosen act through one of these, opened above the results.
 type SelectionPanel = 'REASSIGNMENT' | 'LOAN';
 
-const selectedAssetOf = ({ id, name, asset_number, on_loan, start_loan_warning }: SearchAssetItem): SelectedAsset => ({
+const selectedAssetOf = ({ id, name, asset_number, on_loan, under_repair, start_loan_warning }: SearchAssetItem): SelectedAsset => ({
   id,
   name,
   asset_number,
   on_loan,
+  under_repair,
   start_loan_warning,
 });
 
@@ -822,6 +834,26 @@ export const AssetSearch: React.FC = () => {
               />
               {ON_LOAN_LABEL}
             </label>
+            <label
+              htmlFor="search-filter-under_repair"
+              style={{
+                display: 'flex',
+                alignItems: 'center',
+                gap: '0.375rem',
+                marginTop: '0.5rem',
+                fontSize: '0.875rem',
+                fontWeight: 500,
+                color: '#374151',
+              }}
+            >
+              <input
+                id="search-filter-under_repair"
+                type="checkbox"
+                checked={selectedFilters.under_repair === 'true'}
+                onChange={(e) => setSelectedFilters((current) => ({ ...current, under_repair: e.target.checked ? 'true' : '' }))}
+              />
+              {UNDER_REPAIR_FILTER_LABEL}
+            </label>
             {referenceLists.error && (
               <div role="alert" style={{ marginTop: '0.5rem', fontSize: '0.8125rem', color: '#b91c1c' }}>
                 {referenceLists.error}
@@ -986,6 +1018,9 @@ export const AssetSearch: React.FC = () => {
                         <td style={{ padding: '0.75rem 1rem', color: '#111827' }}>
                           {item.name || '(ไม่มีชื่อ - บันทึกข้อมูลย้อนหลัง)'}
                           {item.on_loan && <OnLoanBadge testId={`search-result-on-loan-${item.id}`} />}
+                          {item.under_repair && (
+                            <UnderRepairBadge repairKind={item.under_repair.repair_kind} testId={`search-result-under-repair-${item.id}`} />
+                          )}
                         </td>
                         <td style={{ padding: '0.75rem 1rem', color: '#6b7280' }}>
                           {item.serial_number || '-'}

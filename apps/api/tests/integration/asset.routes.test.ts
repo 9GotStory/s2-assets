@@ -1476,7 +1476,8 @@ describe('Asset Routes & Security Matrix Integration Tests (Seam A)', () => {
 
         // Strict projection, the one place that pins a search row's exact fields (#78 retro): id, name,
         // asset_number, serial_number and, since T4, the reference context; since F004-T4 (#78), On Loan
-        // and, since F005-T2 (#100), the Start Loan warning that replaced the latest Loan Return's Condition
+        // and, since F005-T2 (#100), the Start Loan warning that replaced the latest Loan Return's Condition;
+        // since F005-T4 (#102), Under Repair
         expect(Object.keys(body.items[0]).sort()).toEqual([
           'asset_number',
           'id',
@@ -1490,6 +1491,7 @@ describe('Asset Routes & Security Matrix Integration Tests (Seam A)', () => {
           'responsible_person',
           'serial_number',
           'start_loan_warning',
+          'under_repair',
         ]);
       }
     });

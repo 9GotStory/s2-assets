@@ -348,6 +348,25 @@ export async function underRepairOfAssets(db: pg.Pool | pg.PoolClient | any, ass
   );
 }
 
+// What a row of the Asset search says of Repair Records (F005-T4, #98 Q21): the Repair Record that keeps
+// the Asset Under Repair, for the list's badge and the bulk Reassignment notice (#98 Q11).
+export interface AssetSearchRepairFacts {
+  under_repair: UnderRepair | null;
+}
+
+/**
+ * The Asset search's view of Repair Records (F005-T4), as `loanSearch` is its view of Loans: a filter for
+ * a row aliased `a`, and what each result row says.
+ */
+export const repairSearch = {
+  // The Asset is Under Repair.
+  underRepairFilter: `EXISTS (SELECT 1 FROM repair_records r WHERE r.asset_id = a.id AND ${IS_UNDER_REPAIR})`,
+  factsOf: async (db: pg.Pool | any, assetIds: string[]): Promise<(assetId: string) => AssetSearchRepairFacts> => {
+    const underRepair = await underRepairOfAssets(db, assetIds);
+    return (assetId) => ({ under_repair: underRepair.get(assetId) ?? null });
+  },
+};
+
 // An Asset's latest Repair Outcome, as the Start Loan warning reads it (#98 Q20).
 export interface LatestRepairOutcome {
   repair_record_id: string;

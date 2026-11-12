@@ -263,6 +263,9 @@ export const BulkReassignmentPanel: React.FC<BulkReassignmentPanelProps> = ({
             draft={draft}
             isLocked={isBusy}
             onLoanAssets={selected.flatMap(({ on_loan, ...asset }) => (on_loan ? [{ id: asset.id, label: assetLabelOf(asset, asset.id), onLoan: on_loan }] : []))}
+            underRepairAssets={selected.flatMap(({ under_repair, ...asset }) =>
+              under_repair ? [{ id: asset.id, label: assetLabelOf(asset, asset.id), underRepair: under_repair }] : []
+            )}
           />
           <div style={{ display: 'flex', gap: '0.75rem' }}>
             <button type="button" id="bulk-reassign-preview" disabled={isBusy} onClick={handlePreview} style={buttonStyle(true, isBusy)}>
