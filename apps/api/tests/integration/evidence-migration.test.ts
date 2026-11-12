@@ -36,7 +36,7 @@ describe('Evidence Migration Integration (Seam C - T7)', () => {
     if (container) {
       await container.stop().catch(() => {});
     }
-  }, 30_000);
+  });
 
   it('verifies 0004_evidence.ts migration file exists', () => {
     expect(fs.existsSync(migrationFolder)).toBe(true);

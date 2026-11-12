@@ -91,7 +91,7 @@ describe('Native Kysely Transaction Integration Tests (T027 - US3)', () => {
     if (container) {
       await container.stop().catch(() => {});
     }
-  }, 30_000);
+  });
 
   beforeEach(() => {
     cleanupUserIds.length = 0;

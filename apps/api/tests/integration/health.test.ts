@@ -299,7 +299,7 @@ describe('Health & Readiness Integration Tests (T028 - US3)', () => {
     if (container) {
       await container.stop().catch(() => {});
     }
-  }, 30_000);
+  });
 
   afterEach(async () => {
     // Ensure the test-owned container is running and healthy between test cases

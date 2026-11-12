@@ -65,7 +65,7 @@ describe('CapabilityService Real PostgreSQL Integration Tests (T024 - US2)', () 
     if (container) {
       await container.stop().catch(() => {});
     }
-  }, 30_000);
+  });
 
   beforeEach(async () => {
     // Truncate tables and seed canonical roles

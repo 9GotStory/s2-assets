@@ -57,7 +57,7 @@ describe('Database Migrations Integration', () => {
     if (container) {
       await container.stop();
     }
-  }, 30_000);
+  });
 
   const expectApplied = (results: Awaited<ReturnType<typeof runMigrator>>['results'], names: readonly string[]) => {
     expect(results?.map(({ migrationName, direction, status }) => [migrationName, direction, status])).toEqual(

@@ -78,7 +78,7 @@ describe('Loan Due Date Extensions Migration Integration (Seam C - F004-T5)', ()
     if (container) {
       await container.stop().catch(() => {});
     }
-  }, 30_000);
+  });
 
   it('adds the Due Date Extensions to a populated database, and leaves its Loans alone', async () => {
     for (let step = 1; step <= 10; step++) {

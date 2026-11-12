@@ -54,6 +54,12 @@ run_job() {
   "$@" >"$log" 2>&1 || { result=failed; status=1; }
   # vitest and Playwright colour their summary lines.
   detail=$(sed -E 's/\x1b\[[0-9;]*m//g' "$log" | grep -E "$pattern" | sed -E 's/^ +//; s/ +/ /g; s/ \| /, /g' | awk 'NR > 1 { printf "; " } { printf "%s", $0 }' || true)
+  # #102 retro: a failure the host caused names its cause, so a rerun is not mistaken for a fix.
+  if [[ $result == failed ]]; then
+    local causes
+    causes=$(grep -ohiE 'disk quota exceeded|no space left on device|hook timed out in [0-9]+ms' "$log" | sort -fu | paste -sd ',' - | sed 's/,/, /g' || true)
+    [[ -n $causes ]] && detail="${detail:+$detail; }host: $causes"
+  fi
   rows+=("| \`$*\` | $result | ${detail:-no result line in the log} |")
   echo "all.sh: $name: $result"
 }

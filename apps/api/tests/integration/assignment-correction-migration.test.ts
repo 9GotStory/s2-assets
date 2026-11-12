@@ -66,7 +66,7 @@ describe('Assignment Correction Migration Integration (Seam C - F003-T3)', () =>
     if (container) {
       await container.stop().catch(() => {});
     }
-  }, 30_000);
+  });
 
   it('adds the correction records and the voided state, and keeps the facts recorded before it', async () => {
     for (let step = 1; step <= 6; step++) {
