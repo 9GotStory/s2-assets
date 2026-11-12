@@ -36,6 +36,7 @@ import { LoanReadService } from './services/loan-read.service.ts';
 import { LoanCorrectionService } from './services/loan-correction.service.ts';
 import { RepairReadService } from './services/repair-read.service.ts';
 import { RepairService } from './services/repair.service.ts';
+import { RepairCorrectionService } from './services/repair-correction.service.ts';
 import { AcquisitionService } from './services/acquisition.service.ts';
 import { EvidenceService } from './services/evidence.service.ts';
 
@@ -286,6 +287,7 @@ export async function buildApp(options: AppOptions = {}): Promise<FastifyInstanc
 
     await app.register(repairRoutes, {
       repairService: new RepairService({ db: dbClient, clock: options.clock }),
+      repairCorrectionService: new RepairCorrectionService({ db: dbClient, clock: options.clock }),
       repairReadService,
       capabilityService,
     });

@@ -1,4 +1,4 @@
-// What the API answers about Repair Records (F005-T1, T2, T5), and their labels from GLOSSARY.md (#98 Q14).
+// What the API answers about Repair Records (F005-T1, T2, T5, T6), and their labels from GLOSSARY.md (#98 Q14).
 
 import type { LoanCondition } from './loanFacts';
 import type { PermanentAssignment } from './ReferenceContextFields';
@@ -65,10 +65,35 @@ export interface RepairRecord {
   is_voided: boolean;
   version: number;
   outcome: RepairOutcome | null;
+  // Repair Outcomes voided by a Repair Correction, oldest first: shown struck through (F005-T6).
+  voided_outcomes: RepairOutcome[];
+  // On the Repair Record page only: its corrections, oldest first.
+  corrections?: RepairCorrection[];
   // On the Repair Record page only: whether the viewer holds 'repair:record'.
   can_record_repair?: boolean;
+  // On the Repair Record page only: whether the viewer holds 'repair:correct'.
+  can_correct_repair?: boolean;
   // Asked for with an Outcome Date: where the Asset goes back to on it, shown and never stored.
   assignment_on_outcome_date?: PermanentAssignment;
+}
+
+// The facts a Repair Correction names (F005-T6, #98 Q18).
+export type RepairCorrectionTarget = { kind: 'REPAIR_RECORD' } | { kind: 'REPAIR_OUTCOME'; id: string };
+
+// What a correction changed of one field. A Repair Source comes as it stands now.
+export type RepairCorrectionField =
+  | { field: 'repair_source_loan_return_id'; before: RepairSource | null; after: RepairSource | null }
+  | { field: string; before: string | null; after: string | null };
+
+export interface RepairCorrection {
+  id: string;
+  target: { kind: RepairCorrectionTarget['kind']; id: string };
+  action: 'AMENDED' | 'VOIDED';
+  reason: string;
+  changes: RepairCorrectionField[];
+  recorded_by: string;
+  recorded_by_username: string | null;
+  recorded_at: string;
 }
 
 // A page of the Repair list (F005-T3).

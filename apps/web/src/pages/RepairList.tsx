@@ -2,7 +2,8 @@ import React, { useEffect, useState } from 'react';
 import { Link, useNavigate, useSearchParams } from 'react-router';
 import { QueryClient, QueryClientProvider, useQuery } from '@tanstack/react-query';
 import { thaiDate } from '../components/assignmentFacts';
-import { assetLabel } from '../components/loanFacts';
+import { VoidedMark } from '../components/LoanBadges';
+import { assetLabel, voidedStyle } from '../components/loanFacts';
 import {
   OUTCOME_DATE_LABEL,
   REPAIRER_KIND_LABELS,
@@ -274,7 +275,8 @@ const RepairListContent: React.FC = () => {
                       </thead>
                       <tbody>
                         {page.items.map((record) => (
-                          <tr key={record.id} data-testid={`repair-row-${record.id}`} style={{ borderBottom: '1px solid #e5e7eb' }}>
+                          // A voided record stays listed, struck through, and counts in nothing (#98 Q18).
+                          <tr key={record.id} data-testid={`repair-row-${record.id}`} style={{ borderBottom: '1px solid #e5e7eb', ...(record.is_voided ? voidedStyle : {}) }}>
                             <td style={{ ...cellStyle, fontWeight: 500 }}>
                               <Link to={`/assets/${record.asset.id}`} style={{ color: '#2563eb', textDecoration: 'underline' }}>
                                 {assetLabel(record.asset)}
@@ -288,16 +290,24 @@ const RepairListContent: React.FC = () => {
                             </td>
                             <td style={cellStyle}>{repairerText(record.repairer)}</td>
                             <td style={cellStyle}>
-                              {record.outcome ? (
+                              {record.is_voided && <VoidedMark testId={`repair-row-voided-${record.id}`} />}
+                              {record.outcome && (
                                 <>
                                   {REPAIR_OUTCOME_LABELS[record.repair_kind][record.outcome.outcome]}
                                   <div style={{ color: '#6b7280', marginTop: '0.25rem' }}>
                                     {OUTCOME_DATE_LABEL}: <time dateTime={record.outcome.outcome_date}>{thaiDate(record.outcome.outcome_date)}</time>
                                   </div>
                                 </>
-                              ) : (
-                                <span style={{ color: '#92400e', fontWeight: 600 }}>{UNDER_REPAIR_LABELS[record.repair_kind]}</span>
                               )}
+                              {!record.outcome && !record.is_voided && <span style={{ color: '#92400e', fontWeight: 600 }}>{UNDER_REPAIR_LABELS[record.repair_kind]}</span>}
+                              {record.voided_outcomes.map((voided) => (
+                                <div key={voided.id} data-testid={`repair-row-voided-outcome-${voided.id}`} style={{ marginTop: '0.25rem' }}>
+                                  <span style={voidedStyle}>
+                                    {REPAIR_OUTCOME_LABELS[record.repair_kind][voided.outcome]} <time dateTime={voided.outcome_date}>{thaiDate(voided.outcome_date)}</time>
+                                  </span>
+                                  <VoidedMark testId={`repair-row-voided-outcome-mark-${voided.id}`} />
+                                </div>
+                              ))}
                             </td>
                             <td style={cellStyle}>
                               <Link to={`/repairs/${record.id}`} style={{ color: '#2563eb', textDecoration: 'underline' }}>

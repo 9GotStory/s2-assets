@@ -1,8 +1,10 @@
 import React, { useState } from 'react';
 import { Link } from 'react-router';
 import { useQuery } from '@tanstack/react-query';
+import { VoidedMark } from './LoanBadges';
 import { RepairStartForm } from './RepairStartForm';
 import { thaiDate } from './assignmentFacts';
+import { voidedStyle } from './loanFacts';
 import {
   NEXT_RECOMMENDED_MAINTENANCE_DATE_LABEL,
   OUTCOME_DATE_LABEL,
@@ -13,6 +15,7 @@ import {
   REPAIR_START_LABEL,
   UNDER_REPAIR_LABELS,
   repairerText,
+  type RepairOutcome,
   type RepairRecord,
   type UnderRepair,
 } from './repairFacts';
@@ -32,10 +35,27 @@ export interface RepairSectionProps {
   onPermissionRevoked?: (statusCode?: number) => void;
 }
 
+// One Repair Outcome of a record in the history; a voided one stays shown, struck through (#98 Q18).
+const OutcomeLine: React.FC<{ record: RepairRecord; outcome: RepairOutcome; testId: string; isVoided: boolean }> = ({ record, outcome, testId, isVoided }) => (
+  <div data-testid={testId} style={isVoided ? voidedStyle : undefined}>
+    {REPAIR_OUTCOME_LABEL}: {REPAIR_OUTCOME_LABELS[record.repair_kind][outcome.outcome]} · {OUTCOME_DATE_LABEL}:{' '}
+    <time dateTime={outcome.outcome_date}>{thaiDate(outcome.outcome_date)}</time>
+    {outcome.next_recommended_maintenance_date && (
+      <>
+        {' '}
+        · {NEXT_RECOMMENDED_MAINTENANCE_DATE_LABEL}: <time dateTime={outcome.next_recommended_maintenance_date}>{thaiDate(outcome.next_recommended_maintenance_date)}</time>
+      </>
+    )}
+    {isVoided && <VoidedMark testId={`${testId}-voided`} />}
+    {outcome.note && <div style={{ whiteSpace: 'pre-line' }}>หมายเหตุของผล: {outcome.note}</div>}
+    {outcome.document_reference && <div style={{ whiteSpace: 'pre-line' }}>เอกสารอ้างอิงของผล: {outcome.document_reference}</div>}
+  </div>
+);
+
 /**
  * Whether the Asset is Under Repair, its Next Recommended Maintenance Date and its Repair Records with
  * their outcomes (F005-T1, T2), apart from the assignment timeline and from "การยืม": a Repair Record
- * never changes a Permanent Assignment (RM-05).
+ * never changes a Permanent Assignment (RM-05). Voided facts stay shown, struck through (F005-T6).
  */
 export const RepairSection: React.FC<RepairSectionProps> = ({
   assetId,
@@ -152,27 +172,19 @@ export const RepairSection: React.FC<RepairSectionProps> = ({
             {history.data.map((record) => (
               <li key={record.id} style={{ borderTop: '1px solid #e5e7eb', padding: '0.75rem 0', fontSize: '0.875rem', color: '#374151' }}>
                 <div style={{ fontWeight: 500, color: '#111827' }}>
-                  {REPAIR_KIND_LABELS[record.repair_kind]} · {repairerText(record.repairer)}
+                  <span style={record.is_voided ? voidedStyle : undefined}>
+                    {REPAIR_KIND_LABELS[record.repair_kind]} · {repairerText(record.repairer)}
+                  </span>
+                  {record.is_voided && <VoidedMark testId={`repair-history-voided-${record.id}`} />}
                 </div>
-                <div>
+                <div style={record.is_voided ? voidedStyle : undefined}>
                   วันที่ส่งซ่อม: <time dateTime={record.start_date}>{thaiDate(record.start_date)}</time>
                 </div>
-                {record.outcome && (
-                  <div data-testid={`repair-history-outcome-${record.id}`}>
-                    {REPAIR_OUTCOME_LABEL}: {REPAIR_OUTCOME_LABELS[record.repair_kind][record.outcome.outcome]} · {OUTCOME_DATE_LABEL}:{' '}
-                    <time dateTime={record.outcome.outcome_date}>{thaiDate(record.outcome.outcome_date)}</time>
-                    {record.outcome.next_recommended_maintenance_date && (
-                      <>
-                        {' '}
-                        · {NEXT_RECOMMENDED_MAINTENANCE_DATE_LABEL}:{' '}
-                        <time dateTime={record.outcome.next_recommended_maintenance_date}>{thaiDate(record.outcome.next_recommended_maintenance_date)}</time>
-                      </>
-                    )}
-                    {record.outcome.note && <div style={{ whiteSpace: 'pre-line' }}>หมายเหตุของผล: {record.outcome.note}</div>}
-                    {record.outcome.document_reference && <div style={{ whiteSpace: 'pre-line' }}>เอกสารอ้างอิงของผล: {record.outcome.document_reference}</div>}
-                  </div>
-                )}
-                <div style={{ whiteSpace: 'pre-line' }}>
+                {record.outcome && <OutcomeLine record={record} outcome={record.outcome} testId={`repair-history-outcome-${record.id}`} isVoided={false} />}
+                {record.voided_outcomes.map((voided) => (
+                  <OutcomeLine key={voided.id} record={record} outcome={voided} testId={`repair-history-voided-outcome-${voided.id}`} isVoided />
+                ))}
+                <div style={{ whiteSpace: 'pre-line', ...(record.is_voided ? voidedStyle : {}) }}>
                   อาการ/งานที่ทำ: {record.symptom_or_work}{' '}
                   <Link to={`/repairs/${record.id}`} style={{ color: '#2563eb', textDecoration: 'underline' }}>
                     ดูรายการซ่อม

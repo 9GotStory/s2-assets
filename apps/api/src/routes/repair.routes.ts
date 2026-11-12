@@ -6,6 +6,7 @@ import { errorBody, parseWrite } from './write-request.ts';
 import { isCalendarDate } from '../services/assignment.service.ts';
 import { isValidUuid, type CapabilityService } from '../services/capability.service.ts';
 import { hasDisallowedControlChars } from '../services/control-characters.ts';
+import { RepairCorrectionService, RepairOutcomeVoidRefusedError, type CorrectRepairInput } from '../services/repair-correction.service.ts';
 import { RepairReadService } from '../services/repair-read.service.ts';
 import {
   RepairOutcomeRefusedError,
@@ -20,6 +21,7 @@ import { ValidationError } from '../services/validation-error.ts';
 
 export interface RepairRoutesOptions {
   repairService: RepairService;
+  repairCorrectionService: RepairCorrectionService;
   repairReadService: RepairReadService;
   capabilityService: CapabilityService;
 }
@@ -67,6 +69,45 @@ const StartRepairSchema = z
   })
   .strict();
 
+// #98 Q18: what a Repair Correction names. The record is named by the path; its Asset is never amended.
+const RepairCorrectionSchema = z
+  .object({
+    expected_version: z.number().int().min(1),
+    action: z.enum(['AMEND', 'VOID']),
+    target: z.discriminatedUnion('kind', [
+      z.object({ kind: z.literal('REPAIR_RECORD') }).strict(),
+      z.object({ kind: z.literal('REPAIR_OUTCOME'), id: z.string() }).strict(),
+    ]),
+    reason: z.string(),
+    changes: z
+      .object({
+        repair_kind: z.enum(['REPAIR', 'MAINTENANCE']).optional(),
+        start_date: z.string().optional(),
+        repairer: z
+          .object({
+            kind: z.enum(['INTERNAL', 'EXTERNAL']),
+            name: z.string().nullable().optional(),
+          })
+          .strict()
+          .optional(),
+        symptom_or_work: z.string().optional(),
+        under_warranty: z.enum(['YES', 'NO', 'UNSPECIFIED']).optional(),
+        warranty_end_date: z.string().nullable().optional(),
+        cost: z.string().nullable().optional(),
+        document_reference: z.string().nullable().optional(),
+        remark: z.string().nullable().optional(),
+        repair_source: z.object({ loan_return_id: z.string() }).strict().nullable().optional(),
+        outcome: z.enum(['USABLE', 'NOT_USABLE']).optional(),
+        outcome_date: z.string().optional(),
+        note: z.string().nullable().optional(),
+        next_recommended_maintenance_date: z.string().nullable().optional(),
+      })
+      .strict()
+      .optional(),
+    retry_token: z.string().optional(),
+  })
+  .strict();
+
 // The Repair list's query (#98 Q21): each filter narrows the list on its own, and a page is read as on the
 // Asset list. A repeated parameter arrives as an array and is refused.
 const RepairListQuerySchema = z
@@ -96,6 +137,9 @@ const refusalOf = (err: unknown) => {
   if (err instanceof RepairSourceRefusedError) {
     return { ...errorBody(err.statusCode, err.code, err.message), repair_source: err.repair_source };
   }
+  if (err instanceof RepairOutcomeVoidRefusedError) {
+    return { ...errorBody(err.statusCode, err.code, err.message), asset: err.asset };
+  }
   if (err instanceof RepairOutcomeRefusedError) {
     return { ...errorBody(err.statusCode, err.code, err.message), record: err.record };
   }
@@ -113,7 +157,7 @@ const refusalOf = (err: unknown) => {
 };
 
 export const repairRoutes: FastifyPluginAsync<RepairRoutesOptions> = async (fastify, options) => {
-  const { repairService, repairReadService, capabilityService } = options;
+  const { repairService, repairCorrectionService, repairReadService, capabilityService } = options;
 
   /**
    * POST /repairs
@@ -169,6 +213,37 @@ export const repairRoutes: FastifyPluginAsync<RepairRoutesOptions> = async (fast
   });
 
   /**
+   * POST /repairs/:id/corrections
+   * Amends or voids the Repair Record or its Repair Outcome, recorded wrong, with a reason
+   * ("แก้ไขรายการที่บันทึกผิด", "ยกเลิกรายการ (บันทึกผิด)", F005-T6), against the version the client read.
+   * Protected: requires 'repair:correct' capability (Asset Custodian, Administrator)
+   */
+  fastify.post('/repairs/:id/corrections', { preHandler: [requireCapability('repair:correct')] }, async (request, reply) => {
+    const { id } = request.params as { id: string };
+    if (!isValidUuid(id)) {
+      return reply.status(400).send(errorBody(400, 'INVALID_ID', 'Repair Record ID must be a valid UUID string'));
+    }
+    const write = parseWrite(RepairCorrectionSchema, request);
+    if ('refusal' in write) {
+      return reply.status(400).send(write.refusal);
+    }
+
+    try {
+      const { retry_token: _retryToken, ...input } = write.data;
+      const recorded = await repairCorrectionService.correct(request.user!.id, id.trim().toLowerCase(), input as CorrectRepairInput, {
+        retryToken: write.retryToken,
+      });
+      return reply.status(201).send(recorded);
+    } catch (err) {
+      const refusal = refusalOf(err);
+      if (!refusal) {
+        throw err;
+      }
+      return reply.status(refusal.statusCode).send(refusal);
+    }
+  });
+
+  /**
    * GET /repairs
    * The Repair list ("รายการซ่อม/บำรุงรักษา"), newest Start Date first (F005-T3). The logger names a
    * request by its path, so a search stays out of the logs.
@@ -188,8 +263,8 @@ export const repairRoutes: FastifyPluginAsync<RepairRoutesOptions> = async (fast
 
   /**
    * GET /repairs/:id
-   * One Repair Record with its outcome (F005-T1, T2). Every field goes to every reader, cost and Repairer
-   * included (#98 Q2).
+   * One Repair Record with its outcome and corrections (F005-T1, T2, T6). Every field goes to every reader,
+   * cost and Repairer included (#98 Q2).
    * With ?outcome_date=YYYY-MM-DD, it also says where the Asset goes back to on that date (F005-T2, MR-16).
    * Protected: requires 'asset:view' capability, like the Asset it names
    */
@@ -207,7 +282,8 @@ export const repairRoutes: FastifyPluginAsync<RepairRoutesOptions> = async (fast
       return reply.status(404).send(errorBody(404, 'NOT_FOUND', 'Repair Record not found'));
     }
     const canRecordRepair = await capabilityService.hasCapability(request.user!.id, 'repair:record');
-    return reply.status(200).send({ ...record, can_record_repair: canRecordRepair });
+    const canCorrectRepair = await capabilityService.hasCapability(request.user!.id, 'repair:correct');
+    return reply.status(200).send({ ...record, can_record_repair: canRecordRepair, can_correct_repair: canCorrectRepair });
   });
 
   /**

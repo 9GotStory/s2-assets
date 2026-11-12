@@ -396,4 +396,81 @@ test.describe.serial('Repair journeys: Real SPA -> Composed API -> PostgreSQL (S
     await page.locator('#loan-cancel').click();
     await lendFromAssetPage(page, 'คุณยืมของซ่อมไม่ได้');
   });
+
+  test('Journey F005-T6.1: a Custodian corrects a Repair Record, voids its Repair Outcome so the Asset is "อยู่ระหว่างซ่อม" again, then voids the record, which stays shown struck through', async ({ page, context }) => {
+    const symptom = `พัดลม E2E แก้รายการ ${crypto.randomUUID().slice(0, 8)}`;
+    const { asset } = await assetService.registerAsset(custodianUserId, { name: 'พัดลม E2E แก้รายการซ่อม' } as any);
+    const { repair_record_id: repairRecordId } = await repairService.start(
+      custodianUserId,
+      { asset_id: asset.id, repair_kind: 'REPAIR', start_date: yesterday(), repairer: { kind: 'INTERNAL' }, symptom_or_work: symptom, cost: '200' },
+      { retryToken: crypto.randomUUID() }
+    );
+    await repairService.recordOutcome(custodianUserId, repairRecordId, { expected_version: 1, outcome: 'USABLE', outcome_date: yesterday(), cost: '350' }, { retryToken: crypto.randomUUID() });
+
+    await loginAs(context, custodianUserId);
+    await page.goto(`${targetBaseUrl}/repairs/${repairRecordId}`);
+    await expect(page.locator('#repair-status')).toHaveText('ผลการซ่อม: ใช้งานได้');
+
+    // An amendment of the record keeps its reason and the before and after.
+    await page.locator('#repair-amend-action').click();
+    await page.locator('#repair-amend-remark').fill('ร้านแจ้งรับเครื่องแล้ว');
+    await page.locator('#repair-amend-reason').fill('ลืมบันทึกหมายเหตุ');
+    await page.locator('#repair-amend-submit').click();
+    await expect(page.locator('#repair-remark')).toHaveText('ร้านแจ้งรับเครื่องแล้ว');
+    const corrections = page.locator('[data-testid="repair-correction"]');
+    await expect(corrections).toHaveCount(1);
+    await expect(corrections).toContainText('แก้ไขรายการที่บันทึกผิด: รายการซ่อม/บำรุงรักษา');
+    await expect(corrections).toContainText('หมายเหตุ: ไม่ระบุ แก้เป็น ร้านแจ้งรับเครื่องแล้ว');
+
+    // Voiding the outcome needs a reason, then puts the record back Under Repair with the cost it replaced.
+    await page.locator('#repair-outcome-void-action').click();
+    await page.locator('#repair-void-submit').click();
+    await expect(page.locator('[data-testid="repair-void-form-error"]')).toBeVisible();
+    await page.locator('#repair-void-reason').fill('ร้านยังไม่ได้ซ่อมจริง');
+    await page.locator('#repair-void-submit').click();
+    await expect(page.locator('#repair-status')).toHaveText('อยู่ระหว่างซ่อม');
+    await expect(page.locator('[data-testid="repair-outcome-none"]')).toBeVisible();
+    await expect(page.locator('#repair-cost')).toHaveText('200.00 บาท');
+    const outcomeId = (await (await page.request.get(`${targetBaseUrl}/repairs/${repairRecordId}`)).json()).voided_outcomes[0].id;
+    await expect(page.locator(`[data-testid="repair-voided-outcome-${outcomeId}-voided"]`)).toHaveText('ยกเลิกแล้ว');
+    await expect(corrections).toHaveCount(2);
+    await expect(page.locator('#repair-outcome-action')).toBeVisible();
+
+    // The Asset page reads it Under Repair again, with the voided outcome struck through.
+    await page.locator('#repair-asset').click();
+    await expect(page.locator('[data-testid="repair-under-repair"]')).toContainText('อยู่ระหว่างซ่อม');
+    await expect(page.locator(`[data-testid="repair-history-voided-outcome-${outcomeId}-voided"]`)).toHaveText('ยกเลิกแล้ว');
+
+    // Voiding the record ends Under Repair; it stays shown, struck through, with no action left on it.
+    await page.locator('#repair-current-link').click();
+    await page.locator('#repair-void-action').click();
+    await page.locator('#repair-void-reason').fill('ไม่เคยส่งซ่อมจริง');
+    await page.locator('#repair-void-submit').click();
+    await expect(page.locator('[data-testid="repair-voided"]')).toBeVisible();
+    await expect(page.locator('#repair-status')).toHaveText('ยกเลิกแล้ว');
+    await expect(corrections).toHaveCount(3);
+    await expect(page.locator('#repair-amend-action')).toHaveCount(0);
+    await expect(page.locator('#repair-outcome-action')).toHaveCount(0);
+
+    await page.goto(`${targetBaseUrl}/assets/${asset.id}`);
+    await expect(page.locator(`[data-testid="repair-history-voided-${repairRecordId}"]`)).toHaveText('ยกเลิกแล้ว');
+    await expect(page.locator('[data-testid="repair-under-repair"]')).toHaveCount(0);
+    await expect(page.locator('#repair-action')).toBeVisible();
+
+    await page.goto(`${targetBaseUrl}/repairs?search=${encodeURIComponent(symptom)}`);
+    await expect(page.locator(`[data-testid="repair-row-voided-${repairRecordId}"]`)).toHaveText('ยกเลิกแล้ว');
+
+    // A Read-only User sees the corrections, with no action, where a Custodian was offered them above.
+    const { repair_record_id: openRecordId } = await repairService.start(
+      custodianUserId,
+      { asset_id: asset.id, repair_kind: 'REPAIR', start_date: yesterday(), repairer: { kind: 'INTERNAL' }, symptom_or_work: 'ส่งซ่อมใหม่' },
+      { retryToken: crypto.randomUUID() }
+    );
+    await switchActor(page, context, readonlyUserId);
+    await page.goto(`${targetBaseUrl}/repairs/${repairRecordId}`);
+    await expect(corrections).toHaveCount(3);
+    await page.goto(`${targetBaseUrl}/repairs/${openRecordId}`);
+    await expect(page.locator('#repair-status')).toHaveText('อยู่ระหว่างซ่อม');
+    await expect(page.locator('main button')).toHaveCount(0);
+  });
 });
