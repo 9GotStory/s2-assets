@@ -817,12 +817,12 @@ test.describe.serial('Loan journeys: Real SPA -> Composed API -> PostgreSQL (Sea
     await page.locator('#loan-submit').click();
 
     // Nothing is saved until the Loan Conflict is confirmed, and the fields stay as warned about.
-    const warning = page.locator('[data-testid="loan-conflict-warning"]');
+    const warning = page.locator('[data-testid="conflict-warning"]');
     await expect(warning).toContainText('ช่วงยืมทับกัน 1 รายการ');
     await expect(warning).toContainText('กล้อง E2E ช่วงยืมทับกัน');
     await expect(page.locator('#loan-loan_date')).toBeDisabled();
     expect((await loanReadService.itemsOfAsset(asset.id))!).toHaveLength(1);
-    await page.locator('#loan-conflict-confirm').click();
+    await page.locator('#conflict-confirm').click();
     await expect(page.locator('#loan-form')).toHaveCount(0);
 
     // Both Loans are kept and marked on the Asset page.

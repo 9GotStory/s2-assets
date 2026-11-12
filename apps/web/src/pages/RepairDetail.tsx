@@ -3,6 +3,8 @@ import { Link, useNavigate, useParams } from 'react-router';
 import { QueryClient, QueryClientProvider, useQuery } from '@tanstack/react-query';
 import { VoidedMark } from '../components/LoanBadges';
 import { RepairAmendForm, RepairVoidForm } from '../components/RepairCorrectionForms';
+import { conflictBoxStyle } from '../components/AssignmentConflictWarning';
+import { RepairConflictMarks } from '../components/RepairConflicts';
 import { RepairCorrectionList } from '../components/RepairCorrectionList';
 import { RepairOutcomeForm } from '../components/RepairOutcomeForm';
 import { CORRECTION_LABELS, thaiDate } from '../components/assignmentFacts';
@@ -11,6 +13,7 @@ import {
   NEXT_RECOMMENDED_MAINTENANCE_DATE_LABEL,
   OUTCOME_DATE_LABEL,
   RECORD_REPAIR_OUTCOME_LABEL,
+  REPAIR_CONFLICT_LABEL,
   REPAIR_CORRECTION_TARGET_LABELS,
   REPAIR_KIND_LABELS,
   REPAIR_OUTCOME_LABEL,
@@ -178,7 +181,7 @@ const RepairDetailContent: React.FC = () => {
     );
   }
 
-  const { asset, repair_kind: repairKind, start_date: startDate, repairer, symptom_or_work: symptomOrWork, under_warranty: underWarranty, warranty_end_date: warrantyEndDate, cost, document_reference: documentReference, remark, repair_source: repairSource, recorded_by: recordedBy, recorded_by_username: recordedByUsername, recorded_at: recordedAt, is_voided: isVoided, outcome, voided_outcomes: voidedOutcomes, corrections = [] } = record.data;
+  const { asset, repair_kind: repairKind, start_date: startDate, repairer, symptom_or_work: symptomOrWork, under_warranty: underWarranty, warranty_end_date: warrantyEndDate, cost, document_reference: documentReference, remark, repair_source: repairSource, recorded_by: recordedBy, recorded_by_username: recordedByUsername, recorded_at: recordedAt, is_voided: isVoided, outcome, voided_outcomes: voidedOutcomes, conflicts, corrections = [] } = record.data;
   // In GLOSSARY.md terms only: a voided record keeps nobody's Asset, and one with its outcome shows it.
   const statusText = (): string => {
     if (isVoided) {
@@ -250,6 +253,14 @@ const RepairDetailContent: React.FC = () => {
         {isVoided && (
           <div data-testid="repair-voided" role="note" style={{ padding: '0.75rem 1rem', backgroundColor: '#fee2e2', color: '#991b1b', borderRadius: '6px', marginBottom: '1rem', fontWeight: 600 }}>
             {VOIDED_LABEL}: รายการซ่อมนี้ไม่เคยเกิดขึ้นจริง และไม่นับรวมในสถานะใด
+          </div>
+        )}
+
+        {/* F005-T7: the mark goes away by itself once a correction removes the overlap (#98 Q17). */}
+        {conflicts.length > 0 && (
+          <div data-testid="repair-conflict-notice" role="note" style={{ ...conflictBoxStyle, marginBottom: '1rem' }}>
+            <span style={{ fontWeight: 600 }}>{REPAIR_CONFLICT_LABEL}</span>: ช่วงของรายการนี้ทับกับรายการอื่นของครุภัณฑ์เดียวกัน กรุณาตรวจสอบและแก้ไขรายการที่บันทึกผิด
+            <RepairConflictMarks conflicts={conflicts} testId="repair-conflicts" />
           </div>
         )}
 

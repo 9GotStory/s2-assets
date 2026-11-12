@@ -1,6 +1,7 @@
 import pg from 'pg';
 import { assetExists, containsPattern } from './asset-lookups.ts';
 import { bangkokDate, readAssignmentsAt, type PermanentAssignment, type ReferenceEntrySummary } from './assignment.service.ts';
+import { loanItemPeriods } from './loan-item-periods.ts';
 import { latestRepairOutcomesOf, repairRecordsCiting, type CitingRepairRecord, type RepairKind } from './repair-read.service.ts';
 
 // The reads of Loans: the Loan page, the Loan list, an Asset's Loans and the Asset search's view of them.
@@ -209,19 +210,6 @@ const ITEM_IS_OUTSTANDING = `li.ending_kind = 'NONE' AND NOT li.is_voided`;
 // LR-06, #74 Q5: an Outstanding LoanItem whose current Due Date is before today, for a row aliased `li`
 // and today's Asia/Bangkok date as the parameter `today`. An item due today is not Overdue.
 const itemIsOverdue = (today: string): string => `(${ITEM_IS_OUTSTANDING} AND ${CURRENT_DUE_DATE} < ${today}::date)`;
-
-// The period of each non-voided LoanItem of a non-voided Loan that `scope` keeps, for rows aliased `li`
-// and `l`: from the Loan Date to the effective ending date, the Loan Return's date, otherwise the Not
-// Returned date, and open-ended without either (#74).
-const loanItemPeriods = (scope: string): string => `SELECT li.id AS loan_item_id, li.loan_id, li.asset_id, l.loan_date AS starts,
-         coalesce(loan_return.ending_date, not_returned.ending_date) AS ends
-       FROM loan_items li
-       JOIN loans l ON l.id = li.loan_id
-       LEFT JOIN loan_item_endings loan_return
-         ON loan_return.loan_item_id = li.id AND loan_return.kind = 'LOAN_RETURN' AND NOT loan_return.is_voided
-       LEFT JOIN loan_item_endings not_returned
-         ON not_returned.loan_item_id = li.id AND not_returned.kind = 'NOT_RETURNED' AND NOT not_returned.is_voided
-       WHERE NOT li.is_voided AND NOT l.is_voided AND ${scope}`;
 
 // Every Loan Conflict among the LoanItems that `scope` keeps, once from each side: two periods of one
 // Asset conflict when each starts strictly before the other ends, so a shared boundary day is none (#74 Q20).

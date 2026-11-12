@@ -6,6 +6,12 @@ import { z } from 'zod';
 // as a 403 or a 500 does.
 export const errorBody = (statusCode: number, code: string, message: string) => ({ statusCode, code, error: code, message });
 
+// #74 Q20, #98 Q17: the conflicts a warning listed that the user confirms, each by its other side, a
+// LoanItem or a Repair Record.
+export const ConfirmedConflictsSchema = z
+  .array(z.union([z.object({ conflicting_loan_item_id: z.string() }).strict(), z.object({ conflicting_repair_record_id: z.string() }).strict()]))
+  .optional();
+
 const RETRY_TOKEN_MAX_LENGTH = 128;
 
 // The retry token of a request, from its header or its body, or why there is none to use.

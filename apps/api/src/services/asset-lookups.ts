@@ -12,3 +12,9 @@ export async function assetExists(db: pg.Pool | any, assetId: string): Promise<b
   const res = await db.query('SELECT 1 FROM assets WHERE id = $1', [assetId]);
   return res.rows.length > 0;
 }
+
+/** What a warning names each of `assetIds` by, by Asset. */
+export async function assetNamesOf(db: pg.Pool | any, assetIds: string[]): Promise<Map<string, { name: string | null; asset_number: string | null }>> {
+  const res = await db.query('SELECT id, name, asset_number FROM assets WHERE id = ANY($1::uuid[])', [assetIds]);
+  return new Map(res.rows.map(({ id, name, asset_number }: any) => [id, { name, asset_number }]));
+}

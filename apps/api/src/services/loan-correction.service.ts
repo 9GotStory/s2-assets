@@ -20,7 +20,7 @@ import {
   type LoanCorrectionTarget,
   type StoredLoanFact,
 } from './loan.service.ts';
-import { loanConflictCheck, normalizeConfirmedConflicts, withConfirmedConflicts, type ConfirmedLoanConflictInput } from './loan-conflict.ts';
+import { loanConflictCheck, normalizeConfirmedConflicts, withConfirmedConflicts, type ConfirmedConflictInput } from './loan-conflict.ts';
 import type { LoanCondition } from './loan-read.service.ts';
 import { isSelectablePerson } from './reference.service.ts';
 import { underRepairOfAssets, type RepairKind } from './repair-read.service.ts';
@@ -49,8 +49,8 @@ export interface CorrectLoanInput {
   target: LoanCorrectionTarget;
   reason: string;
   changes?: LoanAmendmentInput;
-  // The Loan Conflicts the user saw in a warning and confirms (#74 Q25).
-  confirmed_conflicts?: ConfirmedLoanConflictInput[];
+  // The Loan Conflicts and Repair Conflicts the user saw in a warning and confirms (#74 Q25, #98 Q17).
+  confirmed_conflicts?: ConfirmedConflictInput[];
 }
 
 // What a Loan Correction answers. It carries no Borrower detail, as for starting a Loan (LR-15, #74 Q24).

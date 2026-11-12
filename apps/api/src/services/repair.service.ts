@@ -2,9 +2,11 @@ import pg from 'pg';
 import { DOCUMENT_REFERENCE_MAX_LENGTH, REMARK_MAX_LENGTH, bangkokDate, isCalendarDate, lockAssetsInIdentifierOrder, normalizeLine, normalizeText } from './assignment.service.ts';
 import { isValidUuid } from './capability.service.ts';
 import { hasStrictControlChars } from './control-characters.ts';
+import { normalizeConfirmedConflicts, withConfirmedConflicts, type ConfirmedConflictInput } from './loan-conflict.ts';
 import { loanReturnsOf } from './loan-return-read.ts';
 import { loansHoldingAssets } from './loan.service.ts';
 import { underRepairOfAssets, type RepairKind, type RepairOutcomeValue, type RepairerKind, type UnderWarranty } from './repair-read.service.ts';
+import { repairConflictCheck } from './repair-conflict.ts';
 import { commitOnce } from './retryable-write.ts';
 import { NotFoundError, StaleBeforeConflictError } from './service-errors.ts';
 import { ValidationError } from './validation-error.ts';
@@ -31,6 +33,8 @@ export interface StartRepairInput {
   repair_source?: { loan_return_id: string } | null;
   // Work finished in one visit, or an old repair, is recorded with its outcome in one write (#98 Q1, Q22).
   outcome?: RepairOutcomeInput | null;
+  // The Repair Conflicts the user saw in a warning and confirms (F005-T7, #98 Q17).
+  confirmed_conflicts?: ConfirmedConflictInput[];
 }
 
 // How a Repair Record ended (#98 Q10, Q22). The record's one cost is not part of it.
@@ -490,8 +494,12 @@ export class RepairService {
 
   async start(actorId: string, input: StartRepairInput, { retryToken }: { retryToken: string }): Promise<RepairRecordVersion> {
     const { outcome, repair_source_loan_return_id: sourceId, ...facts } = normalizeFacts(input, bangkokDate(this.clock()));
-    // A Repair Start without an outcome or a Repair Source keeps the fingerprint it had before either existed.
-    const payload = { version: 1, ...facts, ...(outcome ? { outcome } : {}), ...(sourceId ? { repair_source_loan_return_id: sourceId } : {}) };
+    const confirmed = normalizeConfirmedConflicts(input.confirmed_conflicts);
+    // A Repair Start without an outcome, a Repair Source or a confirmation keeps the fingerprint it had before each existed.
+    const payload = withConfirmedConflicts(
+      { version: 1, ...facts, ...(outcome ? { outcome } : {}), ...(sourceId ? { repair_source_loan_return_id: sourceId } : {}) },
+      confirmed
+    );
     return commitOnce(
       this.db,
       { actorId, operation: 'repair:start', retryToken, payload, explicitContinuation: false },
@@ -500,6 +508,7 @@ export class RepairService {
         if (sourceId) {
           await assertRepairSource(client, facts.asset_id, sourceId);
         }
+        const conflicts = await repairConflictCheck(client, facts.asset_id);
         const res = await client.query(
           `INSERT INTO repair_records (asset_id, repair_kind, start_date, repairer_kind, repairer_name, symptom_or_work, under_warranty,
                                        warranty_end_date, cost, document_reference, remark, repair_source_loan_return_id, has_outcome, recorded_by)
@@ -527,6 +536,8 @@ export class RepairService {
         if (outcome) {
           await insertOutcome(client, { repairRecordId: res.rows[0].id, facts: outcome, costBefore: facts.cost, actorId });
         }
+        // A backdated record may overlap an earlier Repair Record or LoanItem of the Asset (#98 Q17).
+        await conflicts.assertConfirmed({ repairRecordId: res.rows[0].id, isNewRecord: true, confirmed });
         return { repair_record_id: res.rows[0].id, version: res.rows[0].version };
       }
     );

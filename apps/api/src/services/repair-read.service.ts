@@ -1,6 +1,7 @@
 import pg from 'pg';
 import { assetExists, containsPattern } from './asset-lookups.ts';
 import { readAssignmentsAt, type PermanentAssignment } from './assignment.service.ts';
+import { loanItemPeriods } from './loan-item-periods.ts';
 import { loanReturnsOf, type CitedLoanReturn } from './loan-return-read.ts';
 
 export type RepairKind = 'REPAIR' | 'MAINTENANCE';
@@ -59,6 +60,38 @@ export interface RepairRecord {
   outcome: RepairOutcome | null;
   // Its Repair Outcomes voided by a Repair Correction, oldest first: shown struck through, counted in nothing (#98 Q18).
   voided_outcomes: RepairOutcome[];
+  // The other Repair Records and LoanItems of its Asset whose periods overlap its own, earliest first (#98 Q17).
+  conflicts: RepairConflict[];
+}
+
+// A Repair Record as the other side of a Repair Conflict: its period runs from its Start Date to its
+// Outcome Date, open-ended without one (#98 Q17).
+export interface ConflictingRepairRecord {
+  kind: 'REPAIR_RECORD';
+  repair_record_id: string;
+  repair_kind: RepairKind;
+  start_date: string;
+  outcome_date: string | null;
+}
+
+// A LoanItem as the other side of a Repair Conflict, with the period Feature 004 gives it.
+export interface ConflictingLoanItem {
+  kind: 'LOAN_ITEM';
+  loan_id: string;
+  loan_item_id: string;
+  loan_date: string;
+  // Its effective ending date, or null while it has none.
+  ending_date: string | null;
+}
+
+/** A Repair Conflict as one Repair Record sees it: the other Repair Record or LoanItem whose period overlaps its own. */
+export type RepairConflict = ConflictingRepairRecord | ConflictingLoanItem;
+
+/** A Repair Conflict of one Repair Record, with the record and its Asset. */
+export interface RepairRecordConflict {
+  asset_id: string;
+  repair_record: ConflictingRepairRecord;
+  conflicting: RepairConflict;
 }
 
 // What a correction changed of one field. A Repair Source is read as it stands now, as the record reads it.
@@ -87,6 +120,8 @@ export interface RepairListFilters {
   repairer_kind?: RepairerKind;
   // A text in the Repairer name or in the symptom or work, in any case, matched literally.
   search?: string;
+  // "มี conflict ค้างตรวจ": a record in a Repair Conflict (#98 Q17).
+  has_repair_conflict?: boolean;
   limit: number;
   offset: number;
 }
@@ -109,6 +144,57 @@ export interface UnderRepair {
 
 // Under Repair is derived on read, never stored: a non-voided Repair Record without a Repair Outcome (#98 Q1).
 const IS_UNDER_REPAIR = 'NOT r.is_voided AND NOT r.has_outcome';
+
+// The period of each non-voided Repair Record that `scope` keeps, for rows aliased `r`: from its Start Date
+// to the Outcome Date of its non-voided Repair Outcome, and open-ended without one (#98 Q17).
+const repairRecordPeriods = (scope: string): string => `SELECT r.id AS repair_record_id, r.asset_id, r.repair_kind, r.start_date AS starts, o.outcome_date AS ends
+       FROM repair_records r
+       LEFT JOIN repair_outcomes o ON o.repair_record_id = r.id AND NOT o.is_voided
+       WHERE NOT r.is_voided AND ${scope}`;
+
+// Two periods `p` and `o` of one Asset overlap when each starts strictly before the other ends, so a shared
+// boundary day is none (#98 Q17).
+const PERIODS_OVERLAP = `p.starts < coalesce(o.ends, 'infinity'::date) AND o.starts < coalesce(p.ends, 'infinity'::date)`;
+
+// Every Repair Conflict of the Assets that `assetScope` keeps, given the column naming an Asset, once per
+// Repair Record in it: two Repair Records conflict once from each side, a Repair Record and a LoanItem
+// once. Never stored (#98 Q17).
+const repairConflictPairs = (assetScope: (assetColumn: string) => string): string => `WITH repairs AS (${repairRecordPeriods(assetScope('r.asset_id'))}),
+       lent_periods AS (${loanItemPeriods(assetScope('li.asset_id'))})
+     SELECT p.asset_id, p.repair_record_id, p.repair_kind, p.starts, p.ends, 'REPAIR_RECORD' AS conflicting_kind, o.repair_record_id AS conflicting_id,
+            NULL::uuid AS conflicting_loan_id, o.repair_kind AS conflicting_repair_kind, o.starts AS conflicting_starts, o.ends AS conflicting_ends
+     FROM repairs p
+     JOIN repairs o ON o.asset_id = p.asset_id AND o.repair_record_id <> p.repair_record_id
+     WHERE ${PERIODS_OVERLAP}
+     UNION ALL
+     SELECT p.asset_id, p.repair_record_id, p.repair_kind, p.starts, p.ends, 'LOAN_ITEM', o.loan_item_id,
+            o.loan_id, NULL, o.starts, o.ends
+     FROM repairs p
+     JOIN lent_periods o ON o.asset_id = p.asset_id
+     WHERE ${PERIODS_OVERLAP}`;
+
+/**
+ * The Repair Conflicts of `assetIds`, once per Repair Record they involve, computed on read and never
+ * stored (#98 Q17). A write that decides on them holds the Assets locked.
+ */
+export async function readRepairConflictsOfAssets(db: pg.Pool | pg.PoolClient | any, assetIds: string[]): Promise<RepairRecordConflict[]> {
+  const res = await db.query(
+    `SELECT c.asset_id, c.repair_record_id, c.repair_kind, to_char(c.starts, 'YYYY-MM-DD') AS start_date, to_char(c.ends, 'YYYY-MM-DD') AS outcome_date,
+            c.conflicting_kind, c.conflicting_id, c.conflicting_loan_id, c.conflicting_repair_kind,
+            to_char(c.conflicting_starts, 'YYYY-MM-DD') AS conflicting_starts, to_char(c.conflicting_ends, 'YYYY-MM-DD') AS conflicting_ends
+     FROM (${repairConflictPairs((assetColumn) => `${assetColumn} = ANY($1::uuid[])`)}) c
+     ORDER BY c.asset_id, c.conflicting_starts, c.conflicting_id`,
+    [assetIds]
+  );
+  return res.rows.map((row: any): RepairRecordConflict => ({
+    asset_id: row.asset_id,
+    repair_record: { kind: 'REPAIR_RECORD', repair_record_id: row.repair_record_id, repair_kind: row.repair_kind, start_date: row.start_date, outcome_date: row.outcome_date },
+    conflicting:
+      row.conflicting_kind === 'REPAIR_RECORD'
+        ? { kind: 'REPAIR_RECORD', repair_record_id: row.conflicting_id, repair_kind: row.conflicting_repair_kind, start_date: row.conflicting_starts, outcome_date: row.conflicting_ends }
+        : { kind: 'LOAN_ITEM', loan_id: row.conflicting_loan_id, loan_item_id: row.conflicting_id, loan_date: row.conflicting_starts, ending_date: row.conflicting_ends },
+  }));
+}
 
 const RECORD_COLUMNS = `r.id, r.asset_id, a.name AS asset_name, a.asset_number, r.repair_kind, to_char(r.start_date, 'YYYY-MM-DD') AS start_date,
   r.repairer_kind, r.repairer_name, r.symptom_or_work, r.under_warranty, to_char(r.warranty_end_date, 'YYYY-MM-DD') AS warranty_end_date,
@@ -166,7 +252,7 @@ const repairSourceOf = (cited: CitedLoanReturn | undefined): RepairSource | null
   return source;
 };
 
-const recordOf = (row: any, sources: Map<string, CitedLoanReturn>, voidedOutcomes: Map<string, RepairOutcome[]>): RepairRecord => ({
+const recordOf = (row: any, sources: Map<string, CitedLoanReturn>, voidedOutcomes: Map<string, RepairOutcome[]>, conflicts: Map<string, RepairConflict[]>): RepairRecord => ({
   id: row.id,
   asset: { id: row.asset_id, name: row.asset_name, asset_number: row.asset_number },
   repair_kind: row.repair_kind,
@@ -186,6 +272,7 @@ const recordOf = (row: any, sources: Map<string, CitedLoanReturn>, voidedOutcome
   version: row.version,
   outcome: outcomeOf(row),
   voided_outcomes: voidedOutcomes.get(row.id) ?? [],
+  conflicts: conflicts.get(row.id) ?? [],
 });
 
 // Repair Sources by Loan Return, read through the Loan module.
@@ -194,11 +281,17 @@ const sourcesOf = async (db: pg.Pool | any, loanReturnIds: string[]): Promise<Ma
   return ids.length > 0 ? loanReturnsOf(db, ids) : new Map<string, CitedLoanReturn>();
 };
 
-// Repair Records from their rows, each with its Repair Source read through the Loan module.
+// Repair Records from their rows, each with its Repair Source read through the Loan module and its Repair Conflicts.
 async function recordsOf(db: pg.Pool | any, rows: any[]): Promise<RepairRecord[]> {
   const sources = await sourcesOf(db, rows.map((row) => row.repair_source_loan_return_id).filter(Boolean));
   const voidedOutcomes = rows.length > 0 ? await voidedOutcomesOf(db, rows.map((row) => row.id)) : new Map<string, RepairOutcome[]>();
-  return rows.map((row) => recordOf(row, sources, voidedOutcomes));
+  const conflicts = new Map<string, RepairConflict[]>();
+  if (rows.length > 0) {
+    for (const { repair_record: { repair_record_id: id }, conflicting } of await readRepairConflictsOfAssets(db, [...new Set(rows.map((row) => row.asset_id as string))])) {
+      conflicts.set(id, [...(conflicts.get(id) ?? []), conflicting]);
+    }
+  }
+  return rows.map((row) => recordOf(row, sources, voidedOutcomes, conflicts));
 }
 
 const SOURCE_FIELD = 'repair_source_loan_return_id';
@@ -369,6 +462,9 @@ export class RepairReadService {
     if (filters.repairer_kind !== undefined) {
       where((param) => `r.repairer_kind = ${param}`, filters.repairer_kind);
     }
+    if (filters.has_repair_conflict) {
+      conditions.push(`r.id IN (SELECT conflict.repair_record_id FROM (${repairConflictPairs(() => 'true')}) conflict)`);
+    }
     if (filters.search !== undefined) {
       where((param) => `(r.repairer_name ILIKE ${param} ESCAPE '\\' OR r.symptom_or_work ILIKE ${param} ESCAPE '\\')`, containsPattern(filters.search));
     }
@@ -413,6 +509,11 @@ export class RepairReadService {
       [assetId]
     );
     return res.rows[0]?.next_date ?? null;
+  }
+
+  /** Whether any Repair Record of an Asset is in a Repair Conflict (#98 Q17). */
+  async hasRepairConflict(assetId: string): Promise<boolean> {
+    return (await readRepairConflictsOfAssets(this.db, [assetId])).length > 0;
   }
 
   /** The Repair Record that keeps an Asset Under Repair, or null when it is not. */

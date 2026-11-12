@@ -236,13 +236,20 @@ describe('Repair Source (Seam A - F005-T5)', () => {
       const voided = await api.post(
         custodian,
         `/loans/${loanId}/corrections`,
-        { expected_version: (await loanOf(loanId)).version, action: 'VOID', target: { kind: 'LOAN_RETURN', id: loanReturnId }, reason: 'บันทึกคืนผิดรายการ' },
+        {
+          expected_version: (await loanOf(loanId)).version,
+          action: 'VOID',
+          target: { kind: 'LOAN_RETURN', id: loanReturnId },
+          reason: 'บันทึกคืนผิดรายการ',
+          // The Loan is open again from before the repair (F005-T7).
+          confirmed_conflicts: [{ conflicting_repair_record_id: repairRecordId }],
+        },
         { 'x-retry-token': crypto.randomUUID() }
       );
       expect(voided.statusCode).toBe(201);
 
       const after = await recordOf(repairRecordId);
-      expect(after).toEqual({ ...before, repair_source: { ...before.repair_source, is_voided: true } });
+      expect(after).toEqual({ ...before, repair_source: { ...before.repair_source, is_voided: true }, conflicts: [expect.objectContaining({ kind: 'LOAN_ITEM', loan_id: loanId })] });
       const item = (await loanOf(loanId)).items[0];
       expect(item.loan_return).toBeNull();
       expect(item.voided_endings).toEqual([

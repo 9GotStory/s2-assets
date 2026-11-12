@@ -1,13 +1,16 @@
 import React, { useState } from 'react';
 import { Link } from 'react-router';
 import { useQuery } from '@tanstack/react-query';
+import { conflictBoxStyle } from './AssignmentConflictWarning';
 import { VoidedMark } from './LoanBadges';
+import { RepairConflictMarks } from './RepairConflicts';
 import { RepairStartForm } from './RepairStartForm';
 import { thaiDate } from './assignmentFacts';
 import { voidedStyle } from './loanFacts';
 import {
   NEXT_RECOMMENDED_MAINTENANCE_DATE_LABEL,
   OUTCOME_DATE_LABEL,
+  REPAIR_CONFLICT_LABEL,
   REPAIR_KIND_LABELS,
   REPAIR_OUTCOME_LABEL,
   REPAIR_OUTCOME_LABELS,
@@ -25,6 +28,8 @@ export interface RepairSectionProps {
   underRepair: UnderRepair | null;
   // From the Asset's latest Repair Outcome that has one; nothing is scheduled from it (#98 Q7).
   nextRecommendedMaintenanceDate: string | null;
+  // Whether any of the Asset's Repair Records is in a Repair Conflict (F005-T7).
+  hasRepairConflict: boolean;
   // Whether the viewer holds 'repair:record'.
   canRecordRepair: boolean;
   actorId: string | null;
@@ -55,12 +60,14 @@ const OutcomeLine: React.FC<{ record: RepairRecord; outcome: RepairOutcome; test
 /**
  * Whether the Asset is Under Repair, its Next Recommended Maintenance Date and its Repair Records with
  * their outcomes (F005-T1, T2), apart from the assignment timeline and from "การยืม": a Repair Record
- * never changes a Permanent Assignment (RM-05). Voided facts stay shown, struck through (F005-T6).
+ * never changes a Permanent Assignment (RM-05). Voided facts stay shown, struck through (F005-T6), and
+ * each Repair Conflict is marked until a correction removes it (F005-T7).
  */
 export const RepairSection: React.FC<RepairSectionProps> = ({
   assetId,
   underRepair,
   nextRecommendedMaintenanceDate,
+  hasRepairConflict,
   canRecordRepair,
   actorId,
   dataUpdatedAt,
@@ -122,6 +129,12 @@ export const RepairSection: React.FC<RepairSectionProps> = ({
         </dl>
       )}
 
+      {hasRepairConflict && (
+        <div data-testid="repair-conflict-notice" role="note" style={{ ...conflictBoxStyle, marginBottom: '1rem' }}>
+          <span style={{ fontWeight: 600 }}>{REPAIR_CONFLICT_LABEL}</span>: ประวัติการซ่อม/บำรุงรักษาของครุภัณฑ์นี้มีช่วงที่ทับกับการซ่อมหรือการยืมอื่น กรุณาตรวจสอบและแก้ไขรายการที่บันทึกผิด
+        </div>
+      )}
+
       {nextRecommendedMaintenanceDate && (
         <p data-testid="repair-next-maintenance-date" style={{ margin: '0 0 1rem 0', fontSize: '0.9375rem', color: '#374151' }}>
           {NEXT_RECOMMENDED_MAINTENANCE_DATE_LABEL}:{' '}
@@ -180,6 +193,7 @@ export const RepairSection: React.FC<RepairSectionProps> = ({
                 <div style={record.is_voided ? voidedStyle : undefined}>
                   วันที่ส่งซ่อม: <time dateTime={record.start_date}>{thaiDate(record.start_date)}</time>
                 </div>
+                <RepairConflictMarks conflicts={record.conflicts} testId={`repair-history-conflicts-${record.id}`} />
                 {record.outcome && <OutcomeLine record={record} outcome={record.outcome} testId={`repair-history-outcome-${record.id}`} isVoided={false} />}
                 {record.voided_outcomes.map((voided) => (
                   <OutcomeLine key={voided.id} record={record} outcome={voided} testId={`repair-history-voided-outcome-${voided.id}`} isVoided />

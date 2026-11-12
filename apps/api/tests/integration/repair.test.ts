@@ -87,6 +87,8 @@ describe('Repair Start (Seam A - F005-T1)', () => {
         voided_outcomes: [],
         corrections: [],
         can_correct_repair: false,
+        // F005-T7: the Repair Conflicts it is in, of which this record has none.
+        conflicts: [],
       });
       expect(Date.parse(record.recorded_at)).toBeGreaterThanOrEqual(before - 1000);
       expect(Date.parse(record.recorded_at)).toBeLessThanOrEqual(Date.now());
@@ -286,11 +288,12 @@ describe('Repair Start (Seam A - F005-T1)', () => {
       const assetId = await registered();
       expect(await recordsOf(assetId)).toEqual([]);
 
+      // Each one ends before the next starts, so none is in a Repair Conflict (F005-T7).
       const oldest = await sent(assetId, { start_date: '2024-03-01' });
-      await ended(oldest);
+      await ended(oldest, { outcome_date: '2024-03-02' });
       const newest = await sent(assetId, { start_date: '2026-10-01' });
       await ended(newest);
-      const middle = await sent(assetId, { start_date: '2025-06-01', repair_kind: 'MAINTENANCE' });
+      const middle = await sent(assetId, { start_date: '2025-06-01', repair_kind: 'MAINTENANCE', outcome: { outcome: 'USABLE', outcome_date: '2025-06-02' } });
 
       const records = await recordsOf(assetId);
       expect(records.map(({ id }: any) => id)).toEqual([newest, middle, oldest]);
@@ -435,11 +438,26 @@ describe('Repair Start (Seam A - F005-T1)', () => {
         expect((await detailOf(assetId)).on_loan).toBeNull();
       });
 
-      it('is accepted once the Asset is not Under Repair', async () => {
+      it('is accepted once the Asset is not Under Repair, with the Repair Conflict it opens confirmed (F005-T7)', async () => {
         const { assetId, loanId, repairRecordId } = await repairingAfterLoan('เครื่องซ่อมจบแล้ว');
         await ended(repairRecordId);
 
-        const res = await voidLoanReturn(loanId);
+        const warned = await voidLoanReturn(loanId);
+        expect(warned.statusCode).toBe(409);
+        expect(warned.json()).toMatchObject({ code: 'REPAIR_CONFLICTS_FOUND', repair_conflicts: [{ conflicting: { repair_record_id: repairRecordId } }] });
+        const loan = await loanOf(loanId);
+        const res = await api.post(
+          custodian,
+          `/loans/${loanId}/corrections`,
+          {
+            expected_version: loan.version,
+            action: 'VOID',
+            target: { kind: 'LOAN_RETURN', id: loan.items[0].loan_return.id },
+            reason: 'บันทึกคืนผิดรายการ',
+            confirmed_conflicts: [{ conflicting_repair_record_id: repairRecordId }],
+          },
+          { 'x-retry-token': crypto.randomUUID() }
+        );
 
         expect(res.statusCode).toBe(201);
         expect((await detailOf(assetId)).on_loan).toMatchObject({ loan_id: loanId });
