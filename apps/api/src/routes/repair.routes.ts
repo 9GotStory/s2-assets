@@ -10,6 +10,7 @@ import { RepairReadService } from '../services/repair-read.service.ts';
 import {
   RepairOutcomeRefusedError,
   RepairService,
+  RepairSourceRefusedError,
   RepairStartRefusedError,
   type RecordRepairOutcomeInput,
   type StartRepairInput,
@@ -41,8 +42,8 @@ const RecordRepairOutcomeSchema = z
   })
   .strict();
 
-// #98 Q22: what a Repair Start takes, with its Repair Outcome when both are recorded at once (Q1). Its
-// Repair Source arrives with F005-T5.
+// #98 Q22: what a Repair Start takes, with its Repair Outcome when both are recorded at once (Q1), and
+// its Repair Source when a Loan Return recorded ชำรุด led to it (F005-T5, Q5).
 const StartRepairSchema = z
   .object({
     asset_id: z.string(),
@@ -60,6 +61,7 @@ const StartRepairSchema = z
     cost: z.string().nullable().optional(),
     document_reference: z.string().nullable().optional(),
     remark: z.string().nullable().optional(),
+    repair_source: z.object({ loan_return_id: z.string() }).strict().nullable().optional(),
     outcome: z.object(repairOutcomeFields).strict().nullable().optional(),
     retry_token: z.string().optional(),
   })
@@ -90,6 +92,9 @@ const RepairListQuerySchema = z
 const refusalOf = (err: unknown) => {
   if (err instanceof RepairStartRefusedError) {
     return { ...errorBody(err.statusCode, err.code, err.message), asset: err.asset };
+  }
+  if (err instanceof RepairSourceRefusedError) {
+    return { ...errorBody(err.statusCode, err.code, err.message), repair_source: err.repair_source };
   }
   if (err instanceof RepairOutcomeRefusedError) {
     return { ...errorBody(err.statusCode, err.code, err.message), record: err.record };

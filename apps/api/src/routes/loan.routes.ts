@@ -337,11 +337,13 @@ export const loanRoutes: FastifyPluginAsync<LoanRoutesOptions> = async (fastify,
 
     const canRecordLoan = await capabilityService.hasCapability(request.user!.id, 'loan:record');
     const canCorrectLoan = await capabilityService.hasCapability(request.user!.id, 'loan:correct');
+    // "ส่งซ่อม" beside a Loan Return recorded ชำรุด (F005-T5, #98 Q5).
+    const canRecordRepair = await capabilityService.hasCapability(request.user!.id, 'repair:record');
     const loan = await loanReadService.read(id.trim().toLowerCase(), { includePhone: canRecordLoan || canCorrectLoan, returnDate });
     if (!loan) {
       return reply.status(404).send(errorBody(404, 'NOT_FOUND', 'Loan not found'));
     }
-    return reply.status(200).send({ ...loan, can_record_loan: canRecordLoan, can_correct_loan: canCorrectLoan });
+    return reply.status(200).send({ ...loan, can_record_loan: canRecordLoan, can_correct_loan: canCorrectLoan, can_record_repair: canRecordRepair });
   });
 
   /**

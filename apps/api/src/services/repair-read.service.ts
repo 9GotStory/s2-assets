@@ -1,6 +1,7 @@
 import pg from 'pg';
 import { assetExists, containsPattern } from './asset-lookups.ts';
 import { readAssignmentsAt, type PermanentAssignment } from './assignment.service.ts';
+import { loanReturnsOf, type CitedLoanReturn } from './loan-return-read.ts';
 
 export type RepairKind = 'REPAIR' | 'MAINTENANCE';
 export type RepairerKind = 'INTERNAL' | 'EXTERNAL';
@@ -29,6 +30,10 @@ export interface RepairOutcome {
   recorded_at: string;
 }
 
+// The Loan Return recorded ชำรุด that led to a Repair Record (F005-T5, LR-13, RM-08), with its Loan. It is
+// read as it stands now: voided later by a Loan Correction, the record still cites it (#98 Q5).
+export type RepairSource = Omit<CitedLoanReturn, 'asset_id'>;
+
 // A Repair Record as every reader sees it: no field is withheld, cost and Repairer included (#98 Q2).
 export interface RepairRecord {
   id: string;
@@ -43,6 +48,8 @@ export interface RepairRecord {
   cost: string | null;
   document_reference: string | null;
   remark: string | null;
+  // Null when it was sent with none, as from the Asset page (#98 Q5).
+  repair_source: RepairSource | null;
   recorded_by: string;
   recorded_by_username: string | null;
   recorded_at: string;
@@ -86,7 +93,7 @@ const IS_UNDER_REPAIR = 'NOT r.is_voided AND NOT r.has_outcome';
 
 const RECORD_COLUMNS = `r.id, r.asset_id, a.name AS asset_name, a.asset_number, r.repair_kind, to_char(r.start_date, 'YYYY-MM-DD') AS start_date,
   r.repairer_kind, r.repairer_name, r.symptom_or_work, r.under_warranty, to_char(r.warranty_end_date, 'YYYY-MM-DD') AS warranty_end_date,
-  r.cost::text AS cost, r.document_reference, r.remark, r.recorded_by, u.username AS recorded_by_username, r.recorded_at, r.is_voided, r.version,
+  r.cost::text AS cost, r.document_reference, r.remark, r.repair_source_loan_return_id, r.recorded_by, u.username AS recorded_by_username, r.recorded_at, r.is_voided, r.version,
   o.id AS outcome_id, o.outcome, to_char(o.outcome_date, 'YYYY-MM-DD') AS outcome_date, o.note AS outcome_note,
   o.document_reference AS outcome_document_reference, to_char(o.next_recommended_maintenance_date, 'YYYY-MM-DD') AS next_recommended_maintenance_date,
   o.cost_before::text AS outcome_cost_before, o.recorded_by AS outcome_recorded_by, ou.username AS outcome_recorded_by_username, o.recorded_at AS outcome_recorded_at`;
@@ -113,7 +120,15 @@ const outcomeOf = (row: any): RepairOutcome | null =>
         recorded_at: new Date(row.outcome_recorded_at).toISOString(),
       };
 
-const recordOf = (row: any): RepairRecord => ({
+const repairSourceOf = (cited: CitedLoanReturn | undefined): RepairSource | null => {
+  if (!cited) {
+    return null;
+  }
+  const { asset_id: _assetId, ...source } = cited;
+  return source;
+};
+
+const recordOf = (row: any, sources: Map<string, CitedLoanReturn>): RepairRecord => ({
   id: row.id,
   asset: { id: row.asset_id, name: row.asset_name, asset_number: row.asset_number },
   repair_kind: row.repair_kind,
@@ -125,6 +140,7 @@ const recordOf = (row: any): RepairRecord => ({
   cost: row.cost,
   document_reference: row.document_reference,
   remark: row.remark,
+  repair_source: repairSourceOf(sources.get(row.repair_source_loan_return_id)),
   recorded_by: row.recorded_by,
   recorded_by_username: row.recorded_by_username ?? null,
   recorded_at: new Date(row.recorded_at).toISOString(),
@@ -132,6 +148,13 @@ const recordOf = (row: any): RepairRecord => ({
   version: row.version,
   outcome: outcomeOf(row),
 });
+
+// Repair Records from their rows, each with its Repair Source read through the Loan module.
+async function recordsOf(db: pg.Pool | any, rows: any[]): Promise<RepairRecord[]> {
+  const sourceIds = [...new Set<string>(rows.map((row) => row.repair_source_loan_return_id).filter(Boolean))];
+  const sources = sourceIds.length > 0 ? await loanReturnsOf(db, sourceIds) : new Map<string, CitedLoanReturn>();
+  return rows.map((row) => recordOf(row, sources));
+}
 
 /**
  * Each of `assetIds` that is Under Repair, by Asset, with its Repair Record (at most one, #98 Q3). A write
@@ -178,6 +201,30 @@ export async function latestRepairOutcomesOf(db: pg.Pool | pg.PoolClient | any, 
   );
 }
 
+// A Repair Record as the Loan page lists it beside the Loan Return it cites (F005-T5, RM-08, #98 Q5).
+export interface CitingRepairRecord {
+  id: string;
+  repair_kind: RepairKind;
+  start_date: string;
+  is_voided: boolean;
+}
+
+/** The Repair Records citing each of `loanReturnIds` as their Repair Source, oldest Start Date first. */
+export async function repairRecordsCiting(db: pg.Pool | pg.PoolClient | any, loanReturnIds: string[]): Promise<Map<string, CitingRepairRecord[]>> {
+  const res = await db.query(
+    `SELECT r.repair_source_loan_return_id, r.id, r.repair_kind, to_char(r.start_date, 'YYYY-MM-DD') AS start_date, r.is_voided
+     FROM repair_records r
+     WHERE r.repair_source_loan_return_id = ANY($1::uuid[])
+     ORDER BY r.start_date, r.recorded_at, r.id`,
+    [loanReturnIds]
+  );
+  const citing = new Map<string, CitingRepairRecord[]>();
+  for (const { repair_source_loan_return_id: loanReturnId, ...record } of res.rows) {
+    citing.set(loanReturnId, [...(citing.get(loanReturnId) ?? []), record]);
+  }
+  return citing;
+}
+
 /**
  * F005-T1 (#99), T2 (#100): reading Repair Records and their outcomes. The only assignment read is where
  * an Asset goes back to on an Outcome Date, which is shown and never stored (MR-16, MR-17).
@@ -201,7 +248,7 @@ export class RepairReadService {
     if (res.rows.length === 0) {
       return null;
     }
-    const record = recordOf(res.rows[0]);
+    const [record] = await recordsOf(this.db, res.rows);
     if (outcomeDate === undefined) {
       return record;
     }
@@ -220,7 +267,7 @@ export class RepairReadService {
        ORDER BY r.start_date DESC, r.recorded_at DESC, r.id DESC`,
       [assetId]
     );
-    return res.rows.map(recordOf);
+    return recordsOf(this.db, res.rows);
   }
 
   /** The Repair Records that pass every filter given, newest Start Date first, a page at a time as the Asset list. */
@@ -268,7 +315,7 @@ export class RepairReadService {
       params
     );
     const totalCount: number = res.rows[0]?.total_count ?? 0;
-    const items: RepairRecord[] = res.rows.filter((row: any) => row.id !== null).map(recordOf);
+    const items = await recordsOf(this.db, res.rows.filter((row: any) => row.id !== null));
     return { items, limit: filters.limit, offset: filters.offset, total_count: totalCount, has_more: filters.offset + items.length < totalCount };
   }
 

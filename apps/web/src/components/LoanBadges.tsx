@@ -1,5 +1,5 @@
 import React from 'react';
-import { ON_LOAN_LABEL, OVERDUE_LABEL, RETURNED_LATE_LABEL } from './loanFacts';
+import { ON_LOAN_LABEL, OVERDUE_LABEL, RETURNED_LATE_LABEL, VOIDED_LABEL } from './loanFacts';
 
 const badgeStyle: React.CSSProperties = {
   display: 'inline-block',
@@ -21,6 +21,13 @@ export const OverdueBadge: React.FC<{ id?: string; testId?: string }> = ({ id, t
 export const OnLoanBadge: React.FC<{ testId: string }> = ({ testId }) => (
   <span data-testid={testId} style={{ ...badgeStyle, backgroundColor: '#fef3c7', color: '#92400e' }}>
     {ON_LOAN_LABEL}
+  </span>
+);
+
+// "ยกเลิกแล้ว" beside a voided fact, which stays shown struck through (#74 Q25, #98 Q5).
+export const VoidedMark: React.FC<{ testId: string }> = ({ testId }) => (
+  <span data-testid={testId} style={{ marginLeft: '0.375rem', fontWeight: 600, color: '#b91c1c', textDecoration: 'none' }}>
+    {VOIDED_LABEL}
   </span>
 );
 
