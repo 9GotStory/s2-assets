@@ -194,7 +194,7 @@ test.describe.serial('Verification journeys: Real SPA -> Composed API -> Postgre
     await page.locator('#verification-open-fiscal_year').fill('2569');
     await page.locator('#verification-open-submit').click();
     await expect(page.locator('[data-testid="verification-open-refused"]')).toContainText('ตรวจสอบพัสดุประจำปี 2569 ห้องประชุม');
-    await page.unrouteAll({ behavior: 'wait' });
+    await page.unroute('**/auth/session-check');
     await page.locator('#verification-open-cancel').click();
 
     // A Read-only User sees the list and the Round, with no action.
