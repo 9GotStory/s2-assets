@@ -78,7 +78,7 @@ describe('Loan Correction Migration Integration (Seam C - F004-T6)', () => {
     if (container) {
       await container.stop().catch(() => {});
     }
-  }, 30_000);
+  });
 
   it('adds the correction records to a populated database, and leaves its Loans alone', async () => {
     for (let step = 1; step <= 11; step++) {

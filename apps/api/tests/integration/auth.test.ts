@@ -447,7 +447,7 @@ describe('Authentication & Session Integration Tests (T016)', () => {
     if (container) {
       await container.stop();
     }
-  }, 30_000);
+  });
 
   beforeEach(async () => {
     const client = new Client({ connectionString: databaseUrl });

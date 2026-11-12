@@ -61,7 +61,7 @@ describe('Reference Context Migration Integration (Seam C - T4)', () => {
     if (container) {
       await container.stop().catch(() => {});
     }
-  }, 30_000);
+  });
 
   it('preserves incomplete Assets and foundation records when 0005 upgrades a populated 0004 database', async () => {
     for (let step = 1; step <= 4; step++) {

@@ -70,7 +70,7 @@ describe('Repair Outcome Migration Integration (Seam C - F005-T2)', () => {
     if (container) {
       await container.stop().catch(() => {});
     }
-  }, 30_000);
+  });
 
   it('adds the Repair Outcomes to a populated database, and leaves its Repair Records alone', async () => {
     for (let step = 1; step <= 13; step++) {

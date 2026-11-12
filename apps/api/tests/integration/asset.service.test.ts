@@ -69,7 +69,7 @@ describe('AssetService Integration Tests (Seam A - Core Service & Transactions)'
     if (container) {
       await container.stop();
     }
-  }, 30_000);
+  });
 
   beforeEach(async () => {
     // Clean registry tables before each test

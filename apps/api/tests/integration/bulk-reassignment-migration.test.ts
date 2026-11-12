@@ -70,7 +70,7 @@ describe('Bulk Reassignment Migration Integration (Seam C - F003-T5)', () => {
     if (container) {
       await container.stop().catch(() => {});
     }
-  }, 30_000);
+  });
 
   it('adds the bulk reference, and the facts recorded before it have none', async () => {
     for (let step = 1; step <= 7; step++) {

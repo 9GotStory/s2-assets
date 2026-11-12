@@ -58,7 +58,7 @@ describe('SessionService Real PostgreSQL Integration Tests (T019)', () => {
     if (container) {
       await container.stop().catch(() => {});
     }
-  }, 30_000);
+  });
 
   beforeEach(async () => {
     // Clean tables and create fresh test user

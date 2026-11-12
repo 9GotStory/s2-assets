@@ -59,7 +59,7 @@ describe('Repair Source Migration Integration (Seam C - F005-T5)', () => {
     if (container) {
       await container.stop().catch(() => {});
     }
-  }, 30_000);
+  });
 
   it('adds a Repair Source to a populated database, with none on the Repair Records already there', async () => {
     for (let step = 1; step <= 14; step++) {

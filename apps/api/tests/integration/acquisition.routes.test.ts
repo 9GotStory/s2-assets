@@ -115,7 +115,7 @@ describe('Acquisition Routes Integration Tests (Seam A)', () => {
     if (container) {
       await container.stop();
     }
-  }, 30_000);
+  });
 
   describe('D1 Validation & Fact Rules on POST /acquisitions', () => {
     it('rejects creation when no approved facts are provided (blank reference)', async () => {

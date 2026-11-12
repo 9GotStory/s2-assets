@@ -165,7 +165,7 @@ describe('Asset Routes & Security Matrix Integration Tests (Seam A)', () => {
     if (container) {
       await container.stop();
     }
-  }, 30_000);
+  });
 
   beforeEach(async () => {
     await pool.query('DELETE FROM registration_retry_tokens');

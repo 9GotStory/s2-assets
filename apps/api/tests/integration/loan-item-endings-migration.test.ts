@@ -89,7 +89,7 @@ describe('Loan Item Endings Migration Integration (Seam C - F004-T2)', () => {
     if (container) {
       await container.stop().catch(() => {});
     }
-  }, 30_000);
+  });
 
   it('adds the ending facts to a populated database, and leaves its Loans alone', async () => {
     for (let step = 1; step <= 9; step++) {

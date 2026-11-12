@@ -148,6 +148,19 @@ export default tseslint.config(
     },
   },
   {
+    // #102 retro: a container stop under host load outlasted a 30 s afterAll while every test passed.
+    files: ['apps/api/tests/integration/**/*.ts'],
+    rules: {
+      'no-restricted-syntax': [
+        'error',
+        {
+          selector: "CallExpression[callee.name='afterAll'][arguments.length>1]",
+          message: 'Leave the afterAll timeout to hookTimeout in apps/api/vitest.config.ts: stopping a container can outlast a shorter one (#102).',
+        },
+      ],
+    },
+  },
+  {
     files: ['**/tests/**', '**/tests/**/*', '**/*.test.ts', '**/*.spec.ts'],
     rules: {
       'prefer-const': 'off',

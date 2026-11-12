@@ -83,7 +83,7 @@ describe('Loan Migration Integration (Seam C - F004-T1)', () => {
     if (container) {
       await container.stop().catch(() => {});
     }
-  }, 30_000);
+  });
 
   it('adds the Loan tables to a populated database, and leaves its facts alone', async () => {
     for (let step = 1; step <= 8; step++) {

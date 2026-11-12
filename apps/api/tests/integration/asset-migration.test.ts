@@ -36,7 +36,7 @@ describe('Asset Registry Migration Integration (Seam C)', () => {
     if (container) {
       await container.stop();
     }
-  }, 30_000);
+  });
 
   it('verifies 0002_asset_registry and 0003_acquisitions migration files exist', () => {
     expect(fs.existsSync(migrationFolder)).toBe(true);

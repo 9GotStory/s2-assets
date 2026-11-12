@@ -143,12 +143,19 @@ describe('On Loan on the Asset list (Seam A - F004-T4)', () => {
     });
 
     it('needs asset:search, as the Assignment Conflict filter does', async () => {
-      const assetId = await registered('ไม่ควรเห็นในผลค้นหา');
+      const name = 'ไม่ควรเห็นในผลค้นหา';
+      const assetId = await registered(name);
       await lent([assetId]);
+      const query = `/assets/search?field=name&value=${encodeURIComponent(name)}&on_loan=true`;
+      // The same request with the capability does answer both.
+      const allowed = await api.get(readonly, query);
+      expect(allowed.statusCode).toBe(200);
+      expect(allowed.body).toContain(name);
+      expect(allowed.body).toContain('คุณผู้ยืมจากรายการ');
 
-      const denied = await withCapabilityAnswer(api.app, 'asset:search', async () => false, () => api.get(readonly, '/assets/search?on_loan=true'));
+      const denied = await withCapabilityAnswer(api.app, 'asset:search', async () => false, () => api.get(readonly, query));
       expect(denied.statusCode).toBe(403);
-      expect(denied.body).not.toContain('ไม่ควรเห็นในผลค้นหา');
+      expect(denied.body).not.toContain(name);
       expect(denied.body).not.toContain('คุณผู้ยืมจากรายการ');
     });
   });

@@ -78,7 +78,7 @@ describe('Repair Record Migration Integration (Seam C - F005-T1)', () => {
     if (container) {
       await container.stop().catch(() => {});
     }
-  }, 30_000);
+  });
 
   it('adds the Repair Records to a populated database, and leaves its Assets and Loans alone', async () => {
     for (let step = 1; step <= 12; step++) {

@@ -166,7 +166,7 @@ describe('Evidence Routes Integration Tests (Seam A - T7)', () => {
     if (container) {
       await container.stop();
     }
-  }, 30_000);
+  });
 
   // 1. Auth, CSRF, and Cache-Control
   describe('Authentication, CSRF, and Cache-Control', () => {

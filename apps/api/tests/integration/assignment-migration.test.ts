@@ -74,7 +74,7 @@ describe('Initial Assignment Migration Integration (Seam C - F003-T1)', () => {
     if (container) {
       await container.stop().catch(() => {});
     }
-  }, 30_000);
+  });
 
   it("carries each Asset's Feature 002 values over into one Initial Assignment with an unknown Effective Date and drops the columns", async () => {
     for (let step = 1; step <= 5; step++) {
