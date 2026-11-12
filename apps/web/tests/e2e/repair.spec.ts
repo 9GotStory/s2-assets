@@ -14,6 +14,7 @@ import { LoanService } from '../../../api/src/services/loan.service.ts';
 import { LoanCorrectionService } from '../../../api/src/services/loan-correction.service.ts';
 import { LoanReadService } from '../../../api/src/services/loan-read.service.ts';
 import { LoanReturnService } from '../../../api/src/services/loan-return.service.ts';
+import { ReferenceService } from '../../../api/src/services/reference.service.ts';
 import { RepairService } from '../../../api/src/services/repair.service.ts';
 import { repositoryProxyConfig } from '../../vite.config.ts';
 
@@ -25,8 +26,9 @@ const webRoot = path.resolve(__dirname, '../..');
 const migrationFolder = path.resolve(__dirname, '../../../../packages/db/src/migrations');
 
 // F005-T1 (#99): sending an Asset for repair or maintenance from its page. F005-T2 (#100): recording how
-// it ended, alone or with its Repair Start. F005-T5 (#103): sending it from a Loan Return recorded ชำรุด.
-// F005-T7 (#105): a backdated Repair Start that overlaps an old Loan.
+// it ended, alone or with its Repair Start. F005-T4 (#102): Under Repair on the Asset list and the
+// Reassignment forms. F005-T5 (#103): sending it from a Loan Return recorded ชำรุด. F005-T7 (#105): a
+// backdated Repair Start that overlaps an old Loan.
 test.describe.serial('Repair journeys: Real SPA -> Composed API -> PostgreSQL (Seam B)', () => {
   let container: StartedPostgreSqlContainer;
   let pool: pg.Pool;
@@ -36,7 +38,9 @@ test.describe.serial('Repair journeys: Real SPA -> Composed API -> PostgreSQL (S
   let sessionService: SessionService;
   let assetService: AssetService;
   let repairService: RepairService;
+  let referenceService: ReferenceService;
 
+  let adminUserId: string;
   let custodianUserId: string;
   let readonlyUserId: string;
 
@@ -62,6 +66,7 @@ test.describe.serial('Repair journeys: Real SPA -> Composed API -> PostgreSQL (S
     sessionService = new SessionService({ db: pool });
     assetService = new AssetService({ db: pool });
     repairService = new RepairService({ db: pool });
+    referenceService = new ReferenceService({ db: pool });
 
     fastifyApp = await buildApp({
       db: pool,
@@ -81,6 +86,7 @@ test.describe.serial('Repair journeys: Real SPA -> Composed API -> PostgreSQL (S
       await pool.query('INSERT INTO user_roles (user_id, role_id) VALUES ($1, $2)', [res.rows[0].id, role]);
       return res.rows[0].id;
     };
+    adminUserId = await createUser('admin_repair', 'ADMINISTRATOR');
     custodianUserId = await createUser('custodian_repair', 'ASSET_CUSTODIAN');
     readonlyUserId = await createUser('readonly_repair', 'READ_ONLY');
 
@@ -210,7 +216,9 @@ test.describe.serial('Repair journeys: Real SPA -> Composed API -> PostgreSQL (S
     await expect(page.locator('[data-testid="repair-history-empty"]')).toBeVisible();
     await expect(page.locator('#repair-action')).toHaveCount(0);
 
-    const { asset: serviced } = await assetService.registerAsset(custodianUserId, { name: 'แอร์ E2E บำรุงรักษา' } as any);
+    // Placed in a room, so that its page offers "ย้าย / เปลี่ยนผู้รับผิดชอบ" below.
+    const room = await referenceService.create('locations', adminUserId, 'ห้องประชุม E2E ซ่อม');
+    const { asset: serviced } = await assetService.registerAsset(custodianUserId, { name: 'แอร์ E2E บำรุงรักษา', location_id: room.id, effective_date: '2024-01-01' } as any);
     await repairService.start(
       custodianUserId,
       { asset_id: serviced.id, repair_kind: 'MAINTENANCE', start_date: yesterday(), repairer: { kind: 'INTERNAL' }, symptom_or_work: 'ล้างแอร์ประจำปี' },
@@ -219,6 +227,44 @@ test.describe.serial('Repair journeys: Real SPA -> Composed API -> PostgreSQL (S
     await page.goto(`${targetBaseUrl}/assets/${serviced.id}`);
     await expect(page.locator('[data-testid="repair-under-repair"]')).toContainText('อยู่ระหว่างบำรุงรักษา');
     await expect(page.locator('[data-testid="repair-history"] li')).toContainText('บำรุงรักษา');
+
+    // F005-T4 (#102): the Asset list marks each Asset Under Repair by its kind and filters to them (#98 Q21).
+    await page.goto(`${targetBaseUrl}/assets/search`);
+    await page.locator('#search-field').selectOption('name');
+    await page.locator('#search-value').fill('E2E');
+    await page.locator('#search-submit-btn').click();
+    await expect(page.locator('#results-count-summary')).toContainText('พบ 3 รายการ');
+    await expect(page.locator(`[data-testid="search-result-under-repair-${asset.id}"]`)).toHaveText('อยู่ระหว่างซ่อม');
+    await expect(page.locator(`[data-testid="search-result-under-repair-${serviced.id}"]`)).toHaveText('อยู่ระหว่างบำรุงรักษา');
+    await expect(page.locator(`[data-testid="search-result-row-${free.id}"]`)).toBeVisible();
+    await expect(page.locator(`[data-testid="search-result-under-repair-${free.id}"]`)).toHaveCount(0);
+
+    await page.locator('#search-filter-under_repair').check();
+    await page.locator('#search-submit-btn').click();
+    await expect(page.locator('#results-count-summary')).toContainText('พบ 2 รายการ');
+    await expect(page.locator(`[data-testid="search-result-row-${free.id}"]`)).toHaveCount(0);
+
+    // "ย้ายหลายรายการ" and "ย้าย / เปลี่ยนผู้รับผิดชอบ" name the kind and Repairer, and block nothing (#98 Q11).
+    await switchActor(page, context, custodianUserId);
+    await page.goto(`${targetBaseUrl}/assets/search`);
+    await page.locator('#search-field').selectOption('name');
+    await page.locator('#search-value').fill('E2E');
+    await page.locator('#search-filter-under_repair').check();
+    await page.locator('#search-submit-btn').click();
+    await expect(page.locator('#results-count-summary')).toContainText('พบ 2 รายการ');
+    await page.getByTestId(`asset-select-${asset.id}`).check();
+    await page.getByTestId(`asset-select-${serviced.id}`).check();
+    await page.locator('#bulk-reassign-open').click();
+    await expect(page.locator(`[data-testid="assignment-under-repair-${asset.id}"]`)).toContainText('อยู่ระหว่างซ่อม ผู้ซ่อม ภายนอก: ร้านซ่อมดี E2E');
+    await expect(page.locator(`[data-testid="assignment-under-repair-${serviced.id}"]`)).toContainText('อยู่ระหว่างบำรุงรักษา ผู้ซ่อม ภายใน');
+    await expect(page.locator('[data-testid="assignment-under-repair-notice"]')).toContainText('การย้ายไม่เปลี่ยนรายการซ่อมนี้');
+    await expect(page.locator('#bulk-reassign-preview')).toBeEnabled();
+    await page.locator('#bulk-reassign-cancel').click();
+
+    await page.goto(`${targetBaseUrl}/assets/${serviced.id}`);
+    await page.locator('#assignment-action').click();
+    await expect(page.locator(`[data-testid="assignment-under-repair-${serviced.id}"]`)).toContainText('ครุภัณฑ์นี้ อยู่ระหว่างบำรุงรักษา ผู้ซ่อม ภายใน');
+    await expect(page.locator('[data-testid="assignment-under-repair-notice"]')).toContainText('การย้ายไม่เปลี่ยนรายการซ่อมนี้');
   });
 
   test('Journey F005-T2.1: a Custodian records ใช้งานได้ on an Asset Under Repair, which is then lent', async ({ page, context }) => {
