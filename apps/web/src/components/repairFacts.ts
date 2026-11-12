@@ -157,6 +157,12 @@ export const RECORD_REPAIR_OUTCOME_LABEL = 'บันทึกผลการซ
 export const OUTCOME_DATE_LABEL = 'วันที่ได้ผล';
 export const NEXT_RECOMMENDED_MAINTENANCE_DATE_LABEL = 'วันที่แนะนำบำรุงรักษาครั้งถัดไป';
 
+// The fact a Repair Correction names, as its form and the corrections list call it.
+export const REPAIR_CORRECTION_TARGET_LABELS: Record<RepairCorrectionTarget['kind'], string> = {
+  REPAIR_RECORD: REPAIR_RECORD_LABEL,
+  REPAIR_OUTCOME: REPAIR_OUTCOME_LABEL,
+};
+
 export const REPAIR_KIND_LABELS: Record<RepairKind, string> = { REPAIR: 'ซ่อม', MAINTENANCE: 'บำรุงรักษา' };
 
 // Under Repair reads by the record's kind (#98 Q14).

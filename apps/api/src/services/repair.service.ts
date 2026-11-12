@@ -73,6 +73,22 @@ export class RepairStartRefusedError extends Error {
   }
 }
 
+/**
+ * Why an Asset whose lock the caller holds cannot be Under Repair now: a Loan holds it, or another Repair
+ * Record keeps it (#98 Q3, Q15). Null when it can. A Repair Start and voiding a Repair Outcome both ask.
+ */
+export async function underRepairRefusalOf(
+  client: pg.PoolClient,
+  asset: { asset_id: string; name: string | null; asset_number: string | null }
+): Promise<RepairStartRefusal | null> {
+  const held = (await loansHoldingAssets(client, [asset.asset_id])).get(asset.asset_id);
+  if (held) {
+    return { ...asset, ...held };
+  }
+  const repair = (await underRepairOfAssets(client, [asset.asset_id])).get(asset.asset_id);
+  return repair ? { ...asset, reason: 'UNDER_REPAIR', repair_record_id: repair.repair_record_id, repair_kind: repair.repair_kind } : null;
+}
+
 // Why a Loan Return cannot be a Repair Source: it must be a non-voided Loan Return of a LoanItem of the
 // same Asset, recorded ชำรุด (#98). An id that names no Loan Return, a Not Returned among them, is NOT_LOAN_RETURN.
 export interface RepairSourceRefusal {
@@ -298,6 +314,9 @@ async function insertOutcome(
 // A Repair fact a Repair Correction names (#98 Q18): the record, or one of its Repair Outcomes.
 export type RepairCorrectionTarget = { kind: 'REPAIR_RECORD' } | { kind: 'REPAIR_OUTCOME'; id: string };
 
+// One field a correction changed, with its before and after, as the correction record keeps it.
+export type CorrectedField = { field: string; before: string | null; after: string | null };
+
 // The fields a correction compares and amends, by the names its record keeps, and each one's column.
 const AMENDABLE_COLUMNS = {
   REPAIR_RECORD: {
@@ -375,18 +394,23 @@ export async function amendRepairFact(client: pg.PoolClient, target: RepairCorre
 }
 
 /**
- * Voids one fact, in the caller's transaction (#98 Q18). Voiding a record voids its Repair Outcome with it,
- * which ends Under Repair when it had none. Voiding a Repair Outcome puts the record back without one, so
- * the Asset is Under Repair again, and restores the cost the outcome replaced (#98 Q22).
+ * Voids one fact, in the caller's transaction (#98 Q18), and returns what it changed besides voiding.
+ * Voiding a record voids its Repair Outcome with it, which ends Under Repair when it had none. Voiding a
+ * Repair Outcome puts the record back without one, so the Asset is Under Repair again, and restores the
+ * cost the outcome replaced (#98 Q22); the cost it replaced is returned as the before.
  */
-export async function voidRepairFact(client: pg.PoolClient, repairRecordId: string, target: RepairCorrectionTarget, fact: StoredRepairFact): Promise<void> {
+export async function voidRepairFact(client: pg.PoolClient, repairRecordId: string, target: RepairCorrectionTarget, fact: StoredRepairFact): Promise<CorrectedField[]> {
   if (target.kind === 'REPAIR_RECORD') {
     await client.query('UPDATE repair_outcomes SET is_voided = true WHERE repair_record_id = $1 AND NOT is_voided', [repairRecordId]);
     await client.query('UPDATE repair_records SET is_voided = true, has_outcome = false WHERE id = $1', [repairRecordId]);
-    return;
+    return [];
   }
-  const res = await client.query('UPDATE repair_outcomes SET is_voided = true WHERE id = $1 RETURNING cost_before', [fact.id]);
-  await client.query('UPDATE repair_records SET has_outcome = false, cost = $2 WHERE id = $1', [repairRecordId, res.rows[0].cost_before]);
+  const current = await client.query('SELECT cost::text AS cost FROM repair_records WHERE id = $1', [repairRecordId]);
+  const voided = await client.query('UPDATE repair_outcomes SET is_voided = true WHERE id = $1 RETURNING cost_before::text AS cost_before', [fact.id]);
+  await client.query('UPDATE repair_records SET has_outcome = false, cost = $2 WHERE id = $1', [repairRecordId, voided.rows[0].cost_before]);
+  const before: string | null = current.rows[0].cost;
+  const after: string | null = voided.rows[0].cost_before;
+  return before === after ? [] : [{ field: 'cost', before, after }];
 }
 
 // A date rule of a Repair Record that a correction would break (#98 Q4, Q7, Q18).
@@ -422,7 +446,7 @@ export async function recordRepairCorrection(
     reason,
     changes,
     actorId,
-  }: { target: RepairCorrectionTarget; factId: string; action: 'AMENDED' | 'VOIDED'; reason: string; changes: unknown[]; actorId: string }
+  }: { target: RepairCorrectionTarget; factId: string; action: 'AMENDED' | 'VOIDED'; reason: string; changes: CorrectedField[]; actorId: string }
 ): Promise<string> {
   const res = await client.query(
     `INSERT INTO repair_corrections (${TARGET_COLUMNS[target.kind]}, action, reason, changes, recorded_by)
@@ -458,14 +482,9 @@ export class RepairService {
     if (!asset) {
       throw new NotFoundError('Asset not found');
     }
-    const { name, asset_number } = asset;
-    const held = (await loansHoldingAssets(client, [assetId])).get(assetId);
-    if (held) {
-      throw new RepairStartRefusedError({ asset_id: assetId, name, asset_number, ...held });
-    }
-    const repair = (await underRepairOfAssets(client, [assetId])).get(assetId);
-    if (repair) {
-      throw new RepairStartRefusedError({ asset_id: assetId, name, asset_number, reason: 'UNDER_REPAIR', repair_record_id: repair.repair_record_id, repair_kind: repair.repair_kind });
+    const refusal = await underRepairRefusalOf(client, { asset_id: assetId, name: asset.name, asset_number: asset.asset_number });
+    if (refusal) {
+      throw new RepairStartRefusedError(refusal);
     }
   }
 

@@ -1,8 +1,7 @@
 import pg from 'pg';
 import { DOCUMENT_REFERENCE_MAX_LENGTH, REMARK_MAX_LENGTH, bangkokDate, isCalendarDate, normalizeLine, normalizeText } from './assignment.service.ts';
 import { isValidUuid } from './capability.service.ts';
-import { loansHoldingAssets } from './loan.service.ts';
-import { underRepairOfAssets, type RepairKind, type RepairOutcomeValue, type RepairerKind, type UnderWarranty } from './repair-read.service.ts';
+import { type RepairKind, type RepairOutcomeValue, type RepairerKind, type UnderWarranty } from './repair-read.service.ts';
 import {
   OUTCOME_NOTE_MAX_LENGTH,
   REPAIRER_NAME_MAX_LENGTH,
@@ -15,9 +14,10 @@ import {
   normalizeCost,
   readStoredRepairFact,
   recordRepairCorrection,
+  underRepairRefusalOf,
   voidRepairFact,
   type BrokenRepairDateRule,
-  type LockedRepairRecord,
+  type CorrectedField,
   type RepairCorrectionTarget,
   type RepairStartRefusal,
   type StoredRepairFact,
@@ -117,9 +117,6 @@ const DATE_RULE_MESSAGES: Record<BrokenRepairDateRule, string> = {
   OUTCOME_DATE_AFTER_TODAY: 'outcome_date must not be after today (Asia/Bangkok)',
   OUTCOME_DATE_BEFORE_START_DATE: 'outcome_date must not be before the Start Date',
 };
-
-// One changed field of a correction record.
-type CorrectedField = { field: string; before: string | null; after: string | null };
 
 // A request's facts once validated, before any lock. The retry fingerprint covers these.
 interface CorrectionFacts {
@@ -268,20 +265,6 @@ export class RepairCorrectionService {
     this.clock = options.clock ?? (() => new Date());
   }
 
-  // Voiding a Repair Outcome makes the Asset Under Repair again, so no Loan may hold it and no other Repair
-  // Record may keep it (#98 Q3, Q15, Q18). The Asset is locked, the lock a Loan start and a Repair Start take.
-  private async assertAssetMayBeUnderRepair(client: pg.PoolClient, record: LockedRepairRecord): Promise<void> {
-    const { asset_id, asset: { name, asset_number } } = record;
-    const held = (await loansHoldingAssets(client, [asset_id])).get(asset_id);
-    if (held) {
-      throw new RepairOutcomeVoidRefusedError({ asset_id, name, asset_number, ...held });
-    }
-    const repair = (await underRepairOfAssets(client, [asset_id])).get(asset_id);
-    if (repair) {
-      throw new RepairOutcomeVoidRefusedError({ asset_id, name, asset_number, reason: 'UNDER_REPAIR', repair_record_id: repair.repair_record_id, repair_kind: repair.repair_kind });
-    }
-  }
-
   async correct(actorId: string, repairRecordId: string, input: CorrectRepairInput, { retryToken }: { retryToken: string }): Promise<RecordedRepairCorrection> {
     const facts = normalizeFacts(input);
     const today = bangkokDate(this.clock());
@@ -309,10 +292,15 @@ export class RepairCorrectionService {
           }
           await amendRepairFact(client, target, fact.id, Object.fromEntries(changes.map(({ field, after }) => [field, after])));
         } else {
+          // Voiding a Repair Outcome makes the Asset Under Repair again, so no Loan may hold it and no other
+          // Repair Record may keep it (#98 Q18). The Asset is locked, the lock a Loan start and a Repair Start take.
           if (target.kind === 'REPAIR_OUTCOME') {
-            await this.assertAssetMayBeUnderRepair(client, record);
+            const refusal = await underRepairRefusalOf(client, { asset_id: record.asset_id, ...record.asset });
+            if (refusal) {
+              throw new RepairOutcomeVoidRefusedError(refusal);
+            }
           }
-          await voidRepairFact(client, repairRecordId, target, fact);
+          changes = await voidRepairFact(client, repairRecordId, target, fact);
         }
 
         const broken = await brokenRepairDateRules(client, repairRecordId, today);

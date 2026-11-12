@@ -145,9 +145,13 @@ const fieldsOf = (record: RepairRecord, target: RepairCorrectionTarget): Draft |
 const REPAIRER_FIELDS = ['repairer_kind', 'repairer_name'];
 
 // What an amendment names: only the fields that differ from the fact as it stands, so that a read of the
-// latest facts leaves a field the user did not touch at its latest value. A Repairer is named whole.
+// latest facts leaves a field the user did not touch at its latest value. A Repairer is named whole, and a
+// cost compares as an amount, so that "500" over a stored "500.00" is no change.
 const changesOf = (stored: Draft, draft: Draft): Record<string, unknown> => {
-  const differs = (field: string) => draft[field].trim() !== stored[field].trim();
+  const differs = (field: string) => {
+    const [before, after] = [stored[field].trim(), draft[field].trim()];
+    return field === 'cost' && before !== '' && after !== '' ? Number(before) !== Number(after) : before !== after;
+  };
   const changes: Record<string, unknown> = {};
   if (REPAIRER_FIELDS.some((field) => field in stored && differs(field))) {
     changes.repairer = { kind: draft.repairer_kind, name: draft.repairer_name.trim() || null };

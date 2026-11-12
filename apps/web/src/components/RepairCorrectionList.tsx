@@ -2,11 +2,14 @@ import React from 'react';
 import { CORRECTION_LABELS, thaiDate } from './assignmentFacts';
 import { CONDITION_LABELS, VOIDED_LABEL } from './loanFacts';
 import {
+  NEXT_RECOMMENDED_MAINTENANCE_DATE_LABEL,
+  OUTCOME_DATE_LABEL,
   REPAIRER_KIND_LABELS,
+  REPAIR_CORRECTION_TARGET_LABELS,
   REPAIR_KIND_LABELS,
   REPAIR_OUTCOME_LABEL,
   REPAIR_OUTCOME_LABELS,
-  REPAIR_RECORD_LABEL,
+  REPAIR_SOURCE_LABEL,
   UNDER_WARRANTY_LABELS,
   costText,
   type RepairCorrection,
@@ -30,11 +33,11 @@ const FIELD_LABELS: Record<string, string> = {
   cost: 'ค่าใช้จ่าย',
   document_reference: 'เอกสารอ้างอิง',
   remark: 'หมายเหตุ',
-  repair_source_loan_return_id: 'ที่มา',
+  repair_source_loan_return_id: REPAIR_SOURCE_LABEL,
   outcome: REPAIR_OUTCOME_LABEL,
-  outcome_date: 'วันที่ได้ผล',
+  outcome_date: OUTCOME_DATE_LABEL,
   note: 'หมายเหตุของผล',
-  next_recommended_maintenance_date: 'วันที่แนะนำบำรุงรักษาครั้งถัดไป',
+  next_recommended_maintenance_date: NEXT_RECOMMENDED_MAINTENANCE_DATE_LABEL,
 };
 
 const DATE_FIELDS = new Set(['start_date', 'warranty_end_date', 'outcome_date', 'next_recommended_maintenance_date']);
@@ -83,7 +86,7 @@ export const RepairCorrectionList: React.FC<{ repairKind: RepairKind; correction
       {corrections.map((correction) => (
         <li key={correction.id} data-testid="repair-correction" style={{ borderTop: '1px solid #e5e7eb', padding: '0.75rem 0', fontSize: '0.875rem', color: '#374151' }}>
           <div style={{ fontWeight: 600 }}>
-            {CORRECTION_LABELS[correction.action]}: {correction.target.kind === 'REPAIR_RECORD' ? REPAIR_RECORD_LABEL : REPAIR_OUTCOME_LABEL}
+            {CORRECTION_LABELS[correction.action]}: {REPAIR_CORRECTION_TARGET_LABELS[correction.target.kind]}
           </div>
           <div style={{ color: '#4b5563' }}>
             บันทึกเมื่อ <time dateTime={correction.recorded_at}>{THAI_DATE_TIME.format(new Date(correction.recorded_at))}</time> โดย{' '}

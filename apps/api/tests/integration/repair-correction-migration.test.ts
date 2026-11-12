@@ -132,16 +132,16 @@ describe('Repair Correction Migration Integration (Seam C - F005-T6)', () => {
       await expect(insertCorrection(client, { action: 'DELETED' })).rejects.toThrow(/action/);
       await expect(insertCorrection(client, { reason: '  ' })).rejects.toThrow(/reason/);
       await expect(insertCorrection(client, { reason: null })).rejects.toThrow(/reason/);
-      // An amendment lists what it changed, and a void changes no field.
+      // An amendment lists what it changed; a void lists what it changed besides voiding, if anything.
       await expect(insertCorrection(client, { changes: '[]' })).rejects.toThrow(/repair_corrections_amendment_lists_changes/);
       await expect(insertCorrection(client, { changes: '{}' })).rejects.toThrow(/repair_corrections_amendment_lists_changes/);
-      await expect(insertCorrection(client, { action: 'VOIDED' })).rejects.toThrow(/repair_corrections_amendment_lists_changes/);
+      await expect(insertCorrection(client, { action: 'VOIDED', changes: '{}' })).rejects.toThrow(/repair_corrections_amendment_lists_changes/);
 
       await insertCorrection(client);
       await insertCorrection(client, { repair_record_id: null, repair_outcome_id: ids.outcome, changes: JSON.stringify([{ field: 'outcome', before: 'USABLE', after: 'NOT_USABLE' }]) });
       for (const fields of [
         { repair_record_id: ids.record, action: 'VOIDED', changes: '[]' },
-        { repair_record_id: null, repair_outcome_id: ids.outcome, action: 'VOIDED', changes: '[]' },
+        { repair_record_id: null, repair_outcome_id: ids.outcome, action: 'VOIDED', changes: JSON.stringify([{ field: 'cost', before: '750.00', after: '500.00' }]) },
       ]) {
         await insertCorrection(client, fields);
         // A fact is voided at most once.

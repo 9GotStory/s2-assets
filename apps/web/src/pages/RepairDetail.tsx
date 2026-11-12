@@ -11,6 +11,7 @@ import {
   NEXT_RECOMMENDED_MAINTENANCE_DATE_LABEL,
   OUTCOME_DATE_LABEL,
   RECORD_REPAIR_OUTCOME_LABEL,
+  REPAIR_CORRECTION_TARGET_LABELS,
   REPAIR_KIND_LABELS,
   REPAIR_OUTCOME_LABEL,
   REPAIR_OUTCOME_LABELS,
@@ -216,9 +217,9 @@ const RepairDetailContent: React.FC = () => {
     openCorrection.target.kind === target.kind && (
       <div style={{ margin: '1rem 0' }}>
         {openCorrection.correction === 'AMEND' ? (
-          <RepairAmendForm {...formProps} target={openCorrection.target} targetLabel={target.kind === 'REPAIR_RECORD' ? REPAIR_RECORD_LABEL : REPAIR_OUTCOME_LABEL} />
+          <RepairAmendForm {...formProps} target={openCorrection.target} targetLabel={REPAIR_CORRECTION_TARGET_LABELS[target.kind]} />
         ) : (
-          <RepairVoidForm {...formProps} target={openCorrection.target} targetLabel={target.kind === 'REPAIR_RECORD' ? REPAIR_RECORD_LABEL : REPAIR_OUTCOME_LABEL} />
+          <RepairVoidForm {...formProps} target={openCorrection.target} targetLabel={REPAIR_CORRECTION_TARGET_LABELS[target.kind]} />
         )}
       </div>
     );

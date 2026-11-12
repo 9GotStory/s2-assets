@@ -413,16 +413,36 @@ describe('Repair Correction (Seam A - F005-T6)', () => {
       await ended(repairRecordId, { outcome_date: '2026-11-03', cost: '750' });
       const { outcome } = await recordOf(repairRecordId);
 
-      const { version } = await voided(repairRecordId, { kind: 'REPAIR_OUTCOME', id: outcome.id });
+      const { version, correction_id } = await voided(repairRecordId, { kind: 'REPAIR_OUTCOME', id: outcome.id });
 
       const record = await recordOf(repairRecordId);
       expect(record).toMatchObject({ is_voided: false, outcome: null, voided_outcomes: [outcome], cost: '500.00', version });
+      // The cost the outcome set is kept as the void's before, so nothing recorded is lost.
+      expect(record.corrections).toEqual([
+        expect.objectContaining({ id: correction_id, action: 'VOIDED', changes: [{ field: 'cost', before: '750.00', after: '500.00' }] }),
+      ]);
       expect((await detailOf(assetId)).under_repair).toMatchObject({ repair_record_id: repairRecordId, repair_kind: 'REPAIR' });
       const refusedLoan = await startLoan([assetId], { loan_date: TODAY });
       expect(refusedLoan.statusCode).toBe(409);
       expect(JSON.stringify(refusedLoan.json())).toContain('UNDER_REPAIR');
       // A new outcome may be recorded on it.
       expect((await recordOutcome(repairRecordId, { outcome_date: '2026-11-05' })).statusCode).toBe(201);
+    });
+
+    it('voids an outcome that left the cost as it was, or a cost amended after it, keeping the cost the void replaced', async () => {
+      const unchanged = await endedRecord({ cost: '500' });
+      await voided(unchanged.repairRecordId, await outcomeTarget(unchanged.repairRecordId));
+      expect((await recordOf(unchanged.repairRecordId)).corrections.map(({ changes }: any) => changes)).toEqual([[]]);
+
+      const amendedLater = await endedRecord({ cost: '500' }, { cost: '750' });
+      await amended(amendedLater.repairRecordId, RECORD, { cost: '800' });
+      await voided(amendedLater.repairRecordId, await outcomeTarget(amendedLater.repairRecordId));
+      const record = await recordOf(amendedLater.repairRecordId);
+      expect(record.cost).toBe('500.00');
+      expect(record.corrections.map(({ changes }: any) => changes)).toEqual([
+        [{ field: 'cost', before: '750.00', after: '800.00' }],
+        [{ field: 'cost', before: '800.00', after: '500.00' }],
+      ]);
     });
 
     it('refuses to void an outcome while the Asset is On Loan, Not Returned, or Under Repair by another record, naming it, and changes nothing', async () => {

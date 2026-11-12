@@ -15,14 +15,15 @@ export async function up(db: Kysely<any>): Promise<void> {
     .addColumn('repair_outcome_id', 'uuid', (col) => col.references('repair_outcomes.id').onDelete('restrict'))
     .addColumn('action', 'varchar(10)', (col) => col.notNull().check(sql`action IN ('AMENDED', 'VOIDED')`))
     .addColumn('reason', 'text', (col) => col.notNull().check(sql`btrim(reason) <> ''`))
-    // The before and after of every field an amendment changed; a void changes no field.
+    // The before and after of every field an amendment changed. A void lists what it changed besides
+    // voiding: voiding a Repair Outcome restores the record's cost, and keeps the cost it replaced here.
     .addColumn('changes', 'jsonb', (col) => col.notNull())
     .addColumn('recorded_at', 'timestamptz', (col) => col.defaultTo(sql`now()`).notNull())
     .addColumn('recorded_by', 'uuid', (col) => col.references('users.id').onDelete('restrict').notNull())
     .addCheckConstraint('repair_corrections_one_target', sql`num_nonnulls(repair_record_id, repair_outcome_id) = 1`)
     .addCheckConstraint(
       'repair_corrections_amendment_lists_changes',
-      sql`CASE WHEN jsonb_typeof(changes) = 'array' THEN (action = 'AMENDED') = (jsonb_array_length(changes) > 0) ELSE false END`
+      sql`CASE WHEN jsonb_typeof(changes) = 'array' THEN action <> 'AMENDED' OR jsonb_array_length(changes) > 0 ELSE false END`
     )
     .execute();
 

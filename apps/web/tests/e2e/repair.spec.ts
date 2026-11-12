@@ -412,9 +412,13 @@ test.describe.serial('Repair journeys: Real SPA -> Composed API -> PostgreSQL (S
     await expect(page.locator('#repair-status')).toHaveText('ผลการซ่อม: ใช้งานได้');
 
     // An amendment of the record keeps its reason and the before and after.
+    // A cost typed another way is the same amount, so it is no change.
     await page.locator('#repair-amend-action').click();
-    await page.locator('#repair-amend-remark').fill('ร้านแจ้งรับเครื่องแล้ว');
     await page.locator('#repair-amend-reason').fill('ลืมบันทึกหมายเหตุ');
+    await page.locator('#repair-amend-cost').fill('350');
+    await page.locator('#repair-amend-submit').click();
+    await expect(page.locator('[data-testid="repair-amend-form-error"]')).toHaveText('ยังไม่มีค่าที่แก้ไข');
+    await page.locator('#repair-amend-remark').fill('ร้านแจ้งรับเครื่องแล้ว');
     await page.locator('#repair-amend-submit').click();
     await expect(page.locator('#repair-remark')).toHaveText('ร้านแจ้งรับเครื่องแล้ว');
     const corrections = page.locator('[data-testid="repair-correction"]');
@@ -434,6 +438,7 @@ test.describe.serial('Repair journeys: Real SPA -> Composed API -> PostgreSQL (S
     const outcomeId = (await (await page.request.get(`${targetBaseUrl}/repairs/${repairRecordId}`)).json()).voided_outcomes[0].id;
     await expect(page.locator(`[data-testid="repair-voided-outcome-${outcomeId}-voided"]`)).toHaveText('ยกเลิกแล้ว');
     await expect(corrections).toHaveCount(2);
+    await expect(corrections.nth(1)).toContainText('ค่าใช้จ่าย: 350.00 บาท แก้เป็น 200.00 บาท');
     await expect(page.locator('#repair-outcome-action')).toBeVisible();
 
     // The Asset page reads it Under Repair again, with the voided outcome struck through.
