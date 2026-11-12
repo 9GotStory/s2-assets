@@ -133,8 +133,8 @@ The staff member who allowed a Loan, noted for the record. No approval step depe
 _Avoid_: approver
 
 **Condition** (สภาพ):
-How an Asset was found when lent or at its Loan Return: ปกติ or ชำรุด. It belongs to that moment,
-not to the Asset.
+How an Asset was found when lent, at its Loan Return or when Found in a Verification Round: ปกติ or
+ชำรุด. It belongs to that moment, not to the Asset.
 
 **Loan Correction** (แก้ไขรายการที่บันทึกผิด):
 A traceable fix to a Loan fact that was wrong as recorded, up to voiding a fact that never happened
@@ -178,7 +178,8 @@ Who did the work: an internal technician, or an external shop or technician know
 _Avoid_: repair vendor
 
 **Repair Source** (ที่มา):
-The Loan Return, recorded ชำรุด, that led to a Repair Record, when there was one.
+The Loan Return recorded ชำรุด, or the Asset Verification Found ชำรุด, that led to a Repair Record,
+when there was one.
 
 **Repair Correction** (แก้ไขรายการที่บันทึกผิด):
 A traceable fix to a Repair fact that was wrong as recorded, up to voiding a fact that never
@@ -192,8 +193,79 @@ one.
 **Next Recommended Maintenance Date** (วันที่แนะนำบำรุงรักษาครั้งถัดไป):
 A date noted with a Repair Outcome. Nothing is scheduled from it.
 
+## Verification
+
+**Verification Round** (รอบตรวจ):
+One check of a fixed set of Assets, named and labelled with a Thai fiscal year (ปีงบประมาณ), from
+its start date until it is closed. A fiscal year may have several Rounds, one open at a time. A
+Round opened by mistake and holding no result may be voided (ยกเลิกรอบ); it stays shown as ยกเลิกแล้ว.
+Asset Stocktake is not a term: a Stocktake counts Materials.
+_Avoid_: asset stocktake, asset audit
+
+**Scope Snapshot** (รายการในรอบ):
+The Assets a Verification Round covers, each with the identity and Current Assignment the register
+showed when it joined the Round. Nothing recorded later changes it.
+
+**Late Addition** (เพิ่มเข้ารอบภายหลัง):
+An Asset added to an open Verification Round after it started, noting who added it, when and why.
+A Round never adds an Asset by itself.
+
+**Asset Verification** (ผลตรวจ):
+The current result for one Asset in one Verification Round, Found or Not Found, with its earlier
+Verification Revisions. Opening an Asset from its QR label is not one.
+_Avoid_: scan result
+
+**Found** (พบ):
+An Asset Verification saying the Asset was seen, with its Condition and, when given, its Observed
+Location.
+
+**Not Found** (ไม่พบในการตรวจ):
+An Asset Verification saying the Asset was not seen in this Round. It does not say the Asset is
+lost or Retired.
+_Avoid_: สูญหาย
+
+**Not Yet Verified** (ยังไม่ได้ตรวจ):
+An Asset in a Round's Scope Snapshot with no Asset Verification. It stays so when the Round closes;
+it is not Not Found.
+
+**Verification Date** (วันที่ตรวจ):
+The Thai calendar day an Asset was checked, which may be earlier than its Recorded At.
+
+**Re-verification** (ตรวจซ้ำ):
+Checking an Asset again in the same Round on purpose, which makes a new current result and keeps
+the earlier one.
+
+**Verification Revision**:
+One recorded result of an Asset Verification; the latest is the current result.
+
+**Verification Correction** (แก้ไขรายการที่บันทึกผิด):
+A traceable fix to a Verification Revision that was wrong as recorded, such as a result recorded for
+the wrong Asset, by voiding it (ยกเลิกรายการ) in an open Round. It is not a Re-verification. A voided
+revision stays shown as ยกเลิกแล้ว, struck through, and the latest revision not voided becomes the
+current result again, or the Asset is Not Yet Verified.
+
+**Observed Location** (สถานที่ที่พบ):
+The Location where a Found Asset was seen. Left out, it means the Location matched the register.
+
+**Discrepancy** (ข้อแตกต่าง):
+A difference an Asset Verification notes between the Asset and the register: Location ไม่ตรงทะเบียน,
+ชำรุด, ป้าย/QR หายหรือชำรุด, or ข้อมูลไม่ตรงทะเบียน. Location ไม่ตรงทะเบียน compares the Observed Location
+with the Permanent Assignment in effect on the Verification Date. One result may note several. A
+Discrepancy changes nothing in the register; a Reassignment or Repair Record may follow from it.
+
+**Closed Round** (ปิดรอบแล้ว):
+A Verification Round no longer taking results, kept as a historical record until a Reopen. Not a
+Closed Loan.
+
+**Reopen** (เปิดรอบอีกครั้ง):
+Opening a Closed Round again, with a reason, so its results can be changed and it can be closed
+again.
+
 ## Roles
 
 **Asset Custodian** (ผู้ดูแลทะเบียนครุภัณฑ์):
 The role that keeps the Asset register, including its assignment work.
 _Avoid_: Responsible Person, ผู้รับผิดชอบ
+
+**Verification Staff** (ผู้ตรวจ):
+The role that checks Assets in an open Verification Round and records Asset Verifications.
