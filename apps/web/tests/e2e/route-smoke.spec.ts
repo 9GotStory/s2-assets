@@ -13,6 +13,7 @@ import { AssetService } from '../../../api/src/services/asset.service.ts';
 import { AcquisitionService } from '../../../api/src/services/acquisition.service.ts';
 import { LoanService } from '../../../api/src/services/loan.service.ts';
 import { RepairService } from '../../../api/src/services/repair.service.ts';
+import { VerificationService } from '../../../api/src/services/verification.service.ts';
 import { repositoryProxyConfig } from '../../vite.config.ts';
 
 const { Pool } = pg;
@@ -29,6 +30,7 @@ interface Fixtures {
   acquisitionId: string;
   loanId: string;
   repairRecordId: string;
+  verificationRoundId: string;
 }
 
 // Each route of router.tsx: the page a Read-only User opens and its heading, or why it is not opened.
@@ -47,6 +49,8 @@ const SMOKE: Record<string, { url: (f: Fixtures) => string; heading: (f: Fixture
   '/loans/:id': { url: (f) => `/loans/${f.loanId}`, heading: () => 'การยืม' },
   '/repairs': { url: () => '/repairs', heading: () => 'รายการซ่อม/บำรุงรักษา' },
   '/repairs/:id': { url: (f) => `/repairs/${f.repairRecordId}`, heading: () => 'รายการซ่อม/บำรุงรักษา' },
+  '/verification-rounds': { url: () => '/verification-rounds', heading: () => 'รอบตรวจ' },
+  '/verification-rounds/:id': { url: (f) => `/verification-rounds/${f.verificationRoundId}`, heading: () => 'ตรวจประจำปี E2E route smoke' },
   // Every registry viewer reads the Reference Lists; maintaining them is reference:maintain.
   '/admin/references': { url: () => '/admin/references', heading: () => 'รายการข้อมูลอ้างอิง (Reference Lists)' },
 };
@@ -129,7 +133,12 @@ test.describe.serial('Route smoke: Real SPA -> Composed API -> PostgreSQL (Seam 
       { asset_id: asset.id, repair_kind: 'REPAIR', start_date: today, repairer: { kind: 'INTERNAL' }, symptom_or_work: 'E2E route smoke' } as any,
       { retryToken: crypto.randomUUID() }
     );
-    fixtures = { assetId: asset.id, assetName, acquisitionId: acquisition.id, loanId, repairRecordId };
+    const { verification_round_id: verificationRoundId } = await new VerificationService({ db: pool }).open(
+      custodianUserId,
+      { name: 'ตรวจประจำปี E2E route smoke', fiscal_year: 2569 },
+      { retryToken: crypto.randomUUID() }
+    );
+    fixtures = { assetId: asset.id, assetName, acquisitionId: acquisition.id, loanId, repairRecordId, verificationRoundId };
 
     const testProxy: Record<string, any> = {};
     for (const [route, opts] of Object.entries(repositoryProxyConfig)) {

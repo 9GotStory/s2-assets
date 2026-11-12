@@ -196,15 +196,17 @@ A date noted with a Repair Outcome. Nothing is scheduled from it.
 ## Verification
 
 **Verification Round** (รอบตรวจ):
-One check of a fixed set of Assets, named and labelled with a Thai fiscal year (ปีงบประมาณ), from
-its start date until it is closed. A fiscal year may have several Rounds, one open at a time. A
-Round opened by mistake and holding no result may be voided (ยกเลิกรอบ); it stays shown as ยกเลิกแล้ว.
+One check of a fixed set of Assets, named and labelled with a Thai fiscal year (ปีงบประมาณ). Opening
+one (เปิดรอบตรวจ) takes its Scope Snapshot; it is then open (เปิดอยู่) from its start date (วันที่เริ่มตรวจ)
+until it is closed. A fiscal year may have several Rounds, one open at a time. A Round opened by
+mistake and holding no result may be voided (ยกเลิกรอบ); it stays shown as ยกเลิกแล้ว.
 Asset Stocktake is not a term: a Stocktake counts Materials.
 _Avoid_: asset stocktake, asset audit
 
 **Scope Snapshot** (รายการในรอบ):
 The Assets a Verification Round covers, each with the identity and Current Assignment the register
-showed when it joined the Round. Nothing recorded later changes it.
+showed when it joined the Round. A Round opens over the whole register (ทั้งทะเบียน) or over the Assets
+whose Current Assignment is in chosen OrganizationUnits and Locations. Nothing recorded later changes it.
 
 **Late Addition** (เพิ่มเข้ารอบภายหลัง):
 An Asset added to an open Verification Round after it started, noting who added it, when and why.

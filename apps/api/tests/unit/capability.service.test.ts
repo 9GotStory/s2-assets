@@ -75,7 +75,7 @@ describe('CapabilityService Unit Tests (T024 - US2)', () => {
       expect(ROLE_CAPABILITY_MAP.READ_ONLY).not.toContain('evidence:correct');
     });
 
-    it('maps ASSET_CUSTODIAN to asset:view, asset:duplicate-check, asset:register, asset:bulk-register, asset:correct, asset:search, acquisition:create, acquisition:view, evidence:view, evidence:create, evidence:correct, assignment:reassign, assignment:correct, loan:record, loan:correct, repair:record, and repair:correct', () => {
+    it('maps ASSET_CUSTODIAN to asset:view, asset:duplicate-check, asset:register, asset:bulk-register, asset:correct, asset:search, acquisition:create, acquisition:view, evidence:view, evidence:create, evidence:correct, assignment:reassign, assignment:correct, loan:record, loan:correct, repair:record, repair:correct, verification:record, and verification:manage', () => {
       expect(ROLE_CAPABILITY_MAP.ASSET_CUSTODIAN).toEqual([
         'asset:view',
         'asset:duplicate-check',
@@ -94,6 +94,8 @@ describe('CapabilityService Unit Tests (T024 - US2)', () => {
         'loan:correct',
         'repair:record',
         'repair:correct',
+        'verification:record',
+        'verification:manage',
       ]);
       // #98 Q2: only an Asset Custodian records a Repair Start.
       for (const role of ['SYSTEM_MAINTAINER', 'ADMINISTRATOR', 'READ_ONLY']) {
@@ -119,6 +121,24 @@ describe('CapabilityService Unit Tests (T024 - US2)', () => {
       for (const role of ['SYSTEM_MAINTAINER', 'READ_ONLY']) {
         expect(ROLE_CAPABILITY_MAP[role]).not.toContain('repair:correct');
       }
+    });
+
+    // F006-T1 (#125 Q1): Verification Staff check Assets; the Asset Custodian also manages Verification Rounds.
+    it('maps VERIFICATION_STAFF to asset:view, asset:search and verification:record, and gives verification:manage to the Asset Custodian alone', () => {
+      expect(KNOWN_ROLES).toContain('VERIFICATION_STAFF');
+      expect(Object.isFrozen(ROLE_CAPABILITY_MAP.VERIFICATION_STAFF)).toBe(true);
+      expect(ROLE_CAPABILITY_MAP.VERIFICATION_STAFF).toEqual(['asset:view', 'asset:search', 'verification:record']);
+      expect(ROLE_CAPABILITY_MAP.ASSET_CUSTODIAN).toContain('verification:record');
+      expect(ROLE_CAPABILITY_MAP.ASSET_CUSTODIAN).toContain('verification:manage');
+      for (const role of ['SYSTEM_MAINTAINER', 'ADMINISTRATOR', 'READ_ONLY']) {
+        expect(ROLE_CAPABILITY_MAP[role]).not.toContain('verification:record');
+      }
+      for (const role of ['SYSTEM_MAINTAINER', 'ADMINISTRATOR', 'READ_ONLY', 'VERIFICATION_STAFF']) {
+        expect(ROLE_CAPABILITY_MAP[role]).not.toContain('verification:manage');
+      }
+      expect(isKnownCapability('verification:record')).toBe(true);
+      expect(isKnownCapability('verification:manage')).toBe(true);
+      expect(KNOWN_CAPABILITIES).not.toContain('verification:correct');
     });
 
     it('validates UUIDs correctly with isValidUuid', () => {

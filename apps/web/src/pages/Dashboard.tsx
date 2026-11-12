@@ -1,6 +1,7 @@
 import React, { useEffect, useState } from 'react';
 import { useNavigate, Link } from 'react-router';
 import { REPAIR_LIST_LABEL, REPAIR_SECTION_LABEL } from '../components/repairFacts';
+import { VERIFICATION_ROUND_LABEL } from '../components/verificationFacts';
 
 export interface SafeUser {
   id: string;
@@ -500,6 +501,50 @@ export const Dashboard: React.FC = () => {
               }}
             >
               {REPAIR_LIST_LABEL}
+            </Link>
+          </div>
+        </section>
+
+        <section
+          aria-labelledby="verification-heading"
+          style={{
+            backgroundColor: '#f9fafb',
+            borderRadius: '6px',
+            padding: '1.25rem',
+            marginBottom: '1.5rem',
+          }}
+        >
+          <h2
+            id="verification-heading"
+            style={{
+              fontSize: '1.125rem',
+              fontWeight: 600,
+              marginTop: 0,
+              marginBottom: '0.5rem',
+              color: '#374151',
+            }}
+          >
+            ตรวจประจำปี
+          </h2>
+          <p style={{ margin: '0 0 1rem 0', fontSize: '0.875rem', color: '#4b5563' }}>
+            ดูรอบตรวจครุภัณฑ์ประจำปีและรายการครุภัณฑ์ในแต่ละรอบ
+          </p>
+          <div style={{ display: 'flex', gap: '0.75rem', flexWrap: 'wrap' }}>
+            <Link
+              to="/verification-rounds"
+              id="nav-verification-round-list"
+              style={{
+                display: 'inline-block',
+                padding: '0.5rem 1rem',
+                backgroundColor: '#4b5563',
+                color: '#ffffff',
+                textDecoration: 'none',
+                borderRadius: '4px',
+                fontSize: '0.875rem',
+                fontWeight: 500,
+              }}
+            >
+              {VERIFICATION_ROUND_LABEL}
             </Link>
           </div>
         </section>
