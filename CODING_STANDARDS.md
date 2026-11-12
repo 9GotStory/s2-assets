@@ -40,6 +40,12 @@ Without it, the rule can move ahead of the lock and every test stays green. In F
 Repair Source check read the Loan Return after the Asset lock that a Loan Correction also takes; no test
 failed when the check was moved before it, and only the Spec review found the gap.
 
+The test goes red when the read moves ahead of the lock: check it with `scripts/dev/expect-red.sh`. A
+write that creates a fact reads nothing of it before the lock, so moving its read changes no answer;
+test the order on a write that changes a fact that already exists. In F005-T7 (#105), the Repair Conflict
+tests of a Repair Start and a Loan start stayed green with the check moved ahead of the lock; those of the
+two corrections, which read what was there before them, went red.
+
 ## A correction keeps every stored value it replaces
 
 A correction record lists the before and after of each stored value its write changes, side effects
@@ -100,3 +106,10 @@ In application code, SQL on an existing table stays in the module that owns the 
 that module. A read of another module's table goes through that module's read functions too, as
 `loan-read.service.ts` reads Repair Outcomes through `latestRepairOutcomesOf` (#100). For the Loan
 and Repair tables, the guards in `eslint.config.mjs` hold this for SQL text that names the table.
+
+When a rule must join another module's table in SQL, as a list filter does, the owning module exports
+the SQL fragment from a leaf file named after its concept, and that fragment counts as one of its read
+functions. `loan-item-periods.ts` gives the period of a LoanItem to both `loan-read.service.ts` and
+`repair-read.service.ts` (F005-T7, #105). The guards see the table only in the leaf, so name a CTE
+that holds the fragment after what it holds, not after the table: `JOIN loan_periods` reads to the guard
+as the table `loan_periods`.
