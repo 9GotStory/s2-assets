@@ -307,7 +307,8 @@ describe('Open a Verification Round (Seam A - F006-T1)', () => {
         opening({ organization_unit_ids: [room.id] }),
         opening({ location_ids: [unit.id] }),
         opening({ location_ids: [crypto.randomUUID()] }),
-        opening({ location_ids: Array.from({ length: 101 }, () => crypto.randomUUID()) }),
+        // Past the cap, even naming one real entry again and again.
+        opening({ location_ids: Array.from({ length: 1001 }, () => room.id) }),
         opening({ attachment: 'รายชื่อกรรมการ.pdf' }),
       ]) {
         const res = await open(payload);

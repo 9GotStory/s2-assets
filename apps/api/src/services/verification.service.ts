@@ -8,7 +8,7 @@ import { ValidationError } from './validation-error.ts';
 export const ROUND_NAME_MAX_LENGTH = 200;
 export const ROUND_NOTES_MAX_LENGTH = REMARK_MAX_LENGTH;
 // How many entries one filter of a Round may name.
-export const ROUND_FILTER_MAX_ENTRIES = 100;
+export const ROUND_FILTER_MAX_ENTRIES = 1000;
 
 export interface OpenVerificationRoundInput {
   name: string;
