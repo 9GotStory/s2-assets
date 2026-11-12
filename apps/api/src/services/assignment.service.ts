@@ -873,6 +873,12 @@ export const assignmentSearch = {
     const { dimension, column } = DIMENSIONS.find(({ idField }) => idField === field)!;
     return `(${latestChange(dimension, 'a.id', `c.new_${column}`)}) = ${param}`;
   },
+  // The Current Assignment names one of the entries in the uuid[] parameter; an empty or Legacy-text
+  // dimension names none (F006-T1, #125 P3).
+  entryAmongFilter: (field: (typeof REFERENCE_ID_FIELDS)[number], param: string): string => {
+    const { dimension, column } = DIMENSIONS.find(({ idField }) => idField === field)!;
+    return `(${latestChange(dimension, 'a.id', `c.new_${column}`)}) = ANY(${param}::uuid[])`;
+  },
   // The Legacy text of the Asset's non-voided Initial Assignment, current or not (#50, the spec's search decision).
   legacyTextFilter: (field: LegacyTextField, param: string): string => {
     const { dimension } = DIMENSIONS.find(({ legacyField }) => legacyField === field)!;

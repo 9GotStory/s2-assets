@@ -18,6 +18,7 @@ import { assetRoutes } from './routes/asset.routes.ts';
 import { assignmentRoutes } from './routes/assignment.routes.ts';
 import { loanRoutes } from './routes/loan.routes.ts';
 import { repairRoutes } from './routes/repair.routes.ts';
+import { verificationRoutes } from './routes/verification.routes.ts';
 import { acquisitionRoutes } from './routes/acquisition.routes.ts';
 import { evidenceRoutes } from './routes/evidence.routes.ts';
 import { referenceRoutes } from './routes/reference.routes.ts';
@@ -37,6 +38,8 @@ import { LoanCorrectionService } from './services/loan-correction.service.ts';
 import { RepairReadService } from './services/repair-read.service.ts';
 import { RepairService } from './services/repair.service.ts';
 import { RepairCorrectionService } from './services/repair-correction.service.ts';
+import { VerificationReadService } from './services/verification-read.service.ts';
+import { VerificationService } from './services/verification.service.ts';
 import { AcquisitionService } from './services/acquisition.service.ts';
 import { EvidenceService } from './services/evidence.service.ts';
 
@@ -289,6 +292,12 @@ export async function buildApp(options: AppOptions = {}): Promise<FastifyInstanc
       repairService: new RepairService({ db: dbClient, clock: options.clock }),
       repairCorrectionService: new RepairCorrectionService({ db: dbClient, clock: options.clock }),
       repairReadService,
+      capabilityService,
+    });
+
+    await app.register(verificationRoutes, {
+      verificationService: new VerificationService({ db: dbClient, clock: options.clock }),
+      verificationReadService: new VerificationReadService({ db: dbClient }),
       capabilityService,
     });
 

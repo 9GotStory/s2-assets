@@ -14,6 +14,8 @@ import { LoanDetail } from './pages/LoanDetail';
 import { LoanList } from './pages/LoanList';
 import { RepairDetail } from './pages/RepairDetail';
 import { RepairList } from './pages/RepairList';
+import { VerificationRoundDetail } from './pages/VerificationRoundDetail';
+import { VerificationRoundList } from './pages/VerificationRoundList';
 
 export const ProtectedDetailBoundary: React.FC = () => {
   const navigate = useNavigate();
@@ -347,6 +349,14 @@ export const routes: RouteObject[] = [
   {
     path: '/repairs/:id',
     element: <RepairDetail />,
+  },
+  {
+    path: '/verification-rounds',
+    element: <VerificationRoundList />,
+  },
+  {
+    path: '/verification-rounds/:id',
+    element: <VerificationRoundDetail />,
   },
   {
     path: '/admin/references',

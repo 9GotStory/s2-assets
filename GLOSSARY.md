@@ -196,8 +196,9 @@ A date noted with a Repair Outcome. Nothing is scheduled from it.
 ## Verification
 
 **Verification Round** (รอบตรวจ):
-One check of a fixed set of Assets, named and labelled with a Thai fiscal year (ปีงบประมาณ), from
-its start date until it is closed. A fiscal year may have several Rounds, one open at a time. A
+One check of a fixed set of Assets, named and labelled with a Thai fiscal year (ปีงบประมาณ). It is
+open (เปิดอยู่) from its start date (วันที่เริ่มตรวจ) until it is closed. A fiscal year may have several
+Rounds, one open at a time. A
 Round opened by mistake and holding no result may be voided (ยกเลิกรอบ); it stays shown as ยกเลิกแล้ว.
 Asset Stocktake is not a term: a Stocktake counts Materials.
 _Avoid_: asset stocktake, asset audit

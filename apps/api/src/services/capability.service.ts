@@ -14,6 +14,7 @@ export const KNOWN_ROLES = [
   'ADMINISTRATOR',
   'READ_ONLY',
   'ASSET_CUSTODIAN',
+  'VERIFICATION_STAFF',
 ] as const;
 
 export type Role = (typeof KNOWN_ROLES)[number];
@@ -38,17 +39,20 @@ export const KNOWN_CAPABILITIES = [
   'loan:correct',
   'repair:record',
   'repair:correct',
+  'verification:record',
+  'verification:manage',
 ] as const;
 
 export type Capability = (typeof KNOWN_CAPABILITIES)[number];
 
 /**
- * Immutable role-to-capability mapping (Feature 002 T1–T7, Features 003 to 005 approved matrix).
+ * Immutable role-to-capability mapping (Feature 002 T1–T7, Features 003 to 006 approved matrix).
  *
  * - SYSTEM_MAINTAINER: grants 'system:maintain' (preserves foundation maintenance grant)
  * - ADMINISTRATOR: grants 'system:maintain', 'asset:view', 'asset:correct', 'asset:search', 'acquisition:view', 'evidence:view', 'evidence:correct', 'reference:maintain', 'assignment:correct' (#50 Q3: Assignment Correction), 'loan:correct' (#74 Q12: Loan Correction), 'repair:correct' (#98 Q2: Repair Correction)
  * - READ_ONLY: grants 'asset:view', 'asset:search', 'acquisition:view', 'evidence:view' (view and search for registry, acquisitions & evidence)
- * - ASSET_CUSTODIAN: grants 'asset:view', 'asset:duplicate-check', 'asset:register', 'asset:bulk-register', 'asset:correct', 'asset:search', 'acquisition:create', 'acquisition:view', 'evidence:view', 'evidence:create', 'evidence:correct', 'assignment:reassign', 'assignment:correct' (#50 Q3: Initial Assignment, Reassignment and Assignment Correction), 'loan:record' (#74 Q12: starting a Loan), 'loan:correct' (#74 Q12: Loan Correction), 'repair:record' (#98 Q2: a Repair Start and its Repair Outcome), 'repair:correct' (#98 Q2: Repair Correction)
+ * - ASSET_CUSTODIAN: grants 'asset:view', 'asset:duplicate-check', 'asset:register', 'asset:bulk-register', 'asset:correct', 'asset:search', 'acquisition:create', 'acquisition:view', 'evidence:view', 'evidence:create', 'evidence:correct', 'assignment:reassign', 'assignment:correct' (#50 Q3: Initial Assignment, Reassignment and Assignment Correction), 'loan:record' (#74 Q12: starting a Loan), 'loan:correct' (#74 Q12: Loan Correction), 'repair:record' (#98 Q2: a Repair Start and its Repair Outcome), 'repair:correct' (#98 Q2: Repair Correction), 'verification:record' (#125 Q1: an Asset Verification and a Re-verification), 'verification:manage' (#125 Q1: opening, editing and closing a Verification Round, and a Late Addition)
+ * - VERIFICATION_STAFF: grants 'asset:view', 'asset:search', 'verification:record' (#125 Q1: Verification Staff)
  * - Unknown roles: empty / unmapped
  */
 export const ROLE_CAPABILITY_MAP: Readonly<Record<string, readonly string[]>> = Object.freeze({
@@ -90,7 +94,10 @@ export const ROLE_CAPABILITY_MAP: Readonly<Record<string, readonly string[]>> = 
     'loan:correct',
     'repair:record',
     'repair:correct',
+    'verification:record',
+    'verification:manage',
   ] as const),
+  VERIFICATION_STAFF: Object.freeze(['asset:view', 'asset:search', 'verification:record'] as const),
 });
 
 /**
