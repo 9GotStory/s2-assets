@@ -32,6 +32,14 @@ tiebreak is broken, so the test cannot fail. Put the tied rows on either side of
 `loan-list.test.ts` and `repair-list.test.ts` do. In F005-T3 (#101), both tests first kept their
 same-day pair on one page, and breaking the tiebreak left them green.
 
+## A rule read under a lock has a test of its order
+
+When a write decides a rule on a fact that another write can change, and a shared lock orders the two,
+a Seam A test queues the other write first with `whileHolding` and shows that the rule sees its result.
+Without it, the rule can move ahead of the lock and every test stays green. In F005-T5 (#103), the
+Repair Source check read the Loan Return after the Asset lock that a Loan Correction also takes; no test
+failed when the check was moved before it, and only the Spec review found the gap.
+
 ## Helpers decide, handlers reply
 
 A route helper returns a decision, such as a boolean or a result, and the route handler sends the
