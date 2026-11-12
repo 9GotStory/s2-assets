@@ -40,6 +40,19 @@ Without it, the rule can move ahead of the lock and every test stays green. In F
 Repair Source check read the Loan Return after the Asset lock that a Loan Correction also takes; no test
 failed when the check was moved before it, and only the Spec review found the gap.
 
+## A correction keeps every stored value it replaces
+
+A correction record lists the before and after of each stored value its write changes, side effects
+included: a cascade, or a value restored from an earlier column. A Seam A test reads the correction
+back after a void as well as after an amendment. In F005-T6 (#104), voiding a Repair Outcome restored
+the record's cost and kept the cost it replaced nowhere; only the Spec review found it.
+
+## An amend form compares a field the way the server stores it
+
+An amend form counts a field as changed only when the server would store a different value: text
+trimmed, an amount compared as a number, a UUID in lower case. In F005-T6 (#104), "350" over a stored
+"350.00" was sent as a change and refused as "changes nothing".
+
 ## Helpers decide, handlers reply
 
 A route helper returns a decision, such as a boolean or a result, and the route handler sends the

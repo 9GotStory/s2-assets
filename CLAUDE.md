@@ -64,8 +64,8 @@ with `/code-review` → `/pr` → `/retro`.
   `feature/003-asset-assignment-movement`). Branch each task from its feature's integration
   branch and target its pull request there. When a pull request stays in scope and its checks
   pass, merge it yourself:
-  - run `gh pr merge <n> --repo 9GotStory/s2-assets --merge --match-head-commit <headRefOid>`
-    as a standalone command;
+  - run `gh pr merge <n> --repo 9GotStory/s2-assets --merge --match-head-commit <headRefOid>
+    --delete-branch` as a standalone command, which also deletes the task branch, remote and local;
   - then run `scripts/dev/verify-merge.sh <n>`, which fetches and confirms that the merge
     commit's second parent is `<headRefOid>` and that it changes exactly the pull request's files.
 
