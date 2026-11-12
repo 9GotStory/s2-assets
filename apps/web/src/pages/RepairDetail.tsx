@@ -1,6 +1,7 @@
 import React, { useEffect, useState } from 'react';
 import { Link, useNavigate, useParams } from 'react-router';
 import { QueryClient, QueryClientProvider, useQuery } from '@tanstack/react-query';
+import { VoidedMark } from '../components/LoanBadges';
 import { RepairOutcomeForm } from '../components/RepairOutcomeForm';
 import { thaiDate } from '../components/assignmentFacts';
 import { CONDITION_LABELS, VOIDED_LABEL, assetLabel, voidedStyle } from '../components/loanFacts';
@@ -194,11 +195,7 @@ const RepairDetailContent: React.FC = () => {
                 <span style={repairSource.is_voided ? voidedStyle : undefined}>
                   การคืนสภาพ{CONDITION_LABELS[repairSource.condition]} วันที่ <time dateTime={repairSource.return_date}>{thaiDate(repairSource.return_date)}</time>
                 </span>
-                {repairSource.is_voided && (
-                  <span data-testid="repair-source-voided" style={{ marginLeft: '0.375rem', fontWeight: 600, color: '#b91c1c' }}>
-                    {VOIDED_LABEL}
-                  </span>
-                )}{' '}
+                {repairSource.is_voided && <VoidedMark testId="repair-source-voided" />}{' '}
                 <Link to={`/loans/${repairSource.loan_id}`} id="repair-source-loan-link" style={{ color: '#2563eb', textDecoration: 'underline' }}>
                   ดูการยืม
                 </Link>

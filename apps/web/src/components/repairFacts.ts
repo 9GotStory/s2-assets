@@ -1,5 +1,6 @@
 // What the API answers about Repair Records (F005-T1, T2, T5), and their labels from GLOSSARY.md (#98 Q14).
 
+import type { LoanCondition } from './loanFacts';
 import type { PermanentAssignment } from './ReferenceContextFields';
 
 export type RepairKind = 'REPAIR' | 'MAINTENANCE';
@@ -32,7 +33,7 @@ export interface RepairSource {
   loan_return_id: string;
   loan_id: string;
   return_date: string;
-  condition: 'NORMAL' | 'DAMAGED';
+  condition: LoanCondition;
   is_voided: boolean;
 }
 

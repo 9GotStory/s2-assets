@@ -2,7 +2,7 @@ import React, { useEffect, useState } from 'react';
 import { Link, useNavigate, useParams } from 'react-router';
 import { QueryClient, QueryClientProvider, useQuery } from '@tanstack/react-query';
 import { DueDateExtensionForm } from '../components/DueDateExtensionForm';
-import { OverdueBadge, ReturnedLateBadge } from '../components/LoanBadges';
+import { OverdueBadge, ReturnedLateBadge, VoidedMark } from '../components/LoanBadges';
 import { LoanConflictMarks } from '../components/LoanConflicts';
 import { LoanAmendForm, LoanVoidForm } from '../components/LoanCorrectionForms';
 import { LoanCorrectionList, correctionTargetText } from '../components/LoanCorrectionList';
@@ -88,12 +88,6 @@ const correctionActionStyle: React.CSSProperties = {
   fontSize: '0.75rem',
   cursor: 'pointer',
 };
-
-const VoidedMark: React.FC<{ testId: string }> = ({ testId }) => (
-  <span data-testid={testId} style={{ marginLeft: '0.375rem', fontWeight: 600, color: '#b91c1c', textDecoration: 'none' }}>
-    {VOIDED_LABEL}
-  </span>
-);
 
 // The Repair Records that cite a Loan Return as their Repair Source, each linked (F005-T5, RM-08).
 const CitingRepairRecords: React.FC<{ records: CitingRepairRecord[] | undefined; testId: string }> = ({ records, testId }) =>

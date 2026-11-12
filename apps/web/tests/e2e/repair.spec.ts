@@ -11,6 +11,8 @@ import { UserService } from '../../../api/src/services/user.service.ts';
 import { SessionService } from '../../../api/src/services/session.service.ts';
 import { AssetService } from '../../../api/src/services/asset.service.ts';
 import { LoanService } from '../../../api/src/services/loan.service.ts';
+import { LoanCorrectionService } from '../../../api/src/services/loan-correction.service.ts';
+import { LoanReadService } from '../../../api/src/services/loan-read.service.ts';
 import { LoanReturnService } from '../../../api/src/services/loan-return.service.ts';
 import { RepairService } from '../../../api/src/services/repair.service.ts';
 import { repositoryProxyConfig } from '../../vite.config.ts';
@@ -344,6 +346,30 @@ test.describe.serial('Repair journeys: Real SPA -> Composed API -> PostgreSQL (S
     await page.goto(`${targetBaseUrl}/loans/${loanId}`);
     await expect(citing.getByRole('link')).toHaveAttribute('href', new URL(recordUrl).pathname);
     await expect(sendAction).toHaveCount(0);
+
+    // Once the repair has ended, a Loan Correction voids the Loan Return: the record stands, and both pages
+    // mark its source ยกเลิกแล้ว (#98 Q5).
+    const repairRecordId = new URL(recordUrl).pathname.split('/').pop()!;
+    await repairService.recordOutcome(
+      custodianUserId,
+      repairRecordId,
+      { expected_version: 1, outcome: 'USABLE', outcome_date: new Intl.DateTimeFormat('en-CA', { timeZone: 'Asia/Bangkok' }).format(new Date()) },
+      { retryToken: crypto.randomUUID() }
+    );
+    const loan = (await new LoanReadService({ db: pool }).read(loanId, { includePhone: false }))!;
+    await new LoanCorrectionService({ db: pool }).correct(
+      custodianUserId,
+      loanId,
+      { expected_version: loan.version, action: 'VOID', target: { kind: 'LOAN_RETURN', id: loan.items[0].loan_return!.id }, reason: 'บันทึกคืนผิดรายการ' },
+      { retryToken: crypto.randomUUID() }
+    );
+    await page.goto(recordUrl);
+    await expect(page.locator('#repair-source')).toContainText('การคืนสภาพชำรุด');
+    await expect(page.locator('[data-testid="repair-source-voided"]')).toHaveText('ยกเลิกแล้ว');
+    await expect(page.locator('#repair-status')).toHaveText('ผลการซ่อม: ใช้งานได้');
+    await page.goto(`${targetBaseUrl}/loans/${loanId}`);
+    await expect(page.locator(`[data-testid="loan-ending-voided-mark-${loan.items[0].loan_return!.id}"]`)).toBeVisible();
+    await expect(page.locator(`[data-testid="loan-return-repair-records-${loan.items[0].loan_return!.id}"] a`)).toHaveAttribute('href', `/repairs/${repairRecordId}`);
   });
 
   test('Journey F005-T2.3: after ซ่อมไม่ได้, the Start Loan form warns while the Asset stays in the register', async ({ page, context }) => {

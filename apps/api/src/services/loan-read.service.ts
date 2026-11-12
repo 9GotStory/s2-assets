@@ -605,10 +605,11 @@ export class LoanReadService {
       ...[...voidedEndings.values()].flat().flatMap((ending) => (ending.kind === 'LOAN_RETURN' ? [ending.id] : [])),
     ];
     const citing = await repairRecordsCiting(this.db, loanReturnIds);
-    const withRepairRecords = <T extends { id: string }>(loanReturn: T): T & { repair_records: CitingRepairRecord[] } => ({
-      ...loanReturn,
-      repair_records: citing.get(loanReturn.id) ?? [],
-    });
+    function withRepairRecords<T extends { id: string }>(loanReturn: T): T & { repair_records: CitingRepairRecord[] };
+    function withRepairRecords<T extends { id: string }>(loanReturn: T | null): (T & { repair_records: CitingRepairRecord[] }) | null;
+    function withRepairRecords<T extends { id: string }>(loanReturn: T | null) {
+      return loanReturn && { ...loanReturn, repair_records: citing.get(loanReturn.id) ?? [] };
+    }
     const conflicts = conflictsByItem(await readLoanConflictsOfAssets(this.db, [...new Set<string>(itemsRes.rows.map(({ asset_id }: any) => asset_id))]));
     const assignments = returnDate
       ? await readAssignmentsAt(this.db, itemsRes.rows.filter(isReturnable).map((item: any) => item.asset_id), returnDate)
@@ -639,7 +640,7 @@ export class LoanReadService {
         ending_kind: item.ending_kind,
         is_voided: item.is_voided,
         is_overdue: item.is_overdue,
-        loan_return: item.return_id ? withRepairRecords(loanReturnOf(item)!) : null,
+        loan_return: withRepairRecords(loanReturnOf(item)),
         not_returned: notReturnedOfRow(item),
         voided_endings: (voidedEndings.get(item.id) ?? []).map((ending) => (ending.kind === 'LOAN_RETURN' ? withRepairRecords(ending) : ending)),
         due_date_extensions: extensionsOf(item.id),

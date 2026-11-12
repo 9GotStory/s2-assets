@@ -306,9 +306,18 @@ export class RepairService {
   // Asset is locked, as a Loan Correction voiding that Loan Return locks it, so the check holds until commit.
   private async assertRepairSource(client: pg.PoolClient, assetId: string, loanReturnId: string): Promise<void> {
     const cited = (await loanReturnsOf(client, [loanReturnId])).get(loanReturnId);
-    const reason = !cited ? 'NOT_LOAN_RETURN' : cited.asset_id !== assetId ? 'OTHER_ASSET' : cited.is_voided ? 'VOIDED' : cited.condition !== 'DAMAGED' ? 'NOT_DAMAGED' : null;
-    if (reason) {
-      throw new RepairSourceRefusedError({ loan_return_id: loanReturnId, reason });
+    const refuse = (reason: RepairSourceRefusal['reason']) => new RepairSourceRefusedError({ loan_return_id: loanReturnId, reason });
+    if (!cited) {
+      throw refuse('NOT_LOAN_RETURN');
+    }
+    if (cited.asset_id !== assetId) {
+      throw refuse('OTHER_ASSET');
+    }
+    if (cited.is_voided) {
+      throw refuse('VOIDED');
+    }
+    if (cited.condition !== 'DAMAGED') {
+      throw refuse('NOT_DAMAGED');
     }
   }
 

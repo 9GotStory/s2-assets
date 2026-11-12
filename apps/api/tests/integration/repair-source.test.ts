@@ -3,6 +3,7 @@ import { describe, it, expect, beforeAll, afterAll } from 'vitest';
 import { startApiHarness, type Actor, type ApiHarness } from './support/api-harness.ts';
 import { withCapabilityAnswer } from './support/capability-helpers.ts';
 import { loanHelpers } from './support/loan-helpers.ts';
+import { lockHelpers } from './support/lock-helpers.ts';
 import { repairHelpers } from './support/repair-helpers.ts';
 
 // F005-T5 (#103): a Repair Record sent from a Loan Return recorded ชำรุด, which it cites as its Repair
@@ -17,6 +18,7 @@ describe('Repair Source (Seam A - F005-T5)', () => {
     loanDate: '2026-11-01',
     dueDate: '2026-11-30',
   });
+  const { whileHolding, untilWaiting } = lockHelpers(() => ({ api }));
   const { base, send, sent, recordOf, recordsOf, ended } = repairHelpers(() => ({ api, custodian, reader: readonly }), { startDate: '2026-11-05' });
 
   // An Asset lent on 2026-11-01 and returned on 2026-11-04 in `condition`, and its Loan Return.
@@ -110,6 +112,32 @@ describe('Repair Source (Seam A - F005-T5)', () => {
       expect(voided.statusCode).toBe(201);
 
       await refusedFor(assetId, loanReturnId, 'VOIDED');
+    });
+
+    it('reads the Loan Return after locking its Asset, so a Loan Correction voiding it first is seen', async () => {
+      const { assetId, loanId, loanReturnId } = await returnedAs();
+      const voidLoan = {
+        expected_version: (await loanOf(loanId)).version,
+        action: 'VOID',
+        target: { kind: 'LOAN' },
+        reason: 'ไม่เคยยืมจริง',
+      };
+
+      // The correction queues at the Asset first, and the Repair Start behind it.
+      const [voided, refused] = await whileHolding(
+        'assets',
+        assetId,
+        () => [
+          api.post(custodian, `/loans/${loanId}/corrections`, voidLoan, { 'x-retry-token': crypto.randomUUID() }),
+          untilWaiting('assets', 1).then(() => send(base(assetId, fromLoanReturn(loanReturnId)))),
+        ],
+        () => untilWaiting('assets', 2)
+      );
+
+      expect(voided.statusCode).toBe(201);
+      expect(refused.statusCode).toBe(409);
+      expect(refused.json()).toMatchObject({ code: 'REPAIR_SOURCE_REFUSED', repair_source: { loan_return_id: loanReturnId, reason: 'VOIDED' } });
+      expect(await recordsOf(assetId)).toEqual([]);
     });
 
     it('refuses a Not Returned, and an id that names no Loan Return', async () => {
