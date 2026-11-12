@@ -12,7 +12,6 @@ import {
   AnotherVerificationRoundOpenError,
   EmptyVerificationScopeError,
   VerificationService,
-  type OpenVerificationRoundInput,
 } from '../services/verification.service.ts';
 
 export interface VerificationRoutesOptions {
@@ -78,7 +77,7 @@ export const verificationRoutes: FastifyPluginAsync<VerificationRoutesOptions> =
 
     try {
       const { retry_token: _retryToken, ...input } = write.data;
-      return reply.status(201).send(await verificationService.open(request.user!.id, input as OpenVerificationRoundInput, { retryToken: write.retryToken }));
+      return reply.status(201).send(await verificationService.open(request.user!.id, input, { retryToken: write.retryToken }));
     } catch (err) {
       const refusal = refusalOf(err);
       if (!refusal) {

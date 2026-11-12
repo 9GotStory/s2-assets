@@ -182,13 +182,19 @@ test.describe.serial('Verification journeys: Real SPA -> Composed API -> Postgre
     await page.locator(`[data-testid="scope-entry-${projector.id}"]`).getByRole('link').click();
     await expect(page).toHaveURL(new RegExp(`/assets/${projector.id}$`));
 
-    // A second Round is refused while this one is open, naming it.
+    // A second Round is refused while this one is open, naming it. The session answers late: the action waits for
+    // its CSRF token, or a quick submit would be refused as if the grant were gone.
+    await page.route('**/auth/session-check', async (route) => {
+      await new Promise((resolve) => setTimeout(resolve, 1500));
+      await route.continue();
+    });
     await page.goto(`${targetBaseUrl}/verification-rounds`);
     await page.locator('#verification-open-action').click();
     await page.locator('#verification-open-name').fill('รอบที่สอง');
     await page.locator('#verification-open-fiscal_year').fill('2569');
     await page.locator('#verification-open-submit').click();
     await expect(page.locator('[data-testid="verification-open-refused"]')).toContainText('ตรวจสอบพัสดุประจำปี 2569 ห้องประชุม');
+    await page.unrouteAll({ behavior: 'wait' });
     await page.locator('#verification-open-cancel').click();
 
     // A Read-only User sees the list and the Round, with no action.

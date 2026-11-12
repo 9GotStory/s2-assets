@@ -101,6 +101,12 @@ const normalizeOpening = (input: OpenVerificationRoundInput): OpeningFacts => {
   };
 };
 
+// The two dimensions a Round filters by: each its request field and the column it fills (#125 Q3).
+const FILTER_DIMENSIONS = [
+  { field: 'organization_unit_ids', column: 'organization_unit_id' },
+  { field: 'location_ids', column: 'location_id' },
+] as const;
+
 /** The open Round, or null when none is. */
 export async function openVerificationRoundOf(client: pg.PoolClient | pg.Pool): Promise<OpenVerificationRound | null> {
   const res = await client.query(
@@ -143,13 +149,10 @@ async function insertOpenRound(client: pg.PoolClient, facts: OpeningFacts, start
 async function snapshotScope(client: pg.PoolClient, roundId: string, facts: OpeningFacts, actorId: string): Promise<number> {
   const params: unknown[] = [roundId, actorId];
   const conditions: string[] = [];
-  for (const [field, ids] of [
-    ['organization_unit_id', facts.organization_unit_ids],
-    ['location_id', facts.location_ids],
-  ] as const) {
-    if (ids.length > 0) {
-      params.push(ids);
-      conditions.push(assignmentSearch.entryAmongFilter(field, `$${params.length}`));
+  for (const { field, column } of FILTER_DIMENSIONS) {
+    if (facts[field].length > 0) {
+      params.push(facts[field]);
+      conditions.push(assignmentSearch.entryAmongFilter(column, `$${params.length}`));
     }
   }
   const res = await client.query(
@@ -191,23 +194,19 @@ export class VerificationService {
       { actorId, operation: 'verification:open', retryToken, payload: { version: 1, ...facts }, explicitContinuation: false },
       async (client) => {
         // Each filter names an entry of its own list, active or not: Assets may still be assigned to a closed one.
-        for (const [column, ids] of [
-          ['organization_unit_id', facts.organization_unit_ids],
-          ['location_id', facts.location_ids],
-        ] as const) {
-          for (const id of ids) {
+        for (const { field, column } of FILTER_DIMENSIONS) {
+          for (const id of facts[field]) {
             if ((await findUnassignableEntry(client, { [column]: id }, { allowInactive: true })) !== null) {
-              throw new ValidationError(`${column}s must name entries of its Reference List`);
+              throw new ValidationError(`${field} must name entries of its Reference List`);
             }
           }
         }
 
         const round = await insertOpenRound(client, facts, startDate, actorId);
-        for (const id of facts.organization_unit_ids) {
-          await client.query('INSERT INTO verification_round_filters (verification_round_id, organization_unit_id) VALUES ($1, $2)', [round.verification_round_id, id]);
-        }
-        for (const id of facts.location_ids) {
-          await client.query('INSERT INTO verification_round_filters (verification_round_id, location_id) VALUES ($1, $2)', [round.verification_round_id, id]);
+        for (const { field, column } of FILTER_DIMENSIONS) {
+          for (const id of facts[field]) {
+            await client.query(`INSERT INTO verification_round_filters (verification_round_id, ${column}) VALUES ($1, $2)`, [round.verification_round_id, id]);
+          }
         }
         if ((await snapshotScope(client, round.verification_round_id, facts, actorId)) === 0) {
           throw new EmptyVerificationScopeError();

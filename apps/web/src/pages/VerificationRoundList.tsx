@@ -53,6 +53,9 @@ const VerificationRoundListContent: React.FC = () => {
     },
     enabled: canManage,
   });
+  // The action waits for the token: a request sent without it is refused as if the grant were gone.
+  const csrfToken = session.data?.csrfToken ?? null;
+  const mayOpen = canManage && csrfToken !== null;
   const { lists, error: listsError } = useReferenceLists(false, isOpening ? (session.data?.userId ?? null) : null);
 
   const isSignedOut = rounds.error?.status === 401;
@@ -93,7 +96,7 @@ const VerificationRoundListContent: React.FC = () => {
 
         {list && (
           <>
-            {canManage && !isOpening && (
+            {mayOpen && !isOpening && (
               <button
                 type="button"
                 id="verification-open-action"
@@ -103,11 +106,11 @@ const VerificationRoundListContent: React.FC = () => {
                 {OPEN_VERIFICATION_ROUND_LABEL}
               </button>
             )}
-            {canManage && isOpening && (
+            {mayOpen && isOpening && (
               <VerificationRoundOpenForm
                 lists={lists}
                 listsError={listsError}
-                csrfToken={session.data?.csrfToken ?? null}
+                csrfToken={csrfToken}
                 onOpened={async () => {
                   setIsOpening(false);
                   await rounds.refetch();
