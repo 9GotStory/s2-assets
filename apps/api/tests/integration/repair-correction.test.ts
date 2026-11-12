@@ -25,41 +25,7 @@ describe('Repair Correction (Seam A - F005-T6)', () => {
     loanDate: '2026-11-01',
     dueDate: '2026-11-30',
   });
-  const { sent, recordOf, recordsOf, recordOutcome, ended } = repairHelpers(() => ({ api, custodian, reader: readonly }), { startDate: START });
-
-  const correct = (repairRecordId: string, payload: Record<string, unknown>, token: string = crypto.randomUUID(), actor: Actor = custodian) =>
-    api.post(actor, `/repairs/${repairRecordId}/corrections`, payload, { 'x-retry-token': token });
-
-  // An amendment of `target`, against the record's latest version unless `overrides` says otherwise.
-  const amendment = async (repairRecordId: string, target: Record<string, unknown>, changes: Record<string, unknown>, overrides: Record<string, unknown> = {}) => ({
-    expected_version: (await recordOf(repairRecordId)).version,
-    action: 'AMEND',
-    target,
-    reason: 'บันทึกผิดจากใบส่งซ่อม',
-    changes,
-    ...overrides,
-  });
-
-  // A void of `target`, against the record's latest version unless `overrides` says otherwise.
-  const voiding = async (repairRecordId: string, target: Record<string, unknown>, overrides: Record<string, unknown> = {}) => ({
-    expected_version: (await recordOf(repairRecordId)).version,
-    action: 'VOID',
-    target,
-    reason: 'ไม่เคยส่งซ่อมจริง',
-    ...overrides,
-  });
-
-  const amended = async (repairRecordId: string, target: Record<string, unknown>, changes: Record<string, unknown>) => {
-    const res = await correct(repairRecordId, await amendment(repairRecordId, target, changes));
-    expect(res.statusCode).toBe(201);
-    return res.json();
-  };
-
-  const voided = async (repairRecordId: string, target: Record<string, unknown>) => {
-    const res = await correct(repairRecordId, await voiding(repairRecordId, target));
-    expect(res.statusCode).toBe(201);
-    return res.json();
-  };
+  const { sent, recordOf, recordsOf, recordOutcome, ended, correct, amendment, voiding, amended, voided } = repairHelpers(() => ({ api, custodian, reader: readonly }), { startDate: START });
 
   const RECORD = { kind: 'REPAIR_RECORD' };
   const outcomeTarget = async (repairRecordId: string) => ({ kind: 'REPAIR_OUTCOME', id: (await recordOf(repairRecordId)).outcome.id });

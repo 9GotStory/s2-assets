@@ -84,5 +84,40 @@ export function loanHelpers(context: () => { api: ApiHarness; custodian: Actor; 
     expect(res.statusCode).toBe(201);
   };
 
-  return { registered, loanOf, start, lent, returned, closedNotReturned };
+  // A request for a Loan Correction of `loanId`; a new request unless `token` repeats one.
+  const correct = (loanId: string, payload: Record<string, unknown>, token: string = crypto.randomUUID(), actor: Actor = context().custodian) =>
+    context().api.post(actor, `/loans/${loanId}/corrections`, payload, { 'x-retry-token': token });
+
+  // An amendment of `target`, against the Loan's latest version unless `overrides` says otherwise.
+  const amendment = async (loanId: string, target: Record<string, unknown>, changes: Record<string, unknown>, overrides: Record<string, unknown> = {}) => ({
+    expected_version: (await loanOf(loanId)).version,
+    action: 'AMEND',
+    target,
+    reason: 'บันทึกผิดจากใบยืม',
+    changes,
+    ...overrides,
+  });
+
+  // A void of `target`, against the Loan's latest version unless `overrides` says otherwise.
+  const voiding = async (loanId: string, target: Record<string, unknown>, overrides: Record<string, unknown> = {}) => ({
+    expected_version: (await loanOf(loanId)).version,
+    action: 'VOID',
+    target,
+    reason: 'ไม่เคยเกิดขึ้นจริง',
+    ...overrides,
+  });
+
+  const amended = async (loanId: string, target: Record<string, unknown>, changes: Record<string, unknown>, overrides: Record<string, unknown> = {}) => {
+    const res = await correct(loanId, await amendment(loanId, target, changes, overrides));
+    expect(res.statusCode).toBe(201);
+    return res.json();
+  };
+
+  const voided = async (loanId: string, target: Record<string, unknown>, overrides: Record<string, unknown> = {}) => {
+    const res = await correct(loanId, await voiding(loanId, target, overrides));
+    expect(res.statusCode).toBe(201);
+    return res.json();
+  };
+
+  return { registered, loanOf, start, lent, returned, closedNotReturned, correct, amendment, voiding, amended, voided };
 }
