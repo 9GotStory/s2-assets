@@ -1,5 +1,6 @@
-// What the API answers about Repair Records (F005-T1, T2), and their labels from GLOSSARY.md (#98 Q14).
+// What the API answers about Repair Records (F005-T1, T2, T5, T6), and their labels from GLOSSARY.md (#98 Q14).
 
+import type { LoanCondition } from './loanFacts';
 import type { PermanentAssignment } from './ReferenceContextFields';
 
 export type RepairKind = 'REPAIR' | 'MAINTENANCE';
@@ -27,6 +28,23 @@ export interface RepairOutcome {
   recorded_at: string;
 }
 
+// The Loan Return recorded ชำรุด that led to a Repair Record, as it stands now (F005-T5, #98 Q5).
+export interface RepairSource {
+  loan_return_id: string;
+  loan_id: string;
+  return_date: string;
+  condition: LoanCondition;
+  is_voided: boolean;
+}
+
+// A Repair Record as the Loan page lists it beside the Loan Return it cites (F005-T5).
+export interface CitingRepairRecord {
+  id: string;
+  repair_kind: RepairKind;
+  start_date: string;
+  is_voided: boolean;
+}
+
 export interface RepairRecord {
   id: string;
   asset: { id: string; name: string | null; asset_number: string | null };
@@ -40,16 +58,71 @@ export interface RepairRecord {
   cost: string | null;
   document_reference: string | null;
   remark: string | null;
+  repair_source: RepairSource | null;
   recorded_by: string;
   recorded_by_username: string | null;
   recorded_at: string;
   is_voided: boolean;
   version: number;
   outcome: RepairOutcome | null;
+  // Repair Outcomes voided by a Repair Correction, oldest first: shown struck through (F005-T6).
+  voided_outcomes: RepairOutcome[];
+  // On the Repair Record page only: its corrections, oldest first.
+  corrections?: RepairCorrection[];
   // On the Repair Record page only: whether the viewer holds 'repair:record'.
   can_record_repair?: boolean;
+  // On the Repair Record page only: whether the viewer holds 'repair:correct'.
+  can_correct_repair?: boolean;
   // Asked for with an Outcome Date: where the Asset goes back to on it, shown and never stored.
   assignment_on_outcome_date?: PermanentAssignment;
+  // The other Repair Records and LoanItems of its Asset whose periods overlap its own, earliest first (F005-T7).
+  conflicts: RepairConflict[];
+}
+
+// A Repair Conflict as one Repair Record sees it: the other Repair Record, from its Start Date to its
+// Outcome Date, or the LoanItem, from its Loan Date to its ending; null while it has no end (F005-T7).
+export type RepairConflict =
+  | { kind: 'REPAIR_RECORD'; repair_record_id: string; repair_kind: RepairKind; start_date: string; outcome_date: string | null }
+  | { kind: 'LOAN_ITEM'; loan_id: string; loan_item_id: string; loan_date: string; ending_date: string | null };
+
+// The id of a Repair Conflict's other side, a LoanItem or a Repair Record.
+export const conflictingIdOf = (conflicting: RepairConflict): string => (conflicting.kind === 'LOAN_ITEM' ? conflicting.loan_item_id : conflicting.repair_record_id);
+
+// A Repair Conflict a save would create, as the server's warning lists it: of a Repair write, with the
+// other Repair Record or LoanItem; of a Loan write, with the Repair Record.
+export interface WarnedRepairConflict {
+  asset_id: string;
+  name: string | null;
+  asset_number: string | null;
+  conflicting: RepairConflict;
+}
+
+// The facts a Repair Correction names (F005-T6, #98 Q18).
+export type RepairCorrectionTarget = { kind: 'REPAIR_RECORD' } | { kind: 'REPAIR_OUTCOME'; id: string };
+
+// What a correction changed of one field. A Repair Source comes as it stands now.
+export type RepairCorrectionField =
+  | { field: 'repair_source_loan_return_id'; before: RepairSource | null; after: RepairSource | null }
+  | { field: string; before: string | null; after: string | null };
+
+export interface RepairCorrection {
+  id: string;
+  target: { kind: RepairCorrectionTarget['kind']; id: string };
+  action: 'AMENDED' | 'VOIDED';
+  reason: string;
+  changes: RepairCorrectionField[];
+  recorded_by: string;
+  recorded_by_username: string | null;
+  recorded_at: string;
+}
+
+// A page of the Repair list (F005-T3).
+export interface RepairListPage {
+  items: RepairRecord[];
+  limit: number;
+  offset: number;
+  total_count: number;
+  has_more: boolean;
 }
 
 // The Repair Record that keeps an Asset Under Repair.
@@ -66,6 +139,19 @@ export type RepairStartRefusal = { asset_id: string; name: string | null; asset_
   | { reason: 'UNDER_REPAIR'; repair_record_id: string; repair_kind: RepairKind }
 );
 
+// Why the server refused a Repair Source (F005-T5).
+export interface RepairSourceRefusal {
+  loan_return_id: string;
+  reason: 'NOT_LOAN_RETURN' | 'VOIDED' | 'OTHER_ASSET' | 'NOT_DAMAGED';
+}
+
+export const REPAIR_SOURCE_REFUSAL_LABELS: Record<RepairSourceRefusal['reason'], string> = {
+  NOT_LOAN_RETURN: 'ไม่พบการคืนที่อ้างถึง',
+  VOIDED: 'การคืนนั้นยกเลิกแล้ว',
+  OTHER_ASSET: 'การคืนนั้นเป็นของครุภัณฑ์อื่น',
+  NOT_DAMAGED: 'การคืนนั้นไม่ได้บันทึกสภาพชำรุด',
+};
+
 // Why the server refused a Repair Outcome.
 export interface RepairOutcomeRefusal {
   repair_record_id: string;
@@ -80,17 +166,32 @@ export const costError = (cost: string): string | null =>
   cost.trim() !== '' && !COST_PATTERN.test(cost.trim()) ? 'ค่าใช้จ่ายต้องเป็นจำนวนเงินบาทไม่ติดลบ ทศนิยมไม่เกิน 2 ตำแหน่ง' : null;
 
 export const REPAIR_SECTION_LABEL = 'การซ่อม/บำรุงรักษา';
+// GLOSSARY.md: Repair Conflict, and the Repair list's filter for one (#98 Q17).
+export const REPAIR_CONFLICT_LABEL = 'ช่วงซ่อมทับกัน';
+export const REPAIR_CONFLICT_FILTER_LABEL = 'มี conflict ค้างตรวจ';
 export const REPAIR_RECORD_LABEL = 'รายการซ่อม/บำรุงรักษา';
+// The Repair list's title, as the specification names the page (#98).
+export const REPAIR_LIST_LABEL = 'รายการซ่อม/บำรุงรักษา';
 export const REPAIR_START_LABEL = 'ส่งซ่อม';
+// GLOSSARY.md: Repair Source (ที่มา).
+export const REPAIR_SOURCE_LABEL = 'ที่มา';
 export const REPAIR_OUTCOME_LABEL = 'ผลการซ่อม';
 export const RECORD_REPAIR_OUTCOME_LABEL = 'บันทึกผลการซ่อม';
 export const OUTCOME_DATE_LABEL = 'วันที่ได้ผล';
 export const NEXT_RECOMMENDED_MAINTENANCE_DATE_LABEL = 'วันที่แนะนำบำรุงรักษาครั้งถัดไป';
 
+// The fact a Repair Correction names, as its form and the corrections list call it.
+export const REPAIR_CORRECTION_TARGET_LABELS: Record<RepairCorrectionTarget['kind'], string> = {
+  REPAIR_RECORD: REPAIR_RECORD_LABEL,
+  REPAIR_OUTCOME: REPAIR_OUTCOME_LABEL,
+};
+
 export const REPAIR_KIND_LABELS: Record<RepairKind, string> = { REPAIR: 'ซ่อม', MAINTENANCE: 'บำรุงรักษา' };
 
 // Under Repair reads by the record's kind (#98 Q14).
 export const UNDER_REPAIR_LABELS: Record<RepairKind, string> = { REPAIR: 'อยู่ระหว่างซ่อม', MAINTENANCE: 'อยู่ระหว่างบำรุงรักษา' };
+// The Asset list's filter, which takes either kind (F005-T4, GLOSSARY.md).
+export const UNDER_REPAIR_FILTER_LABEL = 'อยู่ระหว่างซ่อม / อยู่ระหว่างบำรุงรักษา';
 
 // A Repair Outcome reads by the record's kind: ซ่อมไม่ได้ for ซ่อม, ใช้งานไม่ได้ for บำรุงรักษา (#98 Q10, Q16).
 export const REPAIR_OUTCOME_LABELS: Record<RepairKind, Record<RepairOutcomeValue, string>> = {

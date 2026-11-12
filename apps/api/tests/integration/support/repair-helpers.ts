@@ -61,5 +61,40 @@ export function repairHelpers(context: () => { api: ApiHarness; custodian: Actor
     return res.json();
   };
 
-  return { base, send, sent, recordOf, recordsOf, recordOutcome, ended };
+  // A request for a Repair Correction of `repairRecordId`; a new request unless `token` repeats one.
+  const correct = (repairRecordId: string, payload: Record<string, unknown>, token: string = crypto.randomUUID(), actor: Actor = context().custodian) =>
+    context().api.post(actor, `/repairs/${repairRecordId}/corrections`, payload, { 'x-retry-token': token });
+
+  // An amendment of `target`, against the record's latest version unless `overrides` says otherwise.
+  const amendment = async (repairRecordId: string, target: Record<string, unknown>, changes: Record<string, unknown>, overrides: Record<string, unknown> = {}) => ({
+    expected_version: (await recordOf(repairRecordId)).version,
+    action: 'AMEND',
+    target,
+    reason: 'บันทึกผิดจากใบส่งซ่อม',
+    changes,
+    ...overrides,
+  });
+
+  // A void of `target`, against the record's latest version unless `overrides` says otherwise.
+  const voiding = async (repairRecordId: string, target: Record<string, unknown>, overrides: Record<string, unknown> = {}) => ({
+    expected_version: (await recordOf(repairRecordId)).version,
+    action: 'VOID',
+    target,
+    reason: 'ไม่เคยส่งซ่อมจริง',
+    ...overrides,
+  });
+
+  const amended = async (repairRecordId: string, target: Record<string, unknown>, changes: Record<string, unknown>, overrides: Record<string, unknown> = {}) => {
+    const res = await correct(repairRecordId, await amendment(repairRecordId, target, changes, overrides));
+    expect(res.statusCode).toBe(201);
+    return res.json();
+  };
+
+  const voided = async (repairRecordId: string, target: Record<string, unknown>, overrides: Record<string, unknown> = {}) => {
+    const res = await correct(repairRecordId, await voiding(repairRecordId, target, overrides));
+    expect(res.statusCode).toBe(201);
+    return res.json();
+  };
+
+  return { base, send, sent, recordOf, recordsOf, recordOutcome, ended, correct, amendment, voiding, amended, voided };
 }

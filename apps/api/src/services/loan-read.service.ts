@@ -1,7 +1,8 @@
 import pg from 'pg';
 import { assetExists, containsPattern } from './asset-lookups.ts';
 import { bangkokDate, readAssignmentsAt, type PermanentAssignment, type ReferenceEntrySummary } from './assignment.service.ts';
-import { latestRepairOutcomesOf, type RepairKind } from './repair-read.service.ts';
+import { loanItemPeriods } from './loan-item-periods.ts';
+import { latestRepairOutcomesOf, repairRecordsCiting, type CitingRepairRecord, type RepairKind } from './repair-read.service.ts';
 
 // The reads of Loans: the Loan page, the Loan list, an Asset's Loans and the Asset search's view of them.
 // Every write to the Loan tables stays in loan.service.ts (#76); this module writes nothing (#80).
@@ -26,6 +27,8 @@ export interface LoanReturn {
   recorded_at: string;
   // "คืนเกินกำหนด": the Return Date is after the item's current Due Date, derived on read (#74 Q5).
   returned_after_due_date: boolean;
+  // On the Loan page only: the Repair Records that cite it as their Repair Source (F005-T5, #98 Q5).
+  repair_records?: CitingRepairRecord[];
 }
 
 // The ending of a LoanItem whose Asset did not come back ("ปิดโดยไม่ได้รับคืน", #74 Q11, Q21). It is
@@ -207,19 +210,6 @@ const ITEM_IS_OUTSTANDING = `li.ending_kind = 'NONE' AND NOT li.is_voided`;
 // LR-06, #74 Q5: an Outstanding LoanItem whose current Due Date is before today, for a row aliased `li`
 // and today's Asia/Bangkok date as the parameter `today`. An item due today is not Overdue.
 const itemIsOverdue = (today: string): string => `(${ITEM_IS_OUTSTANDING} AND ${CURRENT_DUE_DATE} < ${today}::date)`;
-
-// The period of each non-voided LoanItem of a non-voided Loan that `scope` keeps, for rows aliased `li`
-// and `l`: from the Loan Date to the effective ending date, the Loan Return's date, otherwise the Not
-// Returned date, and open-ended without either (#74).
-const loanItemPeriods = (scope: string): string => `SELECT li.id AS loan_item_id, li.loan_id, li.asset_id, l.loan_date AS starts,
-         coalesce(loan_return.ending_date, not_returned.ending_date) AS ends
-       FROM loan_items li
-       JOIN loans l ON l.id = li.loan_id
-       LEFT JOIN loan_item_endings loan_return
-         ON loan_return.loan_item_id = li.id AND loan_return.kind = 'LOAN_RETURN' AND NOT loan_return.is_voided
-       LEFT JOIN loan_item_endings not_returned
-         ON not_returned.loan_item_id = li.id AND not_returned.kind = 'NOT_RETURNED' AND NOT not_returned.is_voided
-       WHERE NOT li.is_voided AND NOT l.is_voided AND ${scope}`;
 
 // Every Loan Conflict among the LoanItems that `scope` keeps, once from each side: two periods of one
 // Asset conflict when each starts strictly before the other ends, so a shared boundary day is none (#74 Q20).
@@ -598,6 +588,16 @@ export class LoanReadService {
           recorded_at: new Date(recorded_at).toISOString(),
         }));
     const voidedEndings = await readVoidedEndingsOf(this.db, loanId);
+    const loanReturnIds = [
+      ...itemsRes.rows.map(({ return_id }: any) => return_id).filter(Boolean),
+      ...[...voidedEndings.values()].flat().flatMap((ending) => (ending.kind === 'LOAN_RETURN' ? [ending.id] : [])),
+    ];
+    const citing = await repairRecordsCiting(this.db, loanReturnIds);
+    function withRepairRecords<T extends { id: string }>(loanReturn: T): T & { repair_records: CitingRepairRecord[] };
+    function withRepairRecords<T extends { id: string }>(loanReturn: T | null): (T & { repair_records: CitingRepairRecord[] }) | null;
+    function withRepairRecords<T extends { id: string }>(loanReturn: T | null) {
+      return loanReturn && { ...loanReturn, repair_records: citing.get(loanReturn.id) ?? [] };
+    }
     const conflicts = conflictsByItem(await readLoanConflictsOfAssets(this.db, [...new Set<string>(itemsRes.rows.map(({ asset_id }: any) => asset_id))]));
     const assignments = returnDate
       ? await readAssignmentsAt(this.db, itemsRes.rows.filter(isReturnable).map((item: any) => item.asset_id), returnDate)
@@ -628,9 +628,9 @@ export class LoanReadService {
         ending_kind: item.ending_kind,
         is_voided: item.is_voided,
         is_overdue: item.is_overdue,
-        loan_return: loanReturnOf(item),
+        loan_return: withRepairRecords(loanReturnOf(item)),
         not_returned: notReturnedOfRow(item),
-        voided_endings: voidedEndings.get(item.id) ?? [],
+        voided_endings: (voidedEndings.get(item.id) ?? []).map((ending) => (ending.kind === 'LOAN_RETURN' ? withRepairRecords(ending) : ending)),
         due_date_extensions: extensionsOf(item.id),
         conflicts: conflicts.get(item.id) ?? [],
         assignment_on_return_date: assignments?.get(item.asset_id),

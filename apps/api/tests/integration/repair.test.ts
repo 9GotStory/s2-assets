@@ -4,6 +4,7 @@ import { startApiHarness, type Actor, type ApiHarness } from './support/api-harn
 import { assignmentHelpers, type Entry } from './support/assignment-helpers.ts';
 import { withCapabilityAnswer } from './support/capability-helpers.ts';
 import { loanHelpers, over } from './support/loan-helpers.ts';
+import { lockHelpers } from './support/lock-helpers.ts';
 import { repairHelpers } from './support/repair-helpers.ts';
 
 const TODAY = '2026-11-11';
@@ -18,7 +19,8 @@ describe('Repair Start (Seam A - F005-T1)', () => {
   let now = new Date('2026-11-11T05:00:00Z');
 
   const { entries, detailOf, assignmentOf } = assignmentHelpers(() => ({ api, admin, reader: readonly }));
-  const { registered, loanOf, start: startLoan, lent, returned, closedNotReturned, whileHolding, untilWaiting } = loanHelpers(
+  const { whileHolding, untilWaiting } = lockHelpers(() => ({ api }));
+  const { registered, loanOf, start: startLoan, lent, returned, closedNotReturned } = loanHelpers(
     () => ({ api, custodian, reader: readonly }),
     { loanDate: TODAY, dueDate: '2026-11-30' }
   );
@@ -73,6 +75,7 @@ describe('Repair Start (Seam A - F005-T1)', () => {
         cost: '1500.50',
         document_reference: 'ใบเสนอราคา 12/2569',
         remark: 'รับเครื่องคืนภายในสัปดาห์',
+        repair_source: null,
         recorded_by: custodian.id,
         recorded_by_username: 'custodian_repair',
         recorded_at: expect.any(String),
@@ -80,6 +83,12 @@ describe('Repair Start (Seam A - F005-T1)', () => {
         version: 1,
         outcome: null,
         can_record_repair: false,
+        // F005-T6: what a Repair Correction voided, and the corrections, of which a new record has none.
+        voided_outcomes: [],
+        corrections: [],
+        can_correct_repair: false,
+        // F005-T7: the Repair Conflicts it is in, of which this record has none.
+        conflicts: [],
       });
       expect(Date.parse(record.recorded_at)).toBeGreaterThanOrEqual(before - 1000);
       expect(Date.parse(record.recorded_at)).toBeLessThanOrEqual(Date.now());
@@ -279,15 +288,17 @@ describe('Repair Start (Seam A - F005-T1)', () => {
       const assetId = await registered();
       expect(await recordsOf(assetId)).toEqual([]);
 
+      // Each one ends before the next starts, so none is in a Repair Conflict (F005-T7).
       const oldest = await sent(assetId, { start_date: '2024-03-01' });
-      await ended(oldest);
+      await ended(oldest, { outcome_date: '2024-03-02' });
       const newest = await sent(assetId, { start_date: '2026-10-01' });
       await ended(newest);
-      const middle = await sent(assetId, { start_date: '2025-06-01', repair_kind: 'MAINTENANCE' });
+      const middle = await sent(assetId, { start_date: '2025-06-01', repair_kind: 'MAINTENANCE', outcome: { outcome: 'USABLE', outcome_date: '2025-06-02' } });
 
       const records = await recordsOf(assetId);
       expect(records.map(({ id }: any) => id)).toEqual([newest, middle, oldest]);
-      const { can_record_repair: _canRecordRepair, ...middleRecord } = await recordOf(middle);
+      // The record page alone adds its corrections and what the viewer may do (F005-T6).
+      const { can_record_repair: _canRecordRepair, can_correct_repair: _canCorrectRepair, corrections: _corrections, ...middleRecord } = await recordOf(middle);
       expect(records[1]).toEqual(middleRecord);
     });
 
@@ -427,11 +438,26 @@ describe('Repair Start (Seam A - F005-T1)', () => {
         expect((await detailOf(assetId)).on_loan).toBeNull();
       });
 
-      it('is accepted once the Asset is not Under Repair', async () => {
+      it('is accepted once the Asset is not Under Repair, with the Repair Conflict it opens confirmed (F005-T7)', async () => {
         const { assetId, loanId, repairRecordId } = await repairingAfterLoan('เครื่องซ่อมจบแล้ว');
         await ended(repairRecordId);
 
-        const res = await voidLoanReturn(loanId);
+        const warned = await voidLoanReturn(loanId);
+        expect(warned.statusCode).toBe(409);
+        expect(warned.json()).toMatchObject({ code: 'REPAIR_CONFLICTS_FOUND', repair_conflicts: [{ conflicting: { repair_record_id: repairRecordId } }] });
+        const loan = await loanOf(loanId);
+        const res = await api.post(
+          custodian,
+          `/loans/${loanId}/corrections`,
+          {
+            expected_version: loan.version,
+            action: 'VOID',
+            target: { kind: 'LOAN_RETURN', id: loan.items[0].loan_return.id },
+            reason: 'บันทึกคืนผิดรายการ',
+            confirmed_conflicts: [{ conflicting_repair_record_id: repairRecordId }],
+          },
+          { 'x-retry-token': crypto.randomUUID() }
+        );
 
         expect(res.statusCode).toBe(201);
         expect((await detailOf(assetId)).on_loan).toMatchObject({ loan_id: loanId });
@@ -528,6 +554,8 @@ describe('Repair Start (Seam A - F005-T1)', () => {
       const detail = await detailOf(assetId);
       expect(detail.current_assignment.location).toMatchObject({ id: roomB.id });
       expect(detail.has_assignment_conflict).toBe(false);
+      // A Reassignment raises no Repair Conflict either (F005-T7, #98 Q11).
+      expect(detail.has_repair_conflict).toBe(false);
       expect(detail.under_repair).toMatchObject({ repair_record_id: repairRecordId });
       expect(await recordOf(repairRecordId)).toEqual(record);
     });

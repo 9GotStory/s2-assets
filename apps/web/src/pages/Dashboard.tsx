@@ -1,5 +1,6 @@
 import React, { useEffect, useState } from 'react';
 import { useNavigate, Link } from 'react-router';
+import { REPAIR_LIST_LABEL, REPAIR_SECTION_LABEL } from '../components/repairFacts';
 
 export interface SafeUser {
   id: string;
@@ -455,6 +456,50 @@ export const Dashboard: React.FC = () => {
               }}
             >
               รายการยืม
+            </Link>
+          </div>
+        </section>
+
+        <section
+          aria-labelledby="repair-heading"
+          style={{
+            backgroundColor: '#f9fafb',
+            borderRadius: '6px',
+            padding: '1.25rem',
+            marginBottom: '1.5rem',
+          }}
+        >
+          <h2
+            id="repair-heading"
+            style={{
+              fontSize: '1.125rem',
+              fontWeight: 600,
+              marginTop: 0,
+              marginBottom: '0.5rem',
+              color: '#374151',
+            }}
+          >
+            {REPAIR_SECTION_LABEL}
+          </h2>
+          <p style={{ margin: '0 0 1rem 0', fontSize: '0.875rem', color: '#4b5563' }}>
+            ดูว่าครุภัณฑ์ใดอยู่ระหว่างซ่อมหรือบำรุงรักษา ใครเป็นผู้ซ่อม และแต่ละงานได้ผลอย่างไร
+          </p>
+          <div style={{ display: 'flex', gap: '0.75rem', flexWrap: 'wrap' }}>
+            <Link
+              to="/repairs"
+              id="nav-repair-list"
+              style={{
+                display: 'inline-block',
+                padding: '0.5rem 1rem',
+                backgroundColor: '#4b5563',
+                color: '#ffffff',
+                textDecoration: 'none',
+                borderRadius: '4px',
+                fontSize: '0.875rem',
+                fontWeight: 500,
+              }}
+            >
+              {REPAIR_LIST_LABEL}
             </Link>
           </div>
         </section>

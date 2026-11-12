@@ -571,7 +571,7 @@ export const assetRoutes: FastifyPluginAsync<AssetRoutesOptions> = async (
       const query = (request.query || {}) as Record<string, unknown>;
 
       // Check for unknown parameters
-      const allowedParams = new Set<string>(['field', 'value', 'limit', 'offset', 'has_assignment_conflict', 'on_loan', ...REFERENCE_ID_FIELDS]);
+      const allowedParams = new Set<string>(['field', 'value', 'limit', 'offset', 'has_assignment_conflict', 'on_loan', 'under_repair', ...REFERENCE_ID_FIELDS]);
       for (const key of Object.keys(query)) {
         if (!allowedParams.has(key)) {
           return sendValidationError({ query: 'Unknown query parameter' });
@@ -645,6 +645,10 @@ export const assetRoutes: FastifyPluginAsync<AssetRoutesOptions> = async (
       if (query.on_loan !== undefined && query.on_loan !== 'true') {
         return sendValidationError({ on_loan: "on_loan must be 'true' when given" });
       }
+      // F005-T4 (#102): "อยู่ระหว่างซ่อม/บำรุงรักษา" likewise.
+      if (query.under_repair !== undefined && query.under_repair !== 'true') {
+        return sendValidationError({ under_repair: "under_repair must be 'true' when given" });
+      }
 
       // Limit validation
       if (limit !== undefined) {
@@ -685,6 +689,7 @@ export const assetRoutes: FastifyPluginAsync<AssetRoutesOptions> = async (
           responsible_person_id: query.responsible_person_id as string | undefined,
           has_assignment_conflict: query.has_assignment_conflict === 'true',
           on_loan: query.on_loan === 'true',
+          under_repair: query.under_repair === 'true',
           limit: limit as any,
           offset: offset as any,
         });
@@ -780,6 +785,8 @@ export const assetRoutes: FastifyPluginAsync<AssetRoutesOptions> = async (
         under_repair: await options.repairReadService.underRepairOf(id.trim().toLowerCase()),
         // F005-T2 (#100): from the latest Repair Outcome that has one; nothing is scheduled from it.
         next_recommended_maintenance_date: await options.repairReadService.nextRecommendedMaintenanceDateOf(id.trim().toLowerCase()),
+        // F005-T7: whether any of its Repair Records is in a Repair Conflict.
+        has_repair_conflict: await options.repairReadService.hasRepairConflict(id.trim().toLowerCase()),
         can_record_repair: canRecordRepair,
       });
     }

@@ -4,6 +4,7 @@ import { startApiHarness, type Actor, type ApiHarness } from './support/api-harn
 import { assignmentHelpers, at, NO_VALUE, type Entry } from './support/assignment-helpers.ts';
 import { withCapabilityAnswer } from './support/capability-helpers.ts';
 import { loanHelpers, over } from './support/loan-helpers.ts';
+import { lockHelpers } from './support/lock-helpers.ts';
 
 const TODAY = '2026-11-05';
 const LOAN_DATE = '2026-11-01';
@@ -20,7 +21,8 @@ describe('Recording a Loan Return (Seam A - F004-T2)', () => {
   const logLines: string[] = [];
 
   const { entry, entries, detailOf, assignmentOf } = assignmentHelpers(() => ({ api, admin, reader: readonly }));
-  const { registered, loanOf, start, lent, whileHolding, untilWaiting } = loanHelpers(() => ({ api, custodian, reader: readonly }), {
+  const { whileHolding, untilWaiting } = lockHelpers(() => ({ api }));
+  const { registered, loanOf, start, lent } = loanHelpers(() => ({ api, custodian, reader: readonly }), {
     loanDate: LOAN_DATE,
     dueDate: DUE,
   });
@@ -103,6 +105,8 @@ describe('Recording a Loan Return (Seam A - F004-T2)', () => {
         recorded_by: custodian.id,
         recorded_by_username: 'custodian_return',
         returned_after_due_date: false,
+        // No Repair Record cites either (F005-T5).
+        repair_records: [],
       };
       expect(loan.items.map(({ ending_kind, loan_return }: any) => ({ ending_kind, loan_return }))).toEqual([
         { ending_kind: 'LOAN_RETURN', loan_return: { id: expect.stringMatching(UUID), condition: 'NORMAL', condition_note: null, recorded_at: expect.any(String), ...shared } },

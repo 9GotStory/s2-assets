@@ -10,6 +10,11 @@ import { buildApp } from '../../../api/src/app.ts';
 import { UserService } from '../../../api/src/services/user.service.ts';
 import { SessionService } from '../../../api/src/services/session.service.ts';
 import { AssetService } from '../../../api/src/services/asset.service.ts';
+import { LoanService } from '../../../api/src/services/loan.service.ts';
+import { LoanCorrectionService } from '../../../api/src/services/loan-correction.service.ts';
+import { LoanReadService } from '../../../api/src/services/loan-read.service.ts';
+import { LoanReturnService } from '../../../api/src/services/loan-return.service.ts';
+import { ReferenceService } from '../../../api/src/services/reference.service.ts';
 import { RepairService } from '../../../api/src/services/repair.service.ts';
 import { repositoryProxyConfig } from '../../vite.config.ts';
 
@@ -21,7 +26,9 @@ const webRoot = path.resolve(__dirname, '../..');
 const migrationFolder = path.resolve(__dirname, '../../../../packages/db/src/migrations');
 
 // F005-T1 (#99): sending an Asset for repair or maintenance from its page. F005-T2 (#100): recording how
-// it ended, alone or with its Repair Start.
+// it ended, alone or with its Repair Start. F005-T4 (#102): Under Repair on the Asset list and the
+// Reassignment forms. F005-T5 (#103): sending it from a Loan Return recorded ชำรุด. F005-T7 (#105): a
+// backdated Repair Start that overlaps an old Loan.
 test.describe.serial('Repair journeys: Real SPA -> Composed API -> PostgreSQL (Seam B)', () => {
   let container: StartedPostgreSqlContainer;
   let pool: pg.Pool;
@@ -31,7 +38,9 @@ test.describe.serial('Repair journeys: Real SPA -> Composed API -> PostgreSQL (S
   let sessionService: SessionService;
   let assetService: AssetService;
   let repairService: RepairService;
+  let referenceService: ReferenceService;
 
+  let adminUserId: string;
   let custodianUserId: string;
   let readonlyUserId: string;
 
@@ -57,6 +66,7 @@ test.describe.serial('Repair journeys: Real SPA -> Composed API -> PostgreSQL (S
     sessionService = new SessionService({ db: pool });
     assetService = new AssetService({ db: pool });
     repairService = new RepairService({ db: pool });
+    referenceService = new ReferenceService({ db: pool });
 
     fastifyApp = await buildApp({
       db: pool,
@@ -76,6 +86,7 @@ test.describe.serial('Repair journeys: Real SPA -> Composed API -> PostgreSQL (S
       await pool.query('INSERT INTO user_roles (user_id, role_id) VALUES ($1, $2)', [res.rows[0].id, role]);
       return res.rows[0].id;
     };
+    adminUserId = await createUser('admin_repair', 'ADMINISTRATOR');
     custodianUserId = await createUser('custodian_repair', 'ASSET_CUSTODIAN');
     readonlyUserId = await createUser('readonly_repair', 'READ_ONLY');
 
@@ -205,7 +216,9 @@ test.describe.serial('Repair journeys: Real SPA -> Composed API -> PostgreSQL (S
     await expect(page.locator('[data-testid="repair-history-empty"]')).toBeVisible();
     await expect(page.locator('#repair-action')).toHaveCount(0);
 
-    const { asset: serviced } = await assetService.registerAsset(custodianUserId, { name: 'แอร์ E2E บำรุงรักษา' } as any);
+    // Placed in a room, so that its page offers "ย้าย / เปลี่ยนผู้รับผิดชอบ" below.
+    const room = await referenceService.create('locations', adminUserId, 'ห้องประชุม E2E ซ่อม');
+    const { asset: serviced } = await assetService.registerAsset(custodianUserId, { name: 'แอร์ E2E บำรุงรักษา', location_id: room.id, effective_date: '2024-01-01' } as any);
     await repairService.start(
       custodianUserId,
       { asset_id: serviced.id, repair_kind: 'MAINTENANCE', start_date: yesterday(), repairer: { kind: 'INTERNAL' }, symptom_or_work: 'ล้างแอร์ประจำปี' },
@@ -214,6 +227,44 @@ test.describe.serial('Repair journeys: Real SPA -> Composed API -> PostgreSQL (S
     await page.goto(`${targetBaseUrl}/assets/${serviced.id}`);
     await expect(page.locator('[data-testid="repair-under-repair"]')).toContainText('อยู่ระหว่างบำรุงรักษา');
     await expect(page.locator('[data-testid="repair-history"] li')).toContainText('บำรุงรักษา');
+
+    // F005-T4 (#102): the Asset list marks each Asset Under Repair by its kind and filters to them (#98 Q21).
+    await page.goto(`${targetBaseUrl}/assets/search`);
+    await page.locator('#search-field').selectOption('name');
+    await page.locator('#search-value').fill('E2E');
+    await page.locator('#search-submit-btn').click();
+    await expect(page.locator('#results-count-summary')).toContainText('พบ 3 รายการ');
+    await expect(page.locator(`[data-testid="search-result-under-repair-${asset.id}"]`)).toHaveText('อยู่ระหว่างซ่อม');
+    await expect(page.locator(`[data-testid="search-result-under-repair-${serviced.id}"]`)).toHaveText('อยู่ระหว่างบำรุงรักษา');
+    await expect(page.locator(`[data-testid="search-result-row-${free.id}"]`)).toBeVisible();
+    await expect(page.locator(`[data-testid="search-result-under-repair-${free.id}"]`)).toHaveCount(0);
+
+    await page.locator('#search-filter-under_repair').check();
+    await page.locator('#search-submit-btn').click();
+    await expect(page.locator('#results-count-summary')).toContainText('พบ 2 รายการ');
+    await expect(page.locator(`[data-testid="search-result-row-${free.id}"]`)).toHaveCount(0);
+
+    // "ย้ายหลายรายการ" and "ย้าย / เปลี่ยนผู้รับผิดชอบ" name the kind and Repairer, and block nothing (#98 Q11).
+    await switchActor(page, context, custodianUserId);
+    await page.goto(`${targetBaseUrl}/assets/search`);
+    await page.locator('#search-field').selectOption('name');
+    await page.locator('#search-value').fill('E2E');
+    await page.locator('#search-filter-under_repair').check();
+    await page.locator('#search-submit-btn').click();
+    await expect(page.locator('#results-count-summary')).toContainText('พบ 2 รายการ');
+    await page.getByTestId(`asset-select-${asset.id}`).check();
+    await page.getByTestId(`asset-select-${serviced.id}`).check();
+    await page.locator('#bulk-reassign-open').click();
+    await expect(page.locator(`[data-testid="assignment-under-repair-${asset.id}"]`)).toContainText('อยู่ระหว่างซ่อม ผู้ซ่อม ภายนอก: ร้านซ่อมดี E2E');
+    await expect(page.locator(`[data-testid="assignment-under-repair-${serviced.id}"]`)).toContainText('อยู่ระหว่างบำรุงรักษา ผู้ซ่อม ภายใน');
+    await expect(page.locator('[data-testid="assignment-under-repair-notice"]')).toContainText('การย้ายไม่เปลี่ยนรายการซ่อมนี้');
+    await expect(page.locator('#bulk-reassign-preview')).toBeEnabled();
+    await page.locator('#bulk-reassign-cancel').click();
+
+    await page.goto(`${targetBaseUrl}/assets/${serviced.id}`);
+    await page.locator('#assignment-action').click();
+    await expect(page.locator(`[data-testid="assignment-under-repair-${serviced.id}"]`)).toContainText('ครุภัณฑ์นี้ อยู่ระหว่างบำรุงรักษา ผู้ซ่อม ภายใน');
+    await expect(page.locator('[data-testid="assignment-under-repair-notice"]')).toContainText('การย้ายไม่เปลี่ยนรายการซ่อมนี้');
   });
 
   test('Journey F005-T2.1: a Custodian records ใช้งานได้ on an Asset Under Repair, which is then lent', async ({ page, context }) => {
@@ -291,6 +342,90 @@ test.describe.serial('Repair journeys: Real SPA -> Composed API -> PostgreSQL (S
     await expect(page.locator('[data-testid="repair-history"] li')).toContainText('ล้างแผงคอยล์แล้ว');
   });
 
+  test('Journey F005-T5.1: a ชำรุด Loan Return\'s "ส่งซ่อม" opens the form with its Repair Source, and the Loan page then links the record', async ({ page, context }) => {
+    const { asset } = await assetService.registerAsset(custodianUserId, { name: 'โปรเจกเตอร์ E2E คืนชำรุด' } as any);
+    const { loan_id: loanId, items } = await new LoanService({ db: pool }).start(
+      custodianUserId,
+      { assets: [{ asset_id: asset.id, condition: 'NORMAL' }], borrower: { kind: 'EXTERNAL', contact_name: 'คุณยืม E2E คืนชำรุด' }, loan_date: yesterday(), due_date: '2099-12-31' },
+      { retryToken: crypto.randomUUID() }
+    );
+    await new LoanReturnService({ db: pool }).record(
+      custodianUserId,
+      loanId,
+      { expected_version: 1, return_date: yesterday(), items: [{ loan_item_id: items[0].id, condition: 'DAMAGED', condition_note: 'ขาตั้งหัก' }] },
+      { retryToken: crypto.randomUUID() }
+    );
+
+    await loginAs(context, custodianUserId);
+    await page.goto(`${targetBaseUrl}/loans/${loanId}`);
+    const loanReturn = page.locator('[data-testid="loan-item-return"]');
+    await expect(loanReturn).toContainText('ชำรุด');
+    const sendAction = loanReturn.locator('[id$="-repair-action"]');
+
+    // The form opens with the Repair Source and the damage noted, and nothing is saved on cancel.
+    await sendAction.click();
+    await expect(page.locator('#repair-repair_source')).toContainText('ที่มา: การคืนสภาพชำรุด');
+    await expect(page.locator('#repair-symptom_or_work')).toHaveValue('ขาตั้งหัก');
+    await page.locator('#repair-cancel').click();
+    await expect(sendAction).toBeVisible();
+    await expect(loanReturn.locator('[data-testid^="loan-return-repair-records-"]')).toHaveCount(0);
+
+    await sendAction.click();
+    await page.locator('#repair-repair_kind').selectOption('REPAIR');
+    await page.getByLabel('ผู้ซ่อมภายนอก').check();
+    await page.locator('#repair-submit').click();
+
+    // The Loan page links the Repair Record, which shows its source and links back.
+    const citing = loanReturn.locator('[data-testid^="loan-return-repair-records-"]');
+    await expect(citing).toContainText('ส่งซ่อมแล้ว: ซ่อม');
+    await citing.getByRole('link').click();
+    await expect(page).toHaveURL(/\/repairs\/[0-9a-f-]{36}$/);
+    const recordUrl = page.url();
+    await expect(page.locator('#repair-status')).toHaveText('อยู่ระหว่างซ่อม');
+    await expect(page.locator('#repair-symptom-or-work')).toHaveText('ขาตั้งหัก');
+    await expect(page.locator('#repair-source')).toContainText('การคืนสภาพชำรุด');
+    await expect(page.locator('[data-testid="repair-source-voided"]')).toHaveCount(0);
+    await page.locator('#repair-source-loan-link').click();
+    await expect(page).toHaveURL(`${targetBaseUrl}/loans/${loanId}`);
+
+    // A Read-only User sees the link, with no "ส่งซ่อม".
+    await switchActor(page, context, readonlyUserId);
+    await page.goto(`${targetBaseUrl}/loans/${loanId}`);
+    await expect(citing.getByRole('link')).toHaveAttribute('href', new URL(recordUrl).pathname);
+    await expect(sendAction).toHaveCount(0);
+
+    // Once the repair has ended, a Loan Correction voids the Loan Return: the record stands, and both pages
+    // mark its source ยกเลิกแล้ว (#98 Q5).
+    const repairRecordId = new URL(recordUrl).pathname.split('/').pop()!;
+    await repairService.recordOutcome(
+      custodianUserId,
+      repairRecordId,
+      { expected_version: 1, outcome: 'USABLE', outcome_date: new Intl.DateTimeFormat('en-CA', { timeZone: 'Asia/Bangkok' }).format(new Date()) },
+      { retryToken: crypto.randomUUID() }
+    );
+    const loan = (await new LoanReadService({ db: pool }).read(loanId, { includePhone: false }))!;
+    await new LoanCorrectionService({ db: pool }).correct(
+      custodianUserId,
+      loanId,
+      {
+        expected_version: loan.version,
+        action: 'VOID',
+        target: { kind: 'LOAN_RETURN', id: loan.items[0].loan_return!.id },
+        reason: 'บันทึกคืนผิดรายการ',
+        // The Loan is open again from before the repair, which the warning names (F005-T7, #98 Q19).
+        confirmed_conflicts: [{ conflicting_repair_record_id: repairRecordId }],
+      },
+      { retryToken: crypto.randomUUID() }
+    );
+    await page.goto(recordUrl);
+    await expect(page.locator('#repair-source')).toContainText('การคืนสภาพชำรุด');
+    await expect(page.locator('[data-testid="repair-source-voided"]')).toHaveText('ยกเลิกแล้ว');
+    await expect(page.locator('#repair-status')).toHaveText('ผลการซ่อม: ใช้งานได้');
+    await page.goto(`${targetBaseUrl}/loans/${loanId}`);
+    await expect(page.locator(`[data-testid="loan-ending-voided-mark-${loan.items[0].loan_return!.id}"]`)).toBeVisible();
+    await expect(page.locator(`[data-testid="loan-return-repair-records-${loan.items[0].loan_return!.id}"] a`)).toHaveAttribute('href', `/repairs/${repairRecordId}`);
+  });
+
   test('Journey F005-T2.3: after ซ่อมไม่ได้, the Start Loan form warns while the Asset stays in the register', async ({ page, context }) => {
     const { asset } = await assetService.registerAsset(custodianUserId, { name: 'สแกนเนอร์ E2E ซ่อมไม่ได้' } as any);
     const { repair_record_id: repairRecordId } = await repairService.start(custodianUserId, { asset_id: asset.id, repair_kind: 'REPAIR', start_date: yesterday(), repairer: { kind: 'INTERNAL' }, symptom_or_work: 'หัวอ่านเสีย' }, { retryToken: crypto.randomUUID() });
@@ -314,5 +449,142 @@ test.describe.serial('Repair journeys: Real SPA -> Composed API -> PostgreSQL (S
     await expect(page.locator(`[data-testid="loan-damaged-warning-${asset.id}"]`)).toHaveCount(0);
     await page.locator('#loan-cancel').click();
     await lendFromAssetPage(page, 'คุณยืมของซ่อมไม่ได้');
+  });
+
+  test('Journey F005-T6.1: a Custodian corrects a Repair Record, voids its Repair Outcome so the Asset is "อยู่ระหว่างซ่อม" again, then voids the record, which stays shown struck through', async ({ page, context }) => {
+    const symptom = `พัดลม E2E แก้รายการ ${crypto.randomUUID().slice(0, 8)}`;
+    const { asset } = await assetService.registerAsset(custodianUserId, { name: 'พัดลม E2E แก้รายการซ่อม' } as any);
+    const { repair_record_id: repairRecordId } = await repairService.start(
+      custodianUserId,
+      { asset_id: asset.id, repair_kind: 'REPAIR', start_date: yesterday(), repairer: { kind: 'INTERNAL' }, symptom_or_work: symptom, cost: '200' },
+      { retryToken: crypto.randomUUID() }
+    );
+    await repairService.recordOutcome(custodianUserId, repairRecordId, { expected_version: 1, outcome: 'USABLE', outcome_date: yesterday(), cost: '350' }, { retryToken: crypto.randomUUID() });
+
+    await loginAs(context, custodianUserId);
+    await page.goto(`${targetBaseUrl}/repairs/${repairRecordId}`);
+    await expect(page.locator('#repair-status')).toHaveText('ผลการซ่อม: ใช้งานได้');
+
+    // An amendment of the record keeps its reason and the before and after.
+    // A cost typed another way is the same amount, so it is no change.
+    await page.locator('#repair-amend-action').click();
+    await page.locator('#repair-amend-reason').fill('ลืมบันทึกหมายเหตุ');
+    await page.locator('#repair-amend-cost').fill('350');
+    await page.locator('#repair-amend-submit').click();
+    await expect(page.locator('[data-testid="repair-amend-form-error"]')).toHaveText('ยังไม่มีค่าที่แก้ไข');
+    await page.locator('#repair-amend-remark').fill('ร้านแจ้งรับเครื่องแล้ว');
+    await page.locator('#repair-amend-submit').click();
+    await expect(page.locator('#repair-remark')).toHaveText('ร้านแจ้งรับเครื่องแล้ว');
+    const corrections = page.locator('[data-testid="repair-correction"]');
+    await expect(corrections).toHaveCount(1);
+    await expect(corrections).toContainText('แก้ไขรายการที่บันทึกผิด: รายการซ่อม/บำรุงรักษา');
+    await expect(corrections).toContainText('หมายเหตุ: ไม่ระบุ แก้เป็น ร้านแจ้งรับเครื่องแล้ว');
+
+    // Voiding the outcome needs a reason, then puts the record back Under Repair with the cost it replaced.
+    await page.locator('#repair-outcome-void-action').click();
+    await page.locator('#repair-void-submit').click();
+    await expect(page.locator('[data-testid="repair-void-form-error"]')).toBeVisible();
+    await page.locator('#repair-void-reason').fill('ร้านยังไม่ได้ซ่อมจริง');
+    await page.locator('#repair-void-submit').click();
+    await expect(page.locator('#repair-status')).toHaveText('อยู่ระหว่างซ่อม');
+    await expect(page.locator('[data-testid="repair-outcome-none"]')).toBeVisible();
+    await expect(page.locator('#repair-cost')).toHaveText('200.00 บาท');
+    const outcomeId = (await (await page.request.get(`${targetBaseUrl}/repairs/${repairRecordId}`)).json()).voided_outcomes[0].id;
+    await expect(page.locator(`[data-testid="repair-voided-outcome-${outcomeId}-voided"]`)).toHaveText('ยกเลิกแล้ว');
+    await expect(corrections).toHaveCount(2);
+    await expect(corrections.nth(1)).toContainText('ค่าใช้จ่าย: 350.00 บาท แก้เป็น 200.00 บาท');
+    await expect(page.locator('#repair-outcome-action')).toBeVisible();
+
+    // The Asset page reads it Under Repair again, with the voided outcome struck through.
+    await page.locator('#repair-asset').click();
+    await expect(page.locator('[data-testid="repair-under-repair"]')).toContainText('อยู่ระหว่างซ่อม');
+    await expect(page.locator(`[data-testid="repair-history-voided-outcome-${outcomeId}-voided"]`)).toHaveText('ยกเลิกแล้ว');
+
+    // Voiding the record ends Under Repair; it stays shown, struck through, with no action left on it.
+    await page.locator('#repair-current-link').click();
+    await page.locator('#repair-void-action').click();
+    await page.locator('#repair-void-reason').fill('ไม่เคยส่งซ่อมจริง');
+    await page.locator('#repair-void-submit').click();
+    await expect(page.locator('[data-testid="repair-voided"]')).toBeVisible();
+    await expect(page.locator('#repair-status')).toHaveText('ยกเลิกแล้ว');
+    await expect(corrections).toHaveCount(3);
+    await expect(page.locator('#repair-amend-action')).toHaveCount(0);
+    await expect(page.locator('#repair-outcome-action')).toHaveCount(0);
+
+    await page.goto(`${targetBaseUrl}/assets/${asset.id}`);
+    await expect(page.locator(`[data-testid="repair-history-voided-${repairRecordId}"]`)).toHaveText('ยกเลิกแล้ว');
+    await expect(page.locator('[data-testid="repair-under-repair"]')).toHaveCount(0);
+    await expect(page.locator('#repair-action')).toBeVisible();
+
+    await page.goto(`${targetBaseUrl}/repairs?search=${encodeURIComponent(symptom)}`);
+    await expect(page.locator(`[data-testid="repair-row-voided-${repairRecordId}"]`)).toHaveText('ยกเลิกแล้ว');
+
+    // A Read-only User sees the corrections, with no action, where a Custodian was offered them above.
+    const { repair_record_id: openRecordId } = await repairService.start(
+      custodianUserId,
+      { asset_id: asset.id, repair_kind: 'REPAIR', start_date: yesterday(), repairer: { kind: 'INTERNAL' }, symptom_or_work: 'ส่งซ่อมใหม่' },
+      { retryToken: crypto.randomUUID() }
+    );
+    await switchActor(page, context, readonlyUserId);
+    await page.goto(`${targetBaseUrl}/repairs/${repairRecordId}`);
+    await expect(corrections).toHaveCount(3);
+    await page.goto(`${targetBaseUrl}/repairs/${openRecordId}`);
+    await expect(page.locator('#repair-status')).toHaveText('อยู่ระหว่างซ่อม');
+    await expect(page.locator('main button')).toHaveCount(0);
+  });
+
+  test('Journey F005-T7.1: a backdated Repair Start that overlaps an old Loan warns, is confirmed, and is shown marked on the Asset page, the Repair list and the Repair Record page', async ({ page, context }) => {
+    const daysAgo = (days: number) => new Date(Date.parse(`${yesterday()}T00:00:00Z`) - (days - 1) * 86_400_000).toISOString().slice(0, 10);
+    const { asset } = await assetService.registerAsset(custodianUserId, { name: 'สแกนเนอร์ E2E ซ่อมย้อนหลัง' } as any);
+    const { loan_id: loanId, items } = await new LoanService({ db: pool }).start(
+      custodianUserId,
+      { assets: [{ asset_id: asset.id, condition: 'NORMAL' }], borrower: { kind: 'EXTERNAL', contact_name: 'คุณยืม E2E ก่อนซ่อม' }, loan_date: daysAgo(10), due_date: daysAgo(5) },
+      { retryToken: crypto.randomUUID() }
+    );
+    await new LoanReturnService({ db: pool }).record(
+      custodianUserId,
+      loanId,
+      { expected_version: 1, return_date: daysAgo(5), items: [{ loan_item_id: items[0].id, condition: 'NORMAL' }] },
+      { retryToken: crypto.randomUUID() }
+    );
+
+    // A Custodian enters an old paper record: the Asset went for repair before that Loan.
+    await loginAs(context, custodianUserId);
+    await page.goto(`${targetBaseUrl}/assets/${asset.id}`);
+    await page.locator('#repair-action').click();
+    await page.locator('#repair-repair_kind').selectOption('REPAIR');
+    await page.locator('#repair-start_date').fill(daysAgo(20));
+    await page.getByLabel('ผู้ซ่อมภายนอก').check();
+    await page.locator('#repair-repairer_name').fill('ร้านซ่อม E2E ย้อนหลัง');
+    await page.locator('#repair-symptom_or_work').fill('หัวสแกนไม่ทำงาน');
+    await page.locator('#repair-submit').click();
+
+    // Nothing is saved until the Repair Conflict is confirmed, and the fields stay as warned about.
+    const warning = page.locator('[data-testid="conflict-warning"]');
+    await expect(warning).toContainText('ช่วงซ่อมทับกัน 1 รายการ');
+    await expect(warning).toContainText('สแกนเนอร์ E2E ซ่อมย้อนหลัง: ช่วงซ่อมทับกันกับการยืม');
+    await expect(page.locator('#repair-start_date')).toBeDisabled();
+    await expect(page.locator('[data-testid="repair-history-empty"]')).toBeVisible();
+    await page.locator('#conflict-confirm').click();
+    await expect(page.locator('#repair-form')).toHaveCount(0);
+
+    // The record is kept and marked on the Asset page.
+    const { rows } = await pool.query('SELECT id FROM repair_records WHERE asset_id = $1', [asset.id]);
+    const repairRecordId: string = rows[0].id;
+    await expect(page.locator('[data-testid="repair-conflict-notice"]')).toContainText('ช่วงซ่อมทับกัน');
+    await expect(page.locator(`[data-testid="repair-history-conflicts-${repairRecordId}"]`)).toContainText('ช่วงซ่อมทับกันกับการยืม');
+
+    // The Repair list's "มี conflict ค้างตรวจ" filter finds it, marked.
+    await page.goto(`${targetBaseUrl}/repairs`);
+    await page.locator('#repair-filter-has_repair_conflict').check();
+    await page.locator('#repair-list-submit').click();
+    await expect(page).toHaveURL(/has_repair_conflict=true/);
+    await expect(page.locator(`[data-testid="repair-row-conflicts-${repairRecordId}"]`)).toContainText('ช่วงซ่อมทับกันกับการยืม');
+
+    // The Repair Record page marks it and links the Loan.
+    await page.goto(`${targetBaseUrl}/repairs/${repairRecordId}`);
+    await expect(page.locator('[data-testid="repair-conflict-notice"]')).toBeVisible();
+    await page.locator('[data-testid="repair-conflicts"]').getByRole('link', { name: 'ดูการยืม' }).click();
+    await expect(page).toHaveURL(new RegExp(`/loans/${loanId}$`));
   });
 });

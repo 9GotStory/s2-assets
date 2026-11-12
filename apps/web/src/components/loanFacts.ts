@@ -1,5 +1,5 @@
 import { entryLabel, type PermanentAssignment, type ReferenceEntry } from './ReferenceContextFields';
-import type { RepairKind } from './repairFacts';
+import type { CitingRepairRecord, RepairKind } from './repairFacts';
 
 export type LoanCondition = 'NORMAL' | 'DAMAGED';
 
@@ -30,6 +30,8 @@ export interface LoanReturn {
   recorded_at: string;
   // "คืนเกินกำหนด", derived by the server (F004-T3).
   returned_after_due_date: boolean;
+  // On the Loan page only: the Repair Records that cite it as their Repair Source (F005-T5).
+  repair_records?: CitingRepairRecord[];
 }
 
 // The ending of an item whose Asset did not come back, "ปิดโดยไม่ได้รับคืน" (F004-T5).
@@ -172,9 +174,10 @@ export interface Loan {
   is_overdue: boolean;
   items: LoanItem[];
   corrections: LoanCorrection[];
-  // Whether the viewer holds 'loan:record' (F004-T2) and 'loan:correct' (F004-T6).
+  // Whether the viewer holds 'loan:record' (F004-T2), 'loan:correct' (F004-T6) and 'repair:record' (F005-T5).
   can_record_loan: boolean;
   can_correct_loan: boolean;
+  can_record_repair: boolean;
 }
 
 // One row of the Loan list (GET /loans, F004-T3). It carries no phone number.

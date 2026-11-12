@@ -62,6 +62,8 @@ export interface AssetDetailResponse {
   can_record_repair?: boolean;
   // F005-T2: from the Asset's latest Repair Outcome that has one.
   next_recommended_maintenance_date?: string | null;
+  // F005-T7: whether any of the Asset's Repair Records is in a Repair Conflict.
+  has_repair_conflict?: boolean;
 }
 
 export const AssetDetail: React.FC = () => {
@@ -788,6 +790,7 @@ const AssetDetailContent: React.FC = () => {
           assignmentVersion={assetData.assignment_version ?? 0}
           hasAssignmentConflict={Boolean(assetData.has_assignment_conflict)}
           onLoan={assetData.on_loan ?? null}
+          underRepair={assetData.under_repair ?? null}
           isLegacy={isLegacy}
           csrfToken={csrfToken}
           onRecorded={async () => {
@@ -828,6 +831,7 @@ const AssetDetailContent: React.FC = () => {
           assetId={asset.id}
           underRepair={assetData.under_repair ?? null}
           nextRecommendedMaintenanceDate={assetData.next_recommended_maintenance_date ?? null}
+          hasRepairConflict={assetData.has_repair_conflict === true}
           canRecordRepair={Boolean(assetData.can_record_repair && !isPermissionRevoked)}
           actorId={currentUser?.id ?? null}
           dataUpdatedAt={dataUpdatedAt}

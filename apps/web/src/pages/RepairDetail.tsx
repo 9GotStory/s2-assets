@@ -1,21 +1,32 @@
 import React, { useEffect, useState } from 'react';
 import { Link, useNavigate, useParams } from 'react-router';
 import { QueryClient, QueryClientProvider, useQuery } from '@tanstack/react-query';
+import { VoidedMark } from '../components/LoanBadges';
+import { RepairAmendForm, RepairVoidForm } from '../components/RepairCorrectionForms';
+import { conflictBoxStyle } from '../components/AssignmentConflictWarning';
+import { RepairConflictMarks } from '../components/RepairConflicts';
+import { RepairCorrectionList } from '../components/RepairCorrectionList';
 import { RepairOutcomeForm } from '../components/RepairOutcomeForm';
-import { thaiDate } from '../components/assignmentFacts';
-import { VOIDED_LABEL, assetLabel } from '../components/loanFacts';
+import { CORRECTION_LABELS, thaiDate } from '../components/assignmentFacts';
+import { CONDITION_LABELS, VOIDED_LABEL, assetLabel, voidedStyle } from '../components/loanFacts';
 import {
   NEXT_RECOMMENDED_MAINTENANCE_DATE_LABEL,
   OUTCOME_DATE_LABEL,
   RECORD_REPAIR_OUTCOME_LABEL,
+  REPAIR_CONFLICT_LABEL,
+  REPAIR_CORRECTION_TARGET_LABELS,
   REPAIR_KIND_LABELS,
   REPAIR_OUTCOME_LABEL,
   REPAIR_OUTCOME_LABELS,
   REPAIR_RECORD_LABEL,
+  REPAIR_SOURCE_LABEL,
   UNDER_REPAIR_LABELS,
   UNDER_WARRANTY_LABELS,
   costText,
   repairerText,
+  type RepairCorrectionTarget,
+  type RepairKind,
+  type RepairOutcome,
   type RepairRecord,
 } from '../components/repairFacts';
 
@@ -50,10 +61,63 @@ const noneStyle: React.CSSProperties = { color: '#9ca3af' };
 
 const orNone = (value: React.ReactNode | null): React.ReactNode => value ?? <span style={noneStyle}>ไม่ระบุ</span>;
 
+const correctionActionStyle: React.CSSProperties = {
+  padding: '0.125rem 0.5rem',
+  marginRight: '0.375rem',
+  backgroundColor: '#ffffff',
+  color: '#374151',
+  border: '1px solid #d1d5db',
+  borderRadius: '4px',
+  fontSize: '0.75rem',
+  cursor: 'pointer',
+};
+
+// The writes on a Repair Record, one form open at a time: its outcome, or a correction of one fact (F005-T6).
+type RepairForm = 'outcome' | { correction: 'AMEND' | 'VOID'; target: RepairCorrectionTarget };
+
+// One Repair Outcome as the page shows it; a voided one stays shown, struck through (#98 Q18). `idPrefix`
+// names its values: "repair-outcome" for the outcome that counts.
+const OutcomeFacts: React.FC<{ outcome: RepairOutcome; repairKind: RepairKind; idPrefix: string; isVoided: boolean }> = ({ outcome, repairKind, idPrefix, isVoided }) => (
+  <dl
+    data-testid={idPrefix}
+    style={{ display: 'grid', gridTemplateColumns: 'max-content 1fr', gap: '0.75rem 1.5rem', margin: '0 0 1rem 0', fontSize: '0.9375rem', backgroundColor: '#f9fafb', padding: '1.25rem', borderRadius: '6px', ...(isVoided ? voidedStyle : {}) }}
+  >
+    <dt style={termStyle}>{REPAIR_OUTCOME_LABEL}:</dt>
+    <dd id={`${idPrefix}-value`} style={{ ...valueStyle, fontWeight: 600, color: isVoided ? undefined : outcome.outcome === 'USABLE' ? '#166534' : '#b91c1c' }}>
+      {REPAIR_OUTCOME_LABELS[repairKind][outcome.outcome]}
+      {isVoided && <VoidedMark testId={`${idPrefix}-voided`} />}
+    </dd>
+    <dt style={termStyle}>{OUTCOME_DATE_LABEL}:</dt>
+    <dd id={`${idPrefix}-date`} style={valueStyle}>
+      <time dateTime={outcome.outcome_date}>{thaiDate(outcome.outcome_date)}</time>
+    </dd>
+    <dt style={termStyle}>{NEXT_RECOMMENDED_MAINTENANCE_DATE_LABEL}:</dt>
+    <dd id={`${idPrefix}-next-maintenance-date`} style={valueStyle}>
+      {orNone(outcome.next_recommended_maintenance_date && <time dateTime={outcome.next_recommended_maintenance_date}>{thaiDate(outcome.next_recommended_maintenance_date)}</time>)}
+    </dd>
+    <dt style={termStyle}>เอกสารอ้างอิงของผล:</dt>
+    <dd id={`${idPrefix}-document-reference`} style={{ ...valueStyle, whiteSpace: 'pre-line' }}>
+      {orNone(outcome.document_reference)}
+    </dd>
+    <dt style={termStyle}>หมายเหตุของผล:</dt>
+    <dd id={`${idPrefix}-note`} style={{ ...valueStyle, whiteSpace: 'pre-line' }}>
+      {orNone(outcome.note)}
+    </dd>
+    <dt style={termStyle}>ผู้บันทึกผล:</dt>
+    <dd id={`${idPrefix}-recorded-by`} style={valueStyle}>
+      {outcome.recorded_by_username ?? outcome.recorded_by}
+    </dd>
+    <dt style={termStyle}>วันที่บันทึกผล:</dt>
+    <dd id={`${idPrefix}-recorded-at`} style={valueStyle}>
+      <time dateTime={outcome.recorded_at}>{THAI_DATE_TIME.format(new Date(outcome.recorded_at))}</time>
+    </dd>
+  </dl>
+);
+
 const RepairDetailContent: React.FC = () => {
   const { id } = useParams<{ id: string }>();
   const navigate = useNavigate();
-  const [isOutcomeFormOpen, setIsOutcomeFormOpen] = useState(false);
+  const [openForm, setOpenForm] = useState<RepairForm | null>(null);
 
   const record = useQuery<RepairRecord, Error & { status?: number }>({
     queryKey: ['repair', id],
@@ -68,8 +132,9 @@ const RepairDetailContent: React.FC = () => {
     },
   });
 
-  // The outcome form needs this session's CSRF token.
+  // The write forms need this session's CSRF token.
   const canRecordRepair = record.data?.can_record_repair === true;
+  const canCorrectRepair = record.data?.can_correct_repair === true;
   const session = useQuery<{ csrfToken: string | null } | null>({
     queryKey: ['repair-session', id],
     queryFn: async ({ signal }) => {
@@ -80,7 +145,7 @@ const RepairDetailContent: React.FC = () => {
       const body = await res.json();
       return { csrfToken: body.csrfToken ?? null };
     },
-    enabled: canRecordRepair,
+    enabled: canRecordRepair || canCorrectRepair,
   });
 
   const isSignedOut = record.error?.status === 401;
@@ -116,7 +181,7 @@ const RepairDetailContent: React.FC = () => {
     );
   }
 
-  const { asset, repair_kind: repairKind, start_date: startDate, repairer, symptom_or_work: symptomOrWork, under_warranty: underWarranty, warranty_end_date: warrantyEndDate, cost, document_reference: documentReference, remark, recorded_by: recordedBy, recorded_by_username: recordedByUsername, recorded_at: recordedAt, is_voided: isVoided, outcome } = record.data;
+  const { asset, repair_kind: repairKind, start_date: startDate, repairer, symptom_or_work: symptomOrWork, under_warranty: underWarranty, warranty_end_date: warrantyEndDate, cost, document_reference: documentReference, remark, repair_source: repairSource, recorded_by: recordedBy, recorded_by_username: recordedByUsername, recorded_at: recordedAt, is_voided: isVoided, outcome, voided_outcomes: voidedOutcomes, conflicts, corrections = [] } = record.data;
   // In GLOSSARY.md terms only: a voided record keeps nobody's Asset, and one with its outcome shows it.
   const statusText = (): string => {
     if (isVoided) {
@@ -126,6 +191,54 @@ const RepairDetailContent: React.FC = () => {
   };
   // A voided record, or one that has its outcome, takes no other; the server would refuse it.
   const mayRecordOutcome = canRecordRepair && !isVoided && outcome === null;
+  // A voided fact is neither amended nor voided again (#98 Q18).
+  const mayCorrect = canCorrectRepair && !isVoided;
+
+  const formProps = {
+    record: record.data,
+    csrfToken: session.data?.csrfToken ?? null,
+    onRecorded: async () => {
+      await record.refetch();
+      setOpenForm(null);
+    },
+    onRefresh: async () => {
+      const result = await record.refetch();
+      return result.isError ? null : (result.data?.version ?? null);
+    },
+    onCancel: () => setOpenForm(null),
+    onPermissionRevoked: (statusCode?: number) => {
+      if (statusCode === 401) {
+        navigate('/login', { replace: true });
+        return;
+      }
+      void record.refetch();
+    },
+  };
+  const openCorrection = typeof openForm === 'object' && openForm !== null ? openForm : null;
+  const correctionForm = (target: RepairCorrectionTarget) =>
+    openCorrection &&
+    openCorrection.target.kind === target.kind && (
+      <div style={{ margin: '1rem 0' }}>
+        {openCorrection.correction === 'AMEND' ? (
+          <RepairAmendForm {...formProps} target={openCorrection.target} targetLabel={REPAIR_CORRECTION_TARGET_LABELS[target.kind]} />
+        ) : (
+          <RepairVoidForm {...formProps} target={openCorrection.target} targetLabel={REPAIR_CORRECTION_TARGET_LABELS[target.kind]} />
+        )}
+      </div>
+    );
+  // "แก้ไขรายการที่บันทึกผิด" and "ยกเลิกรายการ (บันทึกผิด)" for one fact, to holders of 'repair:correct'.
+  const correctionActions = (idPrefix: string, target: RepairCorrectionTarget) =>
+    mayCorrect &&
+    openForm === null && (
+      <div style={{ margin: '0 0 1rem 0' }}>
+        <button type="button" id={`${idPrefix}-amend-action`} onClick={() => setOpenForm({ correction: 'AMEND', target })} style={correctionActionStyle}>
+          {CORRECTION_LABELS.AMENDED}
+        </button>
+        <button type="button" id={`${idPrefix}-void-action`} onClick={() => setOpenForm({ correction: 'VOID', target })} style={correctionActionStyle}>
+          {CORRECTION_LABELS.VOIDED}
+        </button>
+      </div>
+    );
 
   return (
     <main style={pageStyle}>
@@ -137,7 +250,21 @@ const RepairDetailContent: React.FC = () => {
           {REPAIR_RECORD_LABEL}
         </h1>
 
-        <dl style={{ display: 'grid', gridTemplateColumns: 'max-content 1fr', gap: '0.75rem 1.5rem', margin: '0 0 1rem 0', fontSize: '0.9375rem', backgroundColor: '#f9fafb', padding: '1.25rem', borderRadius: '6px' }}>
+        {isVoided && (
+          <div data-testid="repair-voided" role="note" style={{ padding: '0.75rem 1rem', backgroundColor: '#fee2e2', color: '#991b1b', borderRadius: '6px', marginBottom: '1rem', fontWeight: 600 }}>
+            {VOIDED_LABEL}: รายการซ่อมนี้ไม่เคยเกิดขึ้นจริง และไม่นับรวมในสถานะใด
+          </div>
+        )}
+
+        {/* F005-T7: the mark goes away by itself once a correction removes the overlap (#98 Q17). */}
+        {conflicts.length > 0 && (
+          <div data-testid="repair-conflict-notice" role="note" style={{ ...conflictBoxStyle, marginBottom: '1rem' }}>
+            <span style={{ fontWeight: 600 }}>{REPAIR_CONFLICT_LABEL}</span>: ช่วงของรายการนี้ทับกับรายการอื่นของครุภัณฑ์เดียวกัน กรุณาตรวจสอบและแก้ไขรายการที่บันทึกผิด
+            <RepairConflictMarks conflicts={conflicts} testId="repair-conflicts" />
+          </div>
+        )}
+
+        <dl style={{ display: 'grid', gridTemplateColumns: 'max-content 1fr', gap: '0.75rem 1.5rem', margin: '0 0 1rem 0', fontSize: '0.9375rem', backgroundColor: '#f9fafb', padding: '1.25rem', borderRadius: '6px', ...(isVoided ? voidedStyle : {}) }}>
           <dt style={termStyle}>สถานะ:</dt>
           <dd id="repair-status" style={valueStyle}>
             {statusText()}
@@ -185,6 +312,23 @@ const RepairDetailContent: React.FC = () => {
           <dd id="repair-remark" style={{ ...valueStyle, whiteSpace: 'pre-line' }}>
             {orNone(remark)}
           </dd>
+          {/* A Loan Return voided later stays cited, struck through: nothing cascades (#98 Q5). */}
+          <dt style={termStyle}>{REPAIR_SOURCE_LABEL}:</dt>
+          <dd id="repair-source" style={valueStyle}>
+            {repairSource ? (
+              <>
+                <span style={repairSource.is_voided ? voidedStyle : undefined}>
+                  การคืนสภาพ{CONDITION_LABELS[repairSource.condition]} วันที่ <time dateTime={repairSource.return_date}>{thaiDate(repairSource.return_date)}</time>
+                </span>
+                {repairSource.is_voided && <VoidedMark testId="repair-source-voided" />}{' '}
+                <Link to={`/loans/${repairSource.loan_id}`} id="repair-source-loan-link" style={{ color: '#2563eb', textDecoration: 'underline' }}>
+                  ดูการยืม
+                </Link>
+              </>
+            ) : (
+              <span style={noneStyle}>ไม่มี</span>
+            )}
+          </dd>
           <dt style={termStyle}>ผู้บันทึก:</dt>
           <dd id="repair-recorded-by" style={valueStyle}>
             {recordedByUsername ?? recordedBy}
@@ -194,86 +338,42 @@ const RepairDetailContent: React.FC = () => {
             <time dateTime={recordedAt}>{THAI_DATE_TIME.format(new Date(recordedAt))}</time>
           </dd>
         </dl>
+        {correctionActions('repair', { kind: 'REPAIR_RECORD' })}
+        {correctionForm({ kind: 'REPAIR_RECORD' })}
 
         <section aria-labelledby="repair-outcome-heading" style={{ marginTop: '1.5rem' }}>
           <h2 id="repair-outcome-heading" style={{ fontSize: '1.125rem', fontWeight: 600, margin: '0 0 1rem 0', color: '#374151' }}>
             {REPAIR_OUTCOME_LABEL}
           </h2>
           {outcome ? (
-            <dl
-              data-testid="repair-outcome"
-              style={{ display: 'grid', gridTemplateColumns: 'max-content 1fr', gap: '0.75rem 1.5rem', margin: 0, fontSize: '0.9375rem', backgroundColor: '#f9fafb', padding: '1.25rem', borderRadius: '6px' }}
-            >
-              <dt style={termStyle}>{REPAIR_OUTCOME_LABEL}:</dt>
-              <dd id="repair-outcome-value" style={{ ...valueStyle, fontWeight: 600, color: outcome.outcome === 'USABLE' ? '#166534' : '#b91c1c' }}>
-                {REPAIR_OUTCOME_LABELS[repairKind][outcome.outcome]}
-              </dd>
-              <dt style={termStyle}>{OUTCOME_DATE_LABEL}:</dt>
-              <dd id="repair-outcome-date" style={valueStyle}>
-                <time dateTime={outcome.outcome_date}>{thaiDate(outcome.outcome_date)}</time>
-              </dd>
-              <dt style={termStyle}>{NEXT_RECOMMENDED_MAINTENANCE_DATE_LABEL}:</dt>
-              <dd id="repair-outcome-next-maintenance-date" style={valueStyle}>
-                {orNone(outcome.next_recommended_maintenance_date && (
-                  <time dateTime={outcome.next_recommended_maintenance_date}>{thaiDate(outcome.next_recommended_maintenance_date)}</time>
-                ))}
-              </dd>
-              <dt style={termStyle}>เอกสารอ้างอิงของผล:</dt>
-              <dd id="repair-outcome-document-reference" style={{ ...valueStyle, whiteSpace: 'pre-line' }}>
-                {orNone(outcome.document_reference)}
-              </dd>
-              <dt style={termStyle}>หมายเหตุของผล:</dt>
-              <dd id="repair-outcome-note" style={{ ...valueStyle, whiteSpace: 'pre-line' }}>
-                {orNone(outcome.note)}
-              </dd>
-              <dt style={termStyle}>ผู้บันทึกผล:</dt>
-              <dd id="repair-outcome-recorded-by" style={valueStyle}>
-                {outcome.recorded_by_username ?? outcome.recorded_by}
-              </dd>
-              <dt style={termStyle}>วันที่บันทึกผล:</dt>
-              <dd id="repair-outcome-recorded-at" style={valueStyle}>
-                <time dateTime={outcome.recorded_at}>{THAI_DATE_TIME.format(new Date(outcome.recorded_at))}</time>
-              </dd>
-            </dl>
+            <>
+              <OutcomeFacts outcome={outcome} repairKind={repairKind} idPrefix="repair-outcome" isVoided={false} />
+              {correctionActions('repair-outcome', { kind: 'REPAIR_OUTCOME', id: outcome.id })}
+              {correctionForm({ kind: 'REPAIR_OUTCOME', id: outcome.id })}
+            </>
           ) : (
             <p data-testid="repair-outcome-none" style={{ margin: '0 0 1rem 0', fontSize: '0.875rem', color: '#9ca3af' }}>
               ยังไม่มีผลการซ่อม
             </p>
           )}
+          {voidedOutcomes.map((voided) => (
+            <OutcomeFacts key={voided.id} outcome={voided} repairKind={repairKind} idPrefix={`repair-voided-outcome-${voided.id}`} isVoided />
+          ))}
 
-          {mayRecordOutcome && isOutcomeFormOpen && (
-            <RepairOutcomeForm
-              record={record.data}
-              csrfToken={session.data?.csrfToken ?? null}
-              onRecorded={async () => {
-                await record.refetch();
-                setIsOutcomeFormOpen(false);
-              }}
-              onRefresh={async () => {
-                const result = await record.refetch();
-                return result.isError ? null : (result.data?.version ?? null);
-              }}
-              onCancel={() => setIsOutcomeFormOpen(false)}
-              onPermissionRevoked={(statusCode) => {
-                if (statusCode === 401) {
-                  navigate('/login', { replace: true });
-                  return;
-                }
-                void record.refetch();
-              }}
-            />
-          )}
-          {mayRecordOutcome && !isOutcomeFormOpen && (
+          {mayRecordOutcome && openForm === 'outcome' && <RepairOutcomeForm {...formProps} />}
+          {mayRecordOutcome && openForm === null && (
             <button
               type="button"
               id="repair-outcome-action"
-              onClick={() => setIsOutcomeFormOpen(true)}
+              onClick={() => setOpenForm('outcome')}
               style={{ padding: '0.5rem 1rem', backgroundColor: '#2563eb', color: '#ffffff', border: 'none', borderRadius: '6px', fontSize: '0.875rem', fontWeight: 500, cursor: 'pointer' }}
             >
               {RECORD_REPAIR_OUTCOME_LABEL}
             </button>
           )}
         </section>
+
+        {corrections.length > 0 && <RepairCorrectionList repairKind={repairKind} corrections={corrections} />}
       </div>
     </main>
   );

@@ -24,6 +24,41 @@ offered it, and a 404 came from a URL no route serves. Neither test could fail.
 A test that a value is absent searches for the whole value, such as the full phone number. In
 F004-T6 (#80), `not.toContain('090')` over JSON that holds UUIDs failed whenever a UUID held "090".
 
+## An order test of a paged list splits a tie across a page break
+
+A list query orders twice: its `LIMIT … OFFSET` picks the page's rows by one `ORDER BY`, and an
+outer `ORDER BY` returns them. Tied rows on one page come back in order even when the first sort's
+tiebreak is broken, so the test cannot fail. Put the tied rows on either side of a page break, as
+`loan-list.test.ts` and `repair-list.test.ts` do. In F005-T3 (#101), both tests first kept their
+same-day pair on one page, and breaking the tiebreak left them green.
+
+## A rule read under a lock has a test of its order
+
+When a write decides a rule on a fact that another write can change, and a shared lock orders the two,
+a Seam A test queues the other write first with `whileHolding` and shows that the rule sees its result.
+Without it, the rule can move ahead of the lock and every test stays green. In F005-T5 (#103), the
+Repair Source check read the Loan Return after the Asset lock that a Loan Correction also takes; no test
+failed when the check was moved before it, and only the Spec review found the gap.
+
+The test goes red when the read moves ahead of the lock: check it with `scripts/dev/expect-red.sh`. A
+write that creates a fact reads nothing of it before the lock, so moving its read changes no answer;
+test the order on a write that changes a fact that already exists. In F005-T7 (#105), the Repair Conflict
+tests of a Repair Start and a Loan start stayed green with the check moved ahead of the lock; those of the
+two corrections, which read what was there before them, went red.
+
+## A correction keeps every stored value it replaces
+
+A correction record lists the before and after of each stored value its write changes, side effects
+included: a cascade, or a value restored from an earlier column. A Seam A test reads the correction
+back after a void as well as after an amendment. In F005-T6 (#104), voiding a Repair Outcome restored
+the record's cost and kept the cost it replaced nowhere; only the Spec review found it.
+
+## An amend form compares a field the way the server stores it
+
+An amend form counts a field as changed only when the server would store a different value: text
+trimmed, an amount compared as a number, a UUID in lower case. In F005-T6 (#104), "350" over a stored
+"350.00" was sent as a change and refused as "changes nothing".
+
 ## Helpers decide, handlers reply
 
 A route helper returns a decision, such as a boolean or a result, and the route handler sends the
@@ -49,10 +84,13 @@ decision on the F005-T1 retro).
 A name, a phone number or a token is one line and refuses every control character
 (`hasStrictControlChars`). A new one is checked before it is trimmed, so a line break at its end is
 refused, not dropped. Free text, such as a document reference, a remark, a note or a reason, keeps
-tab and line breaks inside it and refuses the rest (`hasDisallowedControlChars`). A search term
-follows the rule of the field it searches: the Loan list's Borrower-name search refuses every
-control character (#77). The first review of F004-T1 (#75) read a Condition note as one line, and
-the second undid the fix.
+tab and line breaks inside it and refuses the rest (`hasDisallowedControlChars`). The first review
+of F004-T1 (#75) read a Condition note as one line, and the second undid the fix.
+
+A search term follows the rule of the field it searches: the Loan list's Borrower-name search
+refuses every control character (#77). A search over several fields follows the loosest of their
+rules: the Repair list's search reaches the free-text symptom or work, so it keeps tab and line
+breaks (#101).
 
 ## A feature's code gets its own files
 
@@ -65,5 +103,13 @@ existing feature stays beside that feature's journeys, as Journey T7.17 does in 
 
 In application code, SQL on an existing table stays in the module that owns the table, as
 `assignment.service.ts` owns `assignment_changes`; the feature's own file holds its rules and calls
-that module. A read may join another module's table to show or filter by its names; a write, a lock
-or a check that decides a rule goes through the owner.
+that module. A read of another module's table goes through that module's read functions too, as
+`loan-read.service.ts` reads Repair Outcomes through `latestRepairOutcomesOf` (#100). For the Loan
+and Repair tables, the guards in `eslint.config.mjs` hold this for SQL text that names the table.
+
+When a rule must join another module's table in SQL, as a list filter does, the owning module exports
+the SQL fragment from a leaf file named after its concept, and that fragment counts as one of its read
+functions. `loan-item-periods.ts` gives the period of a LoanItem to both `loan-read.service.ts` and
+`repair-read.service.ts` (F005-T7, #105). The guards see the table only in the leaf, so name a CTE
+that holds the fragment after what it holds, not after the table: `JOIN loan_periods` reads to the guard
+as the table `loan_periods`.

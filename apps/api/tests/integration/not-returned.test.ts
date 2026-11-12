@@ -4,6 +4,7 @@ import { startApiHarness, type Actor, type ApiHarness } from './support/api-harn
 import { assignmentHelpers, at, type Entry } from './support/assignment-helpers.ts';
 import { withCapabilityAnswer } from './support/capability-helpers.ts';
 import { loanHelpers, over } from './support/loan-helpers.ts';
+import { lockHelpers } from './support/lock-helpers.ts';
 
 const TODAY = '2026-11-05';
 const LOAN_DATE = '2026-11-01';
@@ -20,7 +21,8 @@ describe('Recording Not Returned (Seam A - F004-T5)', () => {
   const logLines: string[] = [];
 
   const { entries, detailOf, assignmentOf } = assignmentHelpers(() => ({ api, admin, reader: readonly }));
-  const { registered, loanOf, start, lent, whileHolding } = loanHelpers(() => ({ api, custodian, reader: readonly }), {
+  const { whileHolding } = lockHelpers(() => ({ api }));
+  const { registered, loanOf, start, lent } = loanHelpers(() => ({ api, custodian, reader: readonly }), {
     loanDate: LOAN_DATE,
     dueDate: DUE,
     contactName: 'คุณผู้ยืมไม่คืน',

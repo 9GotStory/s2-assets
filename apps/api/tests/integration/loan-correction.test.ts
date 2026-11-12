@@ -4,6 +4,7 @@ import { startApiHarness, type Actor, type ApiHarness } from './support/api-harn
 import { assignmentHelpers, type Entry } from './support/assignment-helpers.ts';
 import { withCapabilityAnswer } from './support/capability-helpers.ts';
 import { loanHelpers, over } from './support/loan-helpers.ts';
+import { lockHelpers } from './support/lock-helpers.ts';
 
 const TODAY = '2026-11-05';
 const LOAN_DATE = '2026-11-01';
@@ -21,44 +22,11 @@ describe('Loan Correction (Seam A - F004-T6)', () => {
   const logLines: string[] = [];
 
   const { entry } = assignmentHelpers(() => ({ api, admin, reader: readonly }));
-  const { registered, loanOf, start, lent, returned, closedNotReturned, whileHolding } = loanHelpers(
+  const { whileHolding } = lockHelpers(() => ({ api }));
+  const { registered, loanOf, start, lent, returned, closedNotReturned, correct, amendment, voiding, amended, voided } = loanHelpers(
     () => ({ api, custodian, reader: readonly }),
     { loanDate: LOAN_DATE, dueDate: DUE, contactName: 'คุณผู้ยืมแก้ไข' }
   );
-
-  const correct = (loanId: string, payload: Record<string, unknown>, token: string = crypto.randomUUID(), actor: Actor = custodian) =>
-    api.post(actor, `/loans/${loanId}/corrections`, payload, { 'x-retry-token': token });
-
-  // An amendment of `target`, against the Loan's latest version unless `overrides` says otherwise.
-  const amendment = async (loanId: string, target: Record<string, unknown>, changes: Record<string, unknown>, overrides: Record<string, unknown> = {}) => ({
-    expected_version: (await loanOf(loanId)).version,
-    action: 'AMEND',
-    target,
-    reason: 'บันทึกผิดจากใบยืม',
-    changes,
-    ...overrides,
-  });
-
-  // A void of `target`, against the Loan's latest version unless `overrides` says otherwise.
-  const voiding = async (loanId: string, target: Record<string, unknown>, overrides: Record<string, unknown> = {}) => ({
-    expected_version: (await loanOf(loanId)).version,
-    action: 'VOID',
-    target,
-    reason: 'ไม่เคยเกิดขึ้นจริง',
-    ...overrides,
-  });
-
-  const amended = async (loanId: string, target: Record<string, unknown>, changes: Record<string, unknown>) => {
-    const res = await correct(loanId, await amendment(loanId, target, changes));
-    expect(res.statusCode).toBe(201);
-    return res.json();
-  };
-
-  const voided = async (loanId: string, target: Record<string, unknown>) => {
-    const res = await correct(loanId, await voiding(loanId, target));
-    expect(res.statusCode).toBe(201);
-    return res.json();
-  };
 
   // A Due Date Extension of `itemIds` to `newDueDate`, against the Loan's latest version.
   const extended = async (loanId: string, itemIds: string[], newDueDate: string) => {

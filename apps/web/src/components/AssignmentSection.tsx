@@ -9,6 +9,7 @@ import { ReassignmentForm } from './ReassignmentForm';
 import { REFERENCE_DIMENSIONS, entryLabel, type CurrentAssignment } from './ReferenceContextFields';
 import { CORRECTION_LABELS, KIND_LABELS, type AssignmentEvent } from './assignmentFacts';
 import type { OnLoan } from './loanFacts';
+import type { UnderRepair } from './repairFacts';
 
 // The one form open in the section: recording a new fact, or correcting a fact of the timeline.
 type OpenForm = { type: 'RECORD'; kind: AssignmentEvent['kind'] } | { type: 'AMEND' | 'VOID'; eventId: string };
@@ -44,6 +45,8 @@ export interface AssignmentSectionProps {
   hasAssignmentConflict: boolean;
   // Who holds the Asset while it is On Loan, for the Reassignment form's notice (F004-T4).
   onLoan?: OnLoan | null;
+  // The Repair Record that keeps the Asset Under Repair, for the same form's notice (F005-T4).
+  underRepair?: UnderRepair | null;
   isLegacy: boolean;
   csrfToken: string | null;
   onRecorded: () => Promise<void>;
@@ -65,6 +68,7 @@ export const AssignmentSection: React.FC<AssignmentSectionProps> = ({
   assignmentVersion,
   hasAssignmentConflict,
   onLoan,
+  underRepair,
   isLegacy,
   csrfToken,
   onRecorded,
@@ -180,7 +184,7 @@ export const AssignmentSection: React.FC<AssignmentSectionProps> = ({
         <InitialAssignmentForm save={save} isLegacy={isLegacy} actorId={actorId} />
       )}
       {activeForm?.type === 'RECORD' && activeForm.kind === 'REASSIGNMENT' && (
-        <ReassignmentForm save={save} timeline={timeline.data} actorId={actorId} onLoan={onLoan} />
+        <ReassignmentForm save={save} timeline={timeline.data} actorId={actorId} onLoan={onLoan} underRepair={underRepair} />
       )}
       {!activeForm &&
         offeredKind && (

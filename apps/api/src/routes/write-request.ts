@@ -1,8 +1,16 @@
 import type { FastifyRequest } from 'fastify';
 import { z } from 'zod';
 
-// Feature 002's deterministic error shape.
+// Feature 002's deterministic error shape: a refusal a route replies with itself. Anything thrown past the
+// route answers error-handler.ts's envelope instead, { error: { code, message, request_id, details } },
+// as a 403 or a 500 does.
 export const errorBody = (statusCode: number, code: string, message: string) => ({ statusCode, code, error: code, message });
+
+// #74 Q20, #98 Q17: the conflicts a warning listed that the user confirms, each by its other side, a
+// LoanItem or a Repair Record.
+export const ConfirmedConflictsSchema = z
+  .array(z.union([z.object({ conflicting_loan_item_id: z.string() }).strict(), z.object({ conflicting_repair_record_id: z.string() }).strict()]))
+  .optional();
 
 const RETRY_TOKEN_MAX_LENGTH = 128;
 

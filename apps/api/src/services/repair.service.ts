@@ -2,15 +2,18 @@ import pg from 'pg';
 import { DOCUMENT_REFERENCE_MAX_LENGTH, REMARK_MAX_LENGTH, bangkokDate, isCalendarDate, lockAssetsInIdentifierOrder, normalizeLine, normalizeText } from './assignment.service.ts';
 import { isValidUuid } from './capability.service.ts';
 import { hasStrictControlChars } from './control-characters.ts';
+import { normalizeConfirmedConflicts, withConfirmedConflicts, type ConfirmedConflictInput } from './conflict-confirmation.ts';
+import { loanReturnsOf } from './loan-return-read.ts';
 import { loansHoldingAssets } from './loan.service.ts';
 import { underRepairOfAssets, type RepairKind, type RepairOutcomeValue, type RepairerKind, type UnderWarranty } from './repair-read.service.ts';
+import { repairConflictCheck } from './repair-conflict.ts';
 import { commitOnce } from './retryable-write.ts';
 import { NotFoundError, StaleBeforeConflictError } from './service-errors.ts';
 import { ValidationError } from './validation-error.ts';
 
-const REPAIRER_NAME_MAX_LENGTH = 200;
-const SYMPTOM_OR_WORK_MAX_LENGTH = REMARK_MAX_LENGTH;
-const OUTCOME_NOTE_MAX_LENGTH = REMARK_MAX_LENGTH;
+export const REPAIRER_NAME_MAX_LENGTH = 200;
+export const SYMPTOM_OR_WORK_MAX_LENGTH = REMARK_MAX_LENGTH;
+export const OUTCOME_NOTE_MAX_LENGTH = REMARK_MAX_LENGTH;
 
 // Baht, not negative, with at most two decimals, within numeric(12, 2) (#98 Q8).
 const COST_PATTERN = /^(0|[1-9]\d{0,9})(\.\d{1,2})?$/;
@@ -26,8 +29,12 @@ export interface StartRepairInput {
   cost?: string | null;
   document_reference?: string | null;
   remark?: string | null;
+  // The Loan Return recorded ชำรุด that led to it, when there was one (F005-T5, LR-13, RM-08, #98 Q5).
+  repair_source?: { loan_return_id: string } | null;
   // Work finished in one visit, or an old repair, is recorded with its outcome in one write (#98 Q1, Q22).
   outcome?: RepairOutcomeInput | null;
+  // The Repair Conflicts the user saw in a warning and confirms (F005-T7, #98 Q17).
+  confirmed_conflicts?: ConfirmedConflictInput[];
 }
 
 // How a Repair Record ended (#98 Q10, Q22). The record's one cost is not part of it.
@@ -67,6 +74,42 @@ export class RepairStartRefusedError extends Error {
     super(`${asset.name ?? asset.asset_number ?? asset.asset_id} cannot be sent for repair or maintenance now: ${asset.reason}`);
     this.name = 'RepairStartRefusedError';
     this.asset = asset;
+  }
+}
+
+/**
+ * Why an Asset whose lock the caller holds cannot be Under Repair now: a Loan holds it, or another Repair
+ * Record keeps it (#98 Q3, Q15). Null when it can. A Repair Start and voiding a Repair Outcome both ask.
+ */
+export async function underRepairRefusalOf(
+  client: pg.PoolClient,
+  asset: { asset_id: string; name: string | null; asset_number: string | null }
+): Promise<RepairStartRefusal | null> {
+  const held = (await loansHoldingAssets(client, [asset.asset_id])).get(asset.asset_id);
+  if (held) {
+    return { ...asset, ...held };
+  }
+  const repair = (await underRepairOfAssets(client, [asset.asset_id])).get(asset.asset_id);
+  return repair ? { ...asset, reason: 'UNDER_REPAIR', repair_record_id: repair.repair_record_id, repair_kind: repair.repair_kind } : null;
+}
+
+// Why a Loan Return cannot be a Repair Source: it must be a non-voided Loan Return of a LoanItem of the
+// same Asset, recorded ชำรุด (#98). An id that names no Loan Return, a Not Returned among them, is NOT_LOAN_RETURN.
+export interface RepairSourceRefusal {
+  loan_return_id: string;
+  reason: 'NOT_LOAN_RETURN' | 'VOIDED' | 'OTHER_ASSET' | 'NOT_DAMAGED';
+}
+
+/** A Repair Start cites a Repair Source it cannot have. Nothing is saved, and the answer says why. */
+export class RepairSourceRefusedError extends Error {
+  statusCode = 409;
+  code = 'REPAIR_SOURCE_REFUSED';
+  repair_source: RepairSourceRefusal;
+
+  constructor(repairSource: RepairSourceRefusal) {
+    super(`The Loan Return cannot be the Repair Source: ${repairSource.reason}`);
+    this.name = 'RepairSourceRefusedError';
+    this.repair_source = repairSource;
   }
 }
 
@@ -111,11 +154,12 @@ interface RepairStartFacts {
   cost: string | null;
   document_reference: string | null;
   remark: string | null;
+  repair_source_loan_return_id: string | null;
   outcome: RepairOutcomeFacts | null;
 }
 
 // A cost is one line, so a control character is refused before trimming, even at its ends.
-const normalizeCost = (value: string | null | undefined): string | null => {
+export const normalizeCost = (value: string | null | undefined): string | null => {
   if (hasStrictControlChars(value ?? '')) {
     throw new ValidationError('cost must not contain control characters');
   }
@@ -179,6 +223,10 @@ const normalizeFacts = (input: StartRepairInput, today: string): RepairStartFact
   if (symptomOrWork === null) {
     throw new ValidationError('symptom_or_work is required');
   }
+  const sourceId = input.repair_source?.loan_return_id ?? null;
+  if (sourceId !== null && !isValidUuid(sourceId)) {
+    throw new ValidationError('repair_source.loan_return_id must be a valid UUID');
+  }
   const outcome = input.outcome ? normalizeOutcome(input.outcome, today) : null;
   if (outcome) {
     assertOutcomeNotBeforeStart(outcome.outcome_date, input.start_date);
@@ -195,25 +243,50 @@ const normalizeFacts = (input: StartRepairInput, today: string): RepairStartFact
     cost: normalizeCost(input.cost),
     document_reference: normalizeText(input.document_reference, 'document_reference', DOCUMENT_REFERENCE_MAX_LENGTH, ''),
     remark: normalizeText(input.remark, 'remark', REMARK_MAX_LENGTH, ''),
+    repair_source_loan_return_id: sourceId?.trim().toLowerCase() ?? null,
     outcome,
   };
 };
 
+/**
+ * #98: a Repair Source is a non-voided Loan Return of a LoanItem of the same Asset, recorded ชำรุด. The
+ * caller holds the Asset locked, as a Loan Correction voiding that Loan Return locks it, so the check
+ * holds until commit.
+ */
+export async function assertRepairSource(client: pg.PoolClient, assetId: string, loanReturnId: string): Promise<void> {
+  const cited = (await loanReturnsOf(client, [loanReturnId])).get(loanReturnId);
+  const refuse = (reason: RepairSourceRefusal['reason']) => new RepairSourceRefusedError({ loan_return_id: loanReturnId, reason });
+  if (!cited) {
+    throw refuse('NOT_LOAN_RETURN');
+  }
+  if (cited.asset_id !== assetId) {
+    throw refuse('OTHER_ASSET');
+  }
+  if (cited.is_voided) {
+    throw refuse('VOIDED');
+  }
+  if (cited.condition !== 'DAMAGED') {
+    throw refuse('NOT_DAMAGED');
+  }
+}
+
 // What a write on an existing Repair Record reads of it, once locked.
-interface LockedRepairRecord {
+export interface LockedRepairRecord {
   id: string;
   asset_id: string;
   start_date: string;
   cost: string | null;
   has_outcome: boolean;
   is_voided: boolean;
+  // What a refusal names the Asset by.
+  asset: { name: string | null; asset_number: string | null };
 }
 
 /**
  * The first steps of every write on an existing Repair Record (#98): it locks the record row, then its
  * Asset, the lock a Loan start takes, and refuses a client that read another version.
  */
-async function lockRepairRecordForWrite(client: pg.PoolClient, repairRecordId: string, expectedVersion: number): Promise<LockedRepairRecord> {
+export async function lockRepairRecordForWrite(client: pg.PoolClient, repairRecordId: string, expectedVersion: number): Promise<LockedRepairRecord> {
   const res = await client.query(
     `SELECT id, asset_id, to_char(start_date, 'YYYY-MM-DD') AS start_date, cost::text AS cost, has_outcome, is_voided, version
      FROM repair_records WHERE id = $1 FOR UPDATE`,
@@ -223,11 +296,11 @@ async function lockRepairRecordForWrite(client: pg.PoolClient, repairRecordId: s
   if (!record) {
     throw new NotFoundError('Repair Record not found');
   }
-  await lockAssetsInIdentifierOrder(client, [record.asset_id]);
+  const [{ name, asset_number }] = await lockAssetsInIdentifierOrder(client, [record.asset_id]);
   if (record.version !== expectedVersion) {
     throw new StaleBeforeConflictError('The Repair Record changed since it was read', { version: record.version }, { version: expectedVersion });
   }
-  return record;
+  return { ...record, asset: { name, asset_number } };
 }
 
 // Records the outcome fact, which keeps the record's cost before this write set it (#98 Q22).
@@ -240,6 +313,157 @@ async function insertOutcome(
      VALUES ($1, $2, $3, $4, $5, $6, $7, $8)`,
     [repairRecordId, facts.outcome, facts.outcome_date, facts.note, facts.document_reference, facts.next_recommended_maintenance_date, costBefore, actorId]
   );
+}
+
+// A Repair fact a Repair Correction names (#98 Q18): the record, or one of its Repair Outcomes.
+export type RepairCorrectionTarget = { kind: 'REPAIR_RECORD' } | { kind: 'REPAIR_OUTCOME'; id: string };
+
+// One field a correction changed, with its before and after, as the correction record keeps it.
+export type CorrectedField = { field: string; before: string | null; after: string | null };
+
+// The fields a correction compares and amends, by the names its record keeps, and each one's column.
+const AMENDABLE_COLUMNS = {
+  REPAIR_RECORD: {
+    repair_kind: 'repair_kind',
+    start_date: 'start_date',
+    repairer_kind: 'repairer_kind',
+    repairer_name: 'repairer_name',
+    symptom_or_work: 'symptom_or_work',
+    under_warranty: 'under_warranty',
+    warranty_end_date: 'warranty_end_date',
+    cost: 'cost',
+    document_reference: 'document_reference',
+    remark: 'remark',
+    repair_source_loan_return_id: 'repair_source_loan_return_id',
+  },
+  REPAIR_OUTCOME: {
+    outcome: 'outcome',
+    outcome_date: 'outcome_date',
+    note: 'note',
+    document_reference: 'document_reference',
+    next_recommended_maintenance_date: 'next_recommended_maintenance_date',
+  },
+} as const;
+
+const TARGET_TABLES = { REPAIR_RECORD: 'repair_records', REPAIR_OUTCOME: 'repair_outcomes' } as const;
+
+// The column of a correction record that names a fact of each kind.
+const TARGET_COLUMNS = { REPAIR_RECORD: 'repair_record_id', REPAIR_OUTCOME: 'repair_outcome_id' } as const;
+
+// A Repair fact as a correction finds it, under its record's lock: its amendable fields, by the names the
+// correction record keeps. Dates read as YYYY-MM-DD and a cost as text with two decimals.
+export interface StoredRepairFact {
+  id: string;
+  is_voided: boolean;
+  fields: Record<string, string | null>;
+}
+
+/** A fact of a Repair Record whose row the caller holds locked, or null when the record has no such fact. */
+export async function readStoredRepairFact(client: pg.PoolClient, repairRecordId: string, target: RepairCorrectionTarget): Promise<StoredRepairFact | null> {
+  const res =
+    target.kind === 'REPAIR_RECORD'
+      ? await client.query(
+          `SELECT id, is_voided, repair_kind, to_char(start_date, 'YYYY-MM-DD') AS start_date, repairer_kind, repairer_name, symptom_or_work,
+                  under_warranty, to_char(warranty_end_date, 'YYYY-MM-DD') AS warranty_end_date, cost::text AS cost, document_reference, remark,
+                  repair_source_loan_return_id
+           FROM repair_records WHERE id = $1`,
+          [repairRecordId]
+        )
+      : await client.query(
+          `SELECT id, is_voided, outcome, to_char(outcome_date, 'YYYY-MM-DD') AS outcome_date, note, document_reference,
+                  to_char(next_recommended_maintenance_date, 'YYYY-MM-DD') AS next_recommended_maintenance_date
+           FROM repair_outcomes WHERE repair_record_id = $1 AND id = $2`,
+          [repairRecordId, target.id]
+        );
+  if (res.rows.length === 0) {
+    return null;
+  }
+  const { id, is_voided, ...fields } = res.rows[0];
+  return { id, is_voided, fields };
+}
+
+/** Leaves the amended values on one fact, in the caller's transaction. `values` names fields as readStoredRepairFact does. */
+export async function amendRepairFact(client: pg.PoolClient, target: RepairCorrectionTarget, factId: string, values: Record<string, string | null>): Promise<void> {
+  const columns: Record<string, string> = AMENDABLE_COLUMNS[target.kind];
+  const fields = Object.keys(values);
+  if (fields.length === 0) {
+    return;
+  }
+  const unknown = fields.find((field) => !Object.hasOwn(columns, field));
+  if (unknown !== undefined) {
+    throw new Error(`${unknown} is not an amendable field of a ${target.kind}`);
+  }
+  const assignments = fields.map((field, i) => `${columns[field]} = $${i + 2}`).join(', ');
+  await client.query(`UPDATE ${TARGET_TABLES[target.kind]} SET ${assignments} WHERE id = $1`, [factId, ...fields.map((field) => values[field])]);
+}
+
+/**
+ * Voids one fact, in the caller's transaction (#98 Q18), and returns what it changed besides voiding.
+ * Voiding a record voids its Repair Outcome with it, which ends Under Repair when it had none. Voiding a
+ * Repair Outcome puts the record back without one, so the Asset is Under Repair again, and restores the
+ * cost the outcome replaced (#98 Q22); the cost it replaced is returned as the before.
+ */
+export async function voidRepairFact(client: pg.PoolClient, repairRecordId: string, target: RepairCorrectionTarget, fact: StoredRepairFact): Promise<CorrectedField[]> {
+  if (target.kind === 'REPAIR_RECORD') {
+    await client.query('UPDATE repair_outcomes SET is_voided = true WHERE repair_record_id = $1 AND NOT is_voided', [repairRecordId]);
+    await client.query('UPDATE repair_records SET is_voided = true, has_outcome = false WHERE id = $1', [repairRecordId]);
+    return [];
+  }
+  const current = await client.query('SELECT cost::text AS cost FROM repair_records WHERE id = $1', [repairRecordId]);
+  const voided = await client.query('UPDATE repair_outcomes SET is_voided = true WHERE id = $1 RETURNING cost_before::text AS cost_before', [fact.id]);
+  await client.query('UPDATE repair_records SET has_outcome = false, cost = $2 WHERE id = $1', [repairRecordId, voided.rows[0].cost_before]);
+  const before: string | null = current.rows[0].cost;
+  const after: string | null = voided.rows[0].cost_before;
+  return before === after ? [] : [{ field: 'cost', before, after }];
+}
+
+// A date rule of a Repair Record that a correction would break (#98 Q4, Q7, Q18).
+// A Next Recommended Maintenance Date after its Outcome Date is the constraint
+// repair_outcomes_next_recommended_maintenance_date, so a correction checks it before it writes.
+export type BrokenRepairDateRule = 'START_DATE_AFTER_TODAY' | 'OUTCOME_DATE_AFTER_TODAY' | 'OUTCOME_DATE_BEFORE_START_DATE';
+
+/**
+ * The date rules a Repair Record breaks as it now stands in the caller's transaction, with its non-voided
+ * Repair Outcome: the Start Date and Outcome Date are no later than today, and the Outcome Date is not
+ * before the Start Date.
+ */
+export async function brokenRepairDateRules(client: pg.PoolClient, repairRecordId: string, today: string): Promise<BrokenRepairDateRule[]> {
+  const res = await client.query(
+    `SELECT r.start_date > $2::date AS "START_DATE_AFTER_TODAY",
+            coalesce(o.outcome_date > $2::date, false) AS "OUTCOME_DATE_AFTER_TODAY",
+            coalesce(o.outcome_date < r.start_date, false) AS "OUTCOME_DATE_BEFORE_START_DATE"
+     FROM repair_records r
+     LEFT JOIN repair_outcomes o ON o.repair_record_id = r.id AND NOT o.is_voided
+     WHERE r.id = $1`,
+    [repairRecordId, today]
+  );
+  return Object.entries(res.rows[0]).flatMap(([rule, broken]) => (broken ? [rule as BrokenRepairDateRule] : []));
+}
+
+/** Keeps one Repair Correction record, in the caller's transaction, and returns its id. */
+export async function recordRepairCorrection(
+  client: pg.PoolClient,
+  {
+    target,
+    factId,
+    action,
+    reason,
+    changes,
+    actorId,
+  }: { target: RepairCorrectionTarget; factId: string; action: 'AMENDED' | 'VOIDED'; reason: string; changes: CorrectedField[]; actorId: string }
+): Promise<string> {
+  const res = await client.query(
+    `INSERT INTO repair_corrections (${TARGET_COLUMNS[target.kind]}, action, reason, changes, recorded_by)
+     VALUES ($1, $2, $3, $4::jsonb, $5) RETURNING id`,
+    [factId, action, reason, JSON.stringify(changes), actorId]
+  );
+  return res.rows[0].id;
+}
+
+/** Increments a locked Repair Record's version, as every write on it does, and returns the new version. */
+export async function incrementRepairVersion(client: pg.PoolClient, repairRecordId: string): Promise<number> {
+  const res = await client.query('UPDATE repair_records SET version = version + 1 WHERE id = $1 RETURNING version', [repairRecordId]);
+  return res.rows[0].version;
 }
 
 /**
@@ -262,30 +486,33 @@ export class RepairService {
     if (!asset) {
       throw new NotFoundError('Asset not found');
     }
-    const { name, asset_number } = asset;
-    const held = (await loansHoldingAssets(client, [assetId])).get(assetId);
-    if (held) {
-      throw new RepairStartRefusedError({ asset_id: assetId, name, asset_number, ...held });
-    }
-    const repair = (await underRepairOfAssets(client, [assetId])).get(assetId);
-    if (repair) {
-      throw new RepairStartRefusedError({ asset_id: assetId, name, asset_number, reason: 'UNDER_REPAIR', repair_record_id: repair.repair_record_id, repair_kind: repair.repair_kind });
+    const refusal = await underRepairRefusalOf(client, { asset_id: assetId, name: asset.name, asset_number: asset.asset_number });
+    if (refusal) {
+      throw new RepairStartRefusedError(refusal);
     }
   }
 
   async start(actorId: string, input: StartRepairInput, { retryToken }: { retryToken: string }): Promise<RepairRecordVersion> {
-    const { outcome, ...facts } = normalizeFacts(input, bangkokDate(this.clock()));
-    // A Repair Start without an outcome keeps the fingerprint it had before the outcome existed.
-    const payload = { version: 1, ...facts, ...(outcome ? { outcome } : {}) };
+    const { outcome, repair_source_loan_return_id: sourceId, ...facts } = normalizeFacts(input, bangkokDate(this.clock()));
+    const confirmed = normalizeConfirmedConflicts(input.confirmed_conflicts);
+    // A Repair Start without an outcome, a Repair Source or a confirmation keeps the fingerprint it had before each existed.
+    const payload = withConfirmedConflicts(
+      { version: 1, ...facts, ...(outcome ? { outcome } : {}), ...(sourceId ? { repair_source_loan_return_id: sourceId } : {}) },
+      confirmed
+    );
     return commitOnce(
       this.db,
       { actorId, operation: 'repair:start', retryToken, payload, explicitContinuation: false },
       async (client) => {
         await this.assertRepairMayStart(client, facts.asset_id);
+        if (sourceId) {
+          await assertRepairSource(client, facts.asset_id, sourceId);
+        }
+        const conflicts = await repairConflictCheck(client, facts.asset_id);
         const res = await client.query(
           `INSERT INTO repair_records (asset_id, repair_kind, start_date, repairer_kind, repairer_name, symptom_or_work, under_warranty,
-                                       warranty_end_date, cost, document_reference, remark, has_outcome, recorded_by)
-           VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13)
+                                       warranty_end_date, cost, document_reference, remark, repair_source_loan_return_id, has_outcome, recorded_by)
+           VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14)
            RETURNING id, version`,
           [
             facts.asset_id,
@@ -299,6 +526,7 @@ export class RepairService {
             facts.cost,
             facts.document_reference,
             facts.remark,
+            sourceId,
             outcome !== null,
             actorId,
           ]
@@ -308,6 +536,8 @@ export class RepairService {
         if (outcome) {
           await insertOutcome(client, { repairRecordId: res.rows[0].id, facts: outcome, costBefore: facts.cost, actorId });
         }
+        // A backdated record may overlap an earlier Repair Record or LoanItem of the Asset (#98 Q17).
+        await conflicts.assertConfirmed({ repairRecordId: res.rows[0].id, isNewRecord: true, confirmed });
         return { repair_record_id: res.rows[0].id, version: res.rows[0].version };
       }
     );
@@ -316,6 +546,7 @@ export class RepairService {
   /**
    * F005-T2 (#100): how a Repair Record ended. The Asset is no longer Under Repair; ซ่อมไม่ได้ does not
    * retire it (RM-11, DR-17). The record keeps one cost, which this write may change (#98 Q22).
+   * F005-T7: it only ends a period that was open, so it creates no Repair Conflict and asks for no confirmation.
    */
   async recordOutcome(
     actorId: string,
