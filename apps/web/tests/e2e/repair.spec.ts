@@ -26,6 +26,7 @@ const migrationFolder = path.resolve(__dirname, '../../../../packages/db/src/mig
 
 // F005-T1 (#99): sending an Asset for repair or maintenance from its page. F005-T2 (#100): recording how
 // it ended, alone or with its Repair Start. F005-T5 (#103): sending it from a Loan Return recorded ชำรุด.
+// F005-T7 (#105): a backdated Repair Start that overlaps an old Loan.
 test.describe.serial('Repair journeys: Real SPA -> Composed API -> PostgreSQL (Seam B)', () => {
   let container: StartedPostgreSqlContainer;
   let pool: pg.Pool;
@@ -360,7 +361,14 @@ test.describe.serial('Repair journeys: Real SPA -> Composed API -> PostgreSQL (S
     await new LoanCorrectionService({ db: pool }).correct(
       custodianUserId,
       loanId,
-      { expected_version: loan.version, action: 'VOID', target: { kind: 'LOAN_RETURN', id: loan.items[0].loan_return!.id }, reason: 'บันทึกคืนผิดรายการ' },
+      {
+        expected_version: loan.version,
+        action: 'VOID',
+        target: { kind: 'LOAN_RETURN', id: loan.items[0].loan_return!.id },
+        reason: 'บันทึกคืนผิดรายการ',
+        // The Loan is open again from before the repair, which the warning names (F005-T7, #98 Q19).
+        confirmed_conflicts: [{ conflicting_repair_record_id: repairRecordId }],
+      },
       { retryToken: crypto.randomUUID() }
     );
     await page.goto(recordUrl);
@@ -477,5 +485,60 @@ test.describe.serial('Repair journeys: Real SPA -> Composed API -> PostgreSQL (S
     await page.goto(`${targetBaseUrl}/repairs/${openRecordId}`);
     await expect(page.locator('#repair-status')).toHaveText('อยู่ระหว่างซ่อม');
     await expect(page.locator('main button')).toHaveCount(0);
+  });
+
+  test('Journey F005-T7.1: a backdated Repair Start that overlaps an old Loan warns, is confirmed, and is shown marked on the Asset page, the Repair list and the Repair Record page', async ({ page, context }) => {
+    const daysAgo = (days: number) => new Date(Date.parse(`${yesterday()}T00:00:00Z`) - (days - 1) * 86_400_000).toISOString().slice(0, 10);
+    const { asset } = await assetService.registerAsset(custodianUserId, { name: 'สแกนเนอร์ E2E ซ่อมย้อนหลัง' } as any);
+    const { loan_id: loanId, items } = await new LoanService({ db: pool }).start(
+      custodianUserId,
+      { assets: [{ asset_id: asset.id, condition: 'NORMAL' }], borrower: { kind: 'EXTERNAL', contact_name: 'คุณยืม E2E ก่อนซ่อม' }, loan_date: daysAgo(10), due_date: daysAgo(5) },
+      { retryToken: crypto.randomUUID() }
+    );
+    await new LoanReturnService({ db: pool }).record(
+      custodianUserId,
+      loanId,
+      { expected_version: 1, return_date: daysAgo(5), items: [{ loan_item_id: items[0].id, condition: 'NORMAL' }] },
+      { retryToken: crypto.randomUUID() }
+    );
+
+    // A Custodian enters an old paper record: the Asset went for repair before that Loan.
+    await loginAs(context, custodianUserId);
+    await page.goto(`${targetBaseUrl}/assets/${asset.id}`);
+    await page.locator('#repair-action').click();
+    await page.locator('#repair-repair_kind').selectOption('REPAIR');
+    await page.locator('#repair-start_date').fill(daysAgo(20));
+    await page.getByLabel('ผู้ซ่อมภายนอก').check();
+    await page.locator('#repair-repairer_name').fill('ร้านซ่อม E2E ย้อนหลัง');
+    await page.locator('#repair-symptom_or_work').fill('หัวสแกนไม่ทำงาน');
+    await page.locator('#repair-submit').click();
+
+    // Nothing is saved until the Repair Conflict is confirmed, and the fields stay as warned about.
+    const warning = page.locator('[data-testid="conflict-warning"]');
+    await expect(warning).toContainText('ช่วงซ่อมทับกัน 1 รายการ');
+    await expect(warning).toContainText('สแกนเนอร์ E2E ซ่อมย้อนหลัง: ช่วงซ่อมทับกันกับการยืม');
+    await expect(page.locator('#repair-start_date')).toBeDisabled();
+    await expect(page.locator('[data-testid="repair-history-empty"]')).toBeVisible();
+    await page.locator('#conflict-confirm').click();
+    await expect(page.locator('#repair-form')).toHaveCount(0);
+
+    // The record is kept and marked on the Asset page.
+    const { rows } = await pool.query('SELECT id FROM repair_records WHERE asset_id = $1', [asset.id]);
+    const repairRecordId: string = rows[0].id;
+    await expect(page.locator('[data-testid="repair-conflict-notice"]')).toContainText('ช่วงซ่อมทับกัน');
+    await expect(page.locator(`[data-testid="repair-history-conflicts-${repairRecordId}"]`)).toContainText('ช่วงซ่อมทับกันกับการยืม');
+
+    // The Repair list's "มี conflict ค้างตรวจ" filter finds it, marked.
+    await page.goto(`${targetBaseUrl}/repairs`);
+    await page.locator('#repair-filter-has_repair_conflict').check();
+    await page.locator('#repair-list-submit').click();
+    await expect(page).toHaveURL(/has_repair_conflict=true/);
+    await expect(page.locator(`[data-testid="repair-row-conflicts-${repairRecordId}"]`)).toContainText('ช่วงซ่อมทับกันกับการยืม');
+
+    // The Repair Record page marks it and links the Loan.
+    await page.goto(`${targetBaseUrl}/repairs/${repairRecordId}`);
+    await expect(page.locator('[data-testid="repair-conflict-notice"]')).toBeVisible();
+    await page.locator('[data-testid="repair-conflicts"]').getByRole('link', { name: 'ดูการยืม' }).click();
+    await expect(page).toHaveURL(new RegExp(`/loans/${loanId}$`));
   });
 });

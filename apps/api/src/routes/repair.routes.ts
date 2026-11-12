@@ -2,10 +2,11 @@ import type { FastifyPluginAsync } from 'fastify';
 import { z } from 'zod';
 import { requireCapability } from '../middleware/authorization.ts';
 import { invalidQueryBody, pageQueryFields } from './list-query.ts';
-import { errorBody, parseWrite } from './write-request.ts';
+import { ConfirmedConflictsSchema, errorBody, parseWrite } from './write-request.ts';
 import { isCalendarDate } from '../services/assignment.service.ts';
 import { isValidUuid, type CapabilityService } from '../services/capability.service.ts';
 import { hasDisallowedControlChars } from '../services/control-characters.ts';
+import { RepairConflictWarningError } from '../services/repair-conflict.ts';
 import { RepairCorrectionService, RepairOutcomeVoidRefusedError, type CorrectRepairInput } from '../services/repair-correction.service.ts';
 import { RepairReadService } from '../services/repair-read.service.ts';
 import {
@@ -65,6 +66,7 @@ const StartRepairSchema = z
     remark: z.string().nullable().optional(),
     repair_source: z.object({ loan_return_id: z.string() }).strict().nullable().optional(),
     outcome: z.object(repairOutcomeFields).strict().nullable().optional(),
+    confirmed_conflicts: ConfirmedConflictsSchema,
     retry_token: z.string().optional(),
   })
   .strict();
@@ -104,6 +106,7 @@ const RepairCorrectionSchema = z
       })
       .strict()
       .optional(),
+    confirmed_conflicts: ConfirmedConflictsSchema,
     retry_token: z.string().optional(),
   })
   .strict();
@@ -116,6 +119,8 @@ const RepairListQuerySchema = z
     repair_kind: z.enum(['REPAIR', 'MAINTENANCE']).optional(),
     outcome: z.enum(['USABLE', 'NOT_USABLE']).optional(),
     repairer_kind: z.enum(['INTERNAL', 'EXTERNAL']).optional(),
+    // "มี conflict ค้างตรวจ" takes one value; leaving it out lists every record, as on the Loan list.
+    has_repair_conflict: z.literal('true').optional(),
     // It searches the symptom or work, which is free text, so it keeps tab and line breaks inside it as that
     // field does and refuses the rest (CODING_STANDARDS.md).
     search: z
@@ -139,6 +144,9 @@ const refusalOf = (err: unknown) => {
   }
   if (err instanceof RepairOutcomeVoidRefusedError) {
     return { ...errorBody(err.statusCode, err.code, err.message), asset: err.asset };
+  }
+  if (err instanceof RepairConflictWarningError) {
+    return { ...errorBody(err.statusCode, err.code, err.message), repair_conflicts: err.repair_conflicts };
   }
   if (err instanceof RepairOutcomeRefusedError) {
     return { ...errorBody(err.statusCode, err.code, err.message), record: err.record };
@@ -255,10 +263,16 @@ export const repairRoutes: FastifyPluginAsync<RepairRoutesOptions> = async (fast
     if (!parsed.success) {
       return reply.status(400).send(invalidQueryBody(parsed.error));
     }
-    const { has_outcome: hasOutcome, limit = 25, offset = 0, ...filters } = parsed.data;
-    return reply
-      .status(200)
-      .send(await repairReadService.list({ ...filters, has_outcome: hasOutcome === undefined ? undefined : hasOutcome === 'true', limit, offset }));
+    const { has_outcome: hasOutcome, has_repair_conflict: hasRepairConflict, limit = 25, offset = 0, ...filters } = parsed.data;
+    return reply.status(200).send(
+      await repairReadService.list({
+        ...filters,
+        has_outcome: hasOutcome === undefined ? undefined : hasOutcome === 'true',
+        has_repair_conflict: hasRepairConflict === 'true',
+        limit,
+        offset,
+      })
+    );
   });
 
   /**

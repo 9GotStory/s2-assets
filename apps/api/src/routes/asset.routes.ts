@@ -780,6 +780,8 @@ export const assetRoutes: FastifyPluginAsync<AssetRoutesOptions> = async (
         under_repair: await options.repairReadService.underRepairOf(id.trim().toLowerCase()),
         // F005-T2 (#100): from the latest Repair Outcome that has one; nothing is scheduled from it.
         next_recommended_maintenance_date: await options.repairReadService.nextRecommendedMaintenanceDateOf(id.trim().toLowerCase()),
+        // F005-T7: whether any of its Repair Records is in a Repair Conflict.
+        has_repair_conflict: await options.repairReadService.hasRepairConflict(id.trim().toLowerCase()),
         can_record_repair: canRecordRepair,
       });
     }

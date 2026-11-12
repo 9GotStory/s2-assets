@@ -287,7 +287,14 @@ describe('Repair Correction (Seam A - F005-T6)', () => {
       const voidedReturn = await api.post(
         custodian,
         `/loans/${loanId}/corrections`,
-        { expected_version: (await loanOf(loanId)).version, action: 'VOID', target: { kind: 'LOAN_RETURN', id: loanReturnId }, reason: 'บันทึกคืนผิด' },
+        {
+          expected_version: (await loanOf(loanId)).version,
+          action: 'VOID',
+          target: { kind: 'LOAN_RETURN', id: loanReturnId },
+          reason: 'บันทึกคืนผิด',
+          // The Loan is open again from before the repair (F005-T7).
+          confirmed_conflicts: [{ conflicting_repair_record_id: repairRecordId }],
+        },
         { 'x-retry-token': crypto.randomUUID() }
       );
       expect(voidedReturn.statusCode).toBe(201);
@@ -465,9 +472,13 @@ describe('Repair Correction (Seam A - F005-T6)', () => {
         expect(res.json()).toMatchObject({ code: 'REPAIR_OUTCOME_VOID_REFUSED', asset: { asset_id: assetId, ...asset } });
         expect(await unchanged(repairRecordId)).toEqual(before);
       }
-      // Once the Loan is settled, the void goes through.
+      // Once the Loan is settled, the void goes through, with the Repair Conflict it opens confirmed (F005-T7).
       await returned(loan.loanId, [loan.itemOf[onLoan.assetId]], '2026-11-05');
-      await voided(onLoan.repairRecordId, await outcomeTarget(onLoan.repairRecordId));
+      const settled = await correct(
+        onLoan.repairRecordId,
+        await voiding(onLoan.repairRecordId, await outcomeTarget(onLoan.repairRecordId), { confirmed_conflicts: [{ conflicting_loan_item_id: loan.itemOf[onLoan.assetId] }] })
+      );
+      expect(settled.statusCode).toBe(201);
     });
 
     it('decides the outcome void after locking the Asset, so a Loan start of it first is seen', async () => {

@@ -3,10 +3,12 @@ import { Link, useNavigate, useSearchParams } from 'react-router';
 import { QueryClient, QueryClientProvider, useQuery } from '@tanstack/react-query';
 import { thaiDate } from '../components/assignmentFacts';
 import { VoidedMark } from '../components/LoanBadges';
+import { RepairConflictMarks } from '../components/RepairConflicts';
 import { assetLabel, voidedStyle } from '../components/loanFacts';
 import {
   OUTCOME_DATE_LABEL,
   REPAIRER_KIND_LABELS,
+  REPAIR_CONFLICT_FILTER_LABEL,
   REPAIR_KIND_LABELS,
   REPAIR_LIST_LABEL,
   REPAIR_OUTCOME_LABELS,
@@ -30,6 +32,7 @@ interface Filters {
   repair_kind: '' | RepairKind;
   outcome: '' | RepairOutcomeValue;
   repairer_kind: '' | RepairerKind;
+  has_repair_conflict: boolean;
   search: string;
 }
 
@@ -38,6 +41,7 @@ const filtersOf = (params: URLSearchParams): Filters => ({
   repair_kind: (params.get('repair_kind') ?? '') as Filters['repair_kind'],
   outcome: (params.get('outcome') ?? '') as Filters['outcome'],
   repairer_kind: (params.get('repairer_kind') ?? '') as Filters['repairer_kind'],
+  has_repair_conflict: params.get('has_repair_conflict') === 'true',
   search: params.get('search') ?? '',
 });
 
@@ -48,6 +52,7 @@ const paramsOf = (filters: Filters, offset: number): URLSearchParams => {
   if (filters.repair_kind) params.set('repair_kind', filters.repair_kind);
   if (filters.outcome) params.set('outcome', filters.outcome);
   if (filters.repairer_kind) params.set('repairer_kind', filters.repairer_kind);
+  if (filters.has_repair_conflict) params.set('has_repair_conflict', 'true');
   if (filters.search.trim()) params.set('search', filters.search.trim());
   if (offset > 0) params.set('offset', String(offset));
   return params;
@@ -223,6 +228,15 @@ const RepairListContent: React.FC = () => {
                 </div>
               </div>
               <div style={{ display: 'flex', alignItems: 'center', gap: '0.75rem', marginTop: '0.75rem', flexWrap: 'wrap' }}>
+                <label htmlFor="repair-filter-has_repair_conflict" style={{ display: 'flex', alignItems: 'center', gap: '0.375rem', fontSize: '0.875rem', fontWeight: 500, color: '#374151' }}>
+                  <input
+                    id="repair-filter-has_repair_conflict"
+                    type="checkbox"
+                    checked={draft.has_repair_conflict}
+                    onChange={(e) => setDraftField('has_repair_conflict', e.target.checked)}
+                  />
+                  {REPAIR_CONFLICT_FILTER_LABEL}
+                </label>
                 <button
                   type="submit"
                   id="repair-list-submit"
@@ -287,6 +301,7 @@ const RepairListContent: React.FC = () => {
                             <td style={cellStyle}>{REPAIR_KIND_LABELS[record.repair_kind]}</td>
                             <td style={cellStyle}>
                               <time dateTime={record.start_date}>{thaiDate(record.start_date)}</time>
+                              <RepairConflictMarks conflicts={record.conflicts} testId={`repair-row-conflicts-${record.id}`} />
                             </td>
                             <td style={cellStyle}>{repairerText(record.repairer)}</td>
                             <td style={cellStyle}>

@@ -1,6 +1,8 @@
 import pg from 'pg';
 import { DOCUMENT_REFERENCE_MAX_LENGTH, REMARK_MAX_LENGTH, bangkokDate, isCalendarDate, normalizeLine, normalizeText } from './assignment.service.ts';
 import { isValidUuid } from './capability.service.ts';
+import { normalizeConfirmedConflicts, withConfirmedConflicts, type ConfirmedConflictInput } from './conflict-confirmation.ts';
+import { repairConflictCheck } from './repair-conflict.ts';
 import { type RepairKind, type RepairOutcomeValue, type RepairerKind, type UnderWarranty } from './repair-read.service.ts';
 import {
   OUTCOME_NOTE_MAX_LENGTH,
@@ -53,6 +55,8 @@ export interface CorrectRepairInput {
   target: RepairCorrectionTarget;
   reason: string;
   changes?: RepairAmendmentInput;
+  // The Repair Conflicts the user saw in a warning and confirms (F005-T7, #98 Q17).
+  confirmed_conflicts?: ConfirmedConflictInput[];
 }
 
 // What a Repair Correction answers.
@@ -267,12 +271,20 @@ export class RepairCorrectionService {
 
   async correct(actorId: string, repairRecordId: string, input: CorrectRepairInput, { retryToken }: { retryToken: string }): Promise<RecordedRepairCorrection> {
     const facts = normalizeFacts(input);
+    const confirmed = normalizeConfirmedConflicts(input.confirmed_conflicts);
     const today = bangkokDate(this.clock());
     return commitOnce(
       this.db,
-      { actorId, operation: `repair:correct:${repairRecordId}`, retryToken, payload: { version: 1, ...facts }, explicitContinuation: false },
+      {
+        actorId,
+        operation: `repair:correct:${repairRecordId}`,
+        retryToken,
+        payload: withConfirmedConflicts({ version: 1, ...facts }, confirmed),
+        explicitContinuation: false,
+      },
       async (client) => {
         const record = await lockRepairRecordForWrite(client, repairRecordId, facts.expected_version);
+        const conflicts = await repairConflictCheck(client, record.asset_id);
         const { target } = facts;
         const fact = await readStoredRepairFact(client, repairRecordId, target);
         if (!fact) {
@@ -307,6 +319,9 @@ export class RepairCorrectionService {
         if (broken.length > 0) {
           throw new ValidationError(DATE_RULE_MESSAGES[broken[0]]);
         }
+        // An amended date or a voided Repair Outcome may open an overlap with another Repair Record or a
+        // LoanItem of the Asset (#98 Q17, Q18).
+        await conflicts.assertConfirmed({ repairRecordId, isNewRecord: false, confirmed });
 
         const correctionId = await recordRepairCorrection(client, {
           target,

@@ -9,7 +9,8 @@ import {
   normalizeLine,
   normalizeText,
 } from './assignment.service.ts';
-import { loanConflictCheck, normalizeConfirmedConflicts, withConfirmedConflicts, type ConfirmedLoanConflictInput } from './loan-conflict.ts';
+import { normalizeConfirmedConflicts, withConfirmedConflicts, type ConfirmedConflictInput } from './conflict-confirmation.ts';
+import { loanConflictCheck } from './loan-conflict.ts';
 import { CURRENT_DUE_DATE, type LoanCondition, type LoanEndingKind } from './loan-read.service.ts';
 import { isSelectablePerson } from './reference.service.ts';
 import { underRepairOfAssets, type RepairKind } from './repair-read.service.ts';
@@ -47,8 +48,8 @@ export interface StartLoanInput {
   authorizer_person_id?: string | null;
   document_reference?: string | null;
   remark?: string | null;
-  // The Loan Conflicts the user saw in a warning and confirms (#74 Q20).
-  confirmed_conflicts?: ConfirmedLoanConflictInput[];
+  // The Loan Conflicts and Repair Conflicts the user saw in a warning and confirms (#74 Q20, #98 Q17).
+  confirmed_conflicts?: ConfirmedConflictInput[];
 }
 
 // What a Loan write answers. It carries no Borrower detail, because the retry-token store keeps it

@@ -75,6 +75,26 @@ export interface RepairRecord {
   can_correct_repair?: boolean;
   // Asked for with an Outcome Date: where the Asset goes back to on it, shown and never stored.
   assignment_on_outcome_date?: PermanentAssignment;
+  // The other Repair Records and LoanItems of its Asset whose periods overlap its own, earliest first (F005-T7).
+  conflicts: RepairConflict[];
+}
+
+// A Repair Conflict as one Repair Record sees it: the other Repair Record, from its Start Date to its
+// Outcome Date, or the LoanItem, from its Loan Date to its ending; null while it has no end (F005-T7).
+export type RepairConflict =
+  | { kind: 'REPAIR_RECORD'; repair_record_id: string; repair_kind: RepairKind; start_date: string; outcome_date: string | null }
+  | { kind: 'LOAN_ITEM'; loan_id: string; loan_item_id: string; loan_date: string; ending_date: string | null };
+
+// The id of a Repair Conflict's other side, a LoanItem or a Repair Record.
+export const conflictingIdOf = (conflicting: RepairConflict): string => (conflicting.kind === 'LOAN_ITEM' ? conflicting.loan_item_id : conflicting.repair_record_id);
+
+// A Repair Conflict a save would create, as the server's warning lists it: of a Repair write, with the
+// other Repair Record or LoanItem; of a Loan write, with the Repair Record.
+export interface WarnedRepairConflict {
+  asset_id: string;
+  name: string | null;
+  asset_number: string | null;
+  conflicting: RepairConflict;
 }
 
 // The facts a Repair Correction names (F005-T6, #98 Q18).
@@ -146,6 +166,9 @@ export const costError = (cost: string): string | null =>
   cost.trim() !== '' && !COST_PATTERN.test(cost.trim()) ? 'ค่าใช้จ่ายต้องเป็นจำนวนเงินบาทไม่ติดลบ ทศนิยมไม่เกิน 2 ตำแหน่ง' : null;
 
 export const REPAIR_SECTION_LABEL = 'การซ่อม/บำรุงรักษา';
+// GLOSSARY.md: Repair Conflict, and the Repair list's filter for one (#98 Q17).
+export const REPAIR_CONFLICT_LABEL = 'ช่วงซ่อมทับกัน';
+export const REPAIR_CONFLICT_FILTER_LABEL = 'มี conflict ค้างตรวจ';
 export const REPAIR_RECORD_LABEL = 'รายการซ่อม/บำรุงรักษา';
 // The Repair list's title, as the specification names the page (#98).
 export const REPAIR_LIST_LABEL = 'รายการซ่อม/บำรุงรักษา';

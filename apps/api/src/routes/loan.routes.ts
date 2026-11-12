@@ -2,7 +2,7 @@ import type { FastifyPluginAsync, FastifyRequest } from 'fastify';
 import { z } from 'zod';
 import { requireCapability } from '../middleware/authorization.ts';
 import { invalidQueryBody, pageQueryFields } from './list-query.ts';
-import { errorBody, parseWrite } from './write-request.ts';
+import { ConfirmedConflictsSchema, errorBody, parseWrite } from './write-request.ts';
 import { NotFoundError, RetryTokenConflictError, StaleBeforeConflictError, ValidationError } from '../services/asset.service.ts';
 import { isCalendarDate } from '../services/assignment.service.ts';
 import { CapabilityService, isValidUuid } from '../services/capability.service.ts';
@@ -38,9 +38,6 @@ const BorrowerSchema = z.discriminatedUnion('kind', [
     })
     .strict(),
 ]);
-
-// #74 Q20: the Loan Conflicts a warning listed that the user confirms, by the other LoanItem of each.
-const ConfirmedConflictsSchema = z.array(z.object({ conflicting_loan_item_id: z.string() }).strict()).optional();
 
 const StartLoanSchema = z
   .object({
@@ -173,7 +170,7 @@ const refusalOf = (err: unknown) => {
     return { ...errorBody(err.statusCode, err.code, err.message), items: err.items };
   }
   if (err instanceof LoanConflictWarningError) {
-    return { ...errorBody(err.statusCode, err.code, err.message), conflicts: err.conflicts };
+    return { ...errorBody(err.statusCode, err.code, err.message), conflicts: err.conflicts, repair_conflicts: err.repair_conflicts };
   }
   if (err instanceof AssetOnAnotherLoanError || err instanceof AssetUnderRepairError) {
     return { ...errorBody(err.statusCode, err.code, err.message), asset: err.asset };
