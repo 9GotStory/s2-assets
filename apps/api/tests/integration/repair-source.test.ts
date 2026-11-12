@@ -209,7 +209,8 @@ describe('Repair Source (Seam A - F005-T5)', () => {
       const { assetId, loanReturnId } = await returnedAs();
       const symptom = `จอแตกจากการยืม ${crypto.randomUUID()}`;
       const repairRecordId = await sent(assetId, { ...fromLoanReturn(loanReturnId), symptom_or_work: symptom });
-      const { can_record_repair: _canRecordRepair, ...shown } = await recordOf(repairRecordId);
+      // The record page alone adds its corrections and what the viewer may do (F005-T6).
+      const { can_record_repair: _canRecordRepair, can_correct_repair: _canCorrectRepair, corrections: _corrections, ...shown } = await recordOf(repairRecordId);
 
       expect((await recordsOf(assetId))[0]).toEqual(shown);
       const listed = await api.get(readonly, `/repairs?search=${encodeURIComponent(symptom)}`);

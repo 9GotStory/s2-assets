@@ -57,11 +57,30 @@ export interface RepairRecord {
   version: number;
   // Its non-voided Repair Outcome, or null while it has none.
   outcome: RepairOutcome | null;
+  // Its Repair Outcomes voided by a Repair Correction, oldest first: shown struck through, counted in nothing (#98 Q18).
+  voided_outcomes: RepairOutcome[];
+}
+
+// What a correction changed of one field. A Repair Source is read as it stands now, as the record reads it.
+export type RepairCorrectionField =
+  | { field: 'repair_source_loan_return_id'; before: RepairSource | null; after: RepairSource | null }
+  | { field: string; before: string | null; after: string | null };
+
+// One Repair Correction of a Repair Record or its Repair Outcome (#98 Q18): who, when, why, and the before and after.
+export interface RepairCorrection {
+  id: string;
+  target: { kind: 'REPAIR_RECORD' | 'REPAIR_OUTCOME'; id: string };
+  action: 'AMENDED' | 'VOIDED';
+  reason: string;
+  changes: RepairCorrectionField[];
+  recorded_by: string;
+  recorded_by_username: string | null;
+  recorded_at: string;
 }
 
 // What the Repair list is narrowed by (F005-T3, #98 Q21); every filter given applies.
 export interface RepairListFilters {
-  // Whether the record has a Repair Outcome. How a voided record lists arrives with F005-T6 (#104).
+  // Whether the record has a Repair Outcome. A voided record has neither, as it counts in nothing (#98 Q18).
   has_outcome?: boolean;
   repair_kind?: RepairKind;
   outcome?: RepairOutcomeValue;
@@ -120,6 +139,25 @@ const outcomeOf = (row: any): RepairOutcome | null =>
         recorded_at: new Date(row.outcome_recorded_at).toISOString(),
       };
 
+// The voided Repair Outcomes of each of `repairRecordIds`, by record, oldest first.
+async function voidedOutcomesOf(db: pg.Pool | any, repairRecordIds: string[]): Promise<Map<string, RepairOutcome[]>> {
+  const res = await db.query(
+    `SELECT o.repair_record_id, o.id AS outcome_id, o.outcome, to_char(o.outcome_date, 'YYYY-MM-DD') AS outcome_date, o.note AS outcome_note,
+            o.document_reference AS outcome_document_reference, to_char(o.next_recommended_maintenance_date, 'YYYY-MM-DD') AS next_recommended_maintenance_date,
+            o.cost_before::text AS outcome_cost_before, o.recorded_by AS outcome_recorded_by, u.username AS outcome_recorded_by_username, o.recorded_at AS outcome_recorded_at
+     FROM repair_outcomes o
+     LEFT JOIN users u ON u.id = o.recorded_by
+     WHERE o.repair_record_id = ANY($1::uuid[]) AND o.is_voided
+     ORDER BY o.recorded_at, o.id`,
+    [repairRecordIds]
+  );
+  const voided = new Map<string, RepairOutcome[]>();
+  for (const row of res.rows) {
+    voided.set(row.repair_record_id, [...(voided.get(row.repair_record_id) ?? []), outcomeOf(row)!]);
+  }
+  return voided;
+}
+
 const repairSourceOf = (cited: CitedLoanReturn | undefined): RepairSource | null => {
   if (!cited) {
     return null;
@@ -128,7 +166,7 @@ const repairSourceOf = (cited: CitedLoanReturn | undefined): RepairSource | null
   return source;
 };
 
-const recordOf = (row: any, sources: Map<string, CitedLoanReturn>): RepairRecord => ({
+const recordOf = (row: any, sources: Map<string, CitedLoanReturn>, voidedOutcomes: Map<string, RepairOutcome[]>): RepairRecord => ({
   id: row.id,
   asset: { id: row.asset_id, name: row.asset_name, asset_number: row.asset_number },
   repair_kind: row.repair_kind,
@@ -147,13 +185,52 @@ const recordOf = (row: any, sources: Map<string, CitedLoanReturn>): RepairRecord
   is_voided: row.is_voided,
   version: row.version,
   outcome: outcomeOf(row),
+  voided_outcomes: voidedOutcomes.get(row.id) ?? [],
 });
+
+// Repair Sources by Loan Return, read through the Loan module.
+const sourcesOf = async (db: pg.Pool | any, loanReturnIds: string[]): Promise<Map<string, CitedLoanReturn>> => {
+  const ids = [...new Set(loanReturnIds)];
+  return ids.length > 0 ? loanReturnsOf(db, ids) : new Map<string, CitedLoanReturn>();
+};
 
 // Repair Records from their rows, each with its Repair Source read through the Loan module.
 async function recordsOf(db: pg.Pool | any, rows: any[]): Promise<RepairRecord[]> {
-  const sourceIds = [...new Set<string>(rows.map((row) => row.repair_source_loan_return_id).filter(Boolean))];
-  const sources = sourceIds.length > 0 ? await loanReturnsOf(db, sourceIds) : new Map<string, CitedLoanReturn>();
-  return rows.map((row) => recordOf(row, sources));
+  const sources = await sourcesOf(db, rows.map((row) => row.repair_source_loan_return_id).filter(Boolean));
+  const voidedOutcomes = rows.length > 0 ? await voidedOutcomesOf(db, rows.map((row) => row.id)) : new Map<string, RepairOutcome[]>();
+  return rows.map((row) => recordOf(row, sources, voidedOutcomes));
+}
+
+const SOURCE_FIELD = 'repair_source_loan_return_id';
+
+/** The corrections of a Repair Record and of its Repair Outcomes, oldest first, each Repair Source as it stands now. */
+async function readCorrectionsOf(db: pg.Pool | any, repairRecordId: string): Promise<RepairCorrection[]> {
+  const res = await db.query(
+    `SELECT c.id, c.action, c.reason, c.changes, c.recorded_by, u.username AS recorded_by_username, c.recorded_at,
+            coalesce(c.repair_record_id, c.repair_outcome_id) AS target_id,
+            CASE WHEN c.repair_record_id IS NOT NULL THEN 'REPAIR_RECORD' ELSE 'REPAIR_OUTCOME' END AS target_kind
+     FROM repair_corrections c
+     LEFT JOIN repair_outcomes o ON o.id = c.repair_outcome_id
+     LEFT JOIN users u ON u.id = c.recorded_by
+     WHERE $1 IN (c.repair_record_id, o.repair_record_id)
+     ORDER BY c.recorded_at, c.id`,
+    [repairRecordId]
+  );
+  const sources = await sourcesOf(
+    db,
+    res.rows.flatMap(({ changes }: any) => changes.filter(({ field }: any) => field === SOURCE_FIELD).flatMap(({ before, after }: any) => [before, after].filter(Boolean)))
+  );
+  const sourceOf = (id: string | null) => (id ? repairSourceOf(sources.get(id)) : null);
+  return res.rows.map((row: any) => ({
+    id: row.id,
+    target: { kind: row.target_kind, id: row.target_id },
+    action: row.action,
+    reason: row.reason,
+    changes: row.changes.map((change: any) => (change.field === SOURCE_FIELD ? { field: SOURCE_FIELD, before: sourceOf(change.before), after: sourceOf(change.after) } : change)),
+    recorded_by: row.recorded_by,
+    recorded_by_username: row.recorded_by_username ?? null,
+    recorded_at: new Date(row.recorded_at).toISOString(),
+  }));
 }
 
 /**
@@ -226,8 +303,9 @@ export async function repairRecordsCiting(db: pg.Pool | pg.PoolClient | any, loa
 }
 
 /**
- * F005-T1 (#99), T2 (#100): reading Repair Records and their outcomes. The only assignment read is where
- * an Asset goes back to on an Outcome Date, which is shown and never stored (MR-16, MR-17).
+ * F005-T1 (#99), T2 (#100), T6 (#104): reading Repair Records, their outcomes and corrections. The only
+ * assignment read is where an Asset goes back to on an Outcome Date, which is shown and never stored
+ * (MR-16, MR-17).
  */
 export class RepairReadService {
   private readonly db: pg.Pool | any;
@@ -243,12 +321,13 @@ export class RepairReadService {
   async read(
     repairRecordId: string,
     { outcomeDate }: { outcomeDate?: string } = {}
-  ): Promise<(RepairRecord & { assignment_on_outcome_date?: PermanentAssignment }) | null> {
+  ): Promise<(RepairRecord & { corrections: RepairCorrection[]; assignment_on_outcome_date?: PermanentAssignment }) | null> {
     const res = await this.db.query(`SELECT ${RECORD_COLUMNS} FROM repair_records r ${RECORD_JOINS} WHERE r.id = $1`, [repairRecordId]);
     if (res.rows.length === 0) {
       return null;
     }
-    const [record] = await recordsOf(this.db, res.rows);
+    const [listed] = await recordsOf(this.db, res.rows);
+    const record = { ...listed, corrections: await readCorrectionsOf(this.db, repairRecordId) };
     if (outcomeDate === undefined) {
       return record;
     }
@@ -279,7 +358,7 @@ export class RepairReadService {
       conditions.push(condition(`$${params.length}`));
     };
     if (filters.has_outcome !== undefined) {
-      conditions.push(filters.has_outcome ? 'r.has_outcome' : 'NOT r.has_outcome');
+      conditions.push(filters.has_outcome ? 'NOT r.is_voided AND r.has_outcome' : IS_UNDER_REPAIR);
     }
     if (filters.repair_kind !== undefined) {
       where((param) => `r.repair_kind = ${param}`, filters.repair_kind);

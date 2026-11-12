@@ -30,6 +30,7 @@ const MIGRATIONS = [
   '0013_repair_records',
   '0014_repair_outcomes',
   '0015_repair_sources',
+  '0016_repair_corrections',
 ] as const;
 
 describe('Database Migrations Integration', () => {

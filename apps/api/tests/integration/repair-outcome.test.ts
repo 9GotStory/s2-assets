@@ -101,7 +101,8 @@ describe('Repair Outcome (Seam A - F005-T2)', () => {
       });
       expect(Date.parse(record.outcome.recorded_at)).toBeGreaterThanOrEqual(before - 1000);
       expect(record.version).toBe(2);
-      const { can_record_repair: _canRecordRepair, ...shown } = record;
+      // The record page alone adds its corrections and what the viewer may do (F005-T6).
+      const { can_record_repair: _canRecordRepair, can_correct_repair: _canCorrectRepair, corrections: _corrections, ...shown } = record;
       expect((await recordsOf(assetId))[0]).toEqual(shown);
     });
 

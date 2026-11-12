@@ -83,6 +83,10 @@ describe('Repair Start (Seam A - F005-T1)', () => {
         version: 1,
         outcome: null,
         can_record_repair: false,
+        // F005-T6: what a Repair Correction voided, and the corrections, of which a new record has none.
+        voided_outcomes: [],
+        corrections: [],
+        can_correct_repair: false,
       });
       expect(Date.parse(record.recorded_at)).toBeGreaterThanOrEqual(before - 1000);
       expect(Date.parse(record.recorded_at)).toBeLessThanOrEqual(Date.now());
@@ -290,7 +294,8 @@ describe('Repair Start (Seam A - F005-T1)', () => {
 
       const records = await recordsOf(assetId);
       expect(records.map(({ id }: any) => id)).toEqual([newest, middle, oldest]);
-      const { can_record_repair: _canRecordRepair, ...middleRecord } = await recordOf(middle);
+      // The record page alone adds its corrections and what the viewer may do (F005-T6).
+      const { can_record_repair: _canRecordRepair, can_correct_repair: _canCorrectRepair, corrections: _corrections, ...middleRecord } = await recordOf(middle);
       expect(records[1]).toEqual(middleRecord);
     });
 
