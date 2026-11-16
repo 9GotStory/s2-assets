@@ -2,7 +2,7 @@ import { expect } from 'vitest';
 import type { ApiHarness } from './api-harness.ts';
 
 // The tables whose rows the services lock for a write.
-type LockedTable = 'loans' | 'assets' | 'repair_records';
+type LockedTable = 'loans' | 'assets' | 'repair_records' | 'verification_scope_entries';
 
 /**
  * Row lock holders, and waits on the writes they hold back, for Seam A tests of write order.

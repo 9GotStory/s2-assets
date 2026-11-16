@@ -3,6 +3,7 @@ import { Link, useNavigate, useParams, useSearchParams } from 'react-router';
 import { QueryClient, QueryClientProvider, useQuery } from '@tanstack/react-query';
 import { REFERENCE_DIMENSIONS, entryLabel } from '../components/ReferenceContextFields';
 import { thaiDate, valueText } from '../components/assignmentFacts';
+import { RecordingContextLine } from '../components/VerificationPanel';
 import {
   FISCAL_YEAR_LABEL,
   RESULT_LABELS,
@@ -10,14 +11,25 @@ import {
   ROUND_STATE_LABELS,
   SCOPE_SNAPSHOT_LABEL,
   START_DATE_LABEL,
+  VERIFICATION_DATE_LABEL,
   VERIFICATION_ROUND_LABEL,
   WHOLE_REGISTER_LABEL,
+  recordedByText,
+  recordedContextText,
+  resultText,
   type ScopeEntry,
   type ScopeEntryPage,
+  type VerificationResult,
   type VerificationRound,
 } from '../components/verificationFacts';
 
 const PAGE_SIZE = 25;
+
+// The results the list filters by (#125 AV-19); none shows every entry.
+const RESULT_FILTERS: readonly VerificationResult[] = ['FOUND', 'NOT_FOUND', 'NOT_YET_VERIFIED'];
+const isResultFilter = (value: string | null): value is VerificationResult => RESULT_FILTERS.includes(value as VerificationResult);
+
+const RESULT_COLORS: Record<VerificationResult, string> = { FOUND: '#166534', NOT_FOUND: '#991b1b', NOT_YET_VERIFIED: '#92400e' };
 
 const THAI_DATE_TIME = new Intl.DateTimeFormat('th-TH', { dateStyle: 'long', timeStyle: 'short', timeZone: 'Asia/Bangkok' });
 
@@ -74,19 +86,30 @@ const readJson = async <T,>(url: string, signal: AbortSignal): Promise<T> => {
   return res.json();
 };
 
-// One Asset of the Scope Snapshot as the register showed it when the Round opened (#125 Q4).
+// One Asset of the Scope Snapshot as the register showed it when the Round opened (#125 Q4), with its current
+// result and the Loan or Repair context that result kept (Q14).
 const ScopeEntryItem: React.FC<{ entry: ScopeEntry }> = ({ entry }) => {
-  const { snapshot } = entry;
+  const { snapshot, current } = entry;
   return (
     <li data-testid={`scope-entry-${entry.asset_id}`} style={{ padding: '0.75rem 0', borderBottom: '1px solid #e5e7eb', fontSize: '0.875rem' }}>
       <div style={{ display: 'flex', justifyContent: 'space-between', gap: '0.75rem', flexWrap: 'wrap' }}>
         <Link to={`/assets/${entry.asset_id}`} style={{ color: '#2563eb', textDecoration: 'underline', fontWeight: 600, overflowWrap: 'anywhere' }}>
           {snapshot.name ?? snapshot.asset_number ?? entry.asset_id}
         </Link>
-        <span data-testid={`scope-entry-result-${entry.asset_id}`} style={{ color: '#92400e', fontWeight: 600, whiteSpace: 'nowrap' }}>
-          {RESULT_LABELS[entry.result]}
+        <span data-testid={`scope-entry-result-${entry.asset_id}`} style={{ color: RESULT_COLORS[entry.result], fontWeight: 600, whiteSpace: 'nowrap' }}>
+          {resultText(entry.result, current?.condition)}
         </span>
       </div>
+      {current && (
+        <div data-testid={`scope-entry-verification-${entry.asset_id}`} style={{ color: '#4b5563', marginTop: '0.25rem', overflowWrap: 'anywhere' }}>
+          {VERIFICATION_DATE_LABEL} <time dateTime={current.verification_date}>{thaiDate(current.verification_date)}</time> บันทึกโดย {recordedByText(current)}
+          {recordedContextText(current) && (
+            <div style={{ color: '#92400e' }}>
+              ขณะตรวจ: <RecordingContextLine context={current} />
+            </div>
+          )}
+        </div>
+      )}
       <div style={{ color: '#4b5563', marginTop: '0.25rem', overflowWrap: 'anywhere' }}>
         หมายเลขครุภัณฑ์: {snapshot.asset_number ?? '-'} · Serial Number: {snapshot.serial_number ?? '-'}
         {snapshot.category && <> · หมวด: {snapshot.category}</>}
@@ -107,6 +130,8 @@ const VerificationRoundDetailContent: React.FC = () => {
   const navigate = useNavigate();
   const [searchParams, setSearchParams] = useSearchParams();
   const search = searchParams.get('search') ?? '';
+  const resultParam = searchParams.get('result');
+  const result = isResultFilter(resultParam) ? resultParam : null;
   const offset = Number(searchParams.get('offset') ?? 0) || 0;
   // What the search box shows until it is submitted; a new URL, such as going back, shows that URL's search.
   const [draft, setDraft] = useState(search);
@@ -119,11 +144,14 @@ const VerificationRoundDetailContent: React.FC = () => {
     queryFn: ({ signal }) => readJson(`/verification-rounds/${id}`, signal),
   });
   const entries = useQuery<ScopeEntryPage, HttpError>({
-    queryKey: ['verification-round-entries', id, search, offset],
+    queryKey: ['verification-round-entries', id, search, result, offset],
     queryFn: ({ signal }) => {
       const params = new URLSearchParams({ limit: String(PAGE_SIZE), offset: String(offset) });
       if (search.trim()) {
         params.set('search', search.trim());
+      }
+      if (result) {
+        params.set('result', result);
       }
       return readJson(`/verification-rounds/${id}/entries?${params.toString()}`, signal);
     },
@@ -137,12 +165,15 @@ const VerificationRoundDetailContent: React.FC = () => {
     }
   }, [isSignedOut, navigate]);
 
-  const show = (nextSearch: string, nextOffset: number) => {
+  // The list's URL for a search, a result filter and a page.
+  const listQuery = (nextSearch: string, nextResult: VerificationResult | null, nextOffset: number): string => {
     const params = new URLSearchParams();
     if (nextSearch.trim()) params.set('search', nextSearch.trim());
+    if (nextResult) params.set('result', nextResult);
     if (nextOffset > 0) params.set('offset', String(nextOffset));
-    setSearchParams(params);
+    return params.toString();
   };
+  const show = (nextSearch: string, nextOffset: number) => setSearchParams(listQuery(nextSearch, result, nextOffset));
 
   // A failed read hides what an earlier one showed: a lost grant fails closed.
   if (round.isError) {
@@ -221,6 +252,8 @@ const VerificationRoundDetailContent: React.FC = () => {
           {(
             [
               ['in-scope', SCOPE_SNAPSHOT_LABEL, counts.in_scope],
+              ['found', RESULT_LABELS.FOUND, counts.found],
+              ['not-found', RESULT_LABELS.NOT_FOUND, counts.not_found],
               ['not-yet-verified', RESULT_LABELS.NOT_YET_VERIFIED, counts.not_yet_verified],
             ] as const
           ).map(([key, label, count]) => (
@@ -269,6 +302,31 @@ const VerificationRoundDetailContent: React.FC = () => {
           </button>
         </form>
 
+        {/* Links, not buttons: a filter is a URL that a back step or a shared link keeps. */}
+        <nav aria-label="กรองตามผลตรวจ" id="scope-entry-result-filters" style={{ display: 'flex', gap: '0.5rem', flexWrap: 'wrap', marginBottom: '0.75rem', fontSize: '0.875rem' }}>
+          {([null, ...RESULT_FILTERS] as const).map((filter) => {
+            const isCurrent = filter === result;
+            return (
+              <Link
+                key={filter ?? 'ALL'}
+                to={`?${listQuery(search, filter, 0)}`}
+                id={`scope-entry-result-filter-${filter ?? 'ALL'}`}
+                aria-current={isCurrent ? 'page' : undefined}
+                style={{
+                  padding: '0.375rem 0.75rem',
+                  borderRadius: '9999px',
+                  border: '1px solid #d1d5db',
+                  textDecoration: 'none',
+                  backgroundColor: isCurrent ? '#2563eb' : '#ffffff',
+                  color: isCurrent ? '#ffffff' : '#374151',
+                }}
+              >
+                {filter ? RESULT_LABELS[filter] : 'ทั้งหมด'}
+              </Link>
+            );
+          })}
+        </nav>
+
         {entries.isError && !isSignedOut && (
           <div role="alert" id="scope-entry-list-error" style={{ padding: '0.75rem 1rem', borderRadius: '6px', backgroundColor: '#fee2e2', color: '#991b1b', fontSize: '0.875rem' }}>
             เกิดข้อผิดพลาดในการโหลด{SCOPE_SNAPSHOT_LABEL}{' '}
@@ -312,7 +370,7 @@ const VerificationRoundDetailContent: React.FC = () => {
   );
 };
 
-/** A Verification Round's page (F006-T1): its fields, history and Scope Snapshot, each Asset Not Yet Verified. */
+/** A Verification Round's page (F006-T1, F006-T2): its fields, counts, history and Scope Snapshot with each Asset's current result. */
 export const VerificationRoundDetail: React.FC = () => {
   const [queryClient] = useState(() => new QueryClient({ defaultOptions: { queries: { retry: false, refetchOnWindowFocus: true } } }));
 

@@ -1,5 +1,6 @@
 import { test, expect } from '@playwright/test';
 import { createServer, type ViteDevServer } from 'vite';
+import * as crypto from 'node:crypto';
 import * as path from 'node:path';
 import * as fs from 'node:fs';
 import { fileURLToPath } from 'node:url';
@@ -10,6 +11,8 @@ import { UserService } from '../../../api/src/services/user.service.ts';
 import { SessionService } from '../../../api/src/services/session.service.ts';
 import { AssetService } from '../../../api/src/services/asset.service.ts';
 import { ReferenceService } from '../../../api/src/services/reference.service.ts';
+import { RepairService } from '../../../api/src/services/repair.service.ts';
+import { VerificationService } from '../../../api/src/services/verification.service.ts';
 import { repositoryProxyConfig } from '../../vite.config.ts';
 
 const { Pool } = pg;
@@ -20,7 +23,8 @@ const webRoot = path.resolve(__dirname, '../..');
 const migrationFolder = path.resolve(__dirname, '../../../../packages/db/src/migrations');
 
 // F006-T1 (#126): an Asset Custodian opens a Verification Round and sees its Scope Snapshot; a Read-only User
-// sees the Round with no action.
+// sees the Round with no action. F006-T2 (#127): Verification Staff record a result from the Asset page a QR
+// label opens, at a phone viewport.
 test.describe.serial('Verification journeys: Real SPA -> Composed API -> PostgreSQL (Seam B)', () => {
   let container: StartedPostgreSqlContainer;
   let pool: pg.Pool;
@@ -30,10 +34,12 @@ test.describe.serial('Verification journeys: Real SPA -> Composed API -> Postgre
   let sessionService: SessionService;
   let assetService: AssetService;
   let referenceService: ReferenceService;
+  let verificationService: VerificationService;
 
   let adminUserId: string;
   let custodianUserId: string;
   let readonlyUserId: string;
+  let staffUserId: string;
 
   test.beforeAll(async () => {
     test.setTimeout(120_000);
@@ -57,6 +63,7 @@ test.describe.serial('Verification journeys: Real SPA -> Composed API -> Postgre
     sessionService = new SessionService({ db: pool });
     assetService = new AssetService({ db: pool });
     referenceService = new ReferenceService({ db: pool });
+    verificationService = new VerificationService({ db: pool });
 
     fastifyApp = await buildApp({
       db: pool,
@@ -79,6 +86,7 @@ test.describe.serial('Verification journeys: Real SPA -> Composed API -> Postgre
     adminUserId = await createUser('admin_verification', 'ADMINISTRATOR');
     custodianUserId = await createUser('custodian_verification', 'ASSET_CUSTODIAN');
     readonlyUserId = await createUser('readonly_verification', 'READ_ONLY');
+    staffUserId = await createUser('staff_verification', 'VERIFICATION_STAFF');
 
     const testProxy: Record<string, any> = {};
     for (const [route, opts] of Object.entries(repositoryProxyConfig)) {
@@ -205,5 +213,78 @@ test.describe.serial('Verification journeys: Real SPA -> Composed API -> Postgre
     await page.goto(roundUrl);
     await expect(page.locator('[data-testid^="scope-entry-result-"]')).toHaveText(['ยังไม่ได้ตรวจ', 'ยังไม่ได้ตรวจ']);
     await expect(page.locator('main button:not(#scope-entry-search-submit)')).toHaveCount(0);
+  });
+
+  // #125 Q29: one journey runs at a phone viewport, set here because the Playwright configuration has only a desktop project.
+  test.describe('at a phone viewport', () => {
+    test.use({ viewport: { width: 390, height: 844 } });
+
+    // The page fits the viewport's width: nothing scrolls sideways.
+    const fitsWidth = (page: any) => page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth);
+
+    test('Journey F006-T2.1: Verification Staff open an Asset page as its QR link would and record Found ปกติ; the panel then shows the result and the Round page counts it', async ({ page, context }) => {
+      // Test only, until F006-T6 (#131) closes a Round through the API: the Round of Journey F006-T1.1 must not stay open (#125 Q17).
+      await pool.query(`UPDATE verification_rounds SET state = 'CLOSED' WHERE state = 'OPEN'`);
+      const office = await referenceService.create('locations', adminUserId, 'ห้องธุรการ E2E ตรวจ');
+      const store = await referenceService.create('locations', adminUserId, 'ห้องเก็บของ E2E ตรวจ 2');
+      const { asset: printer } = await assetService.registerAsset(custodianUserId, { name: 'เครื่องพิมพ์ E2E ตรวจ', asset_number: 'E2E-VR-101', location_id: office.id, effective_date: '2026-01-05' } as any);
+      const { asset: cabinet } = await assetService.registerAsset(custodianUserId, { name: 'ตู้เอกสาร E2E ตรวจ', location_id: office.id, effective_date: '2026-01-05' } as any);
+      const { asset: outside } = await assetService.registerAsset(custodianUserId, { name: 'พัดลม E2E ตรวจ', location_id: store.id, effective_date: '2026-01-05' } as any);
+      // The cabinet is Under Repair: the panel shows it as context, and it blocks nothing.
+      const { repair_record_id: repairRecordId } = await new RepairService({ db: pool }).start(
+        custodianUserId,
+        { asset_id: cabinet.id, repair_kind: 'REPAIR', start_date: '2026-01-10', repairer: { kind: 'INTERNAL' }, symptom_or_work: 'บานพับหลุด' } as any,
+        { retryToken: crypto.randomUUID() }
+      );
+      const { verification_round_id: roundId } = await verificationService.open(
+        custodianUserId,
+        { name: 'ตรวจสอบพัสดุประจำปี 2569 ห้องธุรการ', fiscal_year: 2569, location_ids: [office.id] },
+        { retryToken: crypto.randomUUID() }
+      );
+
+      // The QR label opens /assets/<id>.
+      await loginAs(context, staffUserId);
+      await page.goto(`${targetBaseUrl}/assets/${printer.id}`);
+      const panel = page.locator('#verification-panel');
+      await expect(panel.getByRole('heading', { name: 'ตรวจประจำปี' })).toBeVisible();
+      await expect(page.locator('#verification-panel-round-link')).toHaveText('ตรวจสอบพัสดุประจำปี 2569 ห้องธุรการ (ปีงบประมาณ 2569)');
+      await page.locator('#verification-record-result-FOUND').check();
+      await page.locator('#verification-record-condition-NORMAL').check();
+      await page.locator('#verification-record-submit').click();
+
+      // The panel shows the result, who recorded it and when, and offers no second form.
+      await expect(page.locator('[data-testid="verification-panel-current-result"]')).toHaveText('พบ · สภาพปกติ');
+      await expect(page.locator('[data-testid="verification-panel-current-recorded-by"]')).toHaveText('staff_verification');
+      await expect(page.locator('#verification-record-form')).toHaveCount(0);
+      await expect(page.locator(`[data-testid="asset-verification-result-${roundId}"]`)).toContainText('พบ · สภาพปกติ');
+      expect(await fitsWidth(page)).toBe(true);
+
+      // An Asset outside the Round says so, with no form.
+      await page.goto(`${targetBaseUrl}/assets/${outside.id}`);
+      await expect(page.locator('[data-testid="verification-panel-not-in-round"]')).toBeVisible();
+      await expect(page.locator('#verification-record-form')).toHaveCount(0);
+
+      // The Round page counts the result and filters by it.
+      await page.goto(`${targetBaseUrl}/verification-rounds/${roundId}`);
+      await expect(page.locator('[data-testid="verification-round-count-found"]')).toContainText('1');
+      await expect(page.locator('[data-testid="verification-round-count-not-found"]')).toContainText('0');
+      await expect(page.locator('[data-testid="verification-round-count-not-yet-verified"]')).toContainText('1');
+      await expect(page.locator(`[data-testid="scope-entry-result-${printer.id}"]`)).toHaveText('พบ · สภาพปกติ');
+      await expect(page.locator(`[data-testid="scope-entry-result-${cabinet.id}"]`)).toHaveText('ยังไม่ได้ตรวจ');
+      await page.locator('#scope-entry-result-filter-FOUND').click();
+      await expect(page).toHaveURL(/result=FOUND/);
+      await expect(page.locator('[data-testid^="scope-entry-result-"]')).toHaveText(['พบ · สภาพปกติ']);
+      expect(await fitsWidth(page)).toBe(true);
+
+      // A Read-only User sees the Asset Not Yet Verified, where Verification Staff see the form, and no form.
+      await page.goto(`${targetBaseUrl}/assets/${cabinet.id}`);
+      await expect(page.locator('#verification-record-form')).toBeVisible();
+      await expect(page.locator('[data-testid="verification-panel-context"]')).toContainText('อยู่ระหว่างซ่อม');
+      await expect(page.locator('[data-testid="verification-panel-context"]').getByRole('link', { name: 'ดูรายการซ่อม' })).toHaveAttribute('href', `/repairs/${repairRecordId}`);
+      await switchActor(page, context, readonlyUserId);
+      await page.goto(`${targetBaseUrl}/assets/${cabinet.id}`);
+      await expect(page.locator('[data-testid="verification-panel-not-yet-verified"]')).toHaveText('ยังไม่ได้ตรวจ');
+      await expect(page.locator('#verification-record-form')).toHaveCount(0);
+    });
   });
 });

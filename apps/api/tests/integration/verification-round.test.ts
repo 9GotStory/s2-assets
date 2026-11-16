@@ -66,7 +66,7 @@ describe('Open a Verification Round (Seam A - F006-T1)', () => {
         notes: 'คณะกรรมการ:\nนาย ก\nนาง ข',
         state: 'OPEN',
         filters: { organization_units: [], locations: [] },
-        counts: { in_scope: expect.any(Number), not_yet_verified: expect.any(Number) },
+        counts: { in_scope: expect.any(Number), found: 0, not_found: 0, not_yet_verified: expect.any(Number) },
         opened_by: custodian.id,
         opened_by_username: 'custodian_verification',
         recorded_at: expect.any(String),
@@ -111,7 +111,7 @@ describe('Open a Verification Round (Seam A - F006-T1)', () => {
       const scope = await scopeOf(roundId);
       expect(scope).toHaveLength(registeredCount);
       expect(scope).toEqual(expect.arrayContaining([placed, legacy, unplaced]));
-      expect((await roundOf(roundId)).counts).toEqual({ in_scope: registeredCount, not_yet_verified: registeredCount });
+      expect((await roundOf(roundId)).counts).toEqual({ in_scope: registeredCount, found: 0, not_found: 0, not_yet_verified: registeredCount });
 
       const items = (await entriesOf(roundId, `search=${encodeURIComponent('เครื่องถ่ายเอกสาร')}`)).items;
       const placedEntry = items.find((item: any) => item.asset_id === placed);
@@ -132,6 +132,8 @@ describe('Open a Verification Round (Seam A - F006-T1)', () => {
           legacy_responsible_person_text: null,
         },
         result: 'NOT_YET_VERIFIED',
+        current: null,
+        version: 1,
       });
     });
 
@@ -388,9 +390,9 @@ describe('Open a Verification Round (Seam A - F006-T1)', () => {
       const { items } = await roundsOf();
       const ours = items.filter((round: any) => [middle, earliest, latest].includes(round.id));
       expect(ours).toEqual([
-        { id: latest, name: 'รอบวันที่ 12', fiscal_year: 2569, start_date: '2026-11-12', state: 'OPEN', counts: { in_scope: 2, not_yet_verified: 2 } },
-        { id: middle, name: 'รอบวันที่ 11', fiscal_year: 2569, start_date: '2026-11-11', state: 'CLOSED', counts: { in_scope: 2, not_yet_verified: 2 } },
-        { id: earliest, name: 'รอบวันที่ 10', fiscal_year: 2569, start_date: '2026-11-10', state: 'CLOSED', counts: { in_scope: 2, not_yet_verified: 2 } },
+        { id: latest, name: 'รอบวันที่ 12', fiscal_year: 2569, start_date: '2026-11-12', state: 'OPEN', counts: { in_scope: 2, found: 0, not_found: 0, not_yet_verified: 2 } },
+        { id: middle, name: 'รอบวันที่ 11', fiscal_year: 2569, start_date: '2026-11-11', state: 'CLOSED', counts: { in_scope: 2, found: 0, not_found: 0, not_yet_verified: 2 } },
+        { id: earliest, name: 'รอบวันที่ 10', fiscal_year: 2569, start_date: '2026-11-10', state: 'CLOSED', counts: { in_scope: 2, found: 0, not_found: 0, not_yet_verified: 2 } },
       ]);
       const startDates = items.map((round: any) => round.start_date);
       expect(startDates).toEqual([...startDates].sort().reverse());

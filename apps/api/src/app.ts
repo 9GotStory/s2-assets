@@ -204,6 +204,7 @@ export async function buildApp(options: AppOptions = {}): Promise<FastifyInstanc
     const loanReadService = new LoanReadService({ db: dbClient, clock: options.clock });
     const loanReturnService = new LoanReturnService({ db: dbClient, clock: options.clock });
     const repairReadService = new RepairReadService({ db: dbClient });
+    const verificationReadService = new VerificationReadService({ db: dbClient });
     const notReturnedService = new NotReturnedService({ db: dbClient, clock: options.clock });
     const dueDateExtensionService = new DueDateExtensionService({ db: dbClient });
     const acquisitionService = new AcquisitionService({ db: dbClient });
@@ -266,6 +267,7 @@ export async function buildApp(options: AppOptions = {}): Promise<FastifyInstanc
       assetService,
       loanReadService,
       repairReadService,
+      verificationReadService,
       capabilityService,
       db: dbClient,
       publicAppOrigin,
@@ -297,7 +299,7 @@ export async function buildApp(options: AppOptions = {}): Promise<FastifyInstanc
 
     await app.register(verificationRoutes, {
       verificationService: new VerificationService({ db: dbClient, clock: options.clock }),
-      verificationReadService: new VerificationReadService({ db: dbClient }),
+      verificationReadService,
       capabilityService,
     });
 
