@@ -751,6 +751,7 @@ export const assetRoutes: FastifyPluginAsync<AssetRoutesOptions> = async (
       let canRecordRepair = false;
       let canRecordVerification = false;
       let canCorrectVerification = false;
+      let canManageVerification = false;
       let canViewAcquisition = false;
       if (request.user && capabilityService) {
         canCorrect = await capabilityService.hasCapability(request.user.id, 'asset:correct');
@@ -760,6 +761,7 @@ export const assetRoutes: FastifyPluginAsync<AssetRoutesOptions> = async (
         canRecordRepair = await capabilityService.hasCapability(request.user.id, 'repair:record');
         canRecordVerification = await capabilityService.hasCapability(request.user.id, 'verification:record');
         canCorrectVerification = await capabilityService.hasCapability(request.user.id, 'verification:correct');
+        canManageVerification = await capabilityService.hasCapability(request.user.id, 'verification:manage');
         canViewAcquisition = await capabilityService.hasCapability(request.user.id, 'acquisition:view');
       }
 
@@ -799,6 +801,8 @@ export const assetRoutes: FastifyPluginAsync<AssetRoutesOptions> = async (
         can_record_verification: canRecordVerification,
         // F006-T4 (#129): whether the viewer may void the panel's current result.
         can_correct_verification: canCorrectVerification,
+        // F006-T5 (#130): whether the viewer may add the Asset to the open Round when it is not in it.
+        can_manage_verification: canManageVerification,
       });
     }
   );
