@@ -10,8 +10,8 @@ import { ValidationError } from '../services/validation-error.ts';
 import { DISCREPANCIES, VerificationReadService, type Discrepancy } from '../services/verification-read.service.ts';
 import {
   AnotherVerificationRoundOpenError,
-  AssetAlreadyVerifiedError,
   AssetNotInVerificationScopeError,
+  CurrentResultRefusal,
   EmptyVerificationScopeError,
   VerificationRoundNotOpenError,
   VerificationService,
@@ -48,6 +48,17 @@ const RecordVerificationSchema = z
     data_mismatch_note: z.string().nullable().optional(),
     note: z.string().nullable().optional(),
     verification_date: z.string().nullable().optional(),
+    // F006-T4 (#129): the current revision a Re-verification saw; left out for a first result.
+    expected_revision_id: z.string().nullable().optional(),
+    retry_token: z.string().optional(),
+  })
+  .strict();
+
+// #125 Q18: what a Verification Correction takes: the current revision the user saw, and why it is voided.
+const CorrectVerificationSchema = z
+  .object({
+    verification_revision_id: z.string(),
+    reason: z.string(),
     retry_token: z.string().optional(),
   })
   .strict();
@@ -80,7 +91,7 @@ const refusalOf = (err: unknown) => {
   if (err instanceof AnotherVerificationRoundOpenError) {
     return { ...errorBody(err.statusCode, err.code, err.message), open_round: err.open_round };
   }
-  if (err instanceof AssetAlreadyVerifiedError) {
+  if (err instanceof CurrentResultRefusal) {
     return { ...errorBody(err.statusCode, err.code, err.message), current: err.current };
   }
   if (
@@ -127,7 +138,8 @@ export const verificationRoutes: FastifyPluginAsync<VerificationRoutesOptions> =
 
   /**
    * POST /verification-rounds/:id/assets/:assetId/verifications
-   * Records an Asset's first result in the open Round, Found or Not Found (F006-T2). A QR link that opens the
+   * Records an Asset's first result in the open Round, Found or Not Found (F006-T2), or a Re-verification over
+   * the current revision it saw (F006-T4). A QR link that opens the
    * Asset page grants nothing: this write alone records, under its capability (#125 AV-04).
    * Protected: requires 'verification:record' capability (Verification Staff, Asset Custodian)
    */
@@ -148,6 +160,37 @@ export const verificationRoutes: FastifyPluginAsync<VerificationRoutesOptions> =
       const { retry_token: _retryToken, ...input } = write.data;
       const recorded = await verificationService.record(request.user!.id, id.trim().toLowerCase(), assetId.trim().toLowerCase(), input, { retryToken: write.retryToken });
       return reply.status(201).send(recorded);
+    } catch (err) {
+      const refusal = refusalOf(err);
+      if (!refusal) {
+        throw err;
+      }
+      return reply.status(refusal.statusCode).send(refusal);
+    }
+  });
+
+  /**
+   * POST /verification-rounds/:id/assets/:assetId/verification-corrections
+   * Voids the Asset's current result in the open Round, with a reason ("ยกเลิกรายการ (บันทึกผิด)", F006-T4).
+   * Protected: requires 'verification:correct' capability (Asset Custodian, Administrator)
+   */
+  fastify.post('/verification-rounds/:id/assets/:assetId/verification-corrections', { preHandler: [requireCapability('verification:correct')] }, async (request, reply) => {
+    const { id, assetId } = request.params as { id: string; assetId: string };
+    if (!isValidUuid(id)) {
+      return reply.status(400).send(invalidRoundId());
+    }
+    if (!isValidUuid(assetId)) {
+      return reply.status(400).send(invalidAssetId());
+    }
+    const write = parseWrite(CorrectVerificationSchema, request);
+    if ('refusal' in write) {
+      return reply.status(400).send(write.refusal);
+    }
+
+    try {
+      const { retry_token: _retryToken, ...input } = write.data;
+      const corrected = await verificationService.correct(request.user!.id, id.trim().toLowerCase(), assetId.trim().toLowerCase(), input, { retryToken: write.retryToken });
+      return reply.status(201).send(corrected);
     } catch (err) {
       const refusal = refusalOf(err);
       if (!refusal) {
@@ -208,6 +251,27 @@ export const verificationRoutes: FastifyPluginAsync<VerificationRoutesOptions> =
       return reply.status(404).send(errorBody(404, 'NOT_FOUND', 'Verification Round not found'));
     }
     return reply.status(200).send(page);
+  });
+
+  /**
+   * GET /verification-rounds/:id/assets/:assetId/verifications
+   * Every revision of the Asset in the Round, newest first, voided ones with their Verification Correction (F006-T4).
+   * Protected: requires 'asset:view' capability
+   */
+  fastify.get('/verification-rounds/:id/assets/:assetId/verifications', { preHandler: [requireCapability('asset:view')] }, async (request, reply) => {
+    reply.header('Cache-Control', 'no-store');
+    const { id, assetId } = request.params as { id: string; assetId: string };
+    if (!isValidUuid(id)) {
+      return reply.status(400).send(invalidRoundId());
+    }
+    if (!isValidUuid(assetId)) {
+      return reply.status(400).send(invalidAssetId());
+    }
+    const items = await verificationReadService.revisionsOf(id.trim().toLowerCase(), assetId.trim().toLowerCase());
+    if (!items) {
+      return reply.status(404).send(errorBody(404, 'NOT_FOUND', 'Asset not found in the Verification Round'));
+    }
+    return reply.status(200).send({ items });
   });
 
   /**

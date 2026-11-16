@@ -493,11 +493,12 @@ describe('Record an Asset Verification (Seam A - F006-T2)', () => {
 
       expect(res.statusCode).toBe(200);
       expect(res.json().items).toEqual([
-        { round: { id: later, name: 'รอบหลัง', fiscal_year: 2569, start_date: '2026-11-12', state: 'OPEN' }, entry_id: expect.stringMatching(UUID), joined_as: 'OPENING', result: 'NOT_YET_VERIFIED', current: null },
+        { round: { id: later, name: 'รอบหลัง', fiscal_year: 2569, start_date: '2026-11-12', state: 'OPEN' }, entry_id: expect.stringMatching(UUID), joined_as: 'OPENING', revision_count: 0, result: 'NOT_YET_VERIFIED', current: null },
         {
           round: { id: earlier, name: 'ตรวจสอบพัสดุประจำปี', fiscal_year: 2569, start_date: '2026-11-02', state: 'CLOSED' },
           entry_id: expect.stringMatching(UUID),
           joined_as: 'OPENING',
+          revision_count: 1,
           result: 'NOT_FOUND',
           current: expect.objectContaining({ result: 'NOT_FOUND', verification_date: '2026-11-02' }),
         },

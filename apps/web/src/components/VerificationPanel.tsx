@@ -1,12 +1,14 @@
-import React from 'react';
+import React, { useState } from 'react';
 import { Link } from 'react-router';
 import { VerificationRecordForm } from './VerificationRecordForm';
+import { VerificationVoidForm } from './VerificationVoidForm';
 import { entryLabel } from './ReferenceContextFields';
-import { thaiDate } from './assignmentFacts';
+import { CORRECTION_LABELS, thaiDate } from './assignmentFacts';
 import {
   DISCREPANCY_LABEL,
   OBSERVED_LOCATION_LABEL,
   RESULT_LABELS,
+  REVERIFICATION_LABEL,
   VERIFICATION_DATE_LABEL,
   VERIFICATION_PANEL_LABEL,
   VERIFICATION_ROUND_LABEL,
@@ -25,12 +27,25 @@ export interface VerificationPanelProps {
   panel: AssetVerificationPanel;
   // Whether the viewer holds 'verification:record'.
   canRecord: boolean;
+  // Whether the viewer holds 'verification:correct' (F006-T4).
+  canCorrect: boolean;
   csrfToken: string | null;
   onRecorded: () => Promise<void>;
   onPermissionRevoked?: (statusCode?: number) => void;
 }
 
 const THAI_DATE_TIME = new Intl.DateTimeFormat('th-TH', { dateStyle: 'medium', timeStyle: 'short', timeZone: 'Asia/Bangkok' });
+
+const actionStyle: React.CSSProperties = {
+  padding: '0.5rem 1rem',
+  backgroundColor: '#ffffff',
+  color: '#1d4ed8',
+  border: '1px solid #2563eb',
+  borderRadius: '6px',
+  fontSize: '0.875rem',
+  fontWeight: 500,
+  cursor: 'pointer',
+};
 
 const termStyle: React.CSSProperties = { fontWeight: 500, color: '#4b5563' };
 const valueStyle: React.CSSProperties = { margin: 0, color: '#111827', minWidth: 0, overflowWrap: 'anywhere' };
@@ -144,10 +159,18 @@ export const RevisionFacts: React.FC<{ revision: VerificationRevision; testId: s
 /**
  * "ตรวจประจำปี": the open Round's panel on the Asset page (F006-T2, #125 Q5). Scanning the QR label opens this
  * page and records nothing (AV-04). The panel shows the record form while the Asset has no result, the result
- * once it has one, or that the Asset is not in the Round; and the Loan or Repair context in each case.
+ * once it has one, or that the Asset is not in the Round; and the Loan or Repair context in each case. Beside the
+ * result it offers "ตรวจซ้ำ" and, to holders of 'verification:correct', "ยกเลิกรายการ (บันทึกผิด)" (F006-T4, Q18, Q20).
  */
-export const VerificationPanel: React.FC<VerificationPanelProps> = ({ assetId, panel, canRecord, csrfToken, onRecorded, onPermissionRevoked }) => {
+export const VerificationPanel: React.FC<VerificationPanelProps> = ({ assetId, panel, canRecord, canCorrect, csrfToken, onRecorded, onPermissionRevoked }) => {
   const { open_round: round, entry, context } = panel;
+  // The form open over the current result, if any.
+  const [openForm, setOpenForm] = useState<'REVERIFY' | 'VOID' | null>(null);
+  const current = entry?.current ?? null;
+  const afterSave = async () => {
+    await onRecorded();
+    setOpenForm(null);
+  };
   // The Asset page reads the Asset only once /auth/session-check has answered, so the CSRF token is there before
   // this form is (#135).
   const mayRecord = canRecord && entry !== null && entry.current === null;
@@ -178,7 +201,49 @@ export const VerificationPanel: React.FC<VerificationPanelProps> = ({ assetId, p
           ครุภัณฑ์นี้ไม่อยู่ในรายการของรอบตรวจนี้ กรุณาแจ้งผู้ดูแลพัสดุ
         </p>
       )}
-      {entry?.current && <RevisionFacts revision={entry.current} testId="verification-panel-current" />}
+      {current && <RevisionFacts revision={current} testId="verification-panel-current" />}
+      {current && openForm === null && (canRecord || canCorrect) && (
+        <div style={{ display: 'flex', flexWrap: 'wrap', gap: '0.5rem', marginTop: '0.75rem' }}>
+          {canRecord && (
+            <button type="button" id="verification-reverify-action" onClick={() => setOpenForm('REVERIFY')} style={actionStyle}>
+              {REVERIFICATION_LABEL}
+            </button>
+          )}
+          {canCorrect && (
+            <button type="button" id="verification-void-action" onClick={() => setOpenForm('VOID')} style={{ ...actionStyle, color: '#991b1b', borderColor: '#991b1b' }}>
+              {CORRECTION_LABELS.VOIDED}
+            </button>
+          )}
+        </div>
+      )}
+      {current && openForm === 'REVERIFY' && canRecord && (
+        <div style={{ marginTop: '0.75rem' }}>
+          <VerificationRecordForm
+            key={current.id}
+            assetId={assetId}
+            round={round}
+            csrfToken={csrfToken}
+            expectedRevisionId={current.id}
+            onRecorded={afterSave}
+            onClose={() => setOpenForm(null)}
+            onPermissionRevoked={onPermissionRevoked}
+          />
+        </div>
+      )}
+      {current && openForm === 'VOID' && canCorrect && (
+        <div style={{ marginTop: '0.75rem' }}>
+          <VerificationVoidForm
+            key={current.id}
+            assetId={assetId}
+            round={round}
+            revision={current}
+            csrfToken={csrfToken}
+            onVoided={afterSave}
+            onClose={() => setOpenForm(null)}
+            onPermissionRevoked={onPermissionRevoked}
+          />
+        </div>
+      )}
       {entry && !entry.current && !mayRecord && (
         <p data-testid="verification-panel-not-yet-verified" style={{ margin: 0, fontSize: '0.9375rem', color: '#92400e', fontWeight: 600 }}>
           {RESULT_LABELS.NOT_YET_VERIFIED}

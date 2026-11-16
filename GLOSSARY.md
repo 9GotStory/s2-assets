@@ -238,7 +238,8 @@ Checking an Asset again in the same Round on purpose, which makes a new current 
 the earlier one.
 
 **Verification Revision**:
-One recorded result of an Asset Verification; the latest is the current result.
+One recorded result of an Asset Verification; the latest is the current result. An Asset's
+revisions in a Round, newest first and voided ones included, are its ประวัติผลตรวจ.
 
 **Verification Correction** (แก้ไขรายการที่บันทึกผิด):
 A traceable fix to a Verification Revision that was wrong as recorded, such as a result recorded for

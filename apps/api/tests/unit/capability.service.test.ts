@@ -2,7 +2,6 @@ import { describe, it, expect, vi } from 'vitest';
 import {
   CapabilityService,
   ROLE_CAPABILITY_MAP,
-  KNOWN_CAPABILITIES,
   KNOWN_ROLES,
   isValidUuid,
   isKnownCapability,
@@ -36,7 +35,7 @@ describe('CapabilityService Unit Tests (T024 - US2)', () => {
       expect(ROLE_CAPABILITY_MAP.SYSTEM_MAINTAINER).not.toContain('evidence:correct');
     });
 
-    it('maps ADMINISTRATOR to system:maintain, asset:view, asset:correct, asset:search, acquisition:view, evidence:view, evidence:correct, reference:maintain, assignment:correct, loan:correct, and repair:correct without wildcards or registration capabilities', () => {
+    it('maps ADMINISTRATOR to system:maintain, asset:view, asset:correct, asset:search, acquisition:view, evidence:view, evidence:correct, reference:maintain, assignment:correct, loan:correct, repair:correct, and verification:correct without wildcards or registration capabilities', () => {
       expect(ROLE_CAPABILITY_MAP.ADMINISTRATOR).toEqual([
         'system:maintain',
         'asset:view',
@@ -49,6 +48,7 @@ describe('CapabilityService Unit Tests (T024 - US2)', () => {
         'assignment:correct',
         'loan:correct',
         'repair:correct',
+        'verification:correct',
       ]);
       // T4 (#25, D3): reference:maintain is granted to ADMINISTRATOR only.
       for (const role of ['SYSTEM_MAINTAINER', 'READ_ONLY', 'ASSET_CUSTODIAN']) {
@@ -75,7 +75,7 @@ describe('CapabilityService Unit Tests (T024 - US2)', () => {
       expect(ROLE_CAPABILITY_MAP.READ_ONLY).not.toContain('evidence:correct');
     });
 
-    it('maps ASSET_CUSTODIAN to asset:view, asset:duplicate-check, asset:register, asset:bulk-register, asset:correct, asset:search, acquisition:create, acquisition:view, evidence:view, evidence:create, evidence:correct, assignment:reassign, assignment:correct, loan:record, loan:correct, repair:record, repair:correct, verification:record, and verification:manage', () => {
+    it('maps ASSET_CUSTODIAN to asset:view, asset:duplicate-check, asset:register, asset:bulk-register, asset:correct, asset:search, acquisition:create, acquisition:view, evidence:view, evidence:create, evidence:correct, assignment:reassign, assignment:correct, loan:record, loan:correct, repair:record, repair:correct, verification:record, verification:manage, and verification:correct', () => {
       expect(ROLE_CAPABILITY_MAP.ASSET_CUSTODIAN).toEqual([
         'asset:view',
         'asset:duplicate-check',
@@ -96,6 +96,7 @@ describe('CapabilityService Unit Tests (T024 - US2)', () => {
         'repair:correct',
         'verification:record',
         'verification:manage',
+        'verification:correct',
       ]);
       // #98 Q2: only an Asset Custodian records a Repair Start.
       for (const role of ['SYSTEM_MAINTAINER', 'ADMINISTRATOR', 'READ_ONLY']) {
@@ -138,7 +139,17 @@ describe('CapabilityService Unit Tests (T024 - US2)', () => {
       }
       expect(isKnownCapability('verification:record')).toBe(true);
       expect(isKnownCapability('verification:manage')).toBe(true);
-      expect(KNOWN_CAPABILITIES).not.toContain('verification:correct');
+    });
+
+    // F006-T4 (#125 Q1): a Verification Correction is for the Asset Custodian and the Administrator.
+    it('gives verification:correct to the Asset Custodian and the Administrator alone', () => {
+      for (const role of ['ASSET_CUSTODIAN', 'ADMINISTRATOR']) {
+        expect(ROLE_CAPABILITY_MAP[role]).toContain('verification:correct');
+      }
+      for (const role of ['SYSTEM_MAINTAINER', 'READ_ONLY', 'VERIFICATION_STAFF']) {
+        expect(ROLE_CAPABILITY_MAP[role]).not.toContain('verification:correct');
+      }
+      expect(isKnownCapability('verification:correct')).toBe(true);
     });
 
     it('validates UUIDs correctly with isValidUuid', () => {

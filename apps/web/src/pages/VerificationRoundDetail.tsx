@@ -4,6 +4,7 @@ import { QueryClient, QueryClientProvider, useQuery } from '@tanstack/react-quer
 import { REFERENCE_DIMENSIONS, entryLabel } from '../components/ReferenceContextFields';
 import { thaiDate, valueText } from '../components/assignmentFacts';
 import { RecordingContextLine, RevisionDiscrepancies } from '../components/VerificationPanel';
+import { VerificationRevisionList } from '../components/VerificationRevisionList';
 import {
   DISCREPANCIES,
   DISCREPANCY_LABEL,
@@ -154,8 +155,9 @@ const readJson = async <T,>(url: string, signal: AbortSignal): Promise<T> => {
 };
 
 // One Asset of the Scope Snapshot as the register showed it when the Round opened (#125 Q4), with its current
-// result, its Observed Location and Discrepancies (Q7), and the Loan or Repair context that result kept (Q14).
-const ScopeEntryItem: React.FC<{ entry: ScopeEntry }> = ({ entry }) => {
+// result, its Observed Location and Discrepancies (Q7), the Loan or Repair context that result kept (Q14), and its
+// revisions (F006-T4).
+const ScopeEntryItem: React.FC<{ roundId: string; entry: ScopeEntry; dataUpdatedAt: number }> = ({ roundId, entry, dataUpdatedAt }) => {
   const { snapshot, current } = entry;
   return (
     <li data-testid={`scope-entry-${entry.asset_id}`} style={{ padding: '0.75rem 0', borderBottom: '1px solid #e5e7eb', fontSize: '0.875rem' }}>
@@ -189,6 +191,7 @@ const ScopeEntryItem: React.FC<{ entry: ScopeEntry }> = ({ entry }) => {
           </div>
         ))}
       </div>
+      {entry.revision_count > 0 && <VerificationRevisionList roundId={roundId} assetId={entry.asset_id} revisionCount={entry.revision_count} dataUpdatedAt={dataUpdatedAt} />}
     </li>
   );
 };
@@ -437,7 +440,7 @@ const VerificationRoundDetailContent: React.FC = () => {
             </div>
             <ul data-testid="scope-entry-list" style={{ listStyle: 'none', margin: 0, padding: 0 }}>
               {page.items.map((entry) => (
-                <ScopeEntryItem key={entry.id} entry={entry} />
+                <ScopeEntryItem key={entry.id} roundId={round.data.id} entry={entry} dataUpdatedAt={entries.dataUpdatedAt} />
               ))}
             </ul>
             {page.total_count > PAGE_SIZE && (
