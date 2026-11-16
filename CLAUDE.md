@@ -85,7 +85,9 @@ To run one test file or a typecheck, use the same scripts:
 `scripts/ci/quality.sh --quick`; `.githooks/pre-commit` runs that last one before each commit
 (enable it once per clone with `git config core.hooksPath .githooks`). Before the full run, run
 every integration file that calls a route or names a response field the change touches (`grep -l`
-over `apps/api/tests/integration`): earlier tests pin those shapes and their data.
+over `apps/api/tests/integration`): earlier tests pin those shapes and their data. Start the full
+run once, after the code-review fixes are committed: a full run started before the review has to be
+run again.
 When CI does not run on a pull request, run each job locally and record each job's exact result
 in the pull request: that record is the pull request's check. A change
 that touches only documentation needs only `git diff --check <base>...HEAD`. In both, `<base>` is
