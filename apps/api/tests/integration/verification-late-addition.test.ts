@@ -166,14 +166,32 @@ describe('Late Addition to the open Round (Seam A - F006-T5)', () => {
       expect((await detailOf(fresh)).verification.entry).toMatchObject({ result: 'NOT_YET_VERIFIED', version: 1 });
     });
 
-    it('offers no way to remove an Asset from a Scope Snapshot: the API serves no other method than GET and POST on a Round (Q11)', async () => {
+    it('offers no way to remove an Asset from a Scope Snapshot: no route but GET and POST names an entry or an Asset of a Round (Q11)', async () => {
       await api.app.ready();
+      // The paths the API serves for `method`. Fastify 5.12.5 prints them as a tree, a segment a line, each child
+      // four characters deeper than its parent, with the methods after a segment that is a route.
+      const pathsServed = (method: 'GET' | 'POST' | 'DELETE' | 'PUT' | 'PATCH'): string[] => {
+        const segments: string[] = [];
+        const paths: string[] = [];
+        for (const line of api.app.printRoutes({ method, commonPrefix: false }).split('\n')) {
+          const node = line.match(/^((?:[│ ] {3})*)[├└]── (\S+)( \(.*\))?$/);
+          if (node) {
+            segments.length = node[1].length / 4;
+            segments.push(node[2]);
+            if (node[3]) paths.push(segments.join(''));
+          }
+        }
+        return paths;
+      };
+      // What a write that removes an Asset from a Round would address. A write on the Round itself, such as an
+      // edit of its name (F006-T6), is outside this rule.
+      const namesScope = (path: string) => /^\/verification-rounds\/:id\/(entries|assets|late-additions)/.test(path);
 
+      expect(pathsServed('GET')).toContain('/verification-rounds/:id/entries');
+      expect(pathsServed('POST')).toContain('/verification-rounds/:id/late-additions');
       for (const method of ['DELETE', 'PUT', 'PATCH'] as const) {
-        // Fastify 5.12.5 prints the route tree of one method; a Round's routes all start with /verification-rounds.
-        expect(api.app.printRoutes({ method, commonPrefix: false })).not.toContain('verification-rounds');
+        expect(pathsServed(method).filter(namesScope)).toEqual([]);
       }
-      expect(api.app.printRoutes({ method: 'POST', commonPrefix: false })).toContain('verification-rounds');
     });
   });
 
