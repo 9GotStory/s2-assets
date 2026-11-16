@@ -1,7 +1,6 @@
 import React, { useState, useEffect, useCallback, useRef } from 'react';
 import { flushSync } from 'react-dom';
 import { QRCodeSVG } from 'qrcode.react';
-// @ts-ignore
 import './AssetQrLabel.css';
 
 export interface QrLabelData {
