@@ -10,11 +10,9 @@ import { ValidationError } from '../services/validation-error.ts';
 import { DISCREPANCIES, VerificationReadService, type Discrepancy } from '../services/verification-read.service.ts';
 import {
   AnotherVerificationRoundOpenError,
-  AssetAlreadyVerifiedError,
   AssetNotInVerificationScopeError,
+  CurrentResultRefusal,
   EmptyVerificationScopeError,
-  VerificationResultChangedError,
-  VerificationRevisionAlreadyVoidedError,
   VerificationRoundNotOpenError,
   VerificationService,
   VerificationTargetNotFoundError,
@@ -93,7 +91,7 @@ const refusalOf = (err: unknown) => {
   if (err instanceof AnotherVerificationRoundOpenError) {
     return { ...errorBody(err.statusCode, err.code, err.message), open_round: err.open_round };
   }
-  if (err instanceof AssetAlreadyVerifiedError || err instanceof VerificationResultChangedError || err instanceof VerificationRevisionAlreadyVoidedError) {
+  if (err instanceof CurrentResultRefusal) {
     return { ...errorBody(err.statusCode, err.code, err.message), current: err.current };
   }
   if (

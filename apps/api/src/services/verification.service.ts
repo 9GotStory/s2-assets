@@ -61,6 +61,8 @@ export class EmptyVerificationScopeError extends Error {
 }
 
 export const VERIFICATION_NOTE_MAX_LENGTH = REMARK_MAX_LENGTH;
+// The reason of a Verification Correction (F006-T4).
+export const VERIFICATION_CORRECTION_REASON_MAX_LENGTH = REMARK_MAX_LENGTH;
 
 // F006-T2 (#127): a first result for one Asset of the open Round (#125 Q6, Q7, Q8). F006-T3 (#128): where a
 // Found Asset was seen and the Discrepancies Verification Staff tick.
@@ -122,16 +124,25 @@ export class AssetNotInVerificationScopeError extends Error {
   }
 }
 
-/** A first result for an Asset that already has a current result is refused, naming it (#125 AV-23, Q20). */
-export class AssetAlreadyVerifiedError extends Error {
+/** A result write refused over the Asset's current result, naming it, or none while it is Not Yet Verified (#125 AV-23). */
+export abstract class CurrentResultRefusal extends Error {
   statusCode = 409;
+  abstract code: string;
+  current: VerificationRevision | null;
+
+  constructor(message: string, current: VerificationRevision | null) {
+    super(message);
+    this.current = current;
+  }
+}
+
+/** A first result for an Asset that already has a current result is refused, naming it (#125 AV-23, Q20). */
+export class AssetAlreadyVerifiedError extends CurrentResultRefusal {
   code = 'ASSET_ALREADY_VERIFIED';
-  current: VerificationRevision;
 
   constructor(current: VerificationRevision) {
-    super('The Asset already has a result in this Verification Round');
+    super('The Asset already has a result in this Verification Round', current);
     this.name = 'AssetAlreadyVerifiedError';
-    this.current = current;
   }
 }
 
@@ -139,28 +150,22 @@ export class AssetAlreadyVerifiedError extends Error {
  * A Re-verification or a Verification Correction whose seen revision is no longer the current one is refused,
  * naming the latest result, or none when the Asset is Not Yet Verified again (#125 AV-23, Q18, Q20).
  */
-export class VerificationResultChangedError extends Error {
-  statusCode = 409;
+export class VerificationResultChangedError extends CurrentResultRefusal {
   code = 'VERIFICATION_RESULT_CHANGED';
-  current: VerificationRevision | null;
 
   constructor(current: VerificationRevision | null) {
-    super('The current result of the Asset has changed in this Verification Round');
+    super('The current result of the Asset has changed in this Verification Round', current);
     this.name = 'VerificationResultChangedError';
-    this.current = current;
   }
 }
 
 /** A revision voided already is not voided again (#125 Q18). The answer names the latest result, or none. */
-export class VerificationRevisionAlreadyVoidedError extends Error {
-  statusCode = 409;
+export class VerificationRevisionAlreadyVoidedError extends CurrentResultRefusal {
   code = 'VERIFICATION_REVISION_ALREADY_VOIDED';
-  current: VerificationRevision | null;
 
   constructor(current: VerificationRevision | null) {
-    super('The Verification Revision is voided already');
+    super('The Verification Revision is voided already', current);
     this.name = 'VerificationRevisionAlreadyVoidedError';
-    this.current = current;
   }
 }
 
@@ -524,7 +529,7 @@ export class VerificationService {
       throw new ValidationError('verification_revision_id must be a valid UUID');
     }
     const revisionId = input.verification_revision_id.trim().toLowerCase();
-    const reason = normalizeText(input.reason, 'reason', VERIFICATION_NOTE_MAX_LENGTH, '');
+    const reason = normalizeText(input.reason, 'reason', VERIFICATION_CORRECTION_REASON_MAX_LENGTH, '');
     if (reason === null) {
       throw new ValidationError('A Verification Correction needs a reason');
     }

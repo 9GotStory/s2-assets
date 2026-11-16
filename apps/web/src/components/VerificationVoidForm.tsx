@@ -1,9 +1,9 @@
 import React, { useState } from 'react';
 import { LoanSaveForm } from './LoanSaveForm';
 import { ReasonField } from './OutstandingItemFields';
-import { CORRECTION_LABELS, thaiDate } from './assignmentFacts';
+import { CORRECTION_LABELS } from './assignmentFacts';
 import { VOIDED_LABEL } from './loanFacts';
-import { RESULT_LABELS, VERIFICATION_DATE_LABEL, recordedByText, resultText, type OpenVerificationRound, type VerificationRevision } from './verificationFacts';
+import { RESULT_LABELS, latestResultText, resultText, type OpenVerificationRound, type VerificationRevision } from './verificationFacts';
 
 export interface VerificationVoidFormProps {
   assetId: string;
@@ -15,10 +15,6 @@ export interface VerificationVoidFormProps {
   onClose: () => void;
   onPermissionRevoked?: (statusCode?: number) => void;
 }
-
-// The latest result a refused void names, or that the Asset is Not Yet Verified.
-const latestText = (current: VerificationRevision | null) =>
-  current ? `${resultText(current.result, current.condition)} ${VERIFICATION_DATE_LABEL} ${thaiDate(current.verification_date)} บันทึกโดย ${recordedByText(current)}` : RESULT_LABELS.NOT_YET_VERIFIED;
 
 /**
  * "ยกเลิกรายการ (บันทึกผิด)": a Verification Correction voids the Asset's current result, such as one recorded for
@@ -37,7 +33,7 @@ export const VerificationVoidForm: React.FC<VerificationVoidFormProps> = ({ asse
       requestBody={() => ({ verification_revision_id: revision.id, reason })}
       refusedList={(body) => {
         if (body?.code === 'VERIFICATION_RESULT_CHANGED' || body?.code === 'VERIFICATION_REVISION_ALREADY_VOIDED') {
-          return <>ยกเลิกไม่ได้ เพราะผลตรวจล่าสุดของครุภัณฑ์นี้เปลี่ยนไปแล้ว: {latestText(body.current ?? null)} กรุณาโหลดหน้าใหม่</>;
+          return <>ยกเลิกไม่ได้ เพราะผลตรวจล่าสุดของครุภัณฑ์นี้เปลี่ยนไปแล้ว: {latestResultText(body.current ?? null)} กรุณาโหลดหน้าใหม่</>;
         }
         return body?.code === 'VERIFICATION_ROUND_NOT_OPEN' ? <>ยกเลิกไม่ได้ เพราะรอบตรวจนี้ไม่ได้เปิดอยู่แล้ว กรุณาโหลดหน้าใหม่</> : null;
       }}

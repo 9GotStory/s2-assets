@@ -12,6 +12,7 @@ import {
   RESULT_LABELS,
   REVERIFICATION_LABEL,
   VERIFICATION_DATE_LABEL,
+  latestResultText,
   recordedByText,
   resultText,
   type OpenVerificationRound,
@@ -40,22 +41,6 @@ const RecordedMeanwhile: React.FC<{ current: VerificationRevision }> = ({ curren
   <>
     บันทึกไม่ได้ เพราะมีผลตรวจของครุภัณฑ์นี้ในรอบนี้แล้ว: {resultText(current.result, current.condition)} {VERIFICATION_DATE_LABEL}{' '}
     <time dateTime={current.verification_date}>{thaiDate(current.verification_date)}</time> บันทึกโดย {recordedByText(current)} กรุณาโหลดหน้าใหม่
-  </>
-);
-
-// The current result that changed while a Re-verification form was open: a newer result, or none after a void (#125 Q20).
-const ResultChanged: React.FC<{ current: VerificationRevision | null }> = ({ current }) => (
-  <>
-    บันทึกไม่ได้ เพราะผลตรวจล่าสุดของครุภัณฑ์นี้เปลี่ยนไปแล้ว:{' '}
-    {current ? (
-      <>
-        {resultText(current.result, current.condition)} {VERIFICATION_DATE_LABEL} <time dateTime={current.verification_date}>{thaiDate(current.verification_date)}</time> บันทึกโดย{' '}
-        {recordedByText(current)}
-      </>
-    ) : (
-      RESULT_LABELS.NOT_YET_VERIFIED
-    )}{' '}
-    กรุณาโหลดหน้าใหม่
   </>
 );
 
@@ -136,7 +121,8 @@ export const VerificationRecordForm: React.FC<VerificationRecordFormProps> = ({ 
           return <RecordedMeanwhile current={body.current as VerificationRevision} />;
         }
         if (body?.code === 'VERIFICATION_RESULT_CHANGED') {
-          return <ResultChanged current={body.current as VerificationRevision | null} />;
+          // A newer result, or none after a void (#125 Q20).
+          return <>บันทึกไม่ได้ เพราะผลตรวจล่าสุดของครุภัณฑ์นี้เปลี่ยนไปแล้ว: {latestResultText(body.current ?? null)} กรุณาโหลดหน้าใหม่</>;
         }
         if (body?.code === 'VERIFICATION_ROUND_NOT_OPEN') {
           return <>บันทึกไม่ได้ เพราะรอบตรวจนี้ไม่ได้เปิดอยู่แล้ว กรุณาโหลดหน้าใหม่</>;

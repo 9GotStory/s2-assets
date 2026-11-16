@@ -221,6 +221,13 @@ export const resultText = (result: VerificationResult, condition: LoanCondition 
 export const recordedByText = ({ recorded_by: recordedBy, recorded_by_username: username }: Pick<VerificationRevision, 'recorded_by' | 'recorded_by_username'>): string =>
   username ?? recordedBy;
 
+// The latest result a refusal names, with when and by whom it was recorded, or that the Asset is Not Yet Verified
+// (#125 AV-23, Q20).
+export const latestResultText = (current: VerificationRevision | null): string =>
+  current
+    ? `${resultText(current.result, current.condition)} ${VERIFICATION_DATE_LABEL} ${thaiDate(current.verification_date)} บันทึกโดย ${recordedByText(current)}`
+    : RESULT_LABELS.NOT_YET_VERIFIED;
+
 // The Loan or Repair context as one line: context only, never proof the Asset was seen (#125 AV-09).
 export const recordedContextText = ({ loan_context: loan, repair_context: repair }: RecordingContext): string | null =>
   [
