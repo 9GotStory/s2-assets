@@ -1,15 +1,39 @@
-// What the API answers about Verification Rounds (F006-T1), and their labels from GLOSSARY.md (#125).
+// What the API answers about Verification Rounds (F006-T1) and Asset Verifications (F006-T2), and their labels
+// from GLOSSARY.md (#125).
 
 import type { PermanentAssignment, ReferenceEntry } from './ReferenceContextFields';
+import { thaiDate } from './assignmentFacts';
+import { NOT_RETURNED_LABEL, ON_LOAN_LABEL, type LoanCondition } from './loanFacts';
+import { UNDER_REPAIR_LABELS, type RepairKind } from './repairFacts';
 
 export type VerificationRoundState = 'OPEN' | 'CLOSED' | 'VOIDED';
 export type VerificationRoundEventKind = 'OPENED' | 'EDITED' | 'CLOSED' | 'REOPENED' | 'VOIDED';
-// An Asset's result in a Round; F006-T1 records none.
-export type VerificationResult = 'NOT_YET_VERIFIED';
+// What one Verification Revision says.
+export type RecordedResult = 'FOUND' | 'NOT_FOUND';
+// An Asset's current result in a Round, or Not Yet Verified while it has none.
+export type VerificationResult = RecordedResult | 'NOT_YET_VERIFIED';
 
 export interface VerificationRoundCounts {
   in_scope: number;
+  found: number;
+  not_found: number;
   not_yet_verified: number;
+}
+
+// One recorded result, with what the server kept of the Asset when it was recorded (#125 Q14, Q26).
+export interface VerificationRevision {
+  id: string;
+  revision_number: number;
+  result: RecordedResult;
+  condition: LoanCondition | null;
+  note: string | null;
+  verification_date: string;
+  assignment_in_effect: PermanentAssignment;
+  loan_context: { kind: 'ON_LOAN' | 'NOT_RETURNED'; loan_item_id: string; borrower_display: string; due_date: string } | null;
+  repair_context: { repair_record_id: string; repair_kind: RepairKind } | null;
+  recorded_by: string;
+  recorded_by_username: string | null;
+  recorded_at: string;
 }
 
 export interface VerificationRoundSummary {
@@ -63,6 +87,8 @@ export interface ScopeEntry {
   joined_as: 'OPENING' | 'LATE_ADDITION';
   snapshot: ScopeSnapshot;
   result: VerificationResult;
+  current: VerificationRevision | null;
+  version: number;
 }
 
 export interface ScopeEntryPage {
@@ -81,7 +107,27 @@ export interface OpenVerificationRound {
   start_date: string;
 }
 
+// The Asset page's "ตรวจประจำปี" panel while a Round is open (GET /assets/:id, F006-T2).
+export interface AssetVerificationPanel {
+  open_round: OpenVerificationRound;
+  // Null when the Asset is not in the open Round's Scope Snapshot.
+  entry: { id: string; version: number; result: VerificationResult; current: VerificationRevision | null } | null;
+}
+
+// An Asset's result in one Round it belongs to (GET /assets/:id/verifications, F006-T2).
+export interface AssetVerification {
+  round: Pick<VerificationRoundSummary, 'id' | 'name' | 'fiscal_year' | 'start_date' | 'state'>;
+  entry_id: string;
+  joined_as: 'OPENING' | 'LATE_ADDITION';
+  result: VerificationResult;
+  current: VerificationRevision | null;
+}
+
 export const VERIFICATION_ROUND_LABEL = 'รอบตรวจ';
+export const VERIFICATION_PANEL_LABEL = 'ตรวจประจำปี';
+export const ASSET_VERIFICATIONS_LABEL = 'ผลตรวจประจำปี';
+export const VERIFICATION_DATE_LABEL = 'วันที่ตรวจ';
+export const RECORD_VERIFICATION_LABEL = 'บันทึกผลตรวจ';
 export const OPEN_VERIFICATION_ROUND_LABEL = 'เปิดรอบตรวจ';
 export const SCOPE_SNAPSHOT_LABEL = 'รายการในรอบ';
 export const FISCAL_YEAR_LABEL = 'ปีงบประมาณ';
@@ -95,6 +141,8 @@ export const ROUND_STATE_LABELS: Record<VerificationRoundState, string> = {
 };
 
 export const RESULT_LABELS: Record<VerificationResult, string> = {
+  FOUND: 'พบ',
+  NOT_FOUND: 'ไม่พบในการตรวจ',
   NOT_YET_VERIFIED: 'ยังไม่ได้ตรวจ',
 };
 
@@ -109,3 +157,12 @@ export const ROUND_EVENT_LABELS: Record<VerificationRoundEventKind, string> = {
 // A Round as a refusal or a heading names it: its name and fiscal year.
 export const roundLabel = ({ name, fiscal_year: fiscalYear }: Pick<VerificationRoundSummary, 'name' | 'fiscal_year'>): string =>
   `${name} (${FISCAL_YEAR_LABEL} ${fiscalYear})`;
+
+// The Loan or Repair context a result kept, as one line: context only, never proof the Asset was seen (#125 AV-09).
+export const recordedContextText = ({ loan_context: loan, repair_context: repair }: Pick<VerificationRevision, 'loan_context' | 'repair_context'>): string | null =>
+  [
+    loan && `${loan.kind === 'ON_LOAN' ? ON_LOAN_LABEL : NOT_RETURNED_LABEL} ผู้ยืม ${loan.borrower_display} กำหนดคืน ${thaiDate(loan.due_date)}`,
+    repair && UNDER_REPAIR_LABELS[repair.repair_kind],
+  ]
+    .filter(Boolean)
+    .join(' · ') || null;

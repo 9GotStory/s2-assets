@@ -10,8 +10,12 @@ import { ValidationError } from '../services/validation-error.ts';
 import { VerificationReadService } from '../services/verification-read.service.ts';
 import {
   AnotherVerificationRoundOpenError,
+  AssetAlreadyVerifiedError,
+  AssetNotInVerificationScopeError,
   EmptyVerificationScopeError,
+  VerificationRoundNotOpenError,
   VerificationService,
+  VerificationTargetNotFoundError,
 } from '../services/verification.service.ts';
 
 export interface VerificationRoutesOptions {
@@ -32,7 +36,19 @@ const OpenVerificationRoundSchema = z
   })
   .strict();
 
-// A Round's entries (#125 AR-14): a search of the Scope Snapshot, and a page read as on the Asset list. An
+// #125 Q6, Q7, Q8: what a first result for one Asset takes. Its context and the assignment it is compared
+// with are derived by the server, never given.
+const RecordVerificationSchema = z
+  .object({
+    result: z.enum(['FOUND', 'NOT_FOUND']),
+    condition: z.enum(['NORMAL', 'DAMAGED']).nullable().optional(),
+    note: z.string().nullable().optional(),
+    verification_date: z.string().nullable().optional(),
+    retry_token: z.string().optional(),
+  })
+  .strict();
+
+// A Round's entries (#125 AR-14, AV-19): a search of the Scope Snapshot, a filter by current result, and a page read as on the Asset list. An
 // Asset name is free text, so the search keeps tab and line breaks inside it and refuses the other control
 // characters (CODING_STANDARDS.md).
 const ScopeEntryQuerySchema = z
@@ -44,6 +60,7 @@ const ScopeEntryQuerySchema = z
       .transform((text) => text.trim())
       .refine((text) => text.length > 0, 'must not be blank')
       .optional(),
+    result: z.enum(['FOUND', 'NOT_FOUND', 'NOT_YET_VERIFIED']).optional(),
     ...pageQueryFields,
   })
   .strict();
@@ -53,13 +70,24 @@ const refusalOf = (err: unknown) => {
   if (err instanceof AnotherVerificationRoundOpenError) {
     return { ...errorBody(err.statusCode, err.code, err.message), open_round: err.open_round };
   }
-  if (err instanceof EmptyVerificationScopeError || err instanceof RetryTokenConflictError || err instanceof ValidationError) {
+  if (err instanceof AssetAlreadyVerifiedError) {
+    return { ...errorBody(err.statusCode, err.code, err.message), current: err.current };
+  }
+  if (
+    err instanceof EmptyVerificationScopeError ||
+    err instanceof VerificationRoundNotOpenError ||
+    err instanceof AssetNotInVerificationScopeError ||
+    err instanceof VerificationTargetNotFoundError ||
+    err instanceof RetryTokenConflictError ||
+    err instanceof ValidationError
+  ) {
     return errorBody(err.statusCode, err.code, err.message);
   }
   return null;
 };
 
 const invalidRoundId = () => errorBody(400, 'INVALID_ID', 'Verification Round ID must be a valid UUID string');
+const invalidAssetId = () => errorBody(400, 'INVALID_ID', 'Asset ID must be a valid UUID string');
 
 export const verificationRoutes: FastifyPluginAsync<VerificationRoutesOptions> = async (fastify, options) => {
   const { verificationService, verificationReadService, capabilityService } = options;
@@ -78,6 +106,38 @@ export const verificationRoutes: FastifyPluginAsync<VerificationRoutesOptions> =
     try {
       const { retry_token: _retryToken, ...input } = write.data;
       return reply.status(201).send(await verificationService.open(request.user!.id, input, { retryToken: write.retryToken }));
+    } catch (err) {
+      const refusal = refusalOf(err);
+      if (!refusal) {
+        throw err;
+      }
+      return reply.status(refusal.statusCode).send(refusal);
+    }
+  });
+
+  /**
+   * POST /verification-rounds/:id/assets/:assetId/verifications
+   * Records an Asset's first result in the open Round, Found or Not Found (F006-T2). A QR link that opens the
+   * Asset page grants nothing: this write alone records, under its capability (#125 AV-04).
+   * Protected: requires 'verification:record' capability (Verification Staff, Asset Custodian)
+   */
+  fastify.post('/verification-rounds/:id/assets/:assetId/verifications', { preHandler: [requireCapability('verification:record')] }, async (request, reply) => {
+    const { id, assetId } = request.params as { id: string; assetId: string };
+    if (!isValidUuid(id)) {
+      return reply.status(400).send(invalidRoundId());
+    }
+    if (!isValidUuid(assetId)) {
+      return reply.status(400).send(invalidAssetId());
+    }
+    const write = parseWrite(RecordVerificationSchema, request);
+    if ('refusal' in write) {
+      return reply.status(400).send(write.refusal);
+    }
+
+    try {
+      const { retry_token: _retryToken, ...input } = write.data;
+      const recorded = await verificationService.record(request.user!.id, id.trim().toLowerCase(), assetId.trim().toLowerCase(), input, { retryToken: write.retryToken });
+      return reply.status(201).send(recorded);
     } catch (err) {
       const refusal = refusalOf(err);
       if (!refusal) {
@@ -132,11 +192,29 @@ export const verificationRoutes: FastifyPluginAsync<VerificationRoutesOptions> =
     if (!parsed.success) {
       return reply.status(400).send(invalidQueryBody(parsed.error));
     }
-    const { limit = 25, offset = 0, search } = parsed.data;
-    const page = await verificationReadService.entries(id.trim().toLowerCase(), { search, limit, offset });
+    const { limit = 25, offset = 0, search, result } = parsed.data;
+    const page = await verificationReadService.entries(id.trim().toLowerCase(), { search, result, limit, offset });
     if (!page) {
       return reply.status(404).send(errorBody(404, 'NOT_FOUND', 'Verification Round not found'));
     }
     return reply.status(200).send(page);
+  });
+
+  /**
+   * GET /assets/:id/verifications
+   * The Asset's current result in every Round it belongs to, newest start date first ("ผลตรวจประจำปี", F006-T2).
+   * Protected: requires 'asset:view' capability, like the Asset itself
+   */
+  fastify.get('/assets/:id/verifications', { preHandler: [requireCapability('asset:view')] }, async (request, reply) => {
+    reply.header('Cache-Control', 'no-store');
+    const { id } = request.params as { id: string };
+    if (!isValidUuid(id)) {
+      return reply.status(400).send(invalidAssetId());
+    }
+    const items = await verificationReadService.verificationsOfAsset(id.trim().toLowerCase());
+    if (!items) {
+      return reply.status(404).send(errorBody(404, 'NOT_FOUND', 'Asset not found'));
+    }
+    return reply.status(200).send({ items });
   });
 };

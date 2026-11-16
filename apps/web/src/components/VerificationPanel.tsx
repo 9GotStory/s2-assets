@@ -1,0 +1,129 @@
+import React from 'react';
+import { Link } from 'react-router';
+import { VerificationRecordForm } from './VerificationRecordForm';
+import { thaiDate } from './assignmentFacts';
+import { CONDITION_LABELS, NOT_RETURNED_LABEL, ON_LOAN_LABEL, borrowerText, type AssetNotReturned, type OnLoan } from './loanFacts';
+import { UNDER_REPAIR_LABELS, type UnderRepair } from './repairFacts';
+import {
+  RESULT_LABELS,
+  VERIFICATION_DATE_LABEL,
+  VERIFICATION_PANEL_LABEL,
+  VERIFICATION_ROUND_LABEL,
+  recordedContextText,
+  roundLabel,
+  type AssetVerificationPanel,
+  type VerificationRevision,
+} from './verificationFacts';
+
+export interface VerificationPanelProps {
+  assetId: string;
+  panel: AssetVerificationPanel;
+  // Whether the viewer holds 'verification:record'.
+  canRecord: boolean;
+  // The Asset's Loan and Repair facts now, shown as context only (#125 AV-09, Q14).
+  onLoan: OnLoan | null;
+  notReturned: AssetNotReturned | null;
+  underRepair: UnderRepair | null;
+  csrfToken: string | null;
+  onRecorded: () => Promise<void>;
+  onPermissionRevoked?: (statusCode?: number) => void;
+}
+
+const THAI_DATE_TIME = new Intl.DateTimeFormat('th-TH', { dateStyle: 'medium', timeStyle: 'short', timeZone: 'Asia/Bangkok' });
+
+const termStyle: React.CSSProperties = { fontWeight: 500, color: '#4b5563' };
+const valueStyle: React.CSSProperties = { margin: 0, color: '#111827', minWidth: 0, overflowWrap: 'anywhere' };
+
+// An Asset's current result, with when and by whom it was recorded (#125 AV-23, Q20).
+export const RevisionFacts: React.FC<{ revision: VerificationRevision; testId: string }> = ({ revision, testId }) => {
+  const context = recordedContextText(revision);
+  return (
+    <dl data-testid={testId} style={{ display: 'grid', gridTemplateColumns: 'max-content minmax(0, 1fr)', gap: '0.375rem 0.75rem', margin: 0, fontSize: '0.9375rem' }}>
+      <dt style={termStyle}>ผลตรวจ:</dt>
+      <dd data-testid={`${testId}-result`} style={{ ...valueStyle, fontWeight: 600 }}>
+        {RESULT_LABELS[revision.result]}
+        {revision.condition && <> · สภาพ{CONDITION_LABELS[revision.condition]}</>}
+      </dd>
+      <dt style={termStyle}>{VERIFICATION_DATE_LABEL}:</dt>
+      <dd style={valueStyle}>
+        <time dateTime={revision.verification_date}>{thaiDate(revision.verification_date)}</time>
+      </dd>
+      <dt style={termStyle}>บันทึกเมื่อ:</dt>
+      <dd style={valueStyle}>
+        <time dateTime={revision.recorded_at}>{THAI_DATE_TIME.format(new Date(revision.recorded_at))}</time>
+      </dd>
+      <dt style={termStyle}>ผู้ตรวจ:</dt>
+      <dd data-testid={`${testId}-recorded-by`} style={valueStyle}>
+        {revision.recorded_by_username ?? revision.recorded_by}
+      </dd>
+      {revision.note && (
+        <>
+          <dt style={termStyle}>หมายเหตุ:</dt>
+          <dd style={{ ...valueStyle, whiteSpace: 'pre-line' }}>{revision.note}</dd>
+        </>
+      )}
+      {context && (
+        <>
+          <dt style={termStyle}>ขณะตรวจ:</dt>
+          <dd style={valueStyle}>{context}</dd>
+        </>
+      )}
+    </dl>
+  );
+};
+
+/**
+ * "ตรวจประจำปี": the open Round's panel on the Asset page (F006-T2, #125 Q5). Scanning the QR label opens this
+ * page and records nothing (AV-04). The panel shows the record form while the Asset has no result, the result
+ * once it has one, or that the Asset is not in the Round; and the Loan or Repair context in each case.
+ */
+export const VerificationPanel: React.FC<VerificationPanelProps> = ({ assetId, panel, canRecord, onLoan, notReturned, underRepair, csrfToken, onRecorded, onPermissionRevoked }) => {
+  const { open_round: round, entry } = panel;
+  // The Asset page reads the Asset only once /auth/session-check has answered, so the CSRF token is there before
+  // this form is (#135).
+  const mayRecord = canRecord && entry !== null && entry.current === null;
+
+  return (
+    <section aria-labelledby="verification-panel-heading" id="verification-panel" style={{ marginBottom: '2rem', border: '2px solid #2563eb', borderRadius: '8px', padding: '1rem' }}>
+      <h2 id="verification-panel-heading" style={{ fontSize: '1.125rem', fontWeight: 600, marginTop: 0, marginBottom: '0.5rem', color: '#1e3a8a' }}>
+        {VERIFICATION_PANEL_LABEL}
+      </h2>
+      <p style={{ margin: '0 0 0.75rem 0', fontSize: '0.875rem', color: '#374151', overflowWrap: 'anywhere' }}>
+        {VERIFICATION_ROUND_LABEL}ที่เปิดอยู่:{' '}
+        <Link to={`/verification-rounds/${round.id}`} id="verification-panel-round-link" style={{ color: '#2563eb', textDecoration: 'underline' }}>
+          {roundLabel(round)}
+        </Link>
+      </p>
+
+      {(onLoan || notReturned || underRepair) && (
+        <ul data-testid="verification-panel-context" style={{ margin: '0 0 0.75rem 0', padding: '0.5rem 0.75rem 0.5rem 1.75rem', backgroundColor: '#fef3c7', borderRadius: '6px', fontSize: '0.875rem', color: '#92400e' }}>
+          {onLoan && (
+            <li>
+              {ON_LOAN_LABEL} ผู้ยืม {borrowerText(onLoan.borrower)} กำหนดคืน <time dateTime={onLoan.due_date}>{thaiDate(onLoan.due_date)}</time>
+            </li>
+          )}
+          {notReturned && (
+            <li>
+              {NOT_RETURNED_LABEL} เมื่อ <time dateTime={notReturned.not_returned_date}>{thaiDate(notReturned.not_returned_date)}</time>
+            </li>
+          )}
+          {underRepair && <li>{UNDER_REPAIR_LABELS[underRepair.repair_kind]}</li>}
+          <li style={{ listStyle: 'none', marginLeft: '-1rem', color: '#6b7280' }}>ข้อมูลนี้ใช้ประกอบเท่านั้น ไม่ถือเป็นการพบ และบันทึกผลได้ตามที่ตรวจจริง</li>
+        </ul>
+      )}
+
+      {entry === null && (
+        <p data-testid="verification-panel-not-in-round" role="note" style={{ margin: 0, fontSize: '0.9375rem', color: '#991b1b' }}>
+          ครุภัณฑ์นี้ไม่อยู่ในรายการของรอบตรวจนี้ กรุณาแจ้งผู้ดูแลพัสดุ
+        </p>
+      )}
+      {entry?.current && <RevisionFacts revision={entry.current} testId="verification-panel-current" />}
+      {entry && !entry.current && !mayRecord && (
+        <p data-testid="verification-panel-not-yet-verified" style={{ margin: 0, fontSize: '0.9375rem', color: '#92400e', fontWeight: 600 }}>
+          {RESULT_LABELS.NOT_YET_VERIFIED}
+        </p>
+      )}
+      {mayRecord && <VerificationRecordForm assetId={assetId} round={round} csrfToken={csrfToken} onRecorded={onRecorded} onPermissionRevoked={onPermissionRevoked} />}
+    </section>
+  );
+};

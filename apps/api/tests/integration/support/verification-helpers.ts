@@ -51,6 +51,30 @@ export function verificationHelpers(context: () => { api: ApiHarness; custodian:
     }
   };
 
+  // A first result for an Asset in a Round, Found ปกติ unless `payload` says otherwise (F006-T2).
+  const finding = (overrides: Record<string, unknown> = {}) => ({ result: 'FOUND', condition: 'NORMAL', ...overrides });
+
+  const record = (roundId: string, assetId: string, payload: Record<string, unknown>, token: string = crypto.randomUUID(), actor: Actor = context().custodian) =>
+    context().api.post(actor, `/verification-rounds/${roundId}/assets/${assetId}/verifications`, payload, { 'x-retry-token': token });
+
+  // A recorded result's answer: its revision and the scope entry's version.
+  const recorded = async (roundId: string, assetId: string, overrides: Record<string, unknown> = {}, actor: Actor = context().custodian) => {
+    const res = await record(roundId, assetId, finding(overrides), crypto.randomUUID(), actor);
+    expect(res.statusCode).toBe(201);
+    return res.json();
+  };
+
+  // The scope entry of an Asset in a Round, as the Round's entries list it.
+  const entryOf = async (roundId: string, assetId: string, actor: Actor = context().reader) => {
+    for (let offset = 0; ; offset += 100) {
+      const page = await entriesOf(roundId, `limit=100&offset=${offset}`, actor);
+      const found = page.items.find((item: any) => item.asset_id === assetId);
+      if (found || !page.has_more) {
+        return found;
+      }
+    }
+  };
+
   /**
    * Test only, until F006-T6 (#131) closes a Round through the API: marks every open Round closed, so the
    * next test can open one (#125 Q17).
@@ -59,5 +83,5 @@ export function verificationHelpers(context: () => { api: ApiHarness; custodian:
     await context().api.pool.query(`UPDATE verification_rounds SET state = 'CLOSED' WHERE state = 'OPEN'`);
   };
 
-  return { opening, open, opened, roundOf, roundsOf, entriesOf, scopeOf, closedStandIn };
+  return { opening, open, opened, roundOf, roundsOf, entriesOf, scopeOf, finding, record, recorded, entryOf, closedStandIn };
 }

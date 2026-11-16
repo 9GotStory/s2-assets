@@ -3,13 +3,16 @@ import { useParams, useNavigate, Link } from 'react-router';
 import { QueryClient, QueryClientProvider, useQuery, useQueryClient } from '@tanstack/react-query';
 import { AssetCorrectionForm } from '../components/AssetCorrectionForm';
 import { AssetQrLabel } from '../components/AssetQrLabel';
+import { AssetVerificationSection } from '../components/AssetVerificationSection';
 import { AssignmentSection } from '../components/AssignmentSection';
 import { EvidencePanel } from '../components/EvidencePanel';
 import { LoanSection } from '../components/LoanSection';
 import { RepairSection } from '../components/RepairSection';
+import { VerificationPanel } from '../components/VerificationPanel';
 import { type CurrentAssignment } from '../components/ReferenceContextFields';
 import { type AssetNotReturned, type OnLoan, type StartLoanWarning } from '../components/loanFacts';
 import { type UnderRepair } from '../components/repairFacts';
+import { type AssetVerificationPanel } from '../components/verificationFacts';
 
 export interface AssetRecord {
   id: string;
@@ -64,6 +67,9 @@ export interface AssetDetailResponse {
   next_recommended_maintenance_date?: string | null;
   // F005-T7: whether any of the Asset's Repair Records is in a Repair Conflict.
   has_repair_conflict?: boolean;
+  // F006-T2: the open Round's "ตรวจประจำปี" panel, null while no Round is open, and whether the viewer holds 'verification:record'.
+  verification?: AssetVerificationPanel | null;
+  can_record_verification?: boolean;
 }
 
 export const AssetDetail: React.FC = () => {
@@ -778,6 +784,27 @@ const AssetDetailContent: React.FC = () => {
           </dl>
         </section>
 
+        {/* Annual verification (F006-T2): the open Round's panel, right after the identity a QR scan confirms */}
+        {assetData.verification && (
+          <VerificationPanel
+            assetId={asset.id}
+            panel={assetData.verification}
+            canRecord={Boolean(assetData.can_record_verification && !isPermissionRevoked)}
+            onLoan={assetData.on_loan ?? null}
+            notReturned={assetData.not_returned ?? null}
+            underRepair={assetData.under_repair ?? null}
+            csrfToken={csrfToken}
+            onRecorded={async () => {
+              setRefreshError(null);
+              const refetchResult = await refetch();
+              if (refetchResult.isError) {
+                setRefreshError('บันทึกผลตรวจสำเร็จ แต่การดึงข้อมูลล่าสุดล้มเหลว กรุณากดปุ่มเพื่อโหลดข้อมูลใหม่');
+              }
+            }}
+            onPermissionRevoked={handlePermissionRevoked}
+          />
+        )}
+
         {/* Permanent Assignment (F003-T1, ADR 0001): Current Assignment and timeline */}
         <AssignmentSection
           assetId={asset.id}
@@ -845,6 +872,9 @@ const AssetDetailContent: React.FC = () => {
           }}
           onPermissionRevoked={handlePermissionRevoked}
         />
+
+        {/* Annual verification results (F006-T2): the Asset's current result in every Round */}
+        <AssetVerificationSection assetId={asset.id} actorId={currentUser?.id ?? null} dataUpdatedAt={dataUpdatedAt} onPermissionRevoked={handlePermissionRevoked} />
 
         {/* QR Code and Minimal Printing Panel (T8) */}
         <AssetQrLabel
