@@ -44,6 +44,7 @@ podman run --rm --userns=keep-id --security-opt label=disable -v "$PWD:/work" -w
 [[ $(sha256sum pnpm-lock.yaml) == "$lockfile" ]] || { note "pnpm install changed pnpm-lock.yaml" >&2; exit 1; }
 
 before=$(test_containers)
+remove_test_containers_on_exit
 
 status=0
 podman run --rm --name "s2-assets-integration-$$" \

@@ -224,6 +224,26 @@ describe('Database Migrations Integration', () => {
     }
   });
 
+  // PostgreSQL truncates a longer identifier to 63 bytes with only a NOTICE, so a name exactly that long was
+  // probably cut: a test or a later migration that names it in full misses it (F006-T2 retro).
+  it('gives no constraint, index, table or sequence a name PostgreSQL truncated to 63 bytes', async () => {
+    const client = new Client({ connectionString: databaseUrl });
+    await client.connect();
+    try {
+      const truncated = await client.query(`
+        SELECT conname AS name FROM pg_constraint c JOIN pg_namespace n ON n.oid = c.connamespace
+        WHERE n.nspname = 'public' AND octet_length(conname) = 63
+        UNION ALL
+        SELECT relname FROM pg_class c JOIN pg_namespace n ON n.oid = c.relnamespace
+        WHERE n.nspname = 'public' AND octet_length(relname) = 63
+        ORDER BY 1
+      `);
+      expect(truncated.rows.map(({ name }) => name)).toEqual([]);
+    } finally {
+      await client.end();
+    }
+  });
+
   it('is idempotent when running latest again with no pending migrations', async () => {
     const rerunResult = await runMigrator({
       command: 'latest',

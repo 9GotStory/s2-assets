@@ -58,6 +58,7 @@ podman run --rm --security-opt label=disable -v "$WORKSPACE:/work" -w /work "$IM
 
 ensure_postgres_image
 before=$(test_containers)
+remove_test_containers_on_exit
 
 # Every run happens, and the job fails once with all the results.
 status=0
