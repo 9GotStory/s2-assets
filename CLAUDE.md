@@ -90,8 +90,9 @@ run once, after the code-review fixes are committed: a full run started before t
 run again.
 A pull request into a base other than `main` or `feature/*` gets no CI (`ci.yml`): run each job
 locally and record each job's exact result in the pull request: that record is its check. Into
-`main` or `feature/*`, the merge waits for CI Gate (`scripts/ci/require-ci-gate.sh`); when GitHub
-has created no run for the head 5 minutes after the pull request opened, close and reopen it. A change
+`main` or `feature/*`, the merge waits for CI Gate (`scripts/ci/require-ci-gate.sh`):
+`scripts/dev/await-ci.sh <n>` waits for the run and prints the head to merge with. When GitHub has
+created no run for the head 5 minutes after the pull request opened, it says so: close and reopen. A change
 that touches only documentation needs only `git diff --check <base>...HEAD`. In both, `<base>` is
 the integration-branch commit the task started from.
 

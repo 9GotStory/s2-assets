@@ -50,6 +50,9 @@ db_has_cluster() { # the data volume holds an initialized PostgreSQL 18 cluster
 db_sql() { # db_sql SQL — one query as the owner role over the container's local socket
   podman exec "$DB_CTR" psql -X -q -At -v ON_ERROR_STOP=1 -U "$DB_NAME" -d "$DB_NAME" -c "$1"
 }
+latest_migration() { # prints the name of the latest migration the database has applied
+  db_sql 'SELECT name FROM kysely_migration ORDER BY name DESC LIMIT 1'
+}
 pending_migrations() { # prints the migration files of the checkout that the database has not applied
   local f files=() applied
   for f in "$SRC"/packages/db/src/migrations/*.ts; do f=${f##*/}; files+=("${f%.ts}"); done
