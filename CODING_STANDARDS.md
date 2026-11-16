@@ -59,6 +59,12 @@ Location `FOR SHARE`, that row orders the two writes: the test holds the other w
 uncommitted until the rule's read waits on it, as F006-T3 (#128) does for a Location deactivation.
 Holding another row that the write also takes makes the test wait on itself.
 
+A foreign key does not order a citing write against a void. Its check locks the cited row `FOR KEY
+SHARE`, and a void's `UPDATE … SET is_voided = true` changes no key, so it takes `FOR NO KEY UPDATE`
+and neither waits for the other (PostgreSQL 18, §13.3.2, Table 13.3). A write that cites a fact only
+while it is not voided takes a lock the void also takes before it checks, and its order test queues
+the void first. F006-T4 (#129) found this for the Verification Revision that T7 and T8 cite.
+
 ## A journey step waits for the URL it changes
 
 A journey step that changes the URL, such as a filter link or a select that navigates, waits for that

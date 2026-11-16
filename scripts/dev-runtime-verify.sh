@@ -47,7 +47,7 @@ check "published only on 127.0.0.1:$API_PORT (API) and 127.0.0.1:$WEB_PORT (Web)
 check "API /health and /ready answer 200 at $API_ORIGIN" api_ok
 check "Web / and /login answer 200 at $WEB_ORIGIN" web_ok
 check "Web dev proxy reaches the API (/system/info answers 401 unauthenticated)" proxy_ok
-check "migrations: none pending" migrations_ok
+check "migrations: none pending (latest $(latest_migration 2>/dev/null || printf unknown))" migrations_ok
 check "database volume carries the $LABEL label" volume_ok
 check "runtime source is the promoted commit, clean" source_ok
 printf 'runtime source: %s @ %s\n' "$SRC" "$(git -C "$SRC" rev-parse HEAD 2>/dev/null || printf unknown)"
