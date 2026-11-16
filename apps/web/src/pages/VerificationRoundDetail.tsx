@@ -3,6 +3,7 @@ import { Link, useNavigate, useParams, useSearchParams } from 'react-router';
 import { QueryClient, QueryClientProvider, useQuery } from '@tanstack/react-query';
 import { REFERENCE_DIMENSIONS, entryLabel } from '../components/ReferenceContextFields';
 import { thaiDate, valueText } from '../components/assignmentFacts';
+import { RecordingContextLine } from '../components/VerificationPanel';
 import {
   FISCAL_YEAR_LABEL,
   RESULT_LABELS,
@@ -89,7 +90,6 @@ const readJson = async <T,>(url: string, signal: AbortSignal): Promise<T> => {
 // result and the Loan or Repair context that result kept (Q14).
 const ScopeEntryItem: React.FC<{ entry: ScopeEntry }> = ({ entry }) => {
   const { snapshot, current } = entry;
-  const context = current && recordedContextText(current);
   return (
     <li data-testid={`scope-entry-${entry.asset_id}`} style={{ padding: '0.75rem 0', borderBottom: '1px solid #e5e7eb', fontSize: '0.875rem' }}>
       <div style={{ display: 'flex', justifyContent: 'space-between', gap: '0.75rem', flexWrap: 'wrap' }}>
@@ -103,7 +103,11 @@ const ScopeEntryItem: React.FC<{ entry: ScopeEntry }> = ({ entry }) => {
       {current && (
         <div data-testid={`scope-entry-verification-${entry.asset_id}`} style={{ color: '#4b5563', marginTop: '0.25rem', overflowWrap: 'anywhere' }}>
           {VERIFICATION_DATE_LABEL} <time dateTime={current.verification_date}>{thaiDate(current.verification_date)}</time> บันทึกโดย {recordedByText(current)}
-          {context && <div style={{ color: '#92400e' }}>ขณะตรวจ: {context}</div>}
+          {recordedContextText(current) && (
+            <div style={{ color: '#92400e' }}>
+              ขณะตรวจ: <RecordingContextLine context={current} />
+            </div>
+          )}
         </div>
       )}
       <div style={{ color: '#4b5563', marginTop: '0.25rem', overflowWrap: 'anywhere' }}>

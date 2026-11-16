@@ -12,6 +12,7 @@ import {
   resultText,
   roundLabel,
   type AssetVerificationPanel,
+  type RecordingContext,
   type VerificationRevision,
 } from './verificationFacts';
 
@@ -30,9 +31,30 @@ const THAI_DATE_TIME = new Intl.DateTimeFormat('th-TH', { dateStyle: 'medium', t
 const termStyle: React.CSSProperties = { fontWeight: 500, color: '#4b5563' };
 const valueStyle: React.CSSProperties = { margin: 0, color: '#111827', minWidth: 0, overflowWrap: 'anywhere' };
 
+// The Loan or Repair context as a line, linking the Repair Record it names (#125 Q14); nothing when there is none.
+export const RecordingContextLine: React.FC<{ context: RecordingContext }> = ({ context }) => {
+  const text = recordedContextText(context);
+  if (!text) {
+    return null;
+  }
+  return (
+    <>
+      {text}
+      {context.repair_context && (
+        <>
+          {' '}
+          <Link to={`/repairs/${context.repair_context.repair_record_id}`} style={{ color: '#2563eb', textDecoration: 'underline' }}>
+            ดูรายการซ่อม
+          </Link>
+        </>
+      )}
+    </>
+  );
+};
+
 // An Asset's current result, with when and by whom it was recorded (#125 AV-23, Q20).
 export const RevisionFacts: React.FC<{ revision: VerificationRevision; testId: string }> = ({ revision, testId }) => {
-  const context = recordedContextText(revision);
+  const hasContext = recordedContextText(revision) !== null;
   return (
     <dl data-testid={testId} style={{ display: 'grid', gridTemplateColumns: 'max-content minmax(0, 1fr)', gap: '0.375rem 0.75rem', margin: 0, fontSize: '0.9375rem' }}>
       <dt style={termStyle}>ผลตรวจ:</dt>
@@ -57,10 +79,12 @@ export const RevisionFacts: React.FC<{ revision: VerificationRevision; testId: s
           <dd style={{ ...valueStyle, whiteSpace: 'pre-line' }}>{revision.note}</dd>
         </>
       )}
-      {context && (
+      {hasContext && (
         <>
           <dt style={termStyle}>ขณะตรวจ:</dt>
-          <dd style={valueStyle}>{context}</dd>
+          <dd style={valueStyle}>
+            <RecordingContextLine context={revision} />
+          </dd>
         </>
       )}
     </dl>
@@ -74,7 +98,6 @@ export const RevisionFacts: React.FC<{ revision: VerificationRevision; testId: s
  */
 export const VerificationPanel: React.FC<VerificationPanelProps> = ({ assetId, panel, canRecord, csrfToken, onRecorded, onPermissionRevoked }) => {
   const { open_round: round, entry, context } = panel;
-  const contextText = recordedContextText(context);
   // The Asset page reads the Asset only once /auth/session-check has answered, so the CSRF token is there before
   // this form is (#135).
   const mayRecord = canRecord && entry !== null && entry.current === null;
@@ -91,18 +114,10 @@ export const VerificationPanel: React.FC<VerificationPanelProps> = ({ assetId, p
         </Link>
       </p>
 
-      {contextText && (
+      {recordedContextText(context) && (
         <div data-testid="verification-panel-context" style={{ margin: '0 0 0.75rem 0', padding: '0.5rem 0.75rem', backgroundColor: '#fef3c7', borderRadius: '6px', fontSize: '0.875rem', color: '#92400e', overflowWrap: 'anywhere' }}>
           <div>
-            ขณะนี้: {contextText}
-            {context.repair_context && (
-              <>
-                {' '}
-                <Link to={`/repairs/${context.repair_context.repair_record_id}`} style={{ color: '#2563eb', textDecoration: 'underline' }}>
-                  ดูรายการซ่อม
-                </Link>
-              </>
-            )}
+            ขณะนี้: <RecordingContextLine context={context} />
           </div>
           <div style={{ color: '#6b7280' }}>ข้อมูลนี้ใช้ประกอบเท่านั้น ไม่ถือเป็นการพบ และบันทึกผลได้ตามที่ตรวจจริง</div>
         </div>

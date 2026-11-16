@@ -387,8 +387,9 @@ export interface LoanContext {
   due_date: string;
 }
 
-// A Borrower by name, as the web's borrowerText shows one: a Person by their name, an External Borrower by
-// contact and organization. The phone number stays out (LR-15).
+// A Borrower by name: a Person by the name they have now, an External Borrower by contact and organization.
+// Unlike the web's borrowerText, it marks no inactive Person: the name is kept as text, and an Asset
+// Verification keeps it as it was. The phone number stays out (LR-15).
 const borrowerDisplayOf = (borrower: Borrower): string => {
   if (borrower.kind === 'INTERNAL') {
     return borrower.person.name;

@@ -2,6 +2,7 @@ import React from 'react';
 import { Link } from 'react-router';
 import { useQuery } from '@tanstack/react-query';
 import { thaiDate } from './assignmentFacts';
+import { RecordingContextLine } from './VerificationPanel';
 import {
   ASSET_VERIFICATIONS_LABEL,
   ROUND_STATE_LABELS,
@@ -64,7 +65,6 @@ export const AssetVerificationSection: React.FC<AssetVerificationSectionProps> =
         ) : (
           <ol data-testid="asset-verifications" style={{ listStyle: 'none', margin: 0, padding: 0 }}>
             {verifications.data.map(({ round, entry_id: entryId, result, current }) => {
-              const context = current && recordedContextText(current);
               return (
                 <li key={entryId} data-testid={`asset-verification-${round.id}`} style={{ borderTop: '1px solid #e5e7eb', padding: '0.75rem 0', fontSize: '0.875rem', color: '#374151', overflowWrap: 'anywhere' }}>
                   <div>
@@ -82,7 +82,11 @@ export const AssetVerificationSection: React.FC<AssetVerificationSectionProps> =
                       </span>
                     )}
                   </div>
-                  {context && <div style={{ color: '#92400e' }}>ขณะตรวจ: {context}</div>}
+                  {current && recordedContextText(current) && (
+                    <div style={{ color: '#92400e' }}>
+                      ขณะตรวจ: <RecordingContextLine context={current} />
+                    </div>
+                  )}
                 </li>
               );
             })}
