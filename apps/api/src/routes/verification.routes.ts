@@ -10,6 +10,7 @@ import { ValidationError } from '../services/validation-error.ts';
 import { DISCREPANCIES, VerificationReadService, type Discrepancy } from '../services/verification-read.service.ts';
 import {
   AnotherVerificationRoundOpenError,
+  AssetAlreadyInVerificationScopeError,
   AssetNotInVerificationScopeError,
   CurrentResultRefusal,
   EmptyVerificationScopeError,
@@ -32,6 +33,15 @@ const OpenVerificationRoundSchema = z
     notes: z.string().nullable().optional(),
     organization_unit_ids: z.array(z.string()).optional(),
     location_ids: z.array(z.string()).optional(),
+    retry_token: z.string().optional(),
+  })
+  .strict();
+
+// #125 Q11: what a Late Addition takes: a registered Asset not in the open Round, and why it is added.
+const AddLateSchema = z
+  .object({
+    asset_id: z.string(),
+    reason: z.string(),
     retry_token: z.string().optional(),
   })
   .strict();
@@ -63,8 +73,8 @@ const CorrectVerificationSchema = z
   })
   .strict();
 
-// A Round's entries (#125 AR-14, AV-19, P5): a search of the Scope Snapshot, filters by current result, by a
-// Discrepancy and by snapshot Location, and a page read as on the Asset list. An Asset name is free text, so the
+// A Round's entries (#125 AR-14, AV-19, AV-21, P5): a search of the Scope Snapshot, filters by current result, by a
+// Discrepancy, by how an Asset joined and by snapshot Location, and a page read as on the Asset list. An Asset name is free text, so the
 // search keeps tab and line breaks inside it and refuses the other control characters (CODING_STANDARDS.md).
 const ScopeEntryQuerySchema = z
   .object({
@@ -77,6 +87,7 @@ const ScopeEntryQuerySchema = z
       .optional(),
     result: z.enum(['FOUND', 'NOT_FOUND', 'NOT_YET_VERIFIED']).optional(),
     discrepancy: z.enum(DISCREPANCIES as [Discrepancy, ...Discrepancy[]]).optional(),
+    joined_as: z.enum(['OPENING', 'LATE_ADDITION']).optional(),
     location_id: z
       .string()
       .refine(isValidUuid, 'must be a valid UUID')
@@ -98,6 +109,7 @@ const refusalOf = (err: unknown) => {
     err instanceof EmptyVerificationScopeError ||
     err instanceof VerificationRoundNotOpenError ||
     err instanceof AssetNotInVerificationScopeError ||
+    err instanceof AssetAlreadyInVerificationScopeError ||
     err instanceof VerificationTargetNotFoundError ||
     err instanceof RetryTokenConflictError ||
     err instanceof ValidationError
@@ -127,6 +139,33 @@ export const verificationRoutes: FastifyPluginAsync<VerificationRoutesOptions> =
     try {
       const { retry_token: _retryToken, ...input } = write.data;
       return reply.status(201).send(await verificationService.open(request.user!.id, input, { retryToken: write.retryToken }));
+    } catch (err) {
+      const refusal = refusalOf(err);
+      if (!refusal) {
+        throw err;
+      }
+      return reply.status(refusal.statusCode).send(refusal);
+    }
+  });
+
+  /**
+   * POST /verification-rounds/:id/late-additions
+   * Adds an Asset that is not in the open Round to its Scope Snapshot, with a reason ("เพิ่มเข้ารอบภายหลัง", F006-T5).
+   * Protected: requires 'verification:manage' capability (Asset Custodian)
+   */
+  fastify.post('/verification-rounds/:id/late-additions', { preHandler: [requireCapability('verification:manage')] }, async (request, reply) => {
+    const { id } = request.params as { id: string };
+    if (!isValidUuid(id)) {
+      return reply.status(400).send(invalidRoundId());
+    }
+    const write = parseWrite(AddLateSchema, request);
+    if ('refusal' in write) {
+      return reply.status(400).send(write.refusal);
+    }
+
+    try {
+      const { retry_token: _retryToken, ...input } = write.data;
+      return reply.status(201).send(await verificationService.addLate(request.user!.id, id.trim().toLowerCase(), input, { retryToken: write.retryToken }));
     } catch (err) {
       const refusal = refusalOf(err);
       if (!refusal) {
@@ -232,7 +271,7 @@ export const verificationRoutes: FastifyPluginAsync<VerificationRoutesOptions> =
   /**
    * GET /verification-rounds/:id/entries
    * A page of the Round's Scope Snapshot, searchable (F006-T1), filtered by result (F006-T2), Discrepancy and
-   * snapshot Location (F006-T3). The logger names a request by its path, so a search stays out of the logs.
+   * snapshot Location (F006-T3), and by Late Addition (F006-T5). The logger names a request by its path, so a search stays out of the logs.
    * Protected: requires 'asset:view' capability
    */
   fastify.get('/verification-rounds/:id/entries', { preHandler: [requireCapability('asset:view')] }, async (request, reply) => {

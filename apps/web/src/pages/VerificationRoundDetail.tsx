@@ -10,6 +10,7 @@ import {
   DISCREPANCY_LABEL,
   DISCREPANCY_LABELS,
   FISCAL_YEAR_LABEL,
+  LATE_ADDITION_LABEL,
   RESULT_LABELS,
   ROUND_EVENT_LABELS,
   ROUND_STATE_LABELS,
@@ -34,21 +35,27 @@ const PAGE_SIZE = 25;
 const RESULT_FILTERS: readonly VerificationResult[] = ['FOUND', 'NOT_FOUND', 'NOT_YET_VERIFIED'];
 const isResultFilter = (value: string | null): value is VerificationResult => RESULT_FILTERS.includes(value as VerificationResult);
 const isDiscrepancyFilter = (value: string | null): value is Discrepancy => DISCREPANCIES.includes(value as Discrepancy);
+// How an Asset joined, as the list filters by it (F006-T5, #125 AV-21): only Late Additions, or every entry.
+const JOINED_AS_FILTERS: readonly ScopeEntry['joined_as'][] = ['LATE_ADDITION'];
+const isJoinedAsFilter = (value: string | null): value is ScopeEntry['joined_as'] => JOINED_AS_FILTERS.includes(value as ScopeEntry['joined_as']);
 
-// What the entry list shows: a search, a result, a Discrepancy and a snapshot Location, each null for any (#125 AV-19, P5).
+// What the entry list shows: a search, a result, a Discrepancy, how an Asset joined and a snapshot Location, each
+// null for any (#125 AV-19, AV-21, P5).
 interface ListFilters {
   search: string;
   result: VerificationResult | null;
   discrepancy: Discrepancy | null;
+  joinedAs: ScopeEntry['joined_as'] | null;
   locationId: string | null;
 }
 
 // The list's URL query for its filters and a page.
-const listQuery = ({ search, result, discrepancy, locationId }: ListFilters, offset: number): string => {
+const listQuery = ({ search, result, discrepancy, joinedAs, locationId }: ListFilters, offset: number): string => {
   const params = new URLSearchParams();
   if (search.trim()) params.set('search', search.trim());
   if (result) params.set('result', result);
   if (discrepancy) params.set('discrepancy', discrepancy);
+  if (joinedAs) params.set('joined_as', joinedAs);
   if (locationId) params.set('location_id', locationId);
   if (offset > 0) params.set('offset', String(offset));
   return params.toString();
@@ -154,11 +161,11 @@ const readJson = async <T,>(url: string, signal: AbortSignal): Promise<T> => {
   return res.json();
 };
 
-// One Asset of the Scope Snapshot as the register showed it when the Round opened (#125 Q4), with its current
-// result, its Observed Location and Discrepancies (Q7), the Loan or Repair context that result kept (Q14), and its
-// revisions (F006-T4).
+// One Asset of the Scope Snapshot as the register showed it when it joined the Round (#125 Q4), with its current
+// result, its Observed Location and Discrepancies (Q7), the Loan or Repair context that result kept (Q14), its
+// revisions (F006-T4), and, for a Late Addition, who added it, when and why (F006-T5, AV-21).
 const ScopeEntryItem: React.FC<{ roundId: string; entry: ScopeEntry; dataUpdatedAt: number }> = ({ roundId, entry, dataUpdatedAt }) => {
-  const { snapshot, current } = entry;
+  const { snapshot, current, late_addition: lateAddition } = entry;
   return (
     <li data-testid={`scope-entry-${entry.asset_id}`} style={{ padding: '0.75rem 0', borderBottom: '1px solid #e5e7eb', fontSize: '0.875rem' }}>
       <div style={{ display: 'flex', justifyContent: 'space-between', gap: '0.75rem', flexWrap: 'wrap' }}>
@@ -169,6 +176,13 @@ const ScopeEntryItem: React.FC<{ roundId: string; entry: ScopeEntry; dataUpdated
           {resultText(entry.result, current?.condition)}
         </span>
       </div>
+      {lateAddition && (
+        <div data-testid={`scope-entry-late-addition-${entry.asset_id}`} style={{ color: '#6b21a8', marginTop: '0.25rem', overflowWrap: 'anywhere' }}>
+          <span style={{ fontWeight: 600 }}>{LATE_ADDITION_LABEL}</span> โดย {lateAddition.recorded_by_username ?? lateAddition.recorded_by} เมื่อ{' '}
+          <time dateTime={lateAddition.recorded_at}>{THAI_DATE_TIME.format(new Date(lateAddition.recorded_at))}</time>
+          <div style={{ whiteSpace: 'pre-line' }}>เหตุผล: {lateAddition.reason}</div>
+        </div>
+      )}
       {current && (
         <div data-testid={`scope-entry-verification-${entry.asset_id}`} style={{ color: '#4b5563', marginTop: '0.25rem', overflowWrap: 'anywhere' }}>
           {VERIFICATION_DATE_LABEL} <time dateTime={current.verification_date}>{thaiDate(current.verification_date)}</time> บันทึกโดย {recordedByText(current)}
@@ -203,10 +217,12 @@ const VerificationRoundDetailContent: React.FC = () => {
   const search = searchParams.get('search') ?? '';
   const resultParam = searchParams.get('result');
   const discrepancyParam = searchParams.get('discrepancy');
+  const joinedAsParam = searchParams.get('joined_as');
   const filters: ListFilters = {
     search,
     result: isResultFilter(resultParam) ? resultParam : null,
     discrepancy: isDiscrepancyFilter(discrepancyParam) ? discrepancyParam : null,
+    joinedAs: isJoinedAsFilter(joinedAsParam) ? joinedAsParam : null,
     locationId: searchParams.get('location_id') || null,
   };
   const offset = Number(searchParams.get('offset') ?? 0) || 0;
@@ -398,6 +414,15 @@ const VerificationRoundDetailContent: React.FC = () => {
           valueLabel={(value) => DISCREPANCY_LABELS[value]}
           queryFor={(value) => listQuery({ ...filters, discrepancy: value }, 0)}
         />
+        <FilterLinks
+          label={`กรองตามรายการที่${LATE_ADDITION_LABEL}`}
+          idPrefix="scope-entry-joined-as-filter"
+          values={JOINED_AS_FILTERS}
+          current={filters.joinedAs}
+          allLabel="ทุกรายการในรอบ"
+          valueLabel={() => LATE_ADDITION_LABEL}
+          queryFor={(value) => listQuery({ ...filters, joinedAs: value }, 0)}
+        />
         {snapshotLocations.length > 0 && (
           <div style={{ marginBottom: '0.75rem', fontSize: '0.875rem' }}>
             {/* The Location the snapshot holds, to walk the office room by room (#125 P5). */}
@@ -464,8 +489,9 @@ const VerificationRoundDetailContent: React.FC = () => {
 };
 
 /**
- * A Verification Round's page (F006-T1, F006-T2, F006-T3): its fields, counts, history and Scope Snapshot with each
- * Asset's current result and Discrepancies, filtered by result, Discrepancy and snapshot Location.
+ * A Verification Round's page (F006-T1, F006-T2, F006-T3, F006-T5): its fields, counts, history and Scope Snapshot with
+ * each Asset's current result, Discrepancies and Late Addition, filtered by result, Discrepancy, Late Addition and
+ * snapshot Location.
  */
 export const VerificationRoundDetail: React.FC = () => {
   const [queryClient] = useState(() => new QueryClient({ defaultOptions: { queries: { retry: false, refetchOnWindowFocus: true } } }));

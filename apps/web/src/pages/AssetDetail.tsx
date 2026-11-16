@@ -71,6 +71,8 @@ export interface AssetDetailResponse {
   verification?: AssetVerificationPanel | null;
   can_record_verification?: boolean;
   can_correct_verification?: boolean;
+  // F006-T5: whether the viewer holds 'verification:manage', which adds an Asset to the open Round.
+  can_manage_verification?: boolean;
 }
 
 export const AssetDetail: React.FC = () => {
@@ -792,6 +794,7 @@ const AssetDetailContent: React.FC = () => {
             panel={assetData.verification}
             canRecord={Boolean(assetData.can_record_verification && !isPermissionRevoked)}
             canCorrect={Boolean(assetData.can_correct_verification && !isPermissionRevoked)}
+            canManage={Boolean(assetData.can_manage_verification && !isPermissionRevoked)}
             csrfToken={csrfToken}
             onRecorded={async () => {
               setRefreshError(null);

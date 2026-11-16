@@ -25,6 +25,7 @@ const migrationFolder = path.resolve(__dirname, '../../../../packages/db/src/mig
 // F006-T1 (#126): an Asset Custodian opens a Verification Round and sees its Scope Snapshot; a Read-only User
 // sees the Round with no action. F006-T2 (#127): Verification Staff record a result from the Asset page a QR
 // label opens, at a phone viewport. F006-T4 (#129): a Re-verification from the panel and a Verification Correction.
+// F006-T5 (#130): a Late Addition from the Asset page of an Asset registered after the Round opened.
 test.describe.serial('Verification journeys: Real SPA -> Composed API -> PostgreSQL (Seam B)', () => {
   let container: StartedPostgreSqlContainer;
   let pool: pg.Pool;
@@ -438,5 +439,60 @@ test.describe.serial('Verification journeys: Real SPA -> Composed API -> Postgre
     await expect(page.locator('[data-testid="verification-panel-current-result"]')).toHaveText('พบ · สภาพปกติ');
     await expect(page.locator('#verification-reverify-action')).toHaveCount(0);
     await expect(page.locator('#verification-void-action')).toHaveCount(0);
+  });
+
+  test('Journey F006-T5.1: an Asset Custodian registers an Asset after the Round opened, adds it from its Asset page with a reason, and the Round page lists it as a Late Addition', async ({ page, context }) => {
+    // Test only, until F006-T6 (#131) closes a Round through the API: the Round of an earlier journey must not stay open (#125 Q17).
+    await pool.query(`UPDATE verification_rounds SET state = 'CLOSED' WHERE state = 'OPEN'`);
+    const office = await referenceService.create('locations', adminUserId, 'ห้องพัสดุ E2E เพิ่มภายหลัง');
+    const { asset: printer } = await assetService.registerAsset(custodianUserId, { name: 'เครื่องพิมพ์ E2E เพิ่มภายหลัง', asset_number: 'E2E-VR-501', location_id: office.id, effective_date: '2026-01-05' } as any);
+    const { verification_round_id: roundId } = await verificationService.open(
+      custodianUserId,
+      { name: 'ตรวจสอบพัสดุประจำปี 2569 เพิ่มภายหลัง', fiscal_year: 2569, location_ids: [office.id] },
+      { retryToken: crypto.randomUUID() }
+    );
+
+    // The Custodian registers an Asset as Feature 002 does; the Round does not take it by itself.
+    await loginAs(context, custodianUserId);
+    await page.goto(`${targetBaseUrl}/assets/register`);
+    await page.locator('input#name').fill('จอภาพ E2E เพิ่มภายหลัง');
+    await page.locator('input#asset_number').fill('E2E-VR-502');
+    await page.locator('button#submit-register-btn').click();
+    await page.waitForURL(new RegExp(`${targetBaseUrl}/assets/[0-9a-f-]{36}$`));
+    const monitorId = page.url().split('/assets/')[1];
+    await expect(page.locator('[data-testid="verification-panel-not-in-round"]')).toHaveText('ครุภัณฑ์นี้ไม่อยู่ในรายการของรอบตรวจนี้');
+    await expect(page.locator('#verification-record-form')).toHaveCount(0);
+
+    // Verification Staff see the same note, asking for an Asset Custodian, with no way to add it.
+    await switchActor(page, context, staffUserId);
+    await page.goto(`${targetBaseUrl}/assets/${monitorId}`);
+    await expect(page.locator('[data-testid="verification-panel-not-in-round"]')).toHaveText('ครุภัณฑ์นี้ไม่อยู่ในรายการของรอบตรวจนี้ กรุณาแจ้งผู้ดูแลพัสดุ');
+    await expect(page.locator('#verification-late-addition-action')).toHaveCount(0);
+
+    // The Custodian adds it with a reason; it is then Not Yet Verified and can be recorded.
+    await switchActor(page, context, custodianUserId);
+    await page.goto(`${targetBaseUrl}/assets/${monitorId}`);
+    await page.locator('#verification-late-addition-action').click();
+    await expect(page.locator('#verification-late-addition-form').getByRole('heading', { name: 'เพิ่มเข้ารอบภายหลัง' })).toBeVisible();
+    await page.locator('#verification-late-addition-submit').click();
+    await expect(page.locator('[data-testid="verification-late-addition-form-error"]')).toContainText('เหตุผล');
+    await page.locator('#verification-late-addition-reason').fill('ลงทะเบียนหลังเปิดรอบ\nพบที่ห้องประชุม');
+    await page.locator('#verification-late-addition-submit').click();
+    await expect(page.locator('#verification-record-form')).toBeVisible();
+    await expect(page.locator('[data-testid="verification-panel-not-in-round"]')).toHaveCount(0);
+    await expect(page.locator('#verification-late-addition-form')).toHaveCount(0);
+
+    // The Round page counts it, marks it with who added it and why, and filters by Late Addition.
+    await page.goto(`${targetBaseUrl}/verification-rounds/${roundId}`);
+    await expect(page.locator('[data-testid="verification-round-count-in-scope"]')).toContainText('2');
+    await expect(page.locator(`[data-testid="scope-entry-late-addition-${printer.id}"]`)).toHaveCount(0);
+    const lateAddition = page.locator(`[data-testid="scope-entry-late-addition-${monitorId}"]`);
+    await expect(lateAddition).toContainText('เพิ่มเข้ารอบภายหลัง โดย custodian_verification เมื่อ');
+    await expect(lateAddition).toContainText('เหตุผล: ลงทะเบียนหลังเปิดรอบ\nพบที่ห้องประชุม');
+    await page.locator('#scope-entry-joined-as-filter-LATE_ADDITION').click();
+    await expect(page).toHaveURL(/joined_as=LATE_ADDITION/);
+    await expect(page.locator('#scope-entry-list-count')).toContainText('พบ 1 รายการ');
+    await expect(page.locator(`[data-testid="scope-entry-result-${monitorId}"]`)).toHaveText('ยังไม่ได้ตรวจ');
+    await expect(page.locator(`[data-testid="scope-entry-${printer.id}"]`)).toHaveCount(0);
   });
 });

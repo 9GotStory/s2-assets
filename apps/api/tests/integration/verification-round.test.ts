@@ -120,6 +120,7 @@ describe('Open a Verification Round (Seam A - F006-T1)', () => {
         id: expect.stringMatching(UUID),
         asset_id: placed,
         joined_as: 'OPENING',
+        late_addition: null,
         snapshot: {
           asset_number: expect.stringMatching(/^VR-/),
           serial_number: 'SN-01',

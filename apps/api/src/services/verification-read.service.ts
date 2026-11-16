@@ -140,11 +140,21 @@ export interface ScopeSnapshot {
   legacy_responsible_person_text: string | null;
 }
 
+// Who added a Late Addition to a Round, when and why (F006-T5, #125 AV-21).
+export interface LateAddition {
+  reason: string;
+  recorded_by: string;
+  recorded_by_username: string | null;
+  recorded_at: string;
+}
+
 // One Asset in a Round's Scope Snapshot, with its current result.
 export interface ScopeEntry {
   id: string;
   asset_id: string;
   joined_as: 'OPENING' | 'LATE_ADDITION';
+  // Null for an Asset that joined when the Round opened.
+  late_addition: LateAddition | null;
   snapshot: ScopeSnapshot;
   result: VerificationResult;
   current: VerificationRevision | null;
@@ -161,6 +171,8 @@ export interface ScopeEntryFilters {
   result?: VerificationResult;
   // A Discrepancy the current result notes (F006-T3, AV-19).
   discrepancy?: Discrepancy;
+  // How the Asset joined the Round: at opening, or as a Late Addition (F006-T5, AV-21).
+  joined_as?: ScopeEntry['joined_as'];
   // The Location the Scope Snapshot holds, to walk the office room by room (P5).
   location_id?: string;
   limit: number;
@@ -348,8 +360,8 @@ const eventOf = (row: any): VerificationRoundEvent => ({
 });
 
 /**
- * F006-T1 (#126), F006-T2 (#127), F006-T3 (#128), F006-T4 (#129): the reads of Verification Rounds, their Scope
- * Snapshots, results, Discrepancies and revisions.
+ * F006-T1 (#126), F006-T2 (#127), F006-T3 (#128), F006-T4 (#129), F006-T5 (#130): the reads of Verification Rounds,
+ * their Scope Snapshots and Late Additions, results, Discrepancies and revisions.
  */
 export class VerificationReadService {
   private readonly db: pg.Pool | any;
@@ -440,6 +452,10 @@ export class VerificationReadService {
     if (filters.discrepancy !== undefined) {
       conditions.push(DISCREPANCY_CONDITIONS[filters.discrepancy]('cur'));
     }
+    if (filters.joined_as !== undefined) {
+      params.push(filters.joined_as);
+      conditions.push(`e.joined_as = $${params.length}`);
+    }
     if (filters.location_id !== undefined) {
       params.push(filters.location_id);
       conditions.push(`e.location_id = $${params.length}`);
@@ -457,7 +473,8 @@ export class VerificationReadService {
          ORDER BY asset_number NULLS LAST, name NULLS LAST, asset_id
          LIMIT $${params.length - 1} OFFSET $${params.length}
        )
-       SELECT p.id, p.asset_id, p.joined_as, p.version, p.asset_number, p.serial_number, p.name, p.category,
+       SELECT p.id, p.asset_id, p.joined_as, p.reason, p.recorded_by, lu.username AS recorded_by_username, p.recorded_at,
+              p.version, p.asset_number, p.serial_number, p.name, p.category,
               p.location_id, l.name AS location_name, l.is_active AS location_active, p.legacy_location_text,
               p.organization_unit_id, o.name AS organization_unit_name, o.is_active AS organization_unit_active, p.legacy_organization_unit_text,
               p.responsible_person_id, pe.name AS responsible_person_name, pe.is_active AS responsible_person_active, p.legacy_responsible_person_text,
@@ -467,6 +484,7 @@ export class VerificationReadService {
        LEFT JOIN locations l ON l.id = p.location_id
        LEFT JOIN organization_units o ON o.id = p.organization_unit_id
        LEFT JOIN persons pe ON pe.id = p.responsible_person_id
+       LEFT JOIN users lu ON lu.id = p.recorded_by
        ORDER BY p.asset_number NULLS LAST, p.name NULLS LAST, p.asset_id`,
       params
     );
@@ -477,6 +495,10 @@ export class VerificationReadService {
         id: row.id,
         asset_id: row.asset_id,
         joined_as: row.joined_as,
+        late_addition:
+          row.joined_as === 'LATE_ADDITION'
+            ? { reason: row.reason, recorded_by: row.recorded_by, recorded_by_username: row.recorded_by_username ?? null, recorded_at: new Date(row.recorded_at).toISOString() }
+            : null,
         snapshot: {
           asset_number: row.asset_number,
           serial_number: row.serial_number,

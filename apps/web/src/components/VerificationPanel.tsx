@@ -1,11 +1,13 @@
 import React, { useState } from 'react';
 import { Link } from 'react-router';
+import { VerificationLateAdditionForm } from './VerificationLateAdditionForm';
 import { VerificationRecordForm } from './VerificationRecordForm';
 import { VerificationVoidForm } from './VerificationVoidForm';
 import { entryLabel } from './ReferenceContextFields';
 import { CORRECTION_LABELS, thaiDate } from './assignmentFacts';
 import {
   DISCREPANCY_LABEL,
+  LATE_ADDITION_LABEL,
   OBSERVED_LOCATION_LABEL,
   RESULT_LABELS,
   REVERIFICATION_LABEL,
@@ -29,6 +31,8 @@ export interface VerificationPanelProps {
   canRecord: boolean;
   // Whether the viewer holds 'verification:correct' (F006-T4).
   canCorrect: boolean;
+  // Whether the viewer holds 'verification:manage', which adds an Asset not in the Round (F006-T5).
+  canManage: boolean;
   csrfToken: string | null;
   onRecorded: () => Promise<void>;
   onPermissionRevoked?: (statusCode?: number) => void;
@@ -161,11 +165,13 @@ export const RevisionFacts: React.FC<{ revision: VerificationRevision; testId: s
  * page and records nothing (AV-04). The panel shows the record form while the Asset has no result, the result
  * once it has one, or that the Asset is not in the Round; and the Loan or Repair context in each case. Beside the
  * result it offers "ตรวจซ้ำ" and, to holders of 'verification:correct', "ยกเลิกรายการ (บันทึกผิด)" (F006-T4, Q18, Q20).
+ * Beside the note that the Asset is not in the Round it offers holders of 'verification:manage' "เพิ่มเข้ารอบภายหลัง"
+ * (F006-T5, Q11).
  */
-export const VerificationPanel: React.FC<VerificationPanelProps> = ({ assetId, panel, canRecord, canCorrect, csrfToken, onRecorded, onPermissionRevoked }) => {
+export const VerificationPanel: React.FC<VerificationPanelProps> = ({ assetId, panel, canRecord, canCorrect, canManage, csrfToken, onRecorded, onPermissionRevoked }) => {
   const { open_round: round, entry, context } = panel;
-  // The form open over the current result, if any.
-  const [openForm, setOpenForm] = useState<'REVERIFY' | 'VOID' | null>(null);
+  // The form open over the current result, or over the note that the Asset is not in the Round, if any.
+  const [openForm, setOpenForm] = useState<'REVERIFY' | 'VOID' | 'LATE_ADDITION' | null>(null);
   const current = entry?.current ?? null;
   const afterSave = async () => {
     await onRecorded();
@@ -198,8 +204,27 @@ export const VerificationPanel: React.FC<VerificationPanelProps> = ({ assetId, p
 
       {entry === null && (
         <p data-testid="verification-panel-not-in-round" role="note" style={{ margin: 0, fontSize: '0.9375rem', color: '#991b1b' }}>
-          ครุภัณฑ์นี้ไม่อยู่ในรายการของรอบตรวจนี้ กรุณาแจ้งผู้ดูแลพัสดุ
+          {canManage ? 'ครุภัณฑ์นี้ไม่อยู่ในรายการของรอบตรวจนี้' : 'ครุภัณฑ์นี้ไม่อยู่ในรายการของรอบตรวจนี้ กรุณาแจ้งผู้ดูแลพัสดุ'}
         </p>
+      )}
+      {entry === null && canManage && openForm === null && (
+        <div style={{ marginTop: '0.75rem' }}>
+          <button type="button" id="verification-late-addition-action" onClick={() => setOpenForm('LATE_ADDITION')} style={actionStyle}>
+            {LATE_ADDITION_LABEL}
+          </button>
+        </div>
+      )}
+      {entry === null && canManage && openForm === 'LATE_ADDITION' && (
+        <div style={{ marginTop: '0.75rem' }}>
+          <VerificationLateAdditionForm
+            assetId={assetId}
+            round={round}
+            csrfToken={csrfToken}
+            onAdded={afterSave}
+            onClose={() => setOpenForm(null)}
+            onPermissionRevoked={onPermissionRevoked}
+          />
+        </div>
       )}
       {current && <RevisionFacts revision={current} testId="verification-panel-current" />}
       {current && openForm === null && (canRecord || canCorrect) && (

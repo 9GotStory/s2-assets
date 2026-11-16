@@ -115,10 +115,20 @@ export interface ScopeSnapshot extends PermanentAssignment {
   category: string | null;
 }
 
+// Who added a Late Addition to a Round, when and why (F006-T5).
+export interface LateAddition {
+  reason: string;
+  recorded_by: string;
+  recorded_by_username: string | null;
+  recorded_at: string;
+}
+
 export interface ScopeEntry {
   id: string;
   asset_id: string;
   joined_as: 'OPENING' | 'LATE_ADDITION';
+  // Null for an Asset that joined when the Round opened.
+  late_addition: LateAddition | null;
   snapshot: ScopeSnapshot;
   result: VerificationResult;
   current: VerificationRevision | null;
@@ -176,6 +186,7 @@ export const OBSERVED_LOCATION_LABEL = 'สถานที่ที่พบ';
 export const DISCREPANCY_LABEL = 'ข้อแตกต่าง';
 export const REVERIFICATION_LABEL = 'ตรวจซ้ำ';
 export const VERIFICATION_REVISIONS_LABEL = 'ประวัติผลตรวจ';
+export const LATE_ADDITION_LABEL = 'เพิ่มเข้ารอบภายหลัง';
 
 export const DISCREPANCY_LABELS: Record<Discrepancy, string> = {
   LOCATION_MISMATCH: 'Location ไม่ตรงทะเบียน',

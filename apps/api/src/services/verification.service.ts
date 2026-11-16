@@ -95,6 +95,21 @@ export interface VerificationCorrectionVersion {
   version: number;
 }
 
+// F006-T5 (#130): a Late Addition adds one registered Asset to the open Round, with a reason (#125 Q11, AV-21).
+export interface AddLateInput {
+  asset_id: string;
+  reason: string;
+}
+
+// The reason of a Late Addition.
+export const LATE_ADDITION_REASON_MAX_LENGTH = REMARK_MAX_LENGTH;
+
+// What a Late Addition answers: the scope entry it added and the version a first result on it must expect.
+export interface VerificationScopeEntryVersion {
+  verification_scope_entry_id: string;
+  version: number;
+}
+
 // What recording a result answers: its revision and the version a later write on the result must expect.
 export interface VerificationRevisionVersion {
   verification_revision_id: string;
@@ -121,6 +136,17 @@ export class AssetNotInVerificationScopeError extends Error {
   constructor() {
     super('The Asset is not in the Scope Snapshot of the Verification Round');
     this.name = 'AssetNotInVerificationScopeError';
+  }
+}
+
+/** A Late Addition of an Asset already in the Round's Scope Snapshot is refused, and nothing is saved (#125 Q11). */
+export class AssetAlreadyInVerificationScopeError extends Error {
+  statusCode = 409;
+  code = 'ASSET_ALREADY_IN_VERIFICATION_SCOPE';
+
+  constructor() {
+    super('The Asset is already in the Scope Snapshot of the Verification Round');
+    this.name = 'AssetAlreadyInVerificationScopeError';
   }
 }
 
@@ -325,6 +351,27 @@ async function insertOpenRound(client: pg.PoolClient, facts: OpeningFacts, start
   }
 }
 
+// What a scope entry snapshots of an Asset: its identity and its Current Assignment (#125 Q4).
+const SNAPSHOT_COLUMNS = [
+  'asset_number',
+  'serial_number',
+  'name',
+  'category',
+  'location_id',
+  'legacy_location_text',
+  'organization_unit_id',
+  'legacy_organization_unit_text',
+  'responsible_person_id',
+  'legacy_responsible_person_text',
+] as const;
+
+// The registered Assets that pass `conditions`, as `s`, each with its id and its SNAPSHOT_COLUMNS now.
+const currentAssetsWhere = (conditions: string[]) => `(
+       SELECT a.id, a.asset_number, a.serial_number, a.name, a.category, ${assignmentSearch.columns}
+       FROM assets a ${assignmentSearch.joins('a')}
+       ${conditions.length > 0 ? `WHERE ${conditions.join(' AND ')}` : ''}
+     ) s`;
+
 /**
  * Takes the Scope Snapshot of an opening Round: each registered Asset that passes its filters, with its
  * identity and Current Assignment now (#125 Q3, Q4, P3). Returns how many Assets joined.
@@ -339,18 +386,9 @@ async function snapshotScope(client: pg.PoolClient, roundId: string, facts: Open
     }
   }
   const res = await client.query(
-    `INSERT INTO verification_scope_entries
-       (verification_round_id, asset_id, joined_as, recorded_by, asset_number, serial_number, name, category,
-        location_id, legacy_location_text, organization_unit_id, legacy_organization_unit_text,
-        responsible_person_id, legacy_responsible_person_text)
-     SELECT $1, s.id, 'OPENING', $2, s.asset_number, s.serial_number, s.name, s.category,
-            s.location_id, s.legacy_location_text, s.organization_unit_id, s.legacy_organization_unit_text,
-            s.responsible_person_id, s.legacy_responsible_person_text
-     FROM (
-       SELECT a.id, a.asset_number, a.serial_number, a.name, a.category, ${assignmentSearch.columns}
-       FROM assets a ${assignmentSearch.joins('a')}
-       ${conditions.length > 0 ? `WHERE ${conditions.join(' AND ')}` : ''}
-     ) s`,
+    `INSERT INTO verification_scope_entries (verification_round_id, asset_id, joined_as, recorded_by, ${SNAPSHOT_COLUMNS.join(', ')})
+     SELECT $1, s.id, 'OPENING', $2, ${SNAPSHOT_COLUMNS.map((column) => `s.${column}`).join(', ')}
+     FROM ${currentAssetsWhere(conditions)}`,
     params
   );
   return res.rowCount ?? 0;
@@ -394,7 +432,8 @@ async function incrementEntryVersion(client: pg.PoolClient, entryId: string, ver
 /**
  * F006-T1 (#126): opening a Verification Round over the whole register or chosen OrganizationUnits and
  * Locations, with its Scope Snapshot. F006-T2 (#127): recording an Asset's first result in the open Round.
- * F006-T4 (#129): a Re-verification, and a Verification Correction that voids the current result. The reads are in verification-read.service.ts.
+ * F006-T4 (#129): a Re-verification, and a Verification Correction that voids the current result. F006-T5 (#130): a
+ * Late Addition. The reads are in verification-read.service.ts.
  */
 export class VerificationService {
   private readonly db: pg.Pool | any;
@@ -435,6 +474,45 @@ export class VerificationService {
           actorId,
         ]);
         return round;
+      }
+    );
+  }
+
+  /**
+   * Adds a registered Asset to the open Round as a Late Addition, with a reason, snapshotting its identity and
+   * Current Assignment now (#125 AV-18, AV-21, Q11). The Round row is locked in share mode, as for a result, so a
+   * write that changes the Round waits for it. The unique scope entry decides between concurrent additions of one
+   * Asset: an insert meeting an uncommitted one waits for it and, once that commits, adds nothing and is refused.
+   */
+  async addLate(actorId: string, roundId: string, input: AddLateInput, { retryToken }: { retryToken: string }): Promise<VerificationScopeEntryVersion> {
+    if (!isValidUuid(input.asset_id)) {
+      throw new ValidationError('asset_id must be a valid UUID');
+    }
+    const assetId = input.asset_id.trim().toLowerCase();
+    const reason = normalizeText(input.reason, 'reason', LATE_ADDITION_REASON_MAX_LENGTH, '');
+    if (reason === null) {
+      throw new ValidationError('A Late Addition needs a reason');
+    }
+    return commitOnce(
+      this.db,
+      { actorId, operation: 'verification:add-late', retryToken, payload: { version: 1, verification_round_id: roundId, asset_id: assetId, reason }, explicitContinuation: false },
+      async (client) => {
+        await lockOpenRound(client, roundId);
+        if (!(await assetExists(client, assetId))) {
+          throw new VerificationTargetNotFoundError('Asset');
+        }
+        const res = await client.query(
+          `INSERT INTO verification_scope_entries (verification_round_id, asset_id, joined_as, reason, recorded_by, ${SNAPSHOT_COLUMNS.join(', ')})
+           SELECT $1, s.id, 'LATE_ADDITION', $3, $4, ${SNAPSHOT_COLUMNS.map((column) => `s.${column}`).join(', ')}
+           FROM ${currentAssetsWhere(['a.id = $2'])}
+           ON CONFLICT (verification_round_id, asset_id) DO NOTHING
+           RETURNING id, version`,
+          [roundId, assetId, reason, actorId]
+        );
+        if (res.rows.length === 0) {
+          throw new AssetAlreadyInVerificationScopeError();
+        }
+        return { verification_scope_entry_id: res.rows[0].id, version: res.rows[0].version };
       }
     );
   }
