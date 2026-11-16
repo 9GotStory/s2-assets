@@ -287,4 +287,83 @@ test.describe.serial('Verification journeys: Real SPA -> Composed API -> Postgre
       await expect(page.locator('#verification-record-form')).toHaveCount(0);
     });
   });
+
+  test('Journey F006-T3.1: Verification Staff record Found at a Location other than the register\'s, with both flags; the panel, the section and the Round page show each Discrepancy, and the Round filters by them', async ({ page, context }) => {
+    // Test only, until F006-T6 (#131) closes a Round through the API: the Round of an earlier journey must not stay open (#125 Q17).
+    await pool.query(`UPDATE verification_rounds SET state = 'CLOSED' WHERE state = 'OPEN'`);
+    const office = await referenceService.create('locations', adminUserId, 'ห้องการเงิน E2E ตรวจ');
+    const hall = await referenceService.create('locations', adminUserId, 'ห้องโถง E2E ตรวจ');
+    const { asset: scanner } = await assetService.registerAsset(custodianUserId, { name: 'สแกนเนอร์ E2E ตรวจ', asset_number: 'E2E-VR-201', location_id: office.id, effective_date: '2026-01-05' } as any);
+    const { asset: safe } = await assetService.registerAsset(custodianUserId, { name: 'ตู้เซฟ E2E ตรวจ', asset_number: 'E2E-VR-202', location_id: office.id, effective_date: '2026-01-05' } as any);
+    const { asset: chair } = await assetService.registerAsset(custodianUserId, { name: 'เก้าอี้ E2E ตรวจ', asset_number: 'E2E-VR-203', location_id: hall.id, effective_date: '2026-01-05' } as any);
+    // The safe is Under Repair and recorded Not Found: its row shows the context it kept (#125 Q14).
+    await new RepairService({ db: pool }).start(
+      custodianUserId,
+      { asset_id: safe.id, repair_kind: 'REPAIR', start_date: '2026-01-10', repairer: { kind: 'INTERNAL' }, symptom_or_work: 'กุญแจเสีย' } as any,
+      { retryToken: crypto.randomUUID() }
+    );
+    const { verification_round_id: roundId } = await verificationService.open(
+      custodianUserId,
+      { name: 'ตรวจสอบพัสดุประจำปี 2569 ห้องการเงินและโถง', fiscal_year: 2569, location_ids: [office.id, hall.id] },
+      { retryToken: crypto.randomUUID() }
+    );
+    await verificationService.record(staffUserId, roundId, safe.id, { result: 'NOT_FOUND' }, { retryToken: crypto.randomUUID() });
+
+    await loginAs(context, staffUserId);
+    await page.goto(`${targetBaseUrl}/assets/${scanner.id}`);
+
+    // Not Found asks for no Observed Location and no flag.
+    await page.locator('#verification-record-result-NOT_FOUND').check();
+    await expect(page.locator('#verification-record-observed_location_id')).toHaveCount(0);
+    await expect(page.locator('#verification-record-label_missing_or_damaged')).toHaveCount(0);
+
+    // "ข้อมูลไม่ตรงทะเบียน" needs its note before the server is asked.
+    await page.locator('#verification-record-result-FOUND').check();
+    await page.locator('#verification-record-condition-NORMAL').check();
+    await page.locator('#verification-record-observed_location_id').selectOption({ label: 'ห้องโถง E2E ตรวจ' });
+    await page.locator('#verification-record-label_missing_or_damaged').check();
+    await page.locator('#verification-record-data_mismatch').check();
+    await page.locator('#verification-record-submit').click();
+    await expect(page.locator('[data-testid="verification-record-form-error"]')).toContainText('ข้อมูลไม่ตรงทะเบียน');
+    await page.locator('#verification-record-data_mismatch_note').fill('Serial Number บนตัวเครื่องไม่ตรง');
+    await page.locator('#verification-record-submit').click();
+
+    // The panel shows the Observed Location and each Discrepancy.
+    await expect(page.locator('[data-testid="verification-panel-current-observed-location"]')).toHaveText('ห้องโถง E2E ตรวจ');
+    await expect(page.locator('[data-testid="verification-panel-current-discrepancies"] li')).toHaveText([
+      'Location ไม่ตรงทะเบียน',
+      'ป้าย/QR หายหรือชำรุด',
+      'ข้อมูลไม่ตรงทะเบียน: Serial Number บนตัวเครื่องไม่ตรง',
+    ]);
+    await expect(page.locator(`[data-testid="asset-verification-discrepancies-${roundId}"]`)).toContainText('Location ไม่ตรงทะเบียน');
+    await expect(page.locator(`[data-testid="asset-verification-discrepancies-${roundId}"]`)).toContainText('สถานที่ที่พบ: ห้องโถง E2E ตรวจ');
+
+    // The Round page counts the result with a Discrepancy, shows it on its row, and filters by it.
+    await page.goto(`${targetBaseUrl}/verification-rounds/${roundId}`);
+    await expect(page.locator('[data-testid="verification-round-count-with-discrepancy"]')).toContainText('1');
+    await expect(page.locator(`[data-testid="scope-entry-discrepancies-${scanner.id}"]`)).toContainText('Location ไม่ตรงทะเบียน');
+    await expect(page.locator(`[data-testid="scope-entry-discrepancies-${scanner.id}"]`)).toContainText('สถานที่ที่พบ: ห้องโถง E2E ตรวจ');
+    await expect(page.locator(`[data-testid="scope-entry-verification-${safe.id}"]`)).toContainText('ขณะตรวจ: อยู่ระหว่างซ่อม');
+    await page.locator('#scope-entry-discrepancy-filter-LOCATION_MISMATCH').click();
+    await expect(page).toHaveURL(/discrepancy=LOCATION_MISMATCH/);
+    await expect(page.locator('[data-testid^="scope-entry-result-"]')).toHaveCount(1);
+    await expect(page.locator(`[data-testid="scope-entry-${scanner.id}"]`)).toBeVisible();
+
+    // The snapshot Location filter walks the office room by room, with the Discrepancy filter or without it.
+    // Each step waits for its URL: a filter chosen before the page shows the last one would keep the last one's.
+    await page.locator('#scope-entry-discrepancy-filter-ALL').click();
+    await expect(page).not.toHaveURL(/discrepancy=/);
+    await expect(page.locator('[data-testid^="scope-entry-result-"]')).toHaveCount(3);
+    await page.locator('#scope-entry-location-filter').selectOption({ label: 'ห้องโถง E2E ตรวจ' });
+    await expect(page).toHaveURL(new RegExp(`\\?location_id=${hall.id}$`));
+    await expect(page.locator('[data-testid^="scope-entry-result-"]')).toHaveCount(1);
+    await expect(page.locator(`[data-testid="scope-entry-${chair.id}"]`)).toBeVisible();
+    await page.locator('#scope-entry-location-filter').selectOption({ label: 'ห้องการเงิน E2E ตรวจ' });
+    await expect(page).toHaveURL(new RegExp(`\\?location_id=${office.id}$`));
+    await expect(page.locator('[data-testid^="scope-entry-result-"]')).toHaveCount(2);
+    await page.locator('#scope-entry-discrepancy-filter-LOCATION_MISMATCH').click();
+    await expect(page).toHaveURL(new RegExp(`discrepancy=LOCATION_MISMATCH&location_id=${office.id}`));
+    await expect(page.locator('[data-testid^="scope-entry-result-"]')).toHaveCount(1);
+    await expect(page.locator(`[data-testid="scope-entry-${scanner.id}"]`)).toBeVisible();
+  });
 });

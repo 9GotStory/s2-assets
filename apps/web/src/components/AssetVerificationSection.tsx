@@ -2,7 +2,7 @@ import React from 'react';
 import { Link } from 'react-router';
 import { useQuery } from '@tanstack/react-query';
 import { thaiDate } from './assignmentFacts';
-import { RecordingContextLine } from './VerificationPanel';
+import { RecordingContextLine, RevisionDiscrepancies } from './VerificationPanel';
 import {
   ASSET_VERIFICATIONS_LABEL,
   ROUND_STATE_LABELS,
@@ -22,7 +22,10 @@ export interface AssetVerificationSectionProps {
   onPermissionRevoked?: (statusCode?: number) => void;
 }
 
-/** "ผลตรวจประจำปี": the Asset's current result in every Round it belongs to, newest first (F006-T2, #125 Q21). */
+/**
+ * "ผลตรวจประจำปี": the Asset's current result in every Round it belongs to, newest first (F006-T2, #125 Q21),
+ * with its Observed Location and Discrepancies (F006-T3).
+ */
 export const AssetVerificationSection: React.FC<AssetVerificationSectionProps> = ({ assetId, actorId, dataUpdatedAt, onPermissionRevoked }) => {
   const verifications = useQuery<AssetVerification[], Error & { status?: number }>({
     queryKey: ['asset-verifications', actorId, assetId, dataUpdatedAt],
@@ -82,6 +85,7 @@ export const AssetVerificationSection: React.FC<AssetVerificationSectionProps> =
                       </span>
                     )}
                   </div>
+                  {current && <RevisionDiscrepancies revision={current} testId={`asset-verification-discrepancies-${round.id}`} />}
                   {current && recordedContextText(current) && (
                     <div style={{ color: '#92400e' }}>
                       ขณะตรวจ: <RecordingContextLine context={current} />

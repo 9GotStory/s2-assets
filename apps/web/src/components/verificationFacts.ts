@@ -1,5 +1,5 @@
-// What the API answers about Verification Rounds (F006-T1) and Asset Verifications (F006-T2), and their labels
-// from GLOSSARY.md (#125).
+// What the API answers about Verification Rounds (F006-T1), Asset Verifications (F006-T2) and their
+// Discrepancies (F006-T3), and their labels from GLOSSARY.md (#125).
 
 import type { PermanentAssignment, ReferenceEntry } from './ReferenceContextFields';
 import { thaiDate } from './assignmentFacts';
@@ -12,12 +12,16 @@ export type VerificationRoundEventKind = 'OPENED' | 'EDITED' | 'CLOSED' | 'REOPE
 export type RecordedResult = 'FOUND' | 'NOT_FOUND';
 // An Asset's current result in a Round, or Not Yet Verified while it has none.
 export type VerificationResult = RecordedResult | 'NOT_YET_VERIFIED';
+// A difference a result notes: "Location ไม่ตรงทะเบียน" and "ชำรุด" derived by the server, the other two ticked.
+export type Discrepancy = 'LOCATION_MISMATCH' | 'DAMAGED' | 'LABEL_MISSING_OR_DAMAGED' | 'DATA_MISMATCH';
 
 export interface VerificationRoundCounts {
   in_scope: number;
   found: number;
   not_found: number;
   not_yet_verified: number;
+  // Current results that note a Discrepancy.
+  with_discrepancy: number;
 }
 
 // What a result keeps of the Asset's Loan and Repair facts at recording: context only (#125 AV-09, Q14).
@@ -32,6 +36,13 @@ export interface VerificationRevision {
   revision_number: number;
   result: RecordedResult;
   condition: LoanCondition | null;
+  // Null when the Asset was seen where the register says, or Not Found.
+  observed_location: ReferenceEntry | null;
+  label_missing_or_damaged: boolean;
+  data_mismatch: boolean;
+  data_mismatch_note: string | null;
+  // In the order of DISCREPANCY_LABELS.
+  discrepancies: Discrepancy[];
   note: string | null;
   verification_date: string;
   assignment_in_effect: PermanentAssignment;
@@ -77,6 +88,8 @@ export interface VerificationRound extends VerificationRoundSummary {
   recorded_at: string;
   version: number;
   history: VerificationRoundEvent[];
+  // The Locations the Scope Snapshot holds, to filter its entries by.
+  snapshot_locations: ReferenceEntry[];
 }
 
 // What the register showed of an Asset when it joined the Round.
@@ -141,6 +154,20 @@ export const SCOPE_SNAPSHOT_LABEL = 'รายการในรอบ';
 export const FISCAL_YEAR_LABEL = 'ปีงบประมาณ';
 export const START_DATE_LABEL = 'วันที่เริ่มตรวจ';
 export const WHOLE_REGISTER_LABEL = 'ทั้งทะเบียน';
+export const OBSERVED_LOCATION_LABEL = 'สถานที่ที่พบ';
+export const DISCREPANCY_LABEL = 'ข้อแตกต่าง';
+
+export const DISCREPANCY_LABELS: Record<Discrepancy, string> = {
+  LOCATION_MISMATCH: 'Location ไม่ตรงทะเบียน',
+  DAMAGED: 'ชำรุด',
+  LABEL_MISSING_OR_DAMAGED: 'ป้าย/QR หายหรือชำรุด',
+  DATA_MISMATCH: 'ข้อมูลไม่ตรงทะเบียน',
+};
+export const DISCREPANCIES = Object.keys(DISCREPANCY_LABELS) as Discrepancy[];
+
+// A Discrepancy as one line: "ข้อมูลไม่ตรงทะเบียน" with its note.
+export const discrepancyText = (discrepancy: Discrepancy, { data_mismatch_note: note }: Pick<VerificationRevision, 'data_mismatch_note'>): string =>
+  discrepancy === 'DATA_MISMATCH' && note ? `${DISCREPANCY_LABELS.DATA_MISMATCH}: ${note}` : DISCREPANCY_LABELS[discrepancy];
 
 export const ROUND_STATE_LABELS: Record<VerificationRoundState, string> = {
   OPEN: 'เปิดอยู่',
