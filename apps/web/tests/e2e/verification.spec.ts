@@ -11,6 +11,7 @@ import { UserService } from '../../../api/src/services/user.service.ts';
 import { SessionService } from '../../../api/src/services/session.service.ts';
 import { AssetService } from '../../../api/src/services/asset.service.ts';
 import { ReferenceService } from '../../../api/src/services/reference.service.ts';
+import { RepairService } from '../../../api/src/services/repair.service.ts';
 import { VerificationService } from '../../../api/src/services/verification.service.ts';
 import { repositoryProxyConfig } from '../../vite.config.ts';
 
@@ -229,6 +230,12 @@ test.describe.serial('Verification journeys: Real SPA -> Composed API -> Postgre
       const { asset: printer } = await assetService.registerAsset(custodianUserId, { name: 'เครื่องพิมพ์ E2E ตรวจ', asset_number: 'E2E-VR-101', location_id: office.id, effective_date: '2026-01-05' } as any);
       const { asset: cabinet } = await assetService.registerAsset(custodianUserId, { name: 'ตู้เอกสาร E2E ตรวจ', location_id: office.id, effective_date: '2026-01-05' } as any);
       const { asset: outside } = await assetService.registerAsset(custodianUserId, { name: 'พัดลม E2E ตรวจ', location_id: store.id, effective_date: '2026-01-05' } as any);
+      // The cabinet is Under Repair: the panel shows it as context, and it blocks nothing.
+      const { repair_record_id: repairRecordId } = await new RepairService({ db: pool }).start(
+        custodianUserId,
+        { asset_id: cabinet.id, repair_kind: 'REPAIR', start_date: '2026-01-10', repairer: { kind: 'INTERNAL' }, symptom_or_work: 'บานพับหลุด' } as any,
+        { retryToken: crypto.randomUUID() }
+      );
       const { verification_round_id: roundId } = await verificationService.open(
         custodianUserId,
         { name: 'ตรวจสอบพัสดุประจำปี 2569 ห้องธุรการ', fiscal_year: 2569, location_ids: [office.id] },
@@ -262,16 +269,18 @@ test.describe.serial('Verification journeys: Real SPA -> Composed API -> Postgre
       await expect(page.locator('[data-testid="verification-round-count-found"]')).toContainText('1');
       await expect(page.locator('[data-testid="verification-round-count-not-found"]')).toContainText('0');
       await expect(page.locator('[data-testid="verification-round-count-not-yet-verified"]')).toContainText('1');
-      await expect(page.locator(`[data-testid="scope-entry-result-${printer.id}"]`)).toHaveText('พบ · ปกติ');
+      await expect(page.locator(`[data-testid="scope-entry-result-${printer.id}"]`)).toHaveText('พบ · สภาพปกติ');
       await expect(page.locator(`[data-testid="scope-entry-result-${cabinet.id}"]`)).toHaveText('ยังไม่ได้ตรวจ');
       await page.locator('#scope-entry-result-filter-FOUND').click();
       await expect(page).toHaveURL(/result=FOUND/);
-      await expect(page.locator('[data-testid^="scope-entry-result-"]')).toHaveText(['พบ · ปกติ']);
+      await expect(page.locator('[data-testid^="scope-entry-result-"]')).toHaveText(['พบ · สภาพปกติ']);
       expect(await fitsWidth(page)).toBe(true);
 
       // A Read-only User sees the Asset Not Yet Verified, where Verification Staff see the form, and no form.
       await page.goto(`${targetBaseUrl}/assets/${cabinet.id}`);
       await expect(page.locator('#verification-record-form')).toBeVisible();
+      await expect(page.locator('[data-testid="verification-panel-context"]')).toContainText('อยู่ระหว่างซ่อม');
+      await expect(page.locator('[data-testid="verification-panel-context"]').getByRole('link', { name: 'ดูรายการซ่อม' })).toHaveAttribute('href', `/repairs/${repairRecordId}`);
       await switchActor(page, context, readonlyUserId);
       await page.goto(`${targetBaseUrl}/assets/${cabinet.id}`);
       await expect(page.locator('[data-testid="verification-panel-not-yet-verified"]')).toHaveText('ยังไม่ได้ตรวจ');

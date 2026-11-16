@@ -7,6 +7,8 @@ import {
   RECORD_VERIFICATION_LABEL,
   RESULT_LABELS,
   VERIFICATION_DATE_LABEL,
+  recordedByText,
+  resultText,
   type OpenVerificationRound,
   type RecordedResult,
   type VerificationRevision,
@@ -26,9 +28,8 @@ const choiceStyle: React.CSSProperties = { display: 'flex', gap: '1.25rem', flex
 // The result someone else recorded while this form was open (#125 AV-23, Q20).
 const RecordedMeanwhile: React.FC<{ current: VerificationRevision }> = ({ current }) => (
   <>
-    บันทึกไม่ได้ เพราะมีผลตรวจของครุภัณฑ์นี้ในรอบนี้แล้ว: {RESULT_LABELS[current.result]}
-    {current.condition && <> สภาพ{CONDITION_LABELS[current.condition]}</>} {VERIFICATION_DATE_LABEL}{' '}
-    <time dateTime={current.verification_date}>{thaiDate(current.verification_date)}</time> โดย {current.recorded_by_username ?? current.recorded_by} กรุณาโหลดหน้าใหม่
+    บันทึกไม่ได้ เพราะมีผลตรวจของครุภัณฑ์นี้ในรอบนี้แล้ว: {resultText(current.result, current.condition)} {VERIFICATION_DATE_LABEL}{' '}
+    <time dateTime={current.verification_date}>{thaiDate(current.verification_date)}</time> บันทึกโดย {recordedByText(current)} กรุณาโหลดหน้าใหม่
   </>
 );
 

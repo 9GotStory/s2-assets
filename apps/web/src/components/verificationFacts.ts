@@ -3,7 +3,7 @@
 
 import type { PermanentAssignment, ReferenceEntry } from './ReferenceContextFields';
 import { thaiDate } from './assignmentFacts';
-import { NOT_RETURNED_LABEL, ON_LOAN_LABEL, type LoanCondition } from './loanFacts';
+import { CONDITION_LABELS, NOT_RETURNED_LABEL, ON_LOAN_LABEL, type LoanCondition } from './loanFacts';
 import { UNDER_REPAIR_LABELS, type RepairKind } from './repairFacts';
 
 export type VerificationRoundState = 'OPEN' | 'CLOSED' | 'VOIDED';
@@ -20,6 +20,12 @@ export interface VerificationRoundCounts {
   not_yet_verified: number;
 }
 
+// What a result keeps of the Asset's Loan and Repair facts at recording: context only (#125 AV-09, Q14).
+export interface RecordingContext {
+  loan_context: { kind: 'ON_LOAN' | 'NOT_RETURNED'; loan_item_id: string; borrower_display: string; due_date: string } | null;
+  repair_context: { repair_record_id: string; repair_kind: RepairKind } | null;
+}
+
 // One recorded result, with what the server kept of the Asset when it was recorded (#125 Q14, Q26).
 export interface VerificationRevision {
   id: string;
@@ -29,8 +35,8 @@ export interface VerificationRevision {
   note: string | null;
   verification_date: string;
   assignment_in_effect: PermanentAssignment;
-  loan_context: { kind: 'ON_LOAN' | 'NOT_RETURNED'; loan_item_id: string; borrower_display: string; due_date: string } | null;
-  repair_context: { repair_record_id: string; repair_kind: RepairKind } | null;
+  loan_context: RecordingContext['loan_context'];
+  repair_context: RecordingContext['repair_context'];
   recorded_by: string;
   recorded_by_username: string | null;
   recorded_at: string;
@@ -112,6 +118,8 @@ export interface AssetVerificationPanel {
   open_round: OpenVerificationRound;
   // Null when the Asset is not in the open Round's Scope Snapshot.
   entry: { id: string; version: number; result: VerificationResult; current: VerificationRevision | null } | null;
+  // The context a result recorded now would keep.
+  context: RecordingContext;
 }
 
 // An Asset's result in one Round it belongs to (GET /assets/:id/verifications, F006-T2).
@@ -158,8 +166,16 @@ export const ROUND_EVENT_LABELS: Record<VerificationRoundEventKind, string> = {
 export const roundLabel = ({ name, fiscal_year: fiscalYear }: Pick<VerificationRoundSummary, 'name' | 'fiscal_year'>): string =>
   `${name} (${FISCAL_YEAR_LABEL} ${fiscalYear})`;
 
-// The Loan or Repair context a result kept, as one line: context only, never proof the Asset was seen (#125 AV-09).
-export const recordedContextText = ({ loan_context: loan, repair_context: repair }: Pick<VerificationRevision, 'loan_context' | 'repair_context'>): string | null =>
+// A result as one label, with its Condition when Found: "พบ · สภาพปกติ".
+export const resultText = (result: VerificationResult, condition: LoanCondition | null | undefined): string =>
+  condition ? `${RESULT_LABELS[result]} · สภาพ${CONDITION_LABELS[condition]}` : RESULT_LABELS[result];
+
+// Who recorded a result, by username when the account has one.
+export const recordedByText = ({ recorded_by: recordedBy, recorded_by_username: username }: Pick<VerificationRevision, 'recorded_by' | 'recorded_by_username'>): string =>
+  username ?? recordedBy;
+
+// The Loan or Repair context as one line: context only, never proof the Asset was seen (#125 AV-09).
+export const recordedContextText = ({ loan_context: loan, repair_context: repair }: RecordingContext): string | null =>
   [
     loan && `${loan.kind === 'ON_LOAN' ? ON_LOAN_LABEL : NOT_RETURNED_LABEL} ผู้ยืม ${loan.borrower_display} กำหนดคืน ${thaiDate(loan.due_date)}`,
     repair && UNDER_REPAIR_LABELS[repair.repair_kind],

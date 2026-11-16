@@ -2,14 +2,14 @@ import React from 'react';
 import { Link } from 'react-router';
 import { VerificationRecordForm } from './VerificationRecordForm';
 import { thaiDate } from './assignmentFacts';
-import { CONDITION_LABELS, NOT_RETURNED_LABEL, ON_LOAN_LABEL, borrowerText, type AssetNotReturned, type OnLoan } from './loanFacts';
-import { UNDER_REPAIR_LABELS, type UnderRepair } from './repairFacts';
 import {
   RESULT_LABELS,
   VERIFICATION_DATE_LABEL,
   VERIFICATION_PANEL_LABEL,
   VERIFICATION_ROUND_LABEL,
+  recordedByText,
   recordedContextText,
+  resultText,
   roundLabel,
   type AssetVerificationPanel,
   type VerificationRevision,
@@ -20,10 +20,6 @@ export interface VerificationPanelProps {
   panel: AssetVerificationPanel;
   // Whether the viewer holds 'verification:record'.
   canRecord: boolean;
-  // The Asset's Loan and Repair facts now, shown as context only (#125 AV-09, Q14).
-  onLoan: OnLoan | null;
-  notReturned: AssetNotReturned | null;
-  underRepair: UnderRepair | null;
   csrfToken: string | null;
   onRecorded: () => Promise<void>;
   onPermissionRevoked?: (statusCode?: number) => void;
@@ -41,8 +37,7 @@ export const RevisionFacts: React.FC<{ revision: VerificationRevision; testId: s
     <dl data-testid={testId} style={{ display: 'grid', gridTemplateColumns: 'max-content minmax(0, 1fr)', gap: '0.375rem 0.75rem', margin: 0, fontSize: '0.9375rem' }}>
       <dt style={termStyle}>ผลตรวจ:</dt>
       <dd data-testid={`${testId}-result`} style={{ ...valueStyle, fontWeight: 600 }}>
-        {RESULT_LABELS[revision.result]}
-        {revision.condition && <> · สภาพ{CONDITION_LABELS[revision.condition]}</>}
+        {resultText(revision.result, revision.condition)}
       </dd>
       <dt style={termStyle}>{VERIFICATION_DATE_LABEL}:</dt>
       <dd style={valueStyle}>
@@ -52,9 +47,9 @@ export const RevisionFacts: React.FC<{ revision: VerificationRevision; testId: s
       <dd style={valueStyle}>
         <time dateTime={revision.recorded_at}>{THAI_DATE_TIME.format(new Date(revision.recorded_at))}</time>
       </dd>
-      <dt style={termStyle}>ผู้ตรวจ:</dt>
+      <dt style={termStyle}>บันทึกโดย:</dt>
       <dd data-testid={`${testId}-recorded-by`} style={valueStyle}>
-        {revision.recorded_by_username ?? revision.recorded_by}
+        {recordedByText(revision)}
       </dd>
       {revision.note && (
         <>
@@ -77,8 +72,9 @@ export const RevisionFacts: React.FC<{ revision: VerificationRevision; testId: s
  * page and records nothing (AV-04). The panel shows the record form while the Asset has no result, the result
  * once it has one, or that the Asset is not in the Round; and the Loan or Repair context in each case.
  */
-export const VerificationPanel: React.FC<VerificationPanelProps> = ({ assetId, panel, canRecord, onLoan, notReturned, underRepair, csrfToken, onRecorded, onPermissionRevoked }) => {
-  const { open_round: round, entry } = panel;
+export const VerificationPanel: React.FC<VerificationPanelProps> = ({ assetId, panel, canRecord, csrfToken, onRecorded, onPermissionRevoked }) => {
+  const { open_round: round, entry, context } = panel;
+  const contextText = recordedContextText(context);
   // The Asset page reads the Asset only once /auth/session-check has answered, so the CSRF token is there before
   // this form is (#135).
   const mayRecord = canRecord && entry !== null && entry.current === null;
@@ -95,21 +91,21 @@ export const VerificationPanel: React.FC<VerificationPanelProps> = ({ assetId, p
         </Link>
       </p>
 
-      {(onLoan || notReturned || underRepair) && (
-        <ul data-testid="verification-panel-context" style={{ margin: '0 0 0.75rem 0', padding: '0.5rem 0.75rem 0.5rem 1.75rem', backgroundColor: '#fef3c7', borderRadius: '6px', fontSize: '0.875rem', color: '#92400e' }}>
-          {onLoan && (
-            <li>
-              {ON_LOAN_LABEL} ผู้ยืม {borrowerText(onLoan.borrower)} กำหนดคืน <time dateTime={onLoan.due_date}>{thaiDate(onLoan.due_date)}</time>
-            </li>
-          )}
-          {notReturned && (
-            <li>
-              {NOT_RETURNED_LABEL} เมื่อ <time dateTime={notReturned.not_returned_date}>{thaiDate(notReturned.not_returned_date)}</time>
-            </li>
-          )}
-          {underRepair && <li>{UNDER_REPAIR_LABELS[underRepair.repair_kind]}</li>}
-          <li style={{ listStyle: 'none', marginLeft: '-1rem', color: '#6b7280' }}>ข้อมูลนี้ใช้ประกอบเท่านั้น ไม่ถือเป็นการพบ และบันทึกผลได้ตามที่ตรวจจริง</li>
-        </ul>
+      {contextText && (
+        <div data-testid="verification-panel-context" style={{ margin: '0 0 0.75rem 0', padding: '0.5rem 0.75rem', backgroundColor: '#fef3c7', borderRadius: '6px', fontSize: '0.875rem', color: '#92400e', overflowWrap: 'anywhere' }}>
+          <div>
+            ขณะนี้: {contextText}
+            {context.repair_context && (
+              <>
+                {' '}
+                <Link to={`/repairs/${context.repair_context.repair_record_id}`} style={{ color: '#2563eb', textDecoration: 'underline' }}>
+                  ดูรายการซ่อม
+                </Link>
+              </>
+            )}
+          </div>
+          <div style={{ color: '#6b7280' }}>ข้อมูลนี้ใช้ประกอบเท่านั้น ไม่ถือเป็นการพบ และบันทึกผลได้ตามที่ตรวจจริง</div>
+        </div>
       )}
 
       {entry === null && (

@@ -3,7 +3,6 @@ import { Link, useNavigate, useParams, useSearchParams } from 'react-router';
 import { QueryClient, QueryClientProvider, useQuery } from '@tanstack/react-query';
 import { REFERENCE_DIMENSIONS, entryLabel } from '../components/ReferenceContextFields';
 import { thaiDate, valueText } from '../components/assignmentFacts';
-import { CONDITION_LABELS } from '../components/loanFacts';
 import {
   FISCAL_YEAR_LABEL,
   RESULT_LABELS,
@@ -14,7 +13,9 @@ import {
   VERIFICATION_DATE_LABEL,
   VERIFICATION_ROUND_LABEL,
   WHOLE_REGISTER_LABEL,
+  recordedByText,
   recordedContextText,
+  resultText,
   type ScopeEntry,
   type ScopeEntryPage,
   type VerificationResult,
@@ -96,13 +97,12 @@ const ScopeEntryItem: React.FC<{ entry: ScopeEntry }> = ({ entry }) => {
           {snapshot.name ?? snapshot.asset_number ?? entry.asset_id}
         </Link>
         <span data-testid={`scope-entry-result-${entry.asset_id}`} style={{ color: RESULT_COLORS[entry.result], fontWeight: 600, whiteSpace: 'nowrap' }}>
-          {RESULT_LABELS[entry.result]}
-          {current?.condition && <> · {CONDITION_LABELS[current.condition]}</>}
+          {resultText(entry.result, current?.condition)}
         </span>
       </div>
       {current && (
         <div data-testid={`scope-entry-verification-${entry.asset_id}`} style={{ color: '#4b5563', marginTop: '0.25rem', overflowWrap: 'anywhere' }}>
-          {VERIFICATION_DATE_LABEL} <time dateTime={current.verification_date}>{thaiDate(current.verification_date)}</time> โดย {current.recorded_by_username ?? current.recorded_by}
+          {VERIFICATION_DATE_LABEL} <time dateTime={current.verification_date}>{thaiDate(current.verification_date)}</time> บันทึกโดย {recordedByText(current)}
           {context && <div style={{ color: '#92400e' }}>ขณะตรวจ: {context}</div>}
         </div>
       )}

@@ -1,8 +1,8 @@
 import pg from 'pg';
 import { assetExists, containsPattern } from './asset-lookups.ts';
 import type { PermanentAssignment, ReferenceEntrySummary } from './assignment.service.ts';
-import type { LoanContext } from './loan-read.service.ts';
-import type { RepairKind } from './repair-read.service.ts';
+import { loanContextOf, type LoanContext } from './loan-read.service.ts';
+import { underRepairOfAssets, type RepairKind } from './repair-read.service.ts';
 
 export type VerificationRoundState = 'OPEN' | 'CLOSED' | 'VOIDED';
 export type VerificationRoundEventKind = 'OPENED' | 'EDITED' | 'CLOSED' | 'REOPENED' | 'VOIDED';
@@ -28,6 +28,19 @@ export interface OpenVerificationRound {
   start_date: string;
 }
 
+// The Repair Record that keeps an Asset Under Repair, as an Asset Verification keeps it (#125 Q14).
+export interface RepairContext {
+  repair_record_id: string;
+  repair_kind: RepairKind;
+}
+
+// What a result keeps of an Asset's Loan and Repair facts at recording: context only, never proof that the
+// Asset was seen, and never a reason to refuse a result (#125 AV-09, LR-14).
+export interface RecordingContext {
+  loan_context: LoanContext | null;
+  repair_context: RepairContext | null;
+}
+
 // One recorded result of an Asset in a Round (F006-T2, #125 Q6, Q8, Q14, Q26), with what the server derived
 // when it was recorded. Nothing recorded later changes it (Q15).
 export interface VerificationRevision {
@@ -40,10 +53,9 @@ export interface VerificationRevision {
   verification_date: string;
   // The Permanent Assignment in effect on the Verification Date, as the register showed it at recording.
   assignment_in_effect: PermanentAssignment;
-  // The LoanItem that held the Asset at recording, with its Borrower as shown then.
-  loan_context: { kind: LoanContext['kind']; loan_item_id: string; borrower_display: string; due_date: string } | null;
-  // The Repair Record that kept the Asset Under Repair at recording.
-  repair_context: { repair_record_id: string; repair_kind: RepairKind } | null;
+  // The Loan and Repair context at recording.
+  loan_context: LoanContext | null;
+  repair_context: RepairContext | null;
   recorded_by: string;
   recorded_by_username: string | null;
   recorded_at: string;
@@ -124,16 +136,24 @@ export interface ScopeEntryFilters {
 export interface AssetVerificationPanel {
   open_round: OpenVerificationRound;
   // The Asset's scope entry in the open Round, or null when the Asset is not in its Scope Snapshot (AV-18).
-  entry: { id: string; version: number; result: VerificationResult; current: VerificationRevision | null } | null;
+  entry: ({ id: string; version: number } & CurrentResult) | null;
+  // The context a result recorded now would keep (Q14).
+  context: RecordingContext;
 }
 
-// An Asset's Asset Verification in one Round it belongs to, as its "ผลตรวจประจำปี" section lists it (#125 Q21).
-export interface AssetVerification {
-  round: Pick<VerificationRoundSummary, 'id' | 'name' | 'fiscal_year' | 'start_date' | 'state'>;
-  entry_id: string;
-  joined_as: 'OPENING' | 'LATE_ADDITION';
+// An Asset's current result in a Round, and the revision that says it.
+interface CurrentResult {
   result: VerificationResult;
   current: VerificationRevision | null;
+}
+
+const currentResultOf = (current: VerificationRevision | undefined): CurrentResult => ({ result: current?.result ?? 'NOT_YET_VERIFIED', current: current ?? null });
+
+// An Asset's Asset Verification in one Round it belongs to, as its "ผลตรวจประจำปี" section lists it (#125 Q21).
+export interface AssetVerification extends CurrentResult {
+  round: Pick<VerificationRoundSummary, 'id' | 'name' | 'fiscal_year' | 'start_date' | 'state'>;
+  entry_id: string;
+  joined_as: ScopeEntry['joined_as'];
 }
 
 export interface ScopeEntryPage {
@@ -201,6 +221,15 @@ export async function openVerificationRoundOf(client: pg.PoolClient | pg.Pool): 
     `SELECT id, name, fiscal_year, to_char(start_date, 'YYYY-MM-DD') AS start_date FROM verification_rounds WHERE state = 'OPEN'`
   );
   return res.rows[0] ?? null;
+}
+
+/** The Loan and Repair context of an Asset now, as a result recorded now keeps it (#125 Q14). It locks nothing. */
+export async function recordingContextOf(db: pg.Pool | pg.PoolClient | any, assetId: string): Promise<RecordingContext> {
+  const repair = (await underRepairOfAssets(db, [assetId])).get(assetId);
+  return {
+    loan_context: await loanContextOf(db, assetId),
+    repair_context: repair ? { repair_record_id: repair.repair_record_id, repair_kind: repair.repair_kind } : null,
+  };
 }
 
 /** The current result of each of `entryIds` that has one, by scope entry: its latest revision not voided. */
@@ -363,8 +392,7 @@ export class VerificationReadService {
           legacy_organization_unit_text: row.legacy_organization_unit_text,
           legacy_responsible_person_text: row.legacy_responsible_person_text,
         },
-        result: current.get(row.id)?.result ?? 'NOT_YET_VERIFIED',
-        current: current.get(row.id) ?? null,
+        ...currentResultOf(current.get(row.id)),
         version: row.version,
       }));
     return { items, limit: filters.limit, offset: filters.offset, total_count: totalCount, has_more: filters.offset + items.length < totalCount };
@@ -378,11 +406,12 @@ export class VerificationReadService {
     }
     const res = await this.db.query('SELECT id, version FROM verification_scope_entries WHERE verification_round_id = $1 AND asset_id = $2', [openRound.id, assetId]);
     const row = res.rows[0];
+    const context = await recordingContextOf(this.db, assetId);
     if (!row) {
-      return { open_round: openRound, entry: null };
+      return { open_round: openRound, entry: null, context };
     }
-    const current = (await currentRevisionsOf(this.db, [row.id])).get(row.id) ?? null;
-    return { open_round: openRound, entry: { id: row.id, version: row.version, result: current?.result ?? 'NOT_YET_VERIFIED', current } };
+    const current = (await currentRevisionsOf(this.db, [row.id])).get(row.id);
+    return { open_round: openRound, entry: { id: row.id, version: row.version, ...currentResultOf(current) }, context };
   }
 
   /** An Asset's current result in every Round it belongs to, newest start date first, or null when there is no such Asset (#125 Q21). */
@@ -402,8 +431,7 @@ export class VerificationReadService {
       round: { id: row.id, name: row.name, fiscal_year: row.fiscal_year, start_date: row.start_date, state: row.state },
       entry_id: row.entry_id,
       joined_as: row.joined_as,
-      result: current.get(row.entry_id)?.result ?? 'NOT_YET_VERIFIED',
-      current: current.get(row.entry_id) ?? null,
+      ...currentResultOf(current.get(row.entry_id)),
     }));
   }
 }

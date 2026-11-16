@@ -2,8 +2,16 @@ import React from 'react';
 import { Link } from 'react-router';
 import { useQuery } from '@tanstack/react-query';
 import { thaiDate } from './assignmentFacts';
-import { CONDITION_LABELS } from './loanFacts';
-import { ASSET_VERIFICATIONS_LABEL, RESULT_LABELS, ROUND_STATE_LABELS, VERIFICATION_DATE_LABEL, recordedContextText, roundLabel, type AssetVerification } from './verificationFacts';
+import {
+  ASSET_VERIFICATIONS_LABEL,
+  ROUND_STATE_LABELS,
+  VERIFICATION_DATE_LABEL,
+  recordedByText,
+  recordedContextText,
+  resultText,
+  roundLabel,
+  type AssetVerification,
+} from './verificationFacts';
 
 export interface AssetVerificationSectionProps {
   assetId: string;
@@ -66,13 +74,11 @@ export const AssetVerificationSection: React.FC<AssetVerificationSectionProps> =
                     <span style={{ color: '#6b7280' }}>({ROUND_STATE_LABELS[round.state]})</span>
                   </div>
                   <div data-testid={`asset-verification-result-${round.id}`} style={{ fontWeight: 600, color: '#111827' }}>
-                    {RESULT_LABELS[result]}
-                    {current?.condition && <> · สภาพ{CONDITION_LABELS[current.condition]}</>}
+                    {resultText(result, current?.condition)}
                     {current && (
                       <span style={{ fontWeight: 400, color: '#4b5563' }}>
                         {' '}
-                        · {VERIFICATION_DATE_LABEL} <time dateTime={current.verification_date}>{thaiDate(current.verification_date)}</time> โดย{' '}
-                        {current.recorded_by_username ?? current.recorded_by}
+                        · {VERIFICATION_DATE_LABEL} <time dateTime={current.verification_date}>{thaiDate(current.verification_date)}</time> บันทึกโดย {recordedByText(current)}
                       </span>
                     )}
                   </div>

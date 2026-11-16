@@ -2,14 +2,13 @@ import pg from 'pg';
 import { assetExists } from './asset-lookups.ts';
 import { REMARK_MAX_LENGTH, assignmentSearch, bangkokDate, isCalendarDate, normalizeLine, normalizeText, readAssignmentsAt } from './assignment.service.ts';
 import { isValidUuid } from './capability.service.ts';
-import { loanContextOf, type Borrower } from './loan-read.service.ts';
 import { findUnassignableEntry } from './reference.service.ts';
-import { underRepairOfAssets } from './repair-read.service.ts';
 import { commitOnce } from './retryable-write.ts';
 import { ValidationError } from './validation-error.ts';
 import {
   currentRevisionsOf,
   openVerificationRoundOf,
+  recordingContextOf,
   type OpenVerificationRound,
   type RecordedResult,
   type VerificationCondition,
@@ -155,14 +154,6 @@ const normalizeResult = (input: RecordVerificationInput, today: string): ResultF
   }
   return { result: input.result, condition, note: normalizeText(input.note, 'note', VERIFICATION_NOTE_MAX_LENGTH, ''), verification_date: date };
 };
-
-// How a revision shows its Borrower, as the Asset page shows it then (#125 Q14).
-const borrowerDisplayOf = (borrower: Borrower): string =>
-  borrower.kind === 'INTERNAL'
-    ? borrower.person.name
-    : borrower.organization_name
-      ? `${borrower.contact_name} (${borrower.organization_name})`
-      : borrower.contact_name;
 
 // A request's facts once validated. The retry fingerprint covers these.
 interface OpeningFacts {
@@ -345,11 +336,11 @@ export class VerificationService {
           throw new ValidationError(`verification_date must not be before the start date of the Verification Round (${round.rows[0].start_date})`);
         }
 
-        const found = await client.query('SELECT id FROM verification_scope_entries WHERE verification_round_id = $1 AND asset_id = $2', [roundId, assetId]);
-        if (found.rows.length === 0) {
+        const scoped = await client.query('SELECT id FROM verification_scope_entries WHERE verification_round_id = $1 AND asset_id = $2', [roundId, assetId]);
+        if (scoped.rows.length === 0) {
           throw (await assetExists(client, assetId)) ? new AssetNotInVerificationScopeError() : new VerificationTargetNotFoundError('Asset');
         }
-        const entryId: string = found.rows[0].id;
+        const entryId: string = scoped.rows[0].id;
         const entry = await client.query('SELECT version FROM verification_scope_entries WHERE id = $1 FOR UPDATE', [entryId]);
         const current = (await currentRevisionsOf(client, [entryId])).get(entryId);
         if (current) {
@@ -357,8 +348,7 @@ export class VerificationService {
         }
 
         const inEffect = (await readAssignmentsAt(client, [assetId], verificationDate)).get(assetId)!;
-        const loan = await loanContextOf(client, assetId);
-        const repair = (await underRepairOfAssets(client, [assetId])).get(assetId) ?? null;
+        const { loan_context: loan, repair_context: repair } = await recordingContextOf(client, assetId);
         const revision = await client.query(
           `INSERT INTO verification_revisions
              (verification_scope_entry_id, revision_number, result, condition, note, verification_date,
@@ -382,7 +372,7 @@ export class VerificationService {
             inEffect.legacy_responsible_person_text,
             loan?.kind ?? null,
             loan?.loan_item_id ?? null,
-            loan ? borrowerDisplayOf(loan.borrower) : null,
+            loan?.borrower_display ?? null,
             loan?.due_date ?? null,
             repair?.repair_record_id ?? null,
             repair?.repair_kind ?? null,

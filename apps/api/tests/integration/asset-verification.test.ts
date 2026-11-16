@@ -180,10 +180,15 @@ describe('Record an Asset Verification (Seam A - F006-T2)', () => {
     it('needs a Condition when Found and refuses one when Not Found, saving nothing', async () => {
       const { assetIds: [assetId], roundId } = await roundOver();
 
-      for (const payload of [{ result: 'FOUND' }, { result: 'FOUND', condition: null }, { result: 'NOT_FOUND', condition: 'NORMAL' }]) {
+      const refusals: [Record<string, unknown>, string][] = [
+        [{ result: 'FOUND' }, 'condition must be'],
+        [{ result: 'FOUND', condition: null }, 'condition must be'],
+        [{ result: 'NOT_FOUND', condition: 'NORMAL' }, 'condition must not be given'],
+      ];
+      for (const [payload, message] of refusals) {
         const res = await record(roundId, assetId, payload);
         expect(res.statusCode).toBe(400);
-        expect(res.json().code).toBe('VALIDATION_FAILED');
+        expect(res.json()).toMatchObject({ code: 'VALIDATION_FAILED', message: expect.stringContaining(message) });
       }
       expect(await revisionCount(roundId, assetId)).toBe(0);
     });
@@ -346,11 +351,16 @@ describe('Record an Asset Verification (Seam A - F006-T2)', () => {
       const { roundId } = await roundOver();
       const outside = await registeredIn(await entry('locations', `ห้องนอกรอบ ${crypto.randomUUID()}`));
 
-      const res = await record(roundId, outside, finding());
+      const revisionsOf = async (): Promise<number> => (await api.pool.query('SELECT count(*)::int AS n FROM verification_revisions')).rows[0].n;
+      const before = await revisionsOf();
+      const token = crypto.randomUUID();
+
+      const res = await record(roundId, outside, finding(), token);
 
       expect(res.statusCode).toBe(409);
       expect(res.json().code).toBe('ASSET_NOT_IN_VERIFICATION_SCOPE');
-      expect((await api.pool.query('SELECT count(*)::int AS n FROM verification_scope_entries WHERE asset_id = $1', [outside])).rows[0].n).toBe(0);
+      expect(await revisionsOf()).toBe(before);
+      expect((await api.pool.query('SELECT count(*)::int AS n FROM registration_retry_tokens WHERE token = $1', [token])).rows[0].n).toBe(0);
     });
 
     it('refuses a result for a Round that is not open, and saves nothing (AV-17)', async () => {
@@ -434,14 +444,36 @@ describe('Record an Asset Verification (Seam A - F006-T2)', () => {
       const openRound = { id: roundId, name: round.name, fiscal_year: round.fiscal_year, start_date: round.start_date };
       const entryId = (await entryOf(roundId, assetId)).id;
 
-      expect((await detailOf(assetId)).verification).toEqual({ open_round: openRound, entry: { id: entryId, version: 1, result: 'NOT_YET_VERIFIED', current: null } });
+      const noContext = { loan_context: null, repair_context: null };
+
+      expect((await detailOf(assetId)).verification).toEqual({ open_round: openRound, entry: { id: entryId, version: 1, result: 'NOT_YET_VERIFIED', current: null }, context: noContext });
       await recorded(roundId, assetId, {}, staff);
-      expect((await detailOf(assetId)).verification).toEqual({ open_round: openRound, entry: { id: entryId, version: 2, result: 'FOUND', current: (await entryOf(roundId, assetId)).current } });
+      expect((await detailOf(assetId)).verification).toEqual({
+        open_round: openRound,
+        entry: { id: entryId, version: 2, result: 'FOUND', current: (await entryOf(roundId, assetId)).current },
+        context: noContext,
+      });
       expect((await detailOf(other)).verification.entry.result).toBe('NOT_YET_VERIFIED');
-      expect((await detailOf(outside)).verification).toEqual({ open_round: openRound, entry: null });
+      expect((await detailOf(outside)).verification).toEqual({ open_round: openRound, entry: null, context: noContext });
 
       await closedStandIn();
       expect((await detailOf(assetId)).verification).toBeNull();
+    });
+
+    it('shows on the panel the Loan and Repair context a result recorded now would keep, the Borrower and Due Date of a Not Returned item too', async () => {
+      const { assetIds: [notReturned, repaired], roundId } = await roundOver(2);
+      const { loanId, itemOf } = await lent([notReturned], { borrower: { kind: 'EXTERNAL', contact_name: 'คุณผู้ยืม', organization_name: 'บริษัท ก' } });
+      await closedNotReturned(loanId, [itemOf[notReturned]], '2026-11-05');
+      const repairRecordId = await sent(repaired);
+
+      expect((await detailOf(notReturned)).verification.context).toEqual({
+        loan_context: { kind: 'NOT_RETURNED', loan_item_id: itemOf[notReturned], borrower_display: 'คุณผู้ยืม (บริษัท ก)', due_date: '2026-11-30' },
+        repair_context: null,
+      });
+      expect((await detailOf(repaired)).verification.context).toEqual({ loan_context: null, repair_context: { repair_record_id: repairRecordId, repair_kind: 'REPAIR' } });
+
+      await recorded(roundId, notReturned, { result: 'NOT_FOUND', condition: null });
+      expect((await entryOf(roundId, notReturned)).current.loan_context).toEqual((await detailOf(notReturned)).verification.context.loan_context);
     });
 
     it("lists the Asset's current result in every Round it belongs to, newest start date first", async () => {

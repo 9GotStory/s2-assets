@@ -379,13 +379,22 @@ async function onLoanOfAssets(db: pg.Pool | any, assetIds: string[], today: stri
 }
 
 // The LoanItem that holds an Asset, as an Asset Verification keeps it (F006-T2, #125 Q14): On Loan, or Not
-// Returned and not come back, with its Borrower and current Due Date.
+// Returned and not come back, with its Borrower as the Asset page names them now and its current Due Date.
 export interface LoanContext {
   kind: 'ON_LOAN' | 'NOT_RETURNED';
   loan_item_id: string;
-  borrower: Borrower;
+  borrower_display: string;
   due_date: string;
 }
+
+// A Borrower by name, as the web's borrowerText shows one: a Person by their name, an External Borrower by
+// contact and organization. The phone number stays out (LR-15).
+const borrowerDisplayOf = (borrower: Borrower): string => {
+  if (borrower.kind === 'INTERNAL') {
+    return borrower.person.name;
+  }
+  return borrower.organization_name ? `${borrower.contact_name} (${borrower.organization_name})` : borrower.contact_name;
+};
 
 /**
  * The Loan context of an Asset, or null when no LoanItem holds it: its Outstanding item of the latest Loan,
@@ -403,7 +412,9 @@ export async function loanContextOf(db: pg.Pool | pg.PoolClient | any, assetId: 
     [assetId]
   );
   const row = res.rows[0];
-  return row ? { kind: row.ending_kind === 'NONE' ? 'ON_LOAN' : 'NOT_RETURNED', loan_item_id: row.item_id, borrower: borrowerOf(row, false), due_date: row.due_date } : null;
+  return row
+    ? { kind: row.ending_kind === 'NONE' ? 'ON_LOAN' : 'NOT_RETURNED', loan_item_id: row.item_id, borrower_display: borrowerDisplayOf(borrowerOf(row, false)), due_date: row.due_date }
+    : null;
 }
 
 // Why the Start Loan form warns about an Asset, with the date of the fact that says so (#98 Q20): its

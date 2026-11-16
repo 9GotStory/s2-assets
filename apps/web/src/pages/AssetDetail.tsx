@@ -790,9 +790,6 @@ const AssetDetailContent: React.FC = () => {
             assetId={asset.id}
             panel={assetData.verification}
             canRecord={Boolean(assetData.can_record_verification && !isPermissionRevoked)}
-            onLoan={assetData.on_loan ?? null}
-            notReturned={assetData.not_returned ?? null}
-            underRepair={assetData.under_repair ?? null}
             csrfToken={csrfToken}
             onRecorded={async () => {
               setRefreshError(null);
