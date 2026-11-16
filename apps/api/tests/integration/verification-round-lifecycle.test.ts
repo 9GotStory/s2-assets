@@ -490,17 +490,28 @@ describe('Close, Reopen, edit and void a Verification Round (Seam A - F006-T6)',
 
   describe('reasons', () => {
     it('needs a nonblank reason for a Reopen and a void, keeping tabs and line breaks inside it and refusing one too long or holding a control character', async () => {
+      // Each reason breaks one rule, which the answer names.
+      const refusals: [string, string][] = [
+        ['', 'needs a reason'],
+        ['   ', 'needs a reason'],
+        ['x'.repeat(2001), 'reason must be at most 2000 characters'],
+        ['มี\u0007อักขระ', 'reason must not contain control characters'],
+      ];
       const { roundId: closedId } = await closedRound();
       const before = await storedOf(closedId);
-      for (const reason of ['', '   ', 'x'.repeat(2001), 'มี\u0007อักขระ']) {
-        await refusedWith(await reopen(closedId, { expected_version: 2, reason }), 400, 'VALIDATION_FAILED');
+      for (const [reason, rule] of refusals) {
+        const res = await reopen(closedId, { expected_version: 2, reason });
+        await refusedWith(res, 400, 'VALIDATION_FAILED');
+        expect(res.json().message).toContain(rule);
       }
       expect(await storedOf(closedId)).toEqual(before);
       await refusedWith(await reopen(closedId, { expected_version: 2 }), 400, 'VALIDATION_FAILED');
 
       const { roundId } = await roundOver();
-      for (const reason of ['', '   ', 'x'.repeat(2001), 'มี\u0007อักขระ']) {
-        await refusedWith(await voidRound(roundId, { expected_version: 1, reason }), 400, 'VALIDATION_FAILED');
+      for (const [reason, rule] of refusals) {
+        const res = await voidRound(roundId, { expected_version: 1, reason });
+        await refusedWith(res, 400, 'VALIDATION_FAILED');
+        expect(res.json().message).toContain(rule);
       }
       expect((await roundOf(roundId)).state).toBe('OPEN');
 

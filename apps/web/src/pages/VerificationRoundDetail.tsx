@@ -110,9 +110,12 @@ const FilterLinks = <T extends string>({
 const RESULT_COLORS: Record<VerificationResult, string> = { FOUND: '#166534', NOT_FOUND: '#991b1b', NOT_YET_VERIFIED: '#92400e' };
 
 // F006-T6 (#131, #125 Q16): the page prints from the browser as its summary, history and the entries shown, without
-// the controls that only act on screen. Inline styles win over a stylesheet, so each rule is !important.
-const PRINT_STYLE = `@media print {
+// the controls that only act on screen, saying which filters chose the entries. Inline styles win over a
+// stylesheet, so each rule is !important.
+const PRINT_STYLE = `.verification-round-print-only { display: none; }
+@media print {
   .verification-round-no-print, .verification-round-page button { display: none !important; }
+  .verification-round-print-only { display: block !important; }
   .verification-round-page { min-height: 0 !important; padding: 0 !important; background-color: #ffffff !important; }
   .verification-round-card { max-width: none !important; padding: 0 !important; box-shadow: none !important; }
   .verification-round-page a { color: inherit !important; text-decoration: none !important; }
@@ -508,6 +511,19 @@ const VerificationRoundDetailContent: React.FC = () => {
             </select>
           </div>
         )}
+
+        <p id="scope-entry-print-filters" className="verification-round-print-only" style={{ margin: '0 0 0.5rem 0', fontSize: '0.875rem' }}>
+          รายการที่แสดง:{' '}
+          {[
+            filters.search.trim() && `ค้นหา “${filters.search.trim()}”`,
+            filters.result && RESULT_LABELS[filters.result],
+            filters.discrepancy && DISCREPANCY_LABELS[filters.discrepancy],
+            filters.joinedAs && LATE_ADDITION_LABEL,
+            filters.locationId && `สถานที่ ${entryLabel(snapshotLocations.find((location) => location.id === filters.locationId) ?? { id: filters.locationId, name: filters.locationId, is_active: true })}`,
+          ]
+            .filter(Boolean)
+            .join(' · ') || 'ทุกรายการในรอบ'}
+        </p>
 
         {entries.isError && !isSignedOut && (
           <div role="alert" id="scope-entry-list-error" style={{ padding: '0.75rem 1rem', borderRadius: '6px', backgroundColor: '#fee2e2', color: '#991b1b', fontSize: '0.875rem' }}>

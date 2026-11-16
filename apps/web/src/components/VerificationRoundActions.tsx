@@ -190,8 +190,29 @@ const EditRoundForm: React.FC<VerificationRoundActionsProps & { onClose: () => v
   );
 };
 
-// "เปิดรอบอีกครั้ง" and "ยกเลิกรอบ": each with a reason (#125 Q25, Q28).
-const ReasonedRoundForm: React.FC<VerificationRoundActionsProps & { action: 'REOPEN' | 'VOID'; onClose: () => void }> = ({
+// "เปิดรอบอีกครั้ง" and "ยกเลิกรอบ": each with a reason (#125 Q25, Q28), and what its form says.
+const REASONED_ACTIONS = {
+  REOPEN: {
+    idPrefix: 'verification-round-reopen',
+    path: 'reopen',
+    heading: ROUND_EVENT_LABELS.REOPENED,
+    effect: `รอบนี้จะกลับเป็น “${ROUND_STATE_LABELS.OPEN}” โดยรายการในรอบและผลตรวจยังเหมือนเดิม แล้วจึงบันทึก ตรวจซ้ำ หรือแก้ไขผลได้ตามปกติ และปิดรอบอีกครั้งได้`,
+    reasonLabel: 'เหตุผลที่เปิดรอบอีกครั้ง',
+    forbiddenMessage: 'คุณไม่มีสิทธิ์เปิดรอบตรวจอีกครั้ง',
+    refusedMessage: 'ไม่สามารถเปิดรอบอีกครั้งได้',
+  },
+  VOID: {
+    idPrefix: 'verification-round-void',
+    path: 'void',
+    heading: ROUND_EVENT_LABELS.VOIDED,
+    effect: `รอบนี้จะยังแสดงในรายการเป็น “${ROUND_STATE_LABELS.VOIDED}” และรับผลตรวจหรือการแก้ไขใด ๆ ไม่ได้อีก`,
+    reasonLabel: 'เหตุผลที่ยกเลิกรอบ',
+    forbiddenMessage: 'คุณไม่มีสิทธิ์ยกเลิกรอบตรวจ',
+    refusedMessage: 'ไม่สามารถยกเลิกรอบได้',
+  },
+} as const;
+
+const ReasonedRoundForm: React.FC<VerificationRoundActionsProps & { action: keyof typeof REASONED_ACTIONS; onClose: () => void }> = ({
   round,
   csrfToken,
   onChanged,
@@ -201,19 +222,18 @@ const ReasonedRoundForm: React.FC<VerificationRoundActionsProps & { action: 'REO
   onClose,
 }) => {
   const [reason, setReason] = useState('');
-  const isReopen = action === 'REOPEN';
-  const idPrefix = isReopen ? 'verification-round-reopen' : 'verification-round-void';
+  const form = REASONED_ACTIONS[action];
   return (
     <LoanSaveForm
-      idPrefix={idPrefix}
-      heading={isReopen ? ROUND_EVENT_LABELS.REOPENED : ROUND_EVENT_LABELS.VOIDED}
-      saveUrl={`/verification-rounds/${round.id}/${isReopen ? 'reopen' : 'void'}`}
+      idPrefix={form.idPrefix}
+      heading={form.heading}
+      saveUrl={`/verification-rounds/${round.id}/${form.path}`}
       csrfToken={csrfToken}
-      requestError={() => (reason.trim() === '' ? `กรุณาระบุเหตุผลที่${isReopen ? ROUND_EVENT_LABELS.REOPENED : ROUND_EVENT_LABELS.VOIDED}` : null)}
+      requestError={() => (reason.trim() === '' ? `กรุณาระบุ${form.reasonLabel}` : null)}
       requestBody={() => ({ expected_version: round.version, reason })}
       refusedList={roundRefusal}
-      forbiddenMessage={isReopen ? 'คุณไม่มีสิทธิ์เปิดรอบตรวจอีกครั้ง' : 'คุณไม่มีสิทธิ์ยกเลิกรอบตรวจ'}
-      refusedMessage={isReopen ? 'ไม่สามารถเปิดรอบอีกครั้งได้' : 'ไม่สามารถยกเลิกรอบได้'}
+      forbiddenMessage={form.forbiddenMessage}
+      refusedMessage={form.refusedMessage}
       onSaved={onChanged}
       onRefresh={onRefresh}
       staleMessage={STALE_MESSAGE}
@@ -222,12 +242,8 @@ const ReasonedRoundForm: React.FC<VerificationRoundActionsProps & { action: 'REO
     >
       {(isLocked) => (
         <fieldset disabled={isLocked} style={{ border: 'none', padding: 0, margin: '0 0 1rem 0', minWidth: 0 }}>
-          <p style={{ margin: '0 0 0.75rem 0', fontSize: '0.8125rem', color: '#92400e' }}>
-            {isReopen
-              ? `รอบนี้จะกลับเป็น “${ROUND_STATE_LABELS.OPEN}” โดยรายการในรอบและผลตรวจยังเหมือนเดิม แล้วจึงบันทึก ตรวจซ้ำ หรือแก้ไขผลได้ตามปกติ และปิดรอบอีกครั้งได้`
-              : `รอบนี้จะยังแสดงในรายการเป็น “${ROUND_STATE_LABELS.VOIDED}” และรับผลตรวจหรือการแก้ไขใด ๆ ไม่ได้อีก`}
-          </p>
-          <ReasonField idPrefix={idPrefix} label={isReopen ? 'เหตุผลที่เปิดรอบอีกครั้ง' : 'เหตุผลที่ยกเลิกรอบ'} value={reason} onChange={setReason} />
+          <p style={{ margin: '0 0 0.75rem 0', fontSize: '0.8125rem', color: '#92400e' }}>{form.effect}</p>
+          <ReasonField idPrefix={form.idPrefix} label={form.reasonLabel} value={reason} onChange={setReason} />
         </fieldset>
       )}
     </LoanSaveForm>

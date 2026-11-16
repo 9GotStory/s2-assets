@@ -553,8 +553,10 @@ test.describe.serial('Verification journeys: Real SPA -> Composed API -> Postgre
     await expect(history).toContainText('เหตุผล: ต้องตรวจเก้าอี้ที่ยืมไปห้องอื่น');
     await expect(page.locator('#verification-round-close-action')).toBeVisible();
 
-    // The page prints its summary, history and entries, without the controls.
+    // The page prints its summary, history and entries, without the controls, saying which entries it shows.
+    await expect(page.locator('#scope-entry-print-filters')).toBeHidden();
     await page.emulateMedia({ media: 'print' });
+    await expect(page.locator('#scope-entry-print-filters')).toHaveText('รายการที่แสดง: ทุกรายการในรอบ');
     await expect(page.locator('#verification-round-actions')).toBeHidden();
     await expect(page.locator('#scope-entry-search-form')).toBeHidden();
     await expect(page.locator('#scope-entry-result-filters')).toBeHidden();

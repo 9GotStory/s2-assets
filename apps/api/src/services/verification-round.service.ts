@@ -3,7 +3,7 @@ import { REMARK_MAX_LENGTH, normalizeText } from './assignment.service.ts';
 import { commitOnce } from './retryable-write.ts';
 import { StaleBeforeConflictError } from './service-errors.ts';
 import { ValidationError } from './validation-error.ts';
-import { roundCountsOf, type VerificationRoundState } from './verification-read.service.ts';
+import { roundCountsOf, type VerificationRoundCounts, type VerificationRoundState } from './verification-read.service.ts';
 import {
   VerificationRoundNotOpenError,
   VerificationTargetNotFoundError,
@@ -87,6 +87,32 @@ async function setState(client: pg.PoolClient, roundId: string, state: Verificat
   return { verification_round_id: roundId, version: res.rows[0].version };
 }
 
+// Adds one event to the Round's history: a close with its counts, or a Reopen, an edit or a void with its reason or changes.
+async function insertEvent(
+  client: pg.PoolClient,
+  roundId: string,
+  actorId: string,
+  event: { kind: 'CLOSED'; counts: VerificationRoundCounts } | { kind: 'REOPENED' | 'VOIDED'; reason: string } | { kind: 'EDITED'; changes: { field: string; before: unknown; after: unknown }[] }
+): Promise<void> {
+  const counts = event.kind === 'CLOSED' ? event.counts : null;
+  await client.query(
+    `INSERT INTO verification_round_events
+       (verification_round_id, kind, reason, changes, found_count, not_found_count, not_yet_verified_count, discrepancy_count, recorded_by)
+     VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)`,
+    [
+      roundId,
+      event.kind,
+      'reason' in event ? event.reason : null,
+      JSON.stringify('changes' in event ? event.changes : []),
+      counts?.found ?? null,
+      counts?.not_found ?? null,
+      counts?.not_yet_verified ?? null,
+      counts?.with_discrepancy ?? null,
+      actorId,
+    ]
+  );
+}
+
 const normalizeReason = (reason: string, what: string): string => {
   const normalized = normalizeText(reason, 'reason', ROUND_REASON_MAX_LENGTH, '');
   if (normalized === null) {
@@ -130,11 +156,7 @@ export class VerificationRoundService {
         }
         const counts = await roundCountsOf(client, roundId);
         const closed = await setState(client, roundId, 'CLOSED');
-        await client.query(
-          `INSERT INTO verification_round_events (verification_round_id, kind, found_count, not_found_count, not_yet_verified_count, discrepancy_count, recorded_by)
-           VALUES ($1, 'CLOSED', $2, $3, $4, $5, $6)`,
-          [roundId, counts.found, counts.not_found, counts.not_yet_verified, counts.with_discrepancy, actorId]
-        );
+        await insertEvent(client, roundId, actorId, { kind: 'CLOSED', counts });
         return closed;
       }
     );
@@ -161,11 +183,7 @@ export class VerificationRoundService {
           throw new VerificationRoundNotClosedError();
         }
         const reopened = await asTheOpenRound(client, () => setState(client, roundId, 'OPEN'));
-        await client.query(`INSERT INTO verification_round_events (verification_round_id, kind, reason, recorded_by) VALUES ($1, 'REOPENED', $2, $3)`, [
-          roundId,
-          reason,
-          actorId,
-        ]);
+        await insertEvent(client, roundId, actorId, { kind: 'REOPENED', reason });
         return reopened;
       }
     );
@@ -200,11 +218,7 @@ export class VerificationRoundService {
           after.fiscal_year,
           after.notes,
         ]);
-        await client.query(`INSERT INTO verification_round_events (verification_round_id, kind, changes, recorded_by) VALUES ($1, 'EDITED', $2, $3)`, [
-          roundId,
-          JSON.stringify(changes),
-          actorId,
-        ]);
+        await insertEvent(client, roundId, actorId, { kind: 'EDITED', changes });
         return { verification_round_id: roundId, version: res.rows[0].version };
       }
     );
@@ -237,11 +251,7 @@ export class VerificationRoundService {
           throw new VerificationRoundHasResultsError();
         }
         const voided = await setState(client, roundId, 'VOIDED');
-        await client.query(`INSERT INTO verification_round_events (verification_round_id, kind, reason, recorded_by) VALUES ($1, 'VOIDED', $2, $3)`, [
-          roundId,
-          reason,
-          actorId,
-        ]);
+        await insertEvent(client, roundId, actorId, { kind: 'VOIDED', reason });
         return voided;
       }
     );

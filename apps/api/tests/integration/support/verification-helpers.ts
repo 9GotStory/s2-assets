@@ -75,15 +75,15 @@ export function verificationHelpers(context: () => { api: ApiHarness; custodian:
     }
   };
 
-  // F006-T6 (#131): the writes that change a Round, each sent with the version `payload` names.
-  const close = (roundId: string, payload: Record<string, unknown>, token: string = crypto.randomUUID(), actor: Actor = context().custodian) =>
-    context().api.post(actor, `/verification-rounds/${roundId}/close`, payload, { 'x-retry-token': token });
-  const reopen = (roundId: string, payload: Record<string, unknown>, token: string = crypto.randomUUID(), actor: Actor = context().custodian) =>
-    context().api.post(actor, `/verification-rounds/${roundId}/reopen`, payload, { 'x-retry-token': token });
-  const voidRound = (roundId: string, payload: Record<string, unknown>, token: string = crypto.randomUUID(), actor: Actor = context().custodian) =>
-    context().api.post(actor, `/verification-rounds/${roundId}/void`, payload, { 'x-retry-token': token });
-  const edit = (roundId: string, payload: Record<string, unknown>, token: string = crypto.randomUUID(), actor: Actor = context().custodian) =>
-    context().api.patch(actor, `/verification-rounds/${roundId}`, payload, { 'x-retry-token': token });
+  // F006-T6 (#131): a write that changes a Round, at `path` under it, sent with the version `payload` names.
+  const roundWrite =
+    (method: 'post' | 'patch', path: string) =>
+    (roundId: string, payload: Record<string, unknown>, token: string = crypto.randomUUID(), actor: Actor = context().custodian) =>
+      context().api[method](actor, `/verification-rounds/${roundId}${path}`, payload, { 'x-retry-token': token });
+  const close = roundWrite('post', '/close');
+  const reopen = roundWrite('post', '/reopen');
+  const voidRound = roundWrite('post', '/void');
+  const edit = roundWrite('patch', '');
 
   // A Round closed against the version it has now; answers the version after the close.
   const closed = async (roundId: string, actor: Actor = context().custodian): Promise<number> => {
