@@ -3,8 +3,11 @@ import { Link, useNavigate, useParams, useSearchParams } from 'react-router';
 import { QueryClient, QueryClientProvider, useQuery } from '@tanstack/react-query';
 import { REFERENCE_DIMENSIONS, entryLabel } from '../components/ReferenceContextFields';
 import { thaiDate, valueText } from '../components/assignmentFacts';
-import { RecordingContextLine } from '../components/VerificationPanel';
+import { RecordingContextLine, RevisionDiscrepancies } from '../components/VerificationPanel';
 import {
+  DISCREPANCIES,
+  DISCREPANCY_LABEL,
+  DISCREPANCY_LABELS,
   FISCAL_YEAR_LABEL,
   RESULT_LABELS,
   ROUND_EVENT_LABELS,
@@ -17,6 +20,7 @@ import {
   recordedByText,
   recordedContextText,
   resultText,
+  type Discrepancy,
   type ScopeEntry,
   type ScopeEntryPage,
   type VerificationResult,
@@ -28,6 +32,36 @@ const PAGE_SIZE = 25;
 // The results the list filters by (#125 AV-19); none shows every entry.
 const RESULT_FILTERS: readonly VerificationResult[] = ['FOUND', 'NOT_FOUND', 'NOT_YET_VERIFIED'];
 const isResultFilter = (value: string | null): value is VerificationResult => RESULT_FILTERS.includes(value as VerificationResult);
+const isDiscrepancyFilter = (value: string | null): value is Discrepancy => DISCREPANCIES.includes(value as Discrepancy);
+
+// What the entry list shows: a search, a result, a Discrepancy and a snapshot Location, each null for any (#125 AV-19, P5).
+interface ListFilters {
+  search: string;
+  result: VerificationResult | null;
+  discrepancy: Discrepancy | null;
+  locationId: string | null;
+}
+
+// The list's URL query for its filters and a page.
+const listQuery = ({ search, result, discrepancy, locationId }: ListFilters, offset: number): string => {
+  const params = new URLSearchParams();
+  if (search.trim()) params.set('search', search.trim());
+  if (result) params.set('result', result);
+  if (discrepancy) params.set('discrepancy', discrepancy);
+  if (locationId) params.set('location_id', locationId);
+  if (offset > 0) params.set('offset', String(offset));
+  return params.toString();
+};
+
+const filterLinkStyle = (isCurrent: boolean): React.CSSProperties => ({
+  padding: '0.375rem 0.75rem',
+  borderRadius: '9999px',
+  border: '1px solid #d1d5db',
+  textDecoration: 'none',
+  backgroundColor: isCurrent ? '#2563eb' : '#ffffff',
+  color: isCurrent ? '#ffffff' : '#374151',
+});
+const filterNavStyle: React.CSSProperties = { display: 'flex', gap: '0.5rem', flexWrap: 'wrap', marginBottom: '0.75rem', fontSize: '0.875rem' };
 
 const RESULT_COLORS: Record<VerificationResult, string> = { FOUND: '#166534', NOT_FOUND: '#991b1b', NOT_YET_VERIFIED: '#92400e' };
 
@@ -87,7 +121,7 @@ const readJson = async <T,>(url: string, signal: AbortSignal): Promise<T> => {
 };
 
 // One Asset of the Scope Snapshot as the register showed it when the Round opened (#125 Q4), with its current
-// result and the Loan or Repair context that result kept (Q14).
+// result, its Observed Location and Discrepancies (Q7), and the Loan or Repair context that result kept (Q14).
 const ScopeEntryItem: React.FC<{ entry: ScopeEntry }> = ({ entry }) => {
   const { snapshot, current } = entry;
   return (
@@ -103,6 +137,7 @@ const ScopeEntryItem: React.FC<{ entry: ScopeEntry }> = ({ entry }) => {
       {current && (
         <div data-testid={`scope-entry-verification-${entry.asset_id}`} style={{ color: '#4b5563', marginTop: '0.25rem', overflowWrap: 'anywhere' }}>
           {VERIFICATION_DATE_LABEL} <time dateTime={current.verification_date}>{thaiDate(current.verification_date)}</time> บันทึกโดย {recordedByText(current)}
+          <RevisionDiscrepancies revision={current} testId={`scope-entry-discrepancies-${entry.asset_id}`} />
           {recordedContextText(current) && (
             <div style={{ color: '#92400e' }}>
               ขณะตรวจ: <RecordingContextLine context={current} />
@@ -131,7 +166,13 @@ const VerificationRoundDetailContent: React.FC = () => {
   const [searchParams, setSearchParams] = useSearchParams();
   const search = searchParams.get('search') ?? '';
   const resultParam = searchParams.get('result');
-  const result = isResultFilter(resultParam) ? resultParam : null;
+  const discrepancyParam = searchParams.get('discrepancy');
+  const filters: ListFilters = {
+    search,
+    result: isResultFilter(resultParam) ? resultParam : null,
+    discrepancy: isDiscrepancyFilter(discrepancyParam) ? discrepancyParam : null,
+    locationId: searchParams.get('location_id') || null,
+  };
   const offset = Number(searchParams.get('offset') ?? 0) || 0;
   // What the search box shows until it is submitted; a new URL, such as going back, shows that URL's search.
   const [draft, setDraft] = useState(search);
@@ -144,15 +185,11 @@ const VerificationRoundDetailContent: React.FC = () => {
     queryFn: ({ signal }) => readJson(`/verification-rounds/${id}`, signal),
   });
   const entries = useQuery<ScopeEntryPage, HttpError>({
-    queryKey: ['verification-round-entries', id, search, result, offset],
+    queryKey: ['verification-round-entries', id, filters, offset],
     queryFn: ({ signal }) => {
-      const params = new URLSearchParams({ limit: String(PAGE_SIZE), offset: String(offset) });
-      if (search.trim()) {
-        params.set('search', search.trim());
-      }
-      if (result) {
-        params.set('result', result);
-      }
+      const params = new URLSearchParams(listQuery(filters, 0));
+      params.set('limit', String(PAGE_SIZE));
+      params.set('offset', String(offset));
       return readJson(`/verification-rounds/${id}/entries?${params.toString()}`, signal);
     },
     enabled: round.isSuccess,
@@ -165,15 +202,7 @@ const VerificationRoundDetailContent: React.FC = () => {
     }
   }, [isSignedOut, navigate]);
 
-  // The list's URL for a search, a result filter and a page.
-  const listQuery = (nextSearch: string, nextResult: VerificationResult | null, nextOffset: number): string => {
-    const params = new URLSearchParams();
-    if (nextSearch.trim()) params.set('search', nextSearch.trim());
-    if (nextResult) params.set('result', nextResult);
-    if (nextOffset > 0) params.set('offset', String(nextOffset));
-    return params.toString();
-  };
-  const show = (nextSearch: string, nextOffset: number) => setSearchParams(listQuery(nextSearch, result, nextOffset));
+  const show = (next: Partial<ListFilters>, nextOffset: number) => setSearchParams(listQuery({ ...filters, ...next }, nextOffset));
 
   // A failed read hides what an earlier one showed: a lost grant fails closed.
   if (round.isError) {
@@ -201,10 +230,23 @@ const VerificationRoundDetailContent: React.FC = () => {
     );
   }
 
-  const { name, fiscal_year: fiscalYear, start_date: startDate, state, notes, filters, counts, opened_by: openedBy, opened_by_username: openedByUsername, recorded_at: recordedAt, history } = round.data;
+  const {
+    name,
+    fiscal_year: fiscalYear,
+    start_date: startDate,
+    state,
+    notes,
+    filters: roundFilters,
+    counts,
+    opened_by: openedBy,
+    opened_by_username: openedByUsername,
+    recorded_at: recordedAt,
+    history,
+    snapshot_locations: snapshotLocations,
+  } = round.data;
   const page = entries.isError ? undefined : entries.data;
   const filterText = (label: string, chosen: { id: string; name: string; is_active: boolean }[]) => (chosen.length > 0 ? `${label}: ${chosen.map(entryLabel).join(', ')}` : null);
-  const scopeText = [filterText('หน่วยงาน', filters.organization_units), filterText('สถานที่', filters.locations)].filter(Boolean).join(' และ ') || WHOLE_REGISTER_LABEL;
+  const scopeText = [filterText('หน่วยงาน', roundFilters.organization_units), filterText('สถานที่', roundFilters.locations)].filter(Boolean).join(' และ ') || WHOLE_REGISTER_LABEL;
 
   return (
     <main style={pageStyle}>
@@ -255,6 +297,7 @@ const VerificationRoundDetailContent: React.FC = () => {
               ['found', RESULT_LABELS.FOUND, counts.found],
               ['not-found', RESULT_LABELS.NOT_FOUND, counts.not_found],
               ['not-yet-verified', RESULT_LABELS.NOT_YET_VERIFIED, counts.not_yet_verified],
+              ['with-discrepancy', `มี${DISCREPANCY_LABEL}`, counts.with_discrepancy],
             ] as const
           ).map(([key, label, count]) => (
             <div key={key} data-testid={`verification-round-count-${key}`} style={{ padding: '0.75rem 1rem', backgroundColor: '#f9fafb', borderRadius: '6px', border: '1px solid #e5e7eb', fontSize: '0.875rem' }}>
@@ -280,7 +323,7 @@ const VerificationRoundDetailContent: React.FC = () => {
           role="search"
           onSubmit={(e) => {
             e.preventDefault();
-            show(draft, 0);
+            show({ search: draft }, 0);
           }}
           style={{ display: 'flex', gap: '0.5rem', flexWrap: 'wrap', marginBottom: '0.75rem' }}
         >
@@ -303,29 +346,53 @@ const VerificationRoundDetailContent: React.FC = () => {
         </form>
 
         {/* Links, not buttons: a filter is a URL that a back step or a shared link keeps. */}
-        <nav aria-label="กรองตามผลตรวจ" id="scope-entry-result-filters" style={{ display: 'flex', gap: '0.5rem', flexWrap: 'wrap', marginBottom: '0.75rem', fontSize: '0.875rem' }}>
-          {([null, ...RESULT_FILTERS] as const).map((filter) => {
-            const isCurrent = filter === result;
-            return (
-              <Link
-                key={filter ?? 'ALL'}
-                to={`?${listQuery(search, filter, 0)}`}
-                id={`scope-entry-result-filter-${filter ?? 'ALL'}`}
-                aria-current={isCurrent ? 'page' : undefined}
-                style={{
-                  padding: '0.375rem 0.75rem',
-                  borderRadius: '9999px',
-                  border: '1px solid #d1d5db',
-                  textDecoration: 'none',
-                  backgroundColor: isCurrent ? '#2563eb' : '#ffffff',
-                  color: isCurrent ? '#ffffff' : '#374151',
-                }}
-              >
-                {filter ? RESULT_LABELS[filter] : 'ทั้งหมด'}
-              </Link>
-            );
-          })}
+        <nav aria-label="กรองตามผลตรวจ" id="scope-entry-result-filters" style={filterNavStyle}>
+          {([null, ...RESULT_FILTERS] as const).map((filter) => (
+            <Link
+              key={filter ?? 'ALL'}
+              to={`?${listQuery({ ...filters, result: filter }, 0)}`}
+              id={`scope-entry-result-filter-${filter ?? 'ALL'}`}
+              aria-current={filter === filters.result ? 'page' : undefined}
+              style={filterLinkStyle(filter === filters.result)}
+            >
+              {filter ? RESULT_LABELS[filter] : 'ทั้งหมด'}
+            </Link>
+          ))}
         </nav>
+        <nav aria-label={`กรองตาม${DISCREPANCY_LABEL}`} id="scope-entry-discrepancy-filters" style={filterNavStyle}>
+          {([null, ...DISCREPANCIES] as const).map((filter) => (
+            <Link
+              key={filter ?? 'ALL'}
+              to={`?${listQuery({ ...filters, discrepancy: filter }, 0)}`}
+              id={`scope-entry-discrepancy-filter-${filter ?? 'ALL'}`}
+              aria-current={filter === filters.discrepancy ? 'page' : undefined}
+              style={filterLinkStyle(filter === filters.discrepancy)}
+            >
+              {filter ? DISCREPANCY_LABELS[filter] : `${DISCREPANCY_LABEL}ทั้งหมด`}
+            </Link>
+          ))}
+        </nav>
+        {snapshotLocations.length > 0 && (
+          <div style={{ marginBottom: '0.75rem', fontSize: '0.875rem' }}>
+            {/* The Location the snapshot holds, to walk the office room by room (#125 P5). */}
+            <label htmlFor="scope-entry-location-filter" style={{ marginRight: '0.5rem', color: '#4b5563' }}>
+              สถานที่ตามรายการในรอบ:
+            </label>
+            <select
+              id="scope-entry-location-filter"
+              value={filters.locationId ?? ''}
+              onChange={(e) => show({ locationId: e.target.value || null }, 0)}
+              style={{ maxWidth: '100%', padding: '0.375rem 0.5rem', border: '1px solid #d1d5db', borderRadius: '4px', fontSize: '0.875rem' }}
+            >
+              <option value="">ทุกสถานที่</option>
+              {snapshotLocations.map((location) => (
+                <option key={location.id} value={location.id}>
+                  {entryLabel(location)}
+                </option>
+              ))}
+            </select>
+          </div>
+        )}
 
         {entries.isError && !isSignedOut && (
           <div role="alert" id="scope-entry-list-error" style={{ padding: '0.75rem 1rem', borderRadius: '6px', backgroundColor: '#fee2e2', color: '#991b1b', fontSize: '0.875rem' }}>
@@ -352,13 +419,13 @@ const VerificationRoundDetailContent: React.FC = () => {
             </ul>
             {page.total_count > PAGE_SIZE && (
               <div id="scope-entry-pagination" style={{ display: 'flex', justifyContent: 'flex-end', alignItems: 'center', gap: '0.75rem', marginTop: '1rem', flexWrap: 'wrap' }}>
-                <button type="button" id="scope-entry-prev" disabled={offset === 0} onClick={() => show(search, Math.max(0, offset - PAGE_SIZE))} style={pageButtonStyle(offset === 0)}>
+                <button type="button" id="scope-entry-prev" disabled={offset === 0} onClick={() => show({}, Math.max(0, offset - PAGE_SIZE))} style={pageButtonStyle(offset === 0)}>
                   ← ก่อนหน้า
                 </button>
                 <span id="scope-entry-page" style={{ fontSize: '0.875rem', color: '#4b5563' }}>
                   หน้า {Math.floor(page.offset / PAGE_SIZE) + 1} จาก {Math.ceil(page.total_count / PAGE_SIZE)}
                 </span>
-                <button type="button" id="scope-entry-next" disabled={!page.has_more} onClick={() => show(search, offset + PAGE_SIZE)} style={pageButtonStyle(!page.has_more)}>
+                <button type="button" id="scope-entry-next" disabled={!page.has_more} onClick={() => show({}, offset + PAGE_SIZE)} style={pageButtonStyle(!page.has_more)}>
                   ถัดไป →
                 </button>
               </div>
@@ -370,7 +437,10 @@ const VerificationRoundDetailContent: React.FC = () => {
   );
 };
 
-/** A Verification Round's page (F006-T1, F006-T2): its fields, counts, history and Scope Snapshot with each Asset's current result. */
+/**
+ * A Verification Round's page (F006-T1, F006-T2, F006-T3): its fields, counts, history and Scope Snapshot with each
+ * Asset's current result and Discrepancies, filtered by result, Discrepancy and snapshot Location.
+ */
 export const VerificationRoundDetail: React.FC = () => {
   const [queryClient] = useState(() => new QueryClient({ defaultOptions: { queries: { retry: false, refetchOnWindowFocus: true } } }));
 

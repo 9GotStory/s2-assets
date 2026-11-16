@@ -11,13 +11,17 @@ export type RecordedResult = 'FOUND' | 'NOT_FOUND';
 // An Asset's current result in a Round: that of its latest revision not voided, or Not Yet Verified with none.
 export type VerificationResult = RecordedResult | 'NOT_YET_VERIFIED';
 export type VerificationCondition = 'NORMAL' | 'DAMAGED';
+// A difference a result notes between the Asset and the register (F006-T3, #125 Q7): "Location ไม่ตรงทะเบียน"
+// and "ชำรุด" are derived on read, never stored; "ป้าย/QR หายหรือชำรุด" and "ข้อมูลไม่ตรงทะเบียน" are ticked.
+export type Discrepancy = 'LOCATION_MISMATCH' | 'DAMAGED' | 'LABEL_MISSING_OR_DAMAGED' | 'DATA_MISMATCH';
 
-// How far a Round has gone (#125 AV-19). F006-T3 adds Discrepancies.
+// How far a Round has gone (#125 AV-19), and how many current results note a Discrepancy (AV-22).
 export interface VerificationRoundCounts {
   in_scope: number;
   found: number;
   not_found: number;
   not_yet_verified: number;
+  with_discrepancy: number;
 }
 
 // The open Round, as a refusal or the Asset page names it (#125 Q17).
@@ -49,6 +53,14 @@ export interface VerificationRevision {
   result: RecordedResult;
   // ปกติ or ชำรุด when Found, and null when Not Found.
   condition: VerificationCondition | null;
+  // Where a Found Asset was seen, by its current name; null when it matched the register (#125 Q7, AV-07).
+  observed_location: ReferenceEntrySummary | null;
+  // "ป้าย/QR หายหรือชำรุด" (AR-14) and "ข้อมูลไม่ตรงทะเบียน" with its note (AV-08), ticked when Found.
+  label_missing_or_damaged: boolean;
+  data_mismatch: boolean;
+  data_mismatch_note: string | null;
+  // Every Discrepancy the result notes, in the order of DISCREPANCIES.
+  discrepancies: Discrepancy[];
   note: string | null;
   verification_date: string;
   // The Permanent Assignment in effect on the Verification Date, as the register showed it at recording.
@@ -94,6 +106,8 @@ export interface VerificationRound extends VerificationRoundSummary {
   recorded_at: string;
   version: number;
   history: VerificationRoundEvent[];
+  // The Locations its Scope Snapshot holds, by current name, that its entries can be filtered by (#125 P5).
+  snapshot_locations: ReferenceEntrySummary[];
 }
 
 // What the register showed of an Asset when it joined the Round (#125 Q4): its identity and Current
@@ -128,6 +142,10 @@ export interface ScopeEntryFilters {
   search?: string;
   // The current result (#125 AV-19).
   result?: VerificationResult;
+  // A Discrepancy the current result notes (F006-T3, AV-19).
+  discrepancy?: Discrepancy;
+  // The Location the Scope Snapshot holds, to walk the office room by room (P5).
+  location_id?: string;
   limit: number;
   offset: number;
 }
@@ -164,20 +182,41 @@ export interface ScopeEntryPage {
   has_more: boolean;
 }
 
-// The current result of the scope entry aliased `e`: its latest revision not voided, or Not Yet Verified (#125 AV-12).
-const CURRENT_RESULT = `coalesce((SELECT v.result FROM verification_revisions v
-                                  WHERE v.verification_scope_entry_id = e.id AND NOT v.is_voided
-                                  ORDER BY v.revision_number DESC LIMIT 1), 'NOT_YET_VERIFIED')`;
+// When the revision aliased `v` notes each Discrepancy (#125 AV-07, AV-08, Q26). "Location ไม่ตรงทะเบียน" compares
+// the Observed Location with the Location in effect on the Verification Date that the revision stored: an empty
+// or Legacy-text one counts as different, and a left-out Observed Location as matching.
+const DISCREPANCY_CONDITIONS: Record<Discrepancy, (v: string) => string> = {
+  LOCATION_MISMATCH: (v) => `(${v}.observed_location_id IS NOT NULL AND ${v}.observed_location_id IS DISTINCT FROM ${v}.location_id)`,
+  DAMAGED: (v) => `(${v}.result = 'FOUND' AND ${v}.condition = 'DAMAGED')`,
+  LABEL_MISSING_OR_DAMAGED: (v) => `${v}.label_missing_or_damaged`,
+  DATA_MISMATCH: (v) => `${v}.data_mismatch`,
+};
+export const DISCREPANCIES = Object.keys(DISCREPANCY_CONDITIONS) as Discrepancy[];
+
+// Every Discrepancy the revision aliased `v` notes, as a text array.
+const discrepanciesOf = (v: string) => `array_remove(ARRAY[${DISCREPANCIES.map((d) => `CASE WHEN ${DISCREPANCY_CONDITIONS[d](v)} THEN '${d}' END`).join(', ')}]::text[], NULL)`;
+// Whether the revision aliased `v` notes any Discrepancy; null for no revision.
+const hasDiscrepancy = (v: string) => `(${DISCREPANCIES.map((d) => DISCREPANCY_CONDITIONS[d](v)).join(' OR ')})`;
+
+// The current revision of the scope entry aliased `e`, as `cur`: its latest revision not voided, or a row of
+// nulls while it is Not Yet Verified (#125 AV-12).
+const CURRENT_REVISION = `LEFT JOIN LATERAL (
+         SELECT v.* FROM verification_revisions v
+         WHERE v.verification_scope_entry_id = e.id AND NOT v.is_voided
+         ORDER BY v.revision_number DESC LIMIT 1
+       ) cur ON true`;
 
 // A Round's columns, for a row aliased `r` joined with ROUND_COUNTS.
 const ROUND_COLUMNS = `r.id, r.name, r.fiscal_year, to_char(r.start_date, 'YYYY-MM-DD') AS start_date, r.state,
-       counted.in_scope, counted.found, counted.not_found`;
+       counted.in_scope, counted.found, counted.not_found, counted.with_discrepancy`;
 
 const ROUND_COUNTS = `CROSS JOIN LATERAL (
          SELECT count(*)::int AS in_scope,
-                count(*) FILTER (WHERE current_result = 'FOUND')::int AS found,
-                count(*) FILTER (WHERE current_result = 'NOT_FOUND')::int AS not_found
-         FROM (SELECT ${CURRENT_RESULT} AS current_result FROM verification_scope_entries e WHERE e.verification_round_id = r.id) results
+                count(*) FILTER (WHERE cur.result = 'FOUND')::int AS found,
+                count(*) FILTER (WHERE cur.result = 'NOT_FOUND')::int AS not_found,
+                count(*) FILTER (WHERE ${hasDiscrepancy('cur')})::int AS with_discrepancy
+         FROM verification_scope_entries e ${CURRENT_REVISION}
+         WHERE e.verification_round_id = r.id
        ) counted`;
 
 const summaryOf = (row: any): VerificationRoundSummary => ({
@@ -186,7 +225,13 @@ const summaryOf = (row: any): VerificationRoundSummary => ({
   fiscal_year: row.fiscal_year,
   start_date: row.start_date,
   state: row.state,
-  counts: { in_scope: row.in_scope, found: row.found, not_found: row.not_found, not_yet_verified: row.in_scope - row.found - row.not_found },
+  counts: {
+    in_scope: row.in_scope,
+    found: row.found,
+    not_found: row.not_found,
+    not_yet_verified: row.in_scope - row.found - row.not_found,
+    with_discrepancy: row.with_discrepancy,
+  },
 });
 
 const entryOf = (id: string | null, name: string, isActive: boolean): ReferenceEntrySummary | null => (id ? { id, name, is_active: isActive } : null);
@@ -196,6 +241,11 @@ const revisionOf = (row: any): VerificationRevision => ({
   revision_number: row.revision_number,
   result: row.result,
   condition: row.condition,
+  observed_location: entryOf(row.observed_location_id, row.observed_location_name, row.observed_location_active),
+  label_missing_or_damaged: row.label_missing_or_damaged,
+  data_mismatch: row.data_mismatch,
+  data_mismatch_note: row.data_mismatch_note,
+  discrepancies: row.discrepancies,
   note: row.note,
   verification_date: row.verification_date,
   assignment_in_effect: {
@@ -237,12 +287,15 @@ export async function currentRevisionsOf(db: pg.Pool | pg.PoolClient | any, entr
   const res = await db.query(
     `SELECT DISTINCT ON (v.verification_scope_entry_id) v.verification_scope_entry_id, v.id, v.revision_number, v.result, v.condition, v.note,
             to_char(v.verification_date, 'YYYY-MM-DD') AS verification_date,
+            v.observed_location_id, ol.name AS observed_location_name, ol.is_active AS observed_location_active,
+            v.label_missing_or_damaged, v.data_mismatch, v.data_mismatch_note, ${discrepanciesOf('v')} AS discrepancies,
             v.location_id, l.name AS location_name, l.is_active AS location_active, v.legacy_location_text,
             v.organization_unit_id, o.name AS organization_unit_name, o.is_active AS organization_unit_active, v.legacy_organization_unit_text,
             v.responsible_person_id, pe.name AS responsible_person_name, pe.is_active AS responsible_person_active, v.legacy_responsible_person_text,
             v.loan_context, v.loan_item_id, v.loan_borrower_display, to_char(v.loan_due_date, 'YYYY-MM-DD') AS loan_due_date,
             v.repair_record_id, v.repair_kind, v.recorded_by, u.username AS recorded_by_username, v.recorded_at
      FROM verification_revisions v
+     LEFT JOIN locations ol ON ol.id = v.observed_location_id
      LEFT JOIN locations l ON l.id = v.location_id
      LEFT JOIN organization_units o ON o.id = v.organization_unit_id
      LEFT JOIN persons pe ON pe.id = v.responsible_person_id
@@ -268,7 +321,7 @@ const eventOf = (row: any): VerificationRoundEvent => ({
   recorded_at: row.recorded_at,
 });
 
-/** F006-T1 (#126), F006-T2 (#127): the reads of Verification Rounds, their Scope Snapshots and results. */
+/** F006-T1 (#126), F006-T2 (#127), F006-T3 (#128): the reads of Verification Rounds, their Scope Snapshots, results and Discrepancies. */
 export class VerificationReadService {
   private readonly db: pg.Pool | any;
 
@@ -312,6 +365,13 @@ export class VerificationReadService {
        ORDER BY ev.recorded_at, ev.id`,
       [roundId]
     );
+    const locations = await this.db.query(
+      `SELECT l.id, l.name, l.is_active
+       FROM locations l
+       WHERE l.id IN (SELECT e.location_id FROM verification_scope_entries e WHERE e.verification_round_id = $1)
+       ORDER BY l.name, l.id`,
+      [roundId]
+    );
     return {
       ...summaryOf(row),
       notes: row.notes,
@@ -324,6 +384,7 @@ export class VerificationReadService {
       recorded_at: row.recorded_at,
       version: row.version,
       history: events.rows.map(eventOf),
+      snapshot_locations: locations.rows.map((l: any) => entryOf(l.id, l.name, l.is_active)!),
     };
   }
 
@@ -345,14 +406,21 @@ export class VerificationReadService {
     }
     if (filters.result !== undefined) {
       params.push(filters.result);
-      conditions.push(`${CURRENT_RESULT} = $${params.length}`);
+      conditions.push(`coalesce(cur.result, 'NOT_YET_VERIFIED') = $${params.length}`);
+    }
+    if (filters.discrepancy !== undefined) {
+      conditions.push(DISCREPANCY_CONDITIONS[filters.discrepancy]('cur'));
+    }
+    if (filters.location_id !== undefined) {
+      params.push(filters.location_id);
+      conditions.push(`e.location_id = $${params.length}`);
     }
     params.push(filters.limit, filters.offset);
 
     // The count joins the page, so a page past the end still says how many entries pass.
     const res = await this.db.query(
       `WITH filtered AS (
-         SELECT e.* FROM verification_scope_entries e WHERE ${conditions.join(' AND ')}
+         SELECT e.* FROM verification_scope_entries e ${CURRENT_REVISION} WHERE ${conditions.join(' AND ')}
        ),
        counted AS (SELECT count(*)::int AS total_count FROM filtered),
        paged AS (

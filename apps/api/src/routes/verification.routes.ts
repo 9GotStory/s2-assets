@@ -7,7 +7,7 @@ import { isValidUuid, type CapabilityService } from '../services/capability.serv
 import { hasDisallowedControlChars } from '../services/control-characters.ts';
 import { RetryTokenConflictError } from '../services/service-errors.ts';
 import { ValidationError } from '../services/validation-error.ts';
-import { VerificationReadService } from '../services/verification-read.service.ts';
+import { DISCREPANCIES, VerificationReadService, type Discrepancy } from '../services/verification-read.service.ts';
 import {
   AnotherVerificationRoundOpenError,
   AssetAlreadyVerifiedError,
@@ -36,21 +36,25 @@ const OpenVerificationRoundSchema = z
   })
   .strict();
 
-// #125 Q6, Q7, Q8: what a first result for one Asset takes. Its context and the assignment it is compared
-// with are derived by the server, never given.
+// #125 Q6, Q7, Q8: what a first result for one Asset takes. Its context, the assignment it is compared with,
+// and the Discrepancies derived from them are the server's, never given.
 const RecordVerificationSchema = z
   .object({
     result: z.enum(['FOUND', 'NOT_FOUND']),
     condition: z.enum(['NORMAL', 'DAMAGED']).nullable().optional(),
+    observed_location_id: z.string().nullable().optional(),
+    label_missing_or_damaged: z.boolean().optional(),
+    data_mismatch: z.boolean().optional(),
+    data_mismatch_note: z.string().nullable().optional(),
     note: z.string().nullable().optional(),
     verification_date: z.string().nullable().optional(),
     retry_token: z.string().optional(),
   })
   .strict();
 
-// A Round's entries (#125 AR-14, AV-19): a search of the Scope Snapshot, a filter by current result, and a page read as on the Asset list. An
-// Asset name is free text, so the search keeps tab and line breaks inside it and refuses the other control
-// characters (CODING_STANDARDS.md).
+// A Round's entries (#125 AR-14, AV-19, P5): a search of the Scope Snapshot, filters by current result, by a
+// Discrepancy and by snapshot Location, and a page read as on the Asset list. An Asset name is free text, so the
+// search keeps tab and line breaks inside it and refuses the other control characters (CODING_STANDARDS.md).
 const ScopeEntryQuerySchema = z
   .object({
     search: z
@@ -61,6 +65,12 @@ const ScopeEntryQuerySchema = z
       .refine((text) => text.length > 0, 'must not be blank')
       .optional(),
     result: z.enum(['FOUND', 'NOT_FOUND', 'NOT_YET_VERIFIED']).optional(),
+    discrepancy: z.enum(DISCREPANCIES as [Discrepancy, ...Discrepancy[]]).optional(),
+    location_id: z
+      .string()
+      .refine(isValidUuid, 'must be a valid UUID')
+      .transform((id) => id.trim().toLowerCase())
+      .optional(),
     ...pageQueryFields,
   })
   .strict();
@@ -178,8 +188,8 @@ export const verificationRoutes: FastifyPluginAsync<VerificationRoutesOptions> =
 
   /**
    * GET /verification-rounds/:id/entries
-   * A page of the Round's Scope Snapshot, searchable (F006-T1). The logger names a request by its path, so a
-   * search stays out of the logs.
+   * A page of the Round's Scope Snapshot, searchable (F006-T1), filtered by result (F006-T2), Discrepancy and
+   * snapshot Location (F006-T3). The logger names a request by its path, so a search stays out of the logs.
    * Protected: requires 'asset:view' capability
    */
   fastify.get('/verification-rounds/:id/entries', { preHandler: [requireCapability('asset:view')] }, async (request, reply) => {
@@ -192,8 +202,8 @@ export const verificationRoutes: FastifyPluginAsync<VerificationRoutesOptions> =
     if (!parsed.success) {
       return reply.status(400).send(invalidQueryBody(parsed.error));
     }
-    const { limit = 25, offset = 0, search, result } = parsed.data;
-    const page = await verificationReadService.entries(id.trim().toLowerCase(), { search, result, limit, offset });
+    const { limit = 25, offset = 0, ...filters } = parsed.data;
+    const page = await verificationReadService.entries(id.trim().toLowerCase(), { ...filters, limit, offset });
     if (!page) {
       return reply.status(404).send(errorBody(404, 'NOT_FOUND', 'Verification Round not found'));
     }

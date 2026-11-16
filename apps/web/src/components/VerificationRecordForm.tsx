@@ -1,9 +1,13 @@
 import React, { useState } from 'react';
+import { useQuery } from '@tanstack/react-query';
 import { LoanSaveForm } from './LoanSaveForm';
-import { fieldInputStyle, fieldLabelStyle } from './ReferenceContextFields';
+import { fetchReferenceList, fieldInputStyle, fieldLabelStyle, type ReferenceEntry } from './ReferenceContextFields';
 import { bangkokToday, thaiDate } from './assignmentFacts';
 import { CONDITION_LABELS, type LoanCondition } from './loanFacts';
 import {
+  DISCREPANCY_LABEL,
+  DISCREPANCY_LABELS,
+  OBSERVED_LOCATION_LABEL,
   RECORD_VERIFICATION_LABEL,
   RESULT_LABELS,
   VERIFICATION_DATE_LABEL,
@@ -24,6 +28,7 @@ export interface VerificationRecordFormProps {
 
 const fieldStyle: React.CSSProperties = { marginBottom: '0.75rem' };
 const choiceStyle: React.CSSProperties = { display: 'flex', gap: '1.25rem', flexWrap: 'wrap', fontSize: '0.9375rem', border: 'none', padding: 0, margin: '0 0 0.75rem 0' };
+const flagStyle: React.CSSProperties = { display: 'block', padding: '0.25rem 0', fontSize: '0.9375rem' };
 
 // The result someone else recorded while this form was open (#125 AV-23, Q20).
 const RecordedMeanwhile: React.FC<{ current: VerificationRevision }> = ({ current }) => (
@@ -35,21 +40,42 @@ const RecordedMeanwhile: React.FC<{ current: VerificationRevision }> = ({ curren
 
 /**
  * "บันทึกผลตรวจ": records an Asset's first result in the open Round, Found with its Condition or Not Found
- * (F006-T2, #125 Q6, Q8). No photo or location is asked for (AV-10, AV-11); the server derives the Loan and
- * Repair context and the assignment it compares with, and decides again everything this form checks.
+ * (F006-T2, #125 Q6, Q8). When Found, it takes the Observed Location from the Location Reference List, left out
+ * when it matched, and the two Discrepancies Verification Staff tick (F006-T3, Q7). No photo or GPS location is
+ * asked for (AV-10, AV-11); the server derives the Loan and Repair context, the assignment it compares with and
+ * the Discrepancies that follow, and decides again everything this form checks.
  */
 export const VerificationRecordForm: React.FC<VerificationRecordFormProps> = ({ assetId, round, csrfToken, onRecorded, onPermissionRevoked }) => {
   const [result, setResult] = useState<RecordedResult | ''>('');
   const [condition, setCondition] = useState<LoanCondition | ''>('');
   const [verificationDate, setVerificationDate] = useState(bangkokToday);
   const [note, setNote] = useState('');
+  const [observedLocationId, setObservedLocationId] = useState('');
+  const [labelMissingOrDamaged, setLabelMissingOrDamaged] = useState(false);
+  const [dataMismatch, setDataMismatch] = useState(false);
+  const [dataMismatchNote, setDataMismatchNote] = useState('');
+  // The active Locations, the ones a result may name (#125 Q7).
+  const locations = useQuery<ReferenceEntry[], Error>({
+    queryKey: ['verification-observed-locations'],
+    queryFn: async ({ signal }) => {
+      const list = await fetchReferenceList('locations', false, signal);
+      if (!list.ok) {
+        throw new Error(`HTTP ${list.status}`);
+      }
+      return list.items;
+    },
+  });
+  const found = result === 'FOUND';
 
   const requestError = (): string | null => {
     if (result === '') {
       return `กรุณาเลือก ${RESULT_LABELS.FOUND} หรือ ${RESULT_LABELS.NOT_FOUND}`;
     }
-    if (result === 'FOUND' && condition === '') {
+    if (found && condition === '') {
       return 'กรุณาเลือกสภาพ ปกติ หรือ ชำรุด';
+    }
+    if (found && dataMismatch && dataMismatchNote.trim() === '') {
+      return `กรุณาระบุว่า${DISCREPANCY_LABELS.DATA_MISMATCH}อย่างไร`;
     }
     if (verificationDate === '') {
       return `กรุณาเลือก${VERIFICATION_DATE_LABEL}`;
@@ -65,7 +91,11 @@ export const VerificationRecordForm: React.FC<VerificationRecordFormProps> = ({ 
 
   const requestBody = () => ({
     result,
-    condition: result === 'FOUND' ? condition : null,
+    condition: found ? condition : null,
+    observed_location_id: found && observedLocationId ? observedLocationId : null,
+    label_missing_or_damaged: found && labelMissingOrDamaged,
+    data_mismatch: found && dataMismatch,
+    data_mismatch_note: found && dataMismatch ? dataMismatchNote.trim() : null,
     verification_date: verificationDate,
     note: note.trim() || null,
   });
@@ -95,6 +125,10 @@ export const VerificationRecordForm: React.FC<VerificationRecordFormProps> = ({ 
         setCondition('');
         setVerificationDate(bangkokToday());
         setNote('');
+        setObservedLocationId('');
+        setLabelMissingOrDamaged(false);
+        setDataMismatch(false);
+        setDataMismatchNote('');
       }}
       onPermissionRevoked={onPermissionRevoked}
     >
@@ -108,7 +142,7 @@ export const VerificationRecordForm: React.FC<VerificationRecordFormProps> = ({ 
               </label>
             ))}
           </fieldset>
-          {result === 'FOUND' && (
+          {found && (
             <fieldset role="radiogroup" aria-label="สภาพ" style={choiceStyle}>
               <legend style={{ ...fieldLabelStyle, marginBottom: '0.25rem' }}>สภาพ</legend>
               {(['NORMAL', 'DAMAGED'] as const).map((value) => (
@@ -118,6 +152,64 @@ export const VerificationRecordForm: React.FC<VerificationRecordFormProps> = ({ 
                 </label>
               ))}
             </fieldset>
+          )}
+          {found && (
+            <>
+              <div style={fieldStyle}>
+                <label htmlFor="verification-record-observed_location_id" style={fieldLabelStyle}>
+                  {OBSERVED_LOCATION_LABEL}
+                </label>
+                <select
+                  id="verification-record-observed_location_id"
+                  value={observedLocationId}
+                  onChange={(e) => setObservedLocationId(e.target.value)}
+                  style={fieldInputStyle}
+                >
+                  <option value="">ตรงกับทะเบียน (ไม่ต้องระบุ)</option>
+                  {(locations.data ?? []).map((location) => (
+                    <option key={location.id} value={location.id}>
+                      {location.name}
+                    </option>
+                  ))}
+                </select>
+                {locations.isError && (
+                  <div role="alert" data-testid="verification-record-locations-error" style={{ color: '#b91c1c', fontSize: '0.875rem', marginTop: '0.25rem' }}>
+                    ไม่สามารถโหลดรายการสถานที่ได้ บันทึกโดยไม่ระบุ{OBSERVED_LOCATION_LABEL}ได้
+                  </div>
+                )}
+              </div>
+              <fieldset style={{ border: 'none', padding: 0, margin: '0 0 0.75rem 0' }}>
+                <legend style={{ ...fieldLabelStyle, marginBottom: '0.25rem' }}>{DISCREPANCY_LABEL}ที่พบ (ติ๊กเมื่อมี)</legend>
+                <label style={flagStyle}>
+                  <input
+                    type="checkbox"
+                    id="verification-record-label_missing_or_damaged"
+                    checked={labelMissingOrDamaged}
+                    onChange={(e) => setLabelMissingOrDamaged(e.target.checked)}
+                  />{' '}
+                  {DISCREPANCY_LABELS.LABEL_MISSING_OR_DAMAGED}
+                </label>
+                <label style={flagStyle}>
+                  <input type="checkbox" id="verification-record-data_mismatch" checked={dataMismatch} onChange={(e) => setDataMismatch(e.target.checked)} />{' '}
+                  {DISCREPANCY_LABELS.DATA_MISMATCH}
+                </label>
+                {dataMismatch && (
+                  <div style={{ marginTop: '0.25rem' }}>
+                    <label htmlFor="verification-record-data_mismatch_note" style={fieldLabelStyle}>
+                      ไม่ตรงอย่างไร (บังคับ)
+                    </label>
+                    <textarea
+                      id="verification-record-data_mismatch_note"
+                      value={dataMismatchNote}
+                      maxLength={2000}
+                      rows={2}
+                      onChange={(e) => setDataMismatchNote(e.target.value)}
+                      style={fieldInputStyle}
+                    />
+                  </div>
+                )}
+              </fieldset>
+            </>
           )}
           <div style={fieldStyle}>
             <label htmlFor="verification-record-verification_date" style={fieldLabelStyle}>

@@ -62,11 +62,18 @@ export class EmptyVerificationScopeError extends Error {
 
 export const VERIFICATION_NOTE_MAX_LENGTH = REMARK_MAX_LENGTH;
 
-// F006-T2 (#127): a first result for one Asset of the open Round (#125 Q6, Q7, Q8).
+// F006-T2 (#127): a first result for one Asset of the open Round (#125 Q6, Q7, Q8). F006-T3 (#128): where a
+// Found Asset was seen and the Discrepancies Verification Staff tick.
 export interface RecordVerificationInput {
   result: RecordedResult;
   // Required when Found and refused when Not Found (AV-05, AV-06).
   condition?: VerificationCondition | null;
+  // When Found, an active Location Reference List entry, left out when it matched the register (AV-07, Q7).
+  observed_location_id?: string | null;
+  // When Found: "ป้าย/QR หายหรือชำรุด" (AR-14), and "ข้อมูลไม่ตรงทะเบียน" with its required note (AV-08).
+  label_missing_or_damaged?: boolean;
+  data_mismatch?: boolean;
+  data_mismatch_note?: string | null;
   note?: string | null;
   // Today when left out (Q8).
   verification_date?: string | null;
@@ -129,6 +136,10 @@ export class VerificationTargetNotFoundError extends Error {
 interface ResultFacts {
   result: RecordedResult;
   condition: VerificationCondition | null;
+  observed_location_id: string | null;
+  label_missing_or_damaged: boolean;
+  data_mismatch: boolean;
+  data_mismatch_note: string | null;
   note: string | null;
   // Null for today: a replay on a later day still matches.
   verification_date: string | null;
@@ -145,6 +156,26 @@ const normalizeResult = (input: RecordVerificationInput, today: string): ResultF
   if (input.result === 'NOT_FOUND' && condition !== null) {
     throw new ValidationError('condition must not be given when the Asset is Not Found');
   }
+  const observedLocationId = input.observed_location_id ?? null;
+  if (observedLocationId !== null && !isValidUuid(observedLocationId)) {
+    throw new ValidationError('observed_location_id must be a valid UUID');
+  }
+  const flags = { label_missing_or_damaged: input.label_missing_or_damaged ?? false, data_mismatch: input.data_mismatch ?? false };
+  if (input.result === 'NOT_FOUND') {
+    // An Asset not seen has no Observed Location and no Discrepancy to tick (#125 AV-07, AV-08).
+    for (const [field, given] of [['observed_location_id', observedLocationId !== null], ...Object.entries(flags)] as const) {
+      if (given) {
+        throw new ValidationError(`${field} must not be given when the Asset is Not Found`);
+      }
+    }
+  }
+  const dataMismatchNote = normalizeText(input.data_mismatch_note, 'data_mismatch_note', VERIFICATION_NOTE_MAX_LENGTH, '');
+  if (flags.data_mismatch && dataMismatchNote === null) {
+    throw new ValidationError('data_mismatch_note is required when data_mismatch is ticked');
+  }
+  if (!flags.data_mismatch && dataMismatchNote !== null) {
+    throw new ValidationError('data_mismatch_note must not be given unless data_mismatch is ticked');
+  }
   const date = input.verification_date ?? null;
   if (date !== null && (typeof date !== 'string' || !isCalendarDate(date))) {
     throw new ValidationError('verification_date must be a date (YYYY-MM-DD)');
@@ -152,7 +183,15 @@ const normalizeResult = (input: RecordVerificationInput, today: string): ResultF
   if (date !== null && date > today) {
     throw new ValidationError(`verification_date must not be after today (${today}, Asia/Bangkok)`);
   }
-  return { result: input.result, condition, note: normalizeText(input.note, 'note', VERIFICATION_NOTE_MAX_LENGTH, ''), verification_date: date };
+  return {
+    result: input.result,
+    condition,
+    observed_location_id: observedLocationId?.trim().toLowerCase() ?? null,
+    ...flags,
+    data_mismatch_note: dataMismatchNote,
+    note: normalizeText(input.note, 'note', VERIFICATION_NOTE_MAX_LENGTH, ''),
+    verification_date: date,
+  };
 };
 
 // A request's facts once validated. The retry fingerprint covers these.
@@ -335,6 +374,9 @@ export class VerificationService {
         if (verificationDate < round.rows[0].start_date) {
           throw new ValidationError(`verification_date must not be before the start date of the Verification Round (${round.rows[0].start_date})`);
         }
+        if (facts.observed_location_id !== null && (await findUnassignableEntry(client, { location_id: facts.observed_location_id })) !== null) {
+          throw new ValidationError('observed_location_id must name an active entry of the Location Reference List');
+        }
 
         const scoped = await client.query('SELECT id FROM verification_scope_entries WHERE verification_round_id = $1 AND asset_id = $2', [roundId, assetId]);
         if (scoped.rows.length === 0) {
@@ -351,17 +393,23 @@ export class VerificationService {
         const { loan_context: loan, repair_context: repair } = await recordingContextOf(client, assetId);
         const revision = await client.query(
           `INSERT INTO verification_revisions
-             (verification_scope_entry_id, revision_number, result, condition, note, verification_date,
+             (verification_scope_entry_id, revision_number, result, condition, observed_location_id,
+              label_missing_or_damaged, data_mismatch, data_mismatch_note, note, verification_date,
               location_id, legacy_location_text, organization_unit_id, legacy_organization_unit_text,
               responsible_person_id, legacy_responsible_person_text,
               loan_context, loan_item_id, loan_borrower_display, loan_due_date, repair_record_id, repair_kind, recorded_by)
-           SELECT $1, coalesce(max(revision_number), 0) + 1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18
+           SELECT $1, coalesce(max(revision_number), 0) + 1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18,
+                  $19, $20, $21, $22
            FROM verification_revisions WHERE verification_scope_entry_id = $1
            RETURNING id, revision_number`,
           [
             entryId,
             facts.result,
             facts.condition,
+            facts.observed_location_id,
+            facts.label_missing_or_damaged,
+            facts.data_mismatch,
+            facts.data_mismatch_note,
             facts.note,
             verificationDate,
             inEffect.location?.id ?? null,

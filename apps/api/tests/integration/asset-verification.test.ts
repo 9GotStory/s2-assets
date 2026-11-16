@@ -113,6 +113,11 @@ describe('Record an Asset Verification (Seam A - F006-T2)', () => {
         revision_number: 1,
         result: 'FOUND',
         condition: 'NORMAL',
+        observed_location: null,
+        label_missing_or_damaged: false,
+        data_mismatch: false,
+        data_mismatch_note: null,
+        discrepancies: [],
         note: null,
         verification_date: '2026-11-12',
         assignment_in_effect: {
@@ -131,7 +136,7 @@ describe('Record an Asset Verification (Seam A - F006-T2)', () => {
       });
       expect(Date.parse(entry.current.recorded_at)).toBeGreaterThanOrEqual(before - 1000);
       expect(await entryOf(roundId, other)).toMatchObject({ result: 'NOT_YET_VERIFIED', version: 1, current: null });
-      expect((await roundOf(roundId)).counts).toEqual({ in_scope: 2, found: 1, not_found: 0, not_yet_verified: 1 });
+      expect((await roundOf(roundId)).counts).toEqual({ in_scope: 2, found: 1, not_found: 0, not_yet_verified: 1, with_discrepancy: 0 });
     });
 
     it('records Not Found with no Condition, and changes nothing about the Asset (DR-03, AV-14)', async () => {
@@ -142,7 +147,7 @@ describe('Record an Asset Verification (Seam A - F006-T2)', () => {
 
       expect(await entryOf(roundId, assetId)).toMatchObject({ result: 'NOT_FOUND', current: { result: 'NOT_FOUND', condition: null } });
       expect(await assetFactsOf(assetId)).toEqual(before);
-      expect((await roundOf(roundId)).counts).toEqual({ in_scope: 1, found: 0, not_found: 1, not_yet_verified: 0 });
+      expect((await roundOf(roundId)).counts).toEqual({ in_scope: 1, found: 0, not_found: 1, not_yet_verified: 0, with_discrepancy: 0 });
     });
 
     it('records Found ชำรุด with a note, keeping tabs and line breaks inside it, and changes nothing about the Asset (AV-14)', async () => {
@@ -434,7 +439,7 @@ describe('Record an Asset Verification (Seam A - F006-T2)', () => {
 
       const listed = (await api.get(readonly, '/verification-rounds')).json().items.find((round: any) => round.id === roundId);
 
-      expect(listed.counts).toEqual({ in_scope: 2, found: 0, not_found: 1, not_yet_verified: 1 });
+      expect(listed.counts).toEqual({ in_scope: 2, found: 0, not_found: 1, not_yet_verified: 1, with_discrepancy: 0 });
     });
 
     it("shows the open Round's panel on the Asset page: the Asset's entry and its current result, or that it is not in the Round", async () => {

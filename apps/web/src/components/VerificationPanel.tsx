@@ -1,12 +1,16 @@
 import React from 'react';
 import { Link } from 'react-router';
 import { VerificationRecordForm } from './VerificationRecordForm';
+import { entryLabel } from './ReferenceContextFields';
 import { thaiDate } from './assignmentFacts';
 import {
+  DISCREPANCY_LABEL,
+  OBSERVED_LOCATION_LABEL,
   RESULT_LABELS,
   VERIFICATION_DATE_LABEL,
   VERIFICATION_PANEL_LABEL,
   VERIFICATION_ROUND_LABEL,
+  discrepancyText,
   recordedByText,
   recordedContextText,
   resultText,
@@ -52,7 +56,37 @@ export const RecordingContextLine: React.FC<{ context: RecordingContext }> = ({ 
   );
 };
 
-// An Asset's current result, with when and by whom it was recorded (#125 AV-23, Q20).
+// Every Discrepancy a result notes, a line each (#125 Q7, AV-08).
+const DiscrepancyItems: React.FC<{ revision: VerificationRevision; testId: string }> = ({ revision, testId }) => (
+  <ul data-testid={testId} style={{ margin: 0, paddingLeft: '1.25rem' }}>
+    {revision.discrepancies.map((discrepancy) => (
+      <li key={discrepancy} style={{ whiteSpace: 'pre-line' }}>
+        {discrepancyText(discrepancy, revision)}
+      </li>
+    ))}
+  </ul>
+);
+
+// A result's Observed Location and Discrepancies, as a list row shows them (F006-T3); nothing when it notes none
+// and gives no Observed Location.
+export const RevisionDiscrepancies: React.FC<{ revision: VerificationRevision; testId: string }> = ({ revision, testId }) => {
+  if (revision.discrepancies.length === 0 && !revision.observed_location) {
+    return null;
+  }
+  return (
+    <div data-testid={testId} style={{ color: '#991b1b', overflowWrap: 'anywhere' }}>
+      {revision.observed_location && (
+        <div>
+          {OBSERVED_LOCATION_LABEL}: {entryLabel(revision.observed_location)}
+        </div>
+      )}
+      {revision.discrepancies.length > 0 && <DiscrepancyItems revision={revision} testId={`${testId}-items`} />}
+    </div>
+  );
+};
+
+// An Asset's current result, with when and by whom it was recorded (#125 AV-23, Q20), where it was seen and what
+// differs from the register (Q7).
 export const RevisionFacts: React.FC<{ revision: VerificationRevision; testId: string }> = ({ revision, testId }) => {
   const hasContext = recordedContextText(revision) !== null;
   return (
@@ -61,6 +95,22 @@ export const RevisionFacts: React.FC<{ revision: VerificationRevision; testId: s
       <dd data-testid={`${testId}-result`} style={{ ...valueStyle, fontWeight: 600 }}>
         {resultText(revision.result, revision.condition)}
       </dd>
+      {revision.observed_location && (
+        <>
+          <dt style={termStyle}>{OBSERVED_LOCATION_LABEL}:</dt>
+          <dd data-testid={`${testId}-observed-location`} style={valueStyle}>
+            {entryLabel(revision.observed_location)}
+          </dd>
+        </>
+      )}
+      {revision.discrepancies.length > 0 && (
+        <>
+          <dt style={termStyle}>{DISCREPANCY_LABEL}:</dt>
+          <dd style={{ ...valueStyle, color: '#991b1b', fontWeight: 600 }}>
+            <DiscrepancyItems revision={revision} testId={`${testId}-discrepancies`} />
+          </dd>
+        </>
+      )}
       <dt style={termStyle}>{VERIFICATION_DATE_LABEL}:</dt>
       <dd style={valueStyle}>
         <time dateTime={revision.verification_date}>{thaiDate(revision.verification_date)}</time>
