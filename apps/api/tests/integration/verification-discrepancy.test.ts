@@ -16,7 +16,7 @@ describe('Observed Location and Discrepancies (Seam A - F006-T3)', () => {
   let now = new Date('2026-11-12T05:00:00Z');
 
   const { entry } = assignmentHelpers(() => ({ api, admin, reader: readonly }));
-  const { opened, roundOf, roundsOf, entriesOf, record, recorded, entryOf, closedStandIn } = verificationHelpers(() => ({ api, custodian, reader: readonly }));
+  const { opened, roundOf, roundsOf, entriesOf, record, recorded, entryOf, closeOpenRound } = verificationHelpers(() => ({ api, custodian, reader: readonly }));
 
   const room = (name: string) => entry('locations', `${name} ${crypto.randomUUID()}`);
 
@@ -67,7 +67,7 @@ describe('Observed Location and Discrepancies (Seam A - F006-T3)', () => {
 
   afterEach(async () => {
     now = new Date('2026-11-12T05:00:00Z');
-    await closedStandIn();
+    await closeOpenRound();
   });
 
   afterAll(async () => {

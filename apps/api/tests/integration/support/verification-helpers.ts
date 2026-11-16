@@ -75,13 +75,56 @@ export function verificationHelpers(context: () => { api: ApiHarness; custodian:
     }
   };
 
-  /**
-   * Test only, until F006-T6 (#131) closes a Round through the API: marks every open Round closed, so the
-   * next test can open one (#125 Q17).
-   */
-  const closedStandIn = async (): Promise<void> => {
-    await context().api.pool.query(`UPDATE verification_rounds SET state = 'CLOSED' WHERE state = 'OPEN'`);
+  // F006-T6 (#131): a write that changes a Round, at `path` under it, sent with the version `payload` names.
+  const roundWrite =
+    (method: 'post' | 'patch', path: string) =>
+    (roundId: string, payload: Record<string, unknown>, token: string = crypto.randomUUID(), actor: Actor = context().custodian) =>
+      context().api[method](actor, `/verification-rounds/${roundId}${path}`, payload, { 'x-retry-token': token });
+  const close = roundWrite('post', '/close');
+  const reopen = roundWrite('post', '/reopen');
+  const voidRound = roundWrite('post', '/void');
+  const edit = roundWrite('patch', '');
+
+  // A Round closed against the version it has now; answers the version after the close.
+  const closed = async (roundId: string, actor: Actor = context().custodian): Promise<number> => {
+    const res = await close(roundId, { expected_version: (await roundOf(roundId)).version }, crypto.randomUUID(), actor);
+    expect(res.statusCode).toBe(201);
+    return res.json().version;
   };
 
-  return { opening, open, opened, roundOf, roundsOf, entriesOf, scopeOf, finding, record, recorded, entryOf, closedStandIn };
+  // A Closed Round reopened against the version it has now, with a reason.
+  const reopened = async (roundId: string, reason: string = 'พบผลที่บันทึกผิด', actor: Actor = context().custodian): Promise<number> => {
+    const res = await reopen(roundId, { expected_version: (await roundOf(roundId)).version, reason }, crypto.randomUUID(), actor);
+    expect(res.statusCode).toBe(201);
+    return res.json().version;
+  };
+
+  // Closes the open Round, if any, so that the next test can open one (#125 Q17).
+  const closeOpenRound = async (): Promise<void> => {
+    const open = (await roundsOf()).items.find((round: any) => round.state === 'OPEN');
+    if (open) {
+      await closed(open.id);
+    }
+  };
+
+  return {
+    opening,
+    open,
+    opened,
+    roundOf,
+    roundsOf,
+    entriesOf,
+    scopeOf,
+    finding,
+    record,
+    recorded,
+    entryOf,
+    close,
+    closed,
+    reopen,
+    reopened,
+    voidRound,
+    edit,
+    closeOpenRound,
+  };
 }

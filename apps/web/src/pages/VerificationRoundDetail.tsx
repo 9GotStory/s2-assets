@@ -5,6 +5,7 @@ import { REFERENCE_DIMENSIONS, entryLabel } from '../components/ReferenceContext
 import { thaiDate, valueText } from '../components/assignmentFacts';
 import { RecordingContextLine, RevisionDiscrepancies } from '../components/VerificationPanel';
 import { VerificationRevisionList } from '../components/VerificationRevisionList';
+import { VerificationRoundActions } from '../components/VerificationRoundActions';
 import {
   DISCREPANCIES,
   DISCREPANCY_LABEL,
@@ -13,6 +14,7 @@ import {
   LATE_ADDITION_LABEL,
   RESULT_LABELS,
   ROUND_EVENT_LABELS,
+  ROUND_FIELD_LABELS,
   ROUND_STATE_LABELS,
   SCOPE_SNAPSHOT_LABEL,
   START_DATE_LABEL,
@@ -27,6 +29,7 @@ import {
   type ScopeEntryPage,
   type VerificationResult,
   type VerificationRound,
+  type VerificationRoundEvent,
 } from '../components/verificationFacts';
 
 const PAGE_SIZE = 25;
@@ -89,7 +92,7 @@ const FilterLinks = <T extends string>({
   valueLabel: (value: T) => string;
   queryFor: (value: T | null) => string;
 }) => (
-  <nav aria-label={label} id={`${idPrefix}s`} style={{ display: 'flex', gap: '0.5rem', flexWrap: 'wrap', marginBottom: '0.75rem', fontSize: '0.875rem' }}>
+  <nav aria-label={label} id={`${idPrefix}s`} className="verification-round-no-print" style={{ display: 'flex', gap: '0.5rem', flexWrap: 'wrap', marginBottom: '0.75rem', fontSize: '0.875rem' }}>
     {([null, ...values] as const).map((value) => (
       <Link
         key={value ?? 'ALL'}
@@ -105,6 +108,19 @@ const FilterLinks = <T extends string>({
 );
 
 const RESULT_COLORS: Record<VerificationResult, string> = { FOUND: '#166534', NOT_FOUND: '#991b1b', NOT_YET_VERIFIED: '#92400e' };
+
+// F006-T6 (#131, #125 Q16): the page prints from the browser as its summary, history and the entries shown, without
+// the controls that only act on screen, saying which filters chose the entries. Inline styles win over a
+// stylesheet, so each rule is !important.
+const PRINT_STYLE = `.verification-round-print-only { display: none; }
+@media print {
+  .verification-round-no-print, .verification-round-page button { display: none !important; }
+  .verification-round-print-only { display: block !important; }
+  .verification-round-page { min-height: 0 !important; padding: 0 !important; background-color: #ffffff !important; }
+  .verification-round-card { max-width: none !important; padding: 0 !important; box-shadow: none !important; }
+  .verification-round-page a { color: inherit !important; text-decoration: none !important; }
+  .verification-round-page li { break-inside: avoid; }
+}`;
 
 const THAI_DATE_TIME = new Intl.DateTimeFormat('th-TH', { dateStyle: 'long', timeStyle: 'short', timeZone: 'Asia/Bangkok' });
 
@@ -160,6 +176,29 @@ const readJson = async <T,>(url: string, signal: AbortSignal): Promise<T> => {
   }
   return res.json();
 };
+
+// An edited field's value as the history shows it.
+const changedValueText = (value: unknown): string => (value === null || value === undefined || value === '' ? 'ไม่ระบุ' : String(value));
+
+// One event of the Round's history: who, when and why, an edit's changed fields and a close's counts (#125 Q27, P4).
+const RoundEventItem: React.FC<{ event: VerificationRoundEvent }> = ({ event }) => (
+  <li data-testid={`verification-round-event-${event.id}`} style={{ marginBottom: '0.5rem' }}>
+    <span style={{ fontWeight: 600 }}>{ROUND_EVENT_LABELS[event.kind]}</span> โดย {event.recorded_by_username ?? event.recorded_by} เมื่อ{' '}
+    <time dateTime={event.recorded_at}>{THAI_DATE_TIME.format(new Date(event.recorded_at))}</time>
+    {event.reason && <div style={{ whiteSpace: 'pre-line', overflowWrap: 'anywhere' }}>เหตุผล: {event.reason}</div>}
+    {event.changes.map((change) => (
+      <div key={change.field} style={{ whiteSpace: 'pre-line', overflowWrap: 'anywhere' }}>
+        {ROUND_FIELD_LABELS[change.field] ?? change.field}: {changedValueText(change.before)} → {changedValueText(change.after)}
+      </div>
+    ))}
+    {event.counts && (
+      <div>
+        {RESULT_LABELS.FOUND} {event.counts.found} · {RESULT_LABELS.NOT_FOUND} {event.counts.not_found} · {RESULT_LABELS.NOT_YET_VERIFIED} {event.counts.not_yet_verified} · มี
+        {DISCREPANCY_LABEL} {event.counts.with_discrepancy}
+      </div>
+    )}
+  </li>
+);
 
 // One Asset of the Scope Snapshot as the register showed it when it joined the Round (#125 Q4), with its current
 // result, its Observed Location and Discrepancies (Q7), the Loan or Repair context that result kept (Q14), its
@@ -246,6 +285,18 @@ const VerificationRoundDetailContent: React.FC = () => {
     enabled: round.isSuccess,
   });
 
+  // The actions need this session's CSRF token, and wait for it: a request sent without it is refused as if the grant were gone.
+  const isHolder = round.data?.can_manage_verification === true || round.data?.can_correct_verification === true;
+  const session = useQuery<string | null>({
+    queryKey: ['verification-round-session'],
+    queryFn: async ({ signal }) => {
+      const res = await fetch('/auth/session-check', { credentials: 'include', signal });
+      return res.ok ? ((await res.json()).csrfToken ?? null) : null;
+    },
+    enabled: isHolder && !round.isError,
+  });
+  const csrfToken = session.data ?? null;
+
   const isSignedOut = round.error?.status === 401 || entries.error?.status === 401;
   useEffect(() => {
     if (isSignedOut) {
@@ -300,9 +351,10 @@ const VerificationRoundDetailContent: React.FC = () => {
   const scopeText = [filterText('หน่วยงาน', roundFilters.organization_units), filterText('สถานที่', roundFilters.locations)].filter(Boolean).join(' และ ') || WHOLE_REGISTER_LABEL;
 
   return (
-    <main style={pageStyle}>
-      <div style={cardStyle}>
-        <Link to="/verification-rounds" id="back-verification-round-list-link" style={{ color: '#4b5563', textDecoration: 'none', fontSize: '0.875rem', fontWeight: 500 }}>
+    <main style={pageStyle} className="verification-round-page">
+      <style>{PRINT_STYLE}</style>
+      <div style={cardStyle} className="verification-round-card">
+        <Link to="/verification-rounds" id="back-verification-round-list-link" className="verification-round-no-print" style={{ color: '#4b5563', textDecoration: 'none', fontSize: '0.875rem', fontWeight: 500 }}>
           ← กลับไปยัง{VERIFICATION_ROUND_LABEL}
         </Link>
         <p style={{ margin: '1rem 0 0.25rem 0', fontSize: '0.875rem', color: '#6b7280' }}>{VERIFICATION_ROUND_LABEL}</p>
@@ -357,20 +409,35 @@ const VerificationRoundDetailContent: React.FC = () => {
           ))}
         </div>
 
+        {csrfToken !== null && (
+          <VerificationRoundActions
+            round={round.data}
+            csrfToken={csrfToken}
+            onChanged={async () => {
+              await Promise.all([round.refetch(), entries.refetch()]);
+            }}
+            onRefresh={async () => (await round.refetch()).isSuccess}
+            onPermissionRevoked={(status) => {
+              if (status === 401) {
+                navigate('/login', { replace: true });
+                return;
+              }
+              void round.refetch();
+            }}
+          />
+        )}
+
         <h2 style={sectionHeadingStyle}>ประวัติของรอบ</h2>
         <ol data-testid="verification-round-history" style={{ margin: 0, paddingLeft: '1.25rem', fontSize: '0.875rem', color: '#374151' }}>
           {history.map((event) => (
-            <li key={event.id} style={{ marginBottom: '0.25rem' }}>
-              {ROUND_EVENT_LABELS[event.kind]} โดย {event.recorded_by_username ?? event.recorded_by} เมื่อ{' '}
-              <time dateTime={event.recorded_at}>{THAI_DATE_TIME.format(new Date(event.recorded_at))}</time>
-              {event.reason && <> เหตุผล: {event.reason}</>}
-            </li>
+            <RoundEventItem key={event.id} event={event} />
           ))}
         </ol>
 
         <h2 style={sectionHeadingStyle}>{SCOPE_SNAPSHOT_LABEL}</h2>
         <form
           id="scope-entry-search-form"
+          className="verification-round-no-print"
           role="search"
           onSubmit={(e) => {
             e.preventDefault();
@@ -424,7 +491,7 @@ const VerificationRoundDetailContent: React.FC = () => {
           queryFor={(value) => listQuery({ ...filters, joinedAs: value }, 0)}
         />
         {snapshotLocations.length > 0 && (
-          <div style={{ marginBottom: '0.75rem', fontSize: '0.875rem' }}>
+          <div className="verification-round-no-print" style={{ marginBottom: '0.75rem', fontSize: '0.875rem' }}>
             {/* The Location the snapshot holds, to walk the office room by room (#125 P5). */}
             <label htmlFor="scope-entry-location-filter" style={{ marginRight: '0.5rem', color: '#4b5563' }}>
               สถานที่ตามรายการในรอบ:
@@ -444,6 +511,19 @@ const VerificationRoundDetailContent: React.FC = () => {
             </select>
           </div>
         )}
+
+        <p id="scope-entry-print-filters" className="verification-round-print-only" style={{ margin: '0 0 0.5rem 0', fontSize: '0.875rem' }}>
+          รายการที่แสดง:{' '}
+          {[
+            filters.search.trim() && `ค้นหา “${filters.search.trim()}”`,
+            filters.result && RESULT_LABELS[filters.result],
+            filters.discrepancy && DISCREPANCY_LABELS[filters.discrepancy],
+            filters.joinedAs && LATE_ADDITION_LABEL,
+            filters.locationId && `สถานที่ ${entryLabel(snapshotLocations.find((location) => location.id === filters.locationId) ?? { id: filters.locationId, name: filters.locationId, is_active: true })}`,
+          ]
+            .filter(Boolean)
+            .join(' · ') || 'ทุกรายการในรอบ'}
+        </p>
 
         {entries.isError && !isSignedOut && (
           <div role="alert" id="scope-entry-list-error" style={{ padding: '0.75rem 1rem', borderRadius: '6px', backgroundColor: '#fee2e2', color: '#991b1b', fontSize: '0.875rem' }}>
@@ -469,7 +549,7 @@ const VerificationRoundDetailContent: React.FC = () => {
               ))}
             </ul>
             {page.total_count > PAGE_SIZE && (
-              <div id="scope-entry-pagination" style={{ display: 'flex', justifyContent: 'flex-end', alignItems: 'center', gap: '0.75rem', marginTop: '1rem', flexWrap: 'wrap' }}>
+              <div id="scope-entry-pagination" className="verification-round-no-print" style={{ display: 'flex', justifyContent: 'flex-end', alignItems: 'center', gap: '0.75rem', marginTop: '1rem', flexWrap: 'wrap' }}>
                 <button type="button" id="scope-entry-prev" disabled={offset === 0} onClick={() => show({}, Math.max(0, offset - PAGE_SIZE))} style={pageButtonStyle(offset === 0)}>
                   ← ก่อนหน้า
                 </button>
@@ -491,7 +571,7 @@ const VerificationRoundDetailContent: React.FC = () => {
 /**
  * A Verification Round's page (F006-T1, F006-T2, F006-T3, F006-T5): its fields, counts, history and Scope Snapshot with
  * each Asset's current result, Discrepancies and Late Addition, filtered by result, Discrepancy, Late Addition and
- * snapshot Location.
+ * snapshot Location. F006-T6: closing, reopening, editing and voiding the Round for holders, and a printable layout.
  */
 export const VerificationRoundDetail: React.FC = () => {
   const [queryClient] = useState(() => new QueryClient({ defaultOptions: { queries: { retry: false, refetchOnWindowFocus: true } } }));

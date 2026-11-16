@@ -5,7 +5,7 @@ import type { ApiHarness } from './api-harness.ts';
 const QUEUED_TIMEOUT_MS = 15_000;
 
 // The tables whose rows the services lock for a write.
-type LockedTable = 'loans' | 'assets' | 'repair_records' | 'verification_scope_entries';
+type LockedTable = 'loans' | 'assets' | 'repair_records' | 'verification_rounds' | 'verification_scope_entries';
 
 /**
  * Row lock holders, and waits on the writes they hold back, for Seam A tests of write order.

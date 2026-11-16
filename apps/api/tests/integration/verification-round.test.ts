@@ -18,7 +18,7 @@ describe('Open a Verification Round (Seam A - F006-T1)', () => {
   let now = new Date('2026-11-12T05:00:00Z');
 
   const { entries, entry } = assignmentHelpers(() => ({ api, admin, reader: readonly }));
-  const { opening, open, opened, roundOf, roundsOf, entriesOf, scopeOf, closedStandIn } = verificationHelpers(() => ({ api, custodian, reader: readonly }));
+  const { opening, open, opened, roundOf, roundsOf, entriesOf, scopeOf, closeOpenRound } = verificationHelpers(() => ({ api, custodian, reader: readonly }));
 
   // A registered Asset, with an Initial Assignment when `fields` names dimension values.
   const registered = async (fields: Record<string, unknown> = {}): Promise<string> => {
@@ -38,7 +38,7 @@ describe('Open a Verification Round (Seam A - F006-T1)', () => {
 
   afterEach(async () => {
     now = new Date('2026-11-12T05:00:00Z');
-    await closedStandIn();
+    await closeOpenRound();
   });
 
   afterAll(async () => {
@@ -72,6 +72,8 @@ describe('Open a Verification Round (Seam A - F006-T1)', () => {
         recorded_at: expect.any(String),
         version: 1,
         snapshot_locations: expect.any(Array),
+        can_manage_verification: false,
+        can_correct_verification: false,
         history: [
           {
             id: expect.stringMatching(UUID),
@@ -96,7 +98,7 @@ describe('Open a Verification Round (Seam A - F006-T1)', () => {
       now = new Date('2026-11-12T17:30:00Z');
 
       expect((await roundOf(await opened())).start_date).toBe('2026-11-13');
-      await closedStandIn();
+      await closeOpenRound();
       expect((await open(opening({ start_date: '2026-11-01' }))).statusCode).toBe(400);
     });
 
@@ -157,11 +159,11 @@ describe('Open a Verification Round (Seam A - F006-T1)', () => {
         organization_units: [],
         locations: [roomA, roomB].map(({ id, name }) => ({ id, name, is_active: true })).sort((x, y) => x.name.localeCompare(y.name)),
       });
-      await closedStandIn();
+      await closeOpenRound();
 
       const byUnit = await opened({ organization_unit_ids: [unitA.id] });
       expect(await scopeOf(byUnit)).toEqual([inA, inC, unitWithLegacyRoom].sort());
-      await closedStandIn();
+      await closeOpenRound();
 
       // Both dimensions: the Asset must match each.
       const byBoth = await opened({ organization_unit_ids: [unitA.id, unitB.id], location_ids: [roomA.id, roomC.id] });
@@ -229,7 +231,7 @@ describe('Open a Verification Round (Seam A - F006-T1)', () => {
     it('opens a Round again once no other is open', async () => {
       await registered();
       await opened();
-      await closedStandIn();
+      await closeOpenRound();
 
       expect((await open(opening())).statusCode).toBe(201);
     });
@@ -329,7 +331,7 @@ describe('Open a Verification Round (Seam A - F006-T1)', () => {
       const atBounds = await roundOf(await opened({ name: ` ${'ก'.repeat(200)} `, notes: `${'ข'.repeat(1990)}\r\nค\tง` }));
       expect(atBounds.name).toBe('ก'.repeat(200));
       expect(atBounds.notes).toBe(`${'ข'.repeat(1990)}\r\nค\tง`);
-      await closedStandIn();
+      await closeOpenRound();
 
       expect((await roundOf(await opened({ notes: '  ' }))).notes).toBeNull();
     });
@@ -385,9 +387,9 @@ describe('Open a Verification Round (Seam A - F006-T1)', () => {
         return roundId;
       };
       const middle = await startedOn('2026-11-11T05:00:00Z', 'รอบวันที่ 11');
-      await closedStandIn();
+      await closeOpenRound();
       const earliest = await startedOn('2026-11-10T05:00:00Z', 'รอบวันที่ 10');
-      await closedStandIn();
+      await closeOpenRound();
       const latest = await startedOn('2026-11-12T05:00:00Z', 'รอบวันที่ 12');
 
       const { items } = await roundsOf();
@@ -595,7 +597,7 @@ describe('Open a Verification Round (Seam A - F006-T1)', () => {
       await registered();
       const token = crypto.randomUUID();
       expect((await open(opening(), token)).statusCode).toBe(201);
-      await closedStandIn();
+      await closeOpenRound();
       const before = (await roundsOf()).items.length;
 
       for (const changed of [opening({ name: 'ชื่ออื่น' }), opening({ notes: 'หมายเหตุ' })]) {
@@ -613,7 +615,7 @@ describe('Open a Verification Round (Seam A - F006-T1)', () => {
 
       const first = await open(opening(), token);
       expect(first.statusCode).toBe(201);
-      await closedStandIn();
+      await closeOpenRound();
       const second = await open(opening(), token, otherCustodian);
 
       expect(second.statusCode).toBe(201);
@@ -638,7 +640,7 @@ describe('Open a Verification Round (Seam A - F006-T1)', () => {
       const token = crypto.randomUUID();
 
       expect((await open(opening(), token)).statusCode).toBe(409);
-      await closedStandIn();
+      await closeOpenRound();
 
       expect((await open(opening(), token)).statusCode).toBe(201);
     });

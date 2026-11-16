@@ -105,6 +105,9 @@ export interface VerificationRound extends VerificationRoundSummary {
   history: VerificationRoundEvent[];
   // The Locations the Scope Snapshot holds, to filter its entries by.
   snapshot_locations: ReferenceEntry[];
+  // Whether the viewer holds 'verification:manage' (close, edit) and 'verification:correct' (Reopen, void), F006-T6.
+  can_manage_verification: boolean;
+  can_correct_verification: boolean;
 }
 
 // What the register showed of an Asset when it joined the Round.
@@ -218,6 +221,13 @@ export const ROUND_EVENT_LABELS: Record<VerificationRoundEventKind, string> = {
   CLOSED: 'ปิดรอบ',
   REOPENED: 'เปิดรอบอีกครั้ง',
   VOIDED: 'ยกเลิกรอบ',
+};
+
+// The Round fields an edit changes, as its history names them (F006-T6, #125 Q27).
+export const ROUND_FIELD_LABELS: Record<string, string> = {
+  name: 'ชื่อรอบตรวจ',
+  fiscal_year: FISCAL_YEAR_LABEL,
+  notes: 'หมายเหตุ',
 };
 
 // A Round as a refusal or a heading names it: its name and fiscal year.

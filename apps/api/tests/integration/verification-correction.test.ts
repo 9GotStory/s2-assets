@@ -23,7 +23,7 @@ describe('Re-verification and Verification Correction (Seam A - F006-T4)', () =>
   const { entry, detailOf } = assignmentHelpers(() => ({ api, admin, reader: readonly }));
   const { lent } = loanHelpers(() => ({ api, custodian, reader: readonly }), { loanDate: '2026-11-06', dueDate: '2026-11-30', contactName: 'คุณผู้ยืม' });
   const { whileHolding, untilWaiting } = lockHelpers(() => ({ api }));
-  const { opened, roundOf, entryOf, finding, record, recorded, closedStandIn } = verificationHelpers(() => ({ api, custodian, reader: readonly }));
+  const { opened, roundOf, entryOf, finding, record, recorded, closeOpenRound } = verificationHelpers(() => ({ api, custodian, reader: readonly }));
 
   // A registered Asset in `room`, placed there on 1 October 2026.
   const registeredIn = async (room: { id: string }): Promise<string> => {
@@ -78,7 +78,7 @@ describe('Re-verification and Verification Correction (Seam A - F006-T4)', () =>
 
   afterEach(async () => {
     now = new Date('2026-11-12T05:00:00Z');
-    await closedStandIn();
+    await closeOpenRound();
   });
 
   afterAll(async () => {
@@ -251,7 +251,7 @@ describe('Re-verification and Verification Correction (Seam A - F006-T4)', () =>
 
       const elsewhere = await voiding(roundId, assetId, { verification_revision_id: ofOther.verification_revision_id, reason: 'ผิด' });
       const unknown = await voiding(roundId, assetId, { verification_revision_id: crypto.randomUUID(), reason: 'ผิด' });
-      await closedStandIn();
+      await closeOpenRound();
       const closed = await voiding(roundId, assetId, { verification_revision_id: first.verification_revision_id, reason: 'ผิด' });
 
       expect(elsewhere.statusCode).toBe(404);

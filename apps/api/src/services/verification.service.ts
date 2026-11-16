@@ -300,19 +300,30 @@ const normalizeFilter = (ids: string[] | undefined, field: string): string[] => 
   return [...new Set(ids.map((id) => id.trim().toLowerCase()))].sort();
 };
 
-const normalizeOpening = (input: OpenVerificationRoundInput): OpeningFacts => {
-  // A name is one line; notes, such as the committee members, are free text (#125 Q2).
-  const name = normalizeLine(input.name, 'name', ROUND_NAME_MAX_LENGTH);
+// A Round's name, fiscal year and notes, as an opening or an edit takes them (#125 Q2, Q27). A name is one line;
+// notes, such as the committee members, are free text, and blank notes are none.
+export const normalizeRoundName = (value: string): string => {
+  const name = normalizeLine(value, 'name', ROUND_NAME_MAX_LENGTH);
   if (name === null) {
     throw new ValidationError('name is required');
   }
-  if (!Number.isInteger(input.fiscal_year) || input.fiscal_year < 1000 || input.fiscal_year > 9999) {
+  return name;
+};
+
+export const checkFiscalYear = (value: number): number => {
+  if (!Number.isInteger(value) || value < 1000 || value > 9999) {
     throw new ValidationError('fiscal_year must be a four-digit Buddhist-era year');
   }
+  return value;
+};
+
+export const normalizeRoundNotes = (value: string | null | undefined): string | null => normalizeText(value, 'notes', ROUND_NOTES_MAX_LENGTH, '');
+
+const normalizeOpening = (input: OpenVerificationRoundInput): OpeningFacts => {
   return {
-    name,
-    fiscal_year: input.fiscal_year,
-    notes: normalizeText(input.notes, 'notes', ROUND_NOTES_MAX_LENGTH, ''),
+    name: normalizeRoundName(input.name),
+    fiscal_year: checkFiscalYear(input.fiscal_year),
+    notes: normalizeRoundNotes(input.notes),
     organization_unit_ids: normalizeFilter(input.organization_unit_ids, 'organization_unit_ids'),
     location_ids: normalizeFilter(input.location_ids, 'location_ids'),
   };
@@ -324,31 +335,47 @@ const FILTER_DIMENSIONS = [
   { field: 'location_ids', column: 'location_id' },
 ] as const;
 
+// How often `asTheOpenRound` tries a write whose rival Round closed before it could be named.
+const OPEN_ROUND_ATTEMPTS = 3;
+
 /**
- * Inserts a Round in the open state, or refuses while another is open, naming it (#125 Q17). The one-open-Round
- * index decides, between concurrent opens too: an insert meeting an uncommitted open Round waits for it and,
- * once that commits, fails; the savepoint keeps the transaction usable to read the Round that is open.
+ * Runs `write`, which makes a Round open, or refuses while another is open, naming it (#125 Q17, Q25). The
+ * one-open-Round index decides, between concurrent opens and reopens too: a write meeting an uncommitted open
+ * Round waits for it and, once that commits, fails; the savepoint keeps the transaction usable to read the Round
+ * that is open. When that Round has closed since, nothing is left to name, so the write is tried again.
  */
+export async function asTheOpenRound<T>(client: pg.PoolClient, write: () => Promise<T>): Promise<T> {
+  for (let attempt = 1; ; attempt++) {
+    await client.query('SAVEPOINT open_verification_round');
+    try {
+      const result = await write();
+      await client.query('RELEASE SAVEPOINT open_verification_round');
+      return result;
+    } catch (err: any) {
+      if (err?.code !== '23505' || err?.constraint !== 'verification_rounds_one_open') {
+        throw err;
+      }
+      await client.query('ROLLBACK TO SAVEPOINT open_verification_round');
+      const openRound = await openVerificationRoundOf(client);
+      if (openRound) {
+        throw new AnotherVerificationRoundOpenError(openRound);
+      }
+      if (attempt === OPEN_ROUND_ATTEMPTS) {
+        throw err;
+      }
+    }
+  }
+}
+
+/** Inserts a Round in the open state, or refuses while another is open, naming it (#125 Q17). */
 async function insertOpenRound(client: pg.PoolClient, facts: OpeningFacts, startDate: string, actorId: string): Promise<VerificationRoundVersion> {
-  await client.query('SAVEPOINT open_verification_round');
-  try {
+  return asTheOpenRound(client, async () => {
     const res = await client.query(
       `INSERT INTO verification_rounds (name, fiscal_year, start_date, notes, opened_by) VALUES ($1, $2, $3, $4, $5) RETURNING id, version`,
       [facts.name, facts.fiscal_year, startDate, facts.notes, actorId]
     );
-    await client.query('RELEASE SAVEPOINT open_verification_round');
     return { verification_round_id: res.rows[0].id, version: res.rows[0].version };
-  } catch (err: any) {
-    if (err?.code !== '23505' || err?.constraint !== 'verification_rounds_one_open') {
-      throw err;
-    }
-    await client.query('ROLLBACK TO SAVEPOINT open_verification_round');
-    const openRound = await openVerificationRoundOf(client);
-    if (!openRound) {
-      throw err;
-    }
-    throw new AnotherVerificationRoundOpenError(openRound);
-  }
+  });
 }
 
 // What a scope entry snapshots of an Asset: its identity and its Current Assignment (#125 Q4).

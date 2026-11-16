@@ -8,6 +8,8 @@ export interface LoanSaveFormProps {
   idPrefix: string;
   heading: string;
   saveUrl: string;
+  // POST unless the write edits its target in place (F006-T6: PATCH of a Verification Round).
+  method?: 'POST' | 'PATCH';
   csrfToken: string | null;
   // Why this request cannot be sent, or null when it can. The server decides again.
   requestError: () => string | null;
@@ -20,6 +22,9 @@ export interface LoanSaveFormProps {
   // Reads the latest facts and returns whether it could. A form on a Loan that exists passes this,
   // and a save refused as stale then offers it.
   onRefresh?: () => Promise<boolean>;
+  // What a save refused as stale says; a Loan's wording unless the form names its own target.
+  staleMessage?: string;
+  submitLabel?: string;
   onCancel: () => void;
   onPermissionRevoked?: (statusCode?: number) => void;
   children: (isLocked: boolean) => React.ReactNode;
@@ -72,6 +77,7 @@ export const LoanSaveForm: React.FC<LoanSaveFormProps> = ({
   idPrefix,
   heading,
   saveUrl,
+  method = 'POST',
   csrfToken,
   requestError,
   requestBody,
@@ -80,6 +86,8 @@ export const LoanSaveForm: React.FC<LoanSaveFormProps> = ({
   refusedMessage,
   onSaved,
   onRefresh,
+  staleMessage = 'มีการบันทึกรายการอื่นของการยืมนี้หลังจากเปิดฟอร์ม กรุณาโหลดข้อมูลล่าสุดแล้วตรวจสอบอีกครั้ง',
+  submitLabel = 'บันทึก',
   onCancel,
   onPermissionRevoked,
   children,
@@ -103,7 +111,7 @@ export const LoanSaveForm: React.FC<LoanSaveFormProps> = ({
     let res: Response;
     try {
       res = await fetch(saveUrl, {
-        method: 'POST',
+        method,
         headers: {
           'Content-Type': 'application/json',
           'x-retry-token': request.retry_token,
@@ -139,7 +147,7 @@ export const LoanSaveForm: React.FC<LoanSaveFormProps> = ({
         return;
       }
       if (body?.code === 'STALE_BEFORE_CONFLICT' && onRefresh) {
-        setFailure({ message: 'มีการบันทึกรายการอื่นของการยืมนี้หลังจากเปิดฟอร์ม กรุณาโหลดข้อมูลล่าสุดแล้วตรวจสอบอีกครั้ง', next: 'reload' });
+        setFailure({ message: staleMessage, next: 'reload' });
         return;
       }
       const list = refusedList(body);
@@ -236,7 +244,7 @@ export const LoanSaveForm: React.FC<LoanSaveFormProps> = ({
           disabled={isLocked}
           style={{ padding: '0.5rem 1.25rem', backgroundColor: '#2563eb', color: '#ffffff', border: 'none', borderRadius: '6px', fontSize: '0.875rem', fontWeight: 500, cursor: isLocked ? 'not-allowed' : 'pointer' }}
         >
-          {isSubmitting ? 'กำลังบันทึก...' : 'บันทึก'}
+          {isSubmitting ? 'กำลังบันทึก...' : submitLabel}
         </button>
         <button
           type="button"

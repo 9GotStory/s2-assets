@@ -39,6 +39,7 @@ import { RepairReadService } from './services/repair-read.service.ts';
 import { RepairService } from './services/repair.service.ts';
 import { RepairCorrectionService } from './services/repair-correction.service.ts';
 import { VerificationReadService } from './services/verification-read.service.ts';
+import { VerificationRoundService } from './services/verification-round.service.ts';
 import { VerificationService } from './services/verification.service.ts';
 import { AcquisitionService } from './services/acquisition.service.ts';
 import { EvidenceService } from './services/evidence.service.ts';
@@ -299,6 +300,7 @@ export async function buildApp(options: AppOptions = {}): Promise<FastifyInstanc
 
     await app.register(verificationRoutes, {
       verificationService: new VerificationService({ db: dbClient, clock: options.clock }),
+      verificationRoundService: new VerificationRoundService({ db: dbClient }),
       verificationReadService,
       capabilityService,
     });
