@@ -1,13 +1,19 @@
-import type { FastifyPluginAsync } from 'fastify';
+import type { FastifyPluginAsync, FastifyReply, FastifyRequest } from 'fastify';
 import { z } from 'zod';
 import { requireCapability } from '../middleware/authorization.ts';
 import { invalidQueryBody, pageQueryFields } from './list-query.ts';
 import { errorBody, parseWrite } from './write-request.ts';
 import { isValidUuid, type CapabilityService } from '../services/capability.service.ts';
 import { hasDisallowedControlChars } from '../services/control-characters.ts';
-import { RetryTokenConflictError } from '../services/service-errors.ts';
+import { RetryTokenConflictError, StaleBeforeConflictError } from '../services/service-errors.ts';
 import { ValidationError } from '../services/validation-error.ts';
 import { DISCREPANCIES, JOINED_AS, VerificationReadService, type Discrepancy } from '../services/verification-read.service.ts';
+import {
+  VerificationRoundHasResultsError,
+  VerificationRoundNotClosedError,
+  VerificationRoundService,
+  type EditVerificationRoundInput,
+} from '../services/verification-round.service.ts';
 import {
   AnotherVerificationRoundOpenError,
   AssetAlreadyInVerificationScopeError,
@@ -21,6 +27,7 @@ import {
 
 export interface VerificationRoutesOptions {
   verificationService: VerificationService;
+  verificationRoundService: VerificationRoundService;
   verificationReadService: VerificationReadService;
   capabilityService: CapabilityService;
 }
@@ -42,6 +49,34 @@ const LateAdditionSchema = z
   .object({
     asset_id: z.string(),
     reason: z.string(),
+    retry_token: z.string().optional(),
+  })
+  .strict();
+
+// F006-T6 (#131): a close names only the version of the Round it read; a Reopen and a void add their reason (#125 Q9,
+// Q25, Q28).
+const RoundVersionSchema = z
+  .object({
+    expected_version: z.number().int().min(1),
+    retry_token: z.string().optional(),
+  })
+  .strict();
+
+const ReasonedRoundSchema = z
+  .object({
+    expected_version: z.number().int().min(1),
+    reason: z.string(),
+    retry_token: z.string().optional(),
+  })
+  .strict();
+
+// #125 Q27: an edit sets an open Round's name, fiscal year or notes. Its start date and Scope Snapshot are not fields.
+const EditVerificationRoundSchema = z
+  .object({
+    expected_version: z.number().int().min(1),
+    name: z.string().optional(),
+    fiscal_year: z.number().optional(),
+    notes: z.string().nullable().optional(),
     retry_token: z.string().optional(),
   })
   .strict();
@@ -105,9 +140,14 @@ const refusalOf = (err: unknown) => {
   if (err instanceof CurrentResultRefusal) {
     return { ...errorBody(err.statusCode, err.code, err.message), current: err.current };
   }
+  if (err instanceof StaleBeforeConflictError) {
+    return { ...errorBody(err.statusCode, err.code, err.message), current_values: err.current_values, expected_values: err.expected_values };
+  }
   if (
     err instanceof EmptyVerificationScopeError ||
     err instanceof VerificationRoundNotOpenError ||
+    err instanceof VerificationRoundNotClosedError ||
+    err instanceof VerificationRoundHasResultsError ||
     err instanceof AssetNotInVerificationScopeError ||
     err instanceof AssetAlreadyInVerificationScopeError ||
     err instanceof VerificationTargetNotFoundError ||
@@ -123,7 +163,31 @@ const invalidRoundId = () => errorBody(400, 'INVALID_ID', 'Verification Round ID
 const invalidAssetId = () => errorBody(400, 'INVALID_ID', 'Asset ID must be a valid UUID string');
 
 export const verificationRoutes: FastifyPluginAsync<VerificationRoutesOptions> = async (fastify, options) => {
-  const { verificationService, verificationReadService, capabilityService } = options;
+  const { verificationService, verificationRoundService, verificationReadService, capabilityService } = options;
+
+  // Answers a write on an existing Round: its id from the path, its body by `schema`, and its refusals.
+  const roundWrite =
+    <T extends { retry_token?: string }>(schema: z.ZodType<T>, status: number, write: (actorId: string, roundId: string, input: Omit<T, 'retry_token'>, retryToken: string) => Promise<unknown>) =>
+    async (request: FastifyRequest, reply: FastifyReply) => {
+      const { id } = request.params as { id: string };
+      if (!isValidUuid(id)) {
+        return reply.status(400).send(invalidRoundId());
+      }
+      const parsed = parseWrite(schema, request);
+      if ('refusal' in parsed) {
+        return reply.status(400).send(parsed.refusal);
+      }
+      try {
+        const { retry_token: _retryToken, ...input } = parsed.data;
+        return reply.status(status).send(await write(request.user!.id, id.trim().toLowerCase(), input, parsed.retryToken));
+      } catch (err) {
+        const refusal = refusalOf(err);
+        if (!refusal) {
+          throw err;
+        }
+        return reply.status(refusal.statusCode).send(refusal);
+      }
+    };
 
   /**
    * POST /verification-rounds
@@ -147,6 +211,52 @@ export const verificationRoutes: FastifyPluginAsync<VerificationRoutesOptions> =
       return reply.status(refusal.statusCode).send(refusal);
     }
   });
+
+  /**
+   * PATCH /verification-rounds/:id
+   * Edits an open Round's name, fiscal year or notes, against the version the client read ("แก้ไขข้อมูลรอบ", F006-T6).
+   * Protected: requires 'verification:manage' capability (Asset Custodian)
+   */
+  fastify.patch(
+    '/verification-rounds/:id',
+    { preHandler: [requireCapability('verification:manage')] },
+    roundWrite(EditVerificationRoundSchema, 200, (actorId, roundId, input, retryToken) =>
+      verificationRoundService.edit(actorId, roundId, input as EditVerificationRoundInput, { retryToken })
+    )
+  );
+
+  /**
+   * POST /verification-rounds/:id/close
+   * Closes an open Round, storing its counts at that moment ("ปิดรอบ", F006-T6).
+   * Protected: requires 'verification:manage' capability (Asset Custodian)
+   */
+  fastify.post(
+    '/verification-rounds/:id/close',
+    { preHandler: [requireCapability('verification:manage')] },
+    roundWrite(RoundVersionSchema, 201, (actorId, roundId, input, retryToken) => verificationRoundService.close(actorId, roundId, input, { retryToken }))
+  );
+
+  /**
+   * POST /verification-rounds/:id/reopen
+   * Opens a Closed Round again, with a reason ("เปิดรอบอีกครั้ง", F006-T6).
+   * Protected: requires 'verification:correct' capability (Asset Custodian, Administrator)
+   */
+  fastify.post(
+    '/verification-rounds/:id/reopen',
+    { preHandler: [requireCapability('verification:correct')] },
+    roundWrite(ReasonedRoundSchema, 201, (actorId, roundId, input, retryToken) => verificationRoundService.reopen(actorId, roundId, input, { retryToken }))
+  );
+
+  /**
+   * POST /verification-rounds/:id/void
+   * Voids an open Round that holds no result, with a reason ("ยกเลิกรอบ", F006-T6).
+   * Protected: requires 'verification:correct' capability (Asset Custodian, Administrator)
+   */
+  fastify.post(
+    '/verification-rounds/:id/void',
+    { preHandler: [requireCapability('verification:correct')] },
+    roundWrite(ReasonedRoundSchema, 201, (actorId, roundId, input, retryToken) => verificationRoundService.void(actorId, roundId, input, { retryToken }))
+  );
 
   /**
    * POST /verification-rounds/:id/late-additions
@@ -253,7 +363,8 @@ export const verificationRoutes: FastifyPluginAsync<VerificationRoutesOptions> =
 
   /**
    * GET /verification-rounds/:id
-   * One Round with its filters, counts and history (F006-T1).
+   * One Round with its filters, counts and history (F006-T1), and whether the viewer may close and edit it, or
+   * reopen and void it (F006-T6).
    * Protected: requires 'asset:view' capability
    */
   fastify.get('/verification-rounds/:id', { preHandler: [requireCapability('asset:view')] }, async (request, reply) => {
@@ -261,11 +372,14 @@ export const verificationRoutes: FastifyPluginAsync<VerificationRoutesOptions> =
     if (!isValidUuid(id)) {
       return reply.status(400).send(invalidRoundId());
     }
+    reply.header('Cache-Control', 'no-store');
     const round = await verificationReadService.read(id.trim().toLowerCase());
     if (!round) {
       return reply.status(404).send(errorBody(404, 'NOT_FOUND', 'Verification Round not found'));
     }
-    return reply.status(200).send(round);
+    const canManageVerification = await capabilityService.hasCapability(request.user!.id, 'verification:manage');
+    const canCorrectVerification = await capabilityService.hasCapability(request.user!.id, 'verification:correct');
+    return reply.status(200).send({ ...round, can_manage_verification: canManageVerification, can_correct_verification: canCorrectVerification });
   });
 
   /**

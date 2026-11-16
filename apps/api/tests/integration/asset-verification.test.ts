@@ -25,7 +25,7 @@ describe('Record an Asset Verification (Seam A - F006-T2)', () => {
   const { lent, loanOf, closedNotReturned } = loanHelpers(() => ({ api, custodian, reader: readonly }), { loanDate: '2026-11-01', dueDate: '2026-11-30', contactName: 'คุณผู้ยืม' });
   const { sent, recordOf } = repairHelpers(() => ({ api, custodian, reader: readonly }), { startDate: '2026-11-03' });
   const { whileHolding, untilWaiting } = lockHelpers(() => ({ api }));
-  const { opened, roundOf, entriesOf, finding, record, recorded, entryOf, closedStandIn } = verificationHelpers(() => ({ api, custodian, reader: readonly }));
+  const { opened, roundOf, entriesOf, finding, record, recorded, entryOf, closeOpenRound } = verificationHelpers(() => ({ api, custodian, reader: readonly }));
 
   // A registered Asset in `room`, placed there on 1 October 2026.
   const registeredIn = async (room: { id: string }, fields: Record<string, unknown> = {}): Promise<string> => {
@@ -88,7 +88,7 @@ describe('Record an Asset Verification (Seam A - F006-T2)', () => {
 
   afterEach(async () => {
     now = new Date('2026-11-12T05:00:00Z');
-    await closedStandIn();
+    await closeOpenRound();
   });
 
   afterAll(async () => {
@@ -370,7 +370,7 @@ describe('Record an Asset Verification (Seam A - F006-T2)', () => {
 
     it('refuses a result for a Round that is not open, and saves nothing (AV-17)', async () => {
       const { assetIds: [assetId], roundId } = await roundOver();
-      await closedStandIn();
+      await closeOpenRound();
 
       const res = await record(roundId, assetId, finding());
 
@@ -461,7 +461,7 @@ describe('Record an Asset Verification (Seam A - F006-T2)', () => {
       expect((await detailOf(other)).verification.entry.result).toBe('NOT_YET_VERIFIED');
       expect((await detailOf(outside)).verification).toEqual({ open_round: openRound, entry: null, context: noContext });
 
-      await closedStandIn();
+      await closeOpenRound();
       expect((await detailOf(assetId)).verification).toBeNull();
     });
 
@@ -485,7 +485,7 @@ describe('Record an Asset Verification (Seam A - F006-T2)', () => {
       now = new Date('2026-11-02T05:00:00Z');
       const { room, assetIds: [assetId], roundId: earlier } = await roundOver();
       await recorded(earlier, assetId, { result: 'NOT_FOUND', condition: null });
-      await closedStandIn();
+      await closeOpenRound();
       now = new Date('2026-11-12T05:00:00Z');
       const later = await opened({ name: 'รอบหลัง', location_ids: [room.id] });
 

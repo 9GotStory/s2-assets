@@ -12,6 +12,7 @@ import { SessionService } from '../../../api/src/services/session.service.ts';
 import { AssetService } from '../../../api/src/services/asset.service.ts';
 import { ReferenceService } from '../../../api/src/services/reference.service.ts';
 import { RepairService } from '../../../api/src/services/repair.service.ts';
+import { VerificationRoundService } from '../../../api/src/services/verification-round.service.ts';
 import { VerificationService } from '../../../api/src/services/verification.service.ts';
 import { repositoryProxyConfig } from '../../vite.config.ts';
 
@@ -25,7 +26,8 @@ const migrationFolder = path.resolve(__dirname, '../../../../packages/db/src/mig
 // F006-T1 (#126): an Asset Custodian opens a Verification Round and sees its Scope Snapshot; a Read-only User
 // sees the Round with no action. F006-T2 (#127): Verification Staff record a result from the Asset page a QR
 // label opens, at a phone viewport. F006-T4 (#129): a Re-verification from the panel and a Verification Correction.
-// F006-T5 (#130): a Late Addition from the Asset page of an Asset registered after the Round opened.
+// F006-T5 (#130): a Late Addition from the Asset page of an Asset registered after the Round opened. F006-T6 (#131):
+// closing a Round over its summary, and reopening it with a reason.
 test.describe.serial('Verification journeys: Real SPA -> Composed API -> PostgreSQL (Seam B)', () => {
   let container: StartedPostgreSqlContainer;
   let pool: pg.Pool;
@@ -36,6 +38,7 @@ test.describe.serial('Verification journeys: Real SPA -> Composed API -> Postgre
   let assetService: AssetService;
   let referenceService: ReferenceService;
   let verificationService: VerificationService;
+  let verificationRoundService: VerificationRoundService;
 
   let adminUserId: string;
   let custodianUserId: string;
@@ -65,6 +68,7 @@ test.describe.serial('Verification journeys: Real SPA -> Composed API -> Postgre
     assetService = new AssetService({ db: pool });
     referenceService = new ReferenceService({ db: pool });
     verificationService = new VerificationService({ db: pool });
+    verificationRoundService = new VerificationRoundService({ db: pool });
 
     fastifyApp = await buildApp({
       db: pool,
@@ -120,6 +124,14 @@ test.describe.serial('Verification journeys: Real SPA -> Composed API -> Postgre
   const switchActor = async (page: any, context: any, userId: string) => {
     await page.goto('about:blank');
     await loginAs(context, userId);
+  };
+
+  // Closes the open Round, if any, as an Asset Custodian would, so that the next journey can open one (#125 Q17).
+  const closeOpenRound = async () => {
+    const open = await pool.query(`SELECT id, version FROM verification_rounds WHERE state = 'OPEN'`);
+    for (const { id, version } of open.rows) {
+      await verificationRoundService.close(custodianUserId, id, { expected_version: version }, { retryToken: crypto.randomUUID() });
+    }
   };
 
   test('Journey F006-T1.1: a Custodian opens a Round with a Location filter and sees its Assets as "ยังไม่ได้ตรวจ"; a Read-only User then sees the Round with no action', async ({ page, context }) => {
@@ -224,8 +236,7 @@ test.describe.serial('Verification journeys: Real SPA -> Composed API -> Postgre
     const fitsWidth = (page: any) => page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth);
 
     test('Journey F006-T2.1: Verification Staff open an Asset page as its QR link would and record Found ปกติ; the panel then shows the result and the Round page counts it', async ({ page, context }) => {
-      // Test only, until F006-T6 (#131) closes a Round through the API: the Round of Journey F006-T1.1 must not stay open (#125 Q17).
-      await pool.query(`UPDATE verification_rounds SET state = 'CLOSED' WHERE state = 'OPEN'`);
+      await closeOpenRound();
       const office = await referenceService.create('locations', adminUserId, 'ห้องธุรการ E2E ตรวจ');
       const store = await referenceService.create('locations', adminUserId, 'ห้องเก็บของ E2E ตรวจ 2');
       const { asset: printer } = await assetService.registerAsset(custodianUserId, { name: 'เครื่องพิมพ์ E2E ตรวจ', asset_number: 'E2E-VR-101', location_id: office.id, effective_date: '2026-01-05' } as any);
@@ -290,8 +301,7 @@ test.describe.serial('Verification journeys: Real SPA -> Composed API -> Postgre
   });
 
   test('Journey F006-T3.1: Verification Staff record Found at a Location other than the register\'s, with both flags; the panel, the section and the Round page show each Discrepancy, and the Round filters by them', async ({ page, context }) => {
-    // Test only, until F006-T6 (#131) closes a Round through the API: the Round of an earlier journey must not stay open (#125 Q17).
-    await pool.query(`UPDATE verification_rounds SET state = 'CLOSED' WHERE state = 'OPEN'`);
+    await closeOpenRound();
     const office = await referenceService.create('locations', adminUserId, 'ห้องการเงิน E2E ตรวจ');
     const hall = await referenceService.create('locations', adminUserId, 'ห้องโถง E2E ตรวจ');
     const { asset: scanner } = await assetService.registerAsset(custodianUserId, { name: 'สแกนเนอร์ E2E ตรวจ', asset_number: 'E2E-VR-201', location_id: office.id, effective_date: '2026-01-05' } as any);
@@ -369,8 +379,7 @@ test.describe.serial('Verification journeys: Real SPA -> Composed API -> Postgre
   });
 
   test('Journey F006-T4.1: Verification Staff re-verify an Asset as Not Found from the panel that shows its latest result; the revisions show both; an Asset Custodian voids the new result and the earlier one is current again', async ({ page, context }) => {
-    // Test only, until F006-T6 (#131) closes a Round through the API: the Round of an earlier journey must not stay open (#125 Q17).
-    await pool.query(`UPDATE verification_rounds SET state = 'CLOSED' WHERE state = 'OPEN'`);
+    await closeOpenRound();
     const office = await referenceService.create('locations', adminUserId, 'ห้องพัสดุ E2E ตรวจซ้ำ');
     const { asset: laptop } = await assetService.registerAsset(custodianUserId, { name: 'โน้ตบุ๊ก E2E ตรวจซ้ำ', asset_number: 'E2E-VR-301', location_id: office.id, effective_date: '2026-01-05' } as any);
     const { verification_round_id: roundId } = await verificationService.open(
@@ -442,8 +451,7 @@ test.describe.serial('Verification journeys: Real SPA -> Composed API -> Postgre
   });
 
   test('Journey F006-T5.1: an Asset Custodian registers an Asset after the Round opened, adds it from its Asset page with a reason, and the Round page lists it as a Late Addition', async ({ page, context }) => {
-    // Test only, until F006-T6 (#131) closes a Round through the API: the Round of an earlier journey must not stay open (#125 Q17).
-    await pool.query(`UPDATE verification_rounds SET state = 'CLOSED' WHERE state = 'OPEN'`);
+    await closeOpenRound();
     const office = await referenceService.create('locations', adminUserId, 'ห้องพัสดุ E2E เพิ่มภายหลัง');
     const { asset: printer } = await assetService.registerAsset(custodianUserId, { name: 'เครื่องพิมพ์ E2E เพิ่มภายหลัง', asset_number: 'E2E-VR-501', location_id: office.id, effective_date: '2026-01-05' } as any);
     const { verification_round_id: roundId } = await verificationService.open(
@@ -496,5 +504,77 @@ test.describe.serial('Verification journeys: Real SPA -> Composed API -> Postgre
     await expect(page.locator('#scope-entry-list-count')).toContainText('พบ 1 รายการ');
     await expect(page.locator(`[data-testid="scope-entry-result-${monitorId}"]`)).toHaveText('ยังไม่ได้ตรวจ');
     await expect(page.locator(`[data-testid="scope-entry-${printer.id}"]`)).toHaveCount(0);
+  });
+  test('Journey F006-T6.1: an Asset Custodian closes a Round with Assets still "ยังไม่ได้ตรวจ" after confirming its summary; the panel then offers no recording; the Custodian reopens it with a reason, and recording works again', async ({ page, context }) => {
+    await closeOpenRound();
+    const room = await referenceService.create('locations', adminUserId, 'ห้องประชุม E2E ปิดรอบ');
+    const { asset: desk } = await assetService.registerAsset(custodianUserId, { name: 'โต๊ะ E2E ปิดรอบ', asset_number: 'E2E-VR-601', location_id: room.id, effective_date: '2026-01-05' } as any);
+    const { asset: chair } = await assetService.registerAsset(custodianUserId, { name: 'เก้าอี้ E2E ปิดรอบ', asset_number: 'E2E-VR-602', location_id: room.id, effective_date: '2026-01-05' } as any);
+    const { verification_round_id: roundId } = await verificationService.open(
+      custodianUserId,
+      { name: 'ตรวจสอบพัสดุประจำปี 2569 ปิดรอบ', fiscal_year: 2569, location_ids: [room.id] },
+      { retryToken: crypto.randomUUID() }
+    );
+    await verificationService.record(staffUserId, roundId, desk.id, { result: 'FOUND', condition: 'NORMAL' }, { retryToken: crypto.randomUUID() });
+
+    // The Custodian closes the Round over its summary; the chair stays Not Yet Verified.
+    await loginAs(context, custodianUserId);
+    await page.goto(`${targetBaseUrl}/verification-rounds/${roundId}`);
+    await page.locator('#verification-round-close-action').click();
+    const summary = page.locator('[data-testid="verification-round-close-summary"]');
+    await expect(summary).toContainText('พบ 1 รายการ');
+    await expect(summary).toContainText('ไม่พบในการตรวจ 0 รายการ');
+    await expect(summary).toContainText('ยังไม่ได้ตรวจ 1 รายการ');
+    await expect(page.locator('#verification-round-close-submit')).toHaveText('ยืนยันปิดรอบ');
+    await page.locator('#verification-round-close-submit').click();
+    await expect(page.locator('#verification-round-state')).toHaveText('ปิดรอบแล้ว');
+    const history = page.locator('[data-testid="verification-round-history"]');
+    await expect(history).toContainText('ปิดรอบ โดย custodian_verification');
+    await expect(history).toContainText('พบ 1 · ไม่พบในการตรวจ 0 · ยังไม่ได้ตรวจ 1 · มีข้อแตกต่าง 0');
+    await expect(page.locator(`[data-testid="scope-entry-result-${chair.id}"]`)).toHaveText('ยังไม่ได้ตรวจ');
+    await expect(page.locator('#verification-round-close-action')).toHaveCount(0);
+    await expect(page.locator('#verification-round-edit-action')).toHaveCount(0);
+
+    // With no Round open, the Asset page offers no recording; its section keeps the result of the Closed Round.
+    await page.goto(`${targetBaseUrl}/assets/${chair.id}`);
+    await expect(page.locator(`[data-testid="asset-verification-result-${roundId}"]`)).toContainText('ยังไม่ได้ตรวจ');
+    await expect(page.locator('#verification-panel')).toHaveCount(0);
+    await expect(page.locator('#verification-record-form')).toHaveCount(0);
+
+    // The Custodian reopens the Round, which needs a reason.
+    await page.goto(`${targetBaseUrl}/verification-rounds/${roundId}`);
+    await page.locator('#verification-round-reopen-action').click();
+    await page.locator('#verification-round-reopen-submit').click();
+    await expect(page.locator('[data-testid="verification-round-reopen-form-error"]')).toContainText('เหตุผล');
+    await page.locator('#verification-round-reopen-reason').fill('ต้องตรวจเก้าอี้ที่ยืมไปห้องอื่น');
+    await page.locator('#verification-round-reopen-submit').click();
+    await expect(page.locator('#verification-round-state')).toHaveText('เปิดอยู่');
+    await expect(history).toContainText('เปิดรอบอีกครั้ง โดย custodian_verification');
+    await expect(history).toContainText('เหตุผล: ต้องตรวจเก้าอี้ที่ยืมไปห้องอื่น');
+    await expect(page.locator('#verification-round-close-action')).toBeVisible();
+
+    // The page prints its summary, history and entries, without the controls.
+    await page.emulateMedia({ media: 'print' });
+    await expect(page.locator('#verification-round-actions')).toBeHidden();
+    await expect(page.locator('#scope-entry-search-form')).toBeHidden();
+    await expect(page.locator('#scope-entry-result-filters')).toBeHidden();
+    await expect(page.locator('[data-testid="verification-round-count-not-yet-verified"]')).toBeVisible();
+    await expect(history).toBeVisible();
+    await expect(page.locator(`[data-testid="scope-entry-${chair.id}"]`)).toBeVisible();
+    await page.emulateMedia({ media: 'screen' });
+
+    // A Read-only User sees the same Round with no action.
+    await switchActor(page, context, readonlyUserId);
+    await page.goto(`${targetBaseUrl}/verification-rounds/${roundId}`);
+    await expect(page.locator('#verification-round-state')).toHaveText('เปิดอยู่');
+    await expect(page.locator('#verification-round-actions')).toHaveCount(0);
+
+    // Recording works again in the reopened Round.
+    await switchActor(page, context, custodianUserId);
+    await page.goto(`${targetBaseUrl}/assets/${chair.id}`);
+    await page.locator('#verification-record-result-FOUND').check();
+    await page.locator('#verification-record-condition-NORMAL').check();
+    await page.locator('#verification-record-submit').click();
+    await expect(page.locator('[data-testid="verification-panel-current-result"]')).toHaveText('พบ · สภาพปกติ');
   });
 });

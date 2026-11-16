@@ -19,7 +19,7 @@ describe('Late Addition to the open Round (Seam A - F006-T5)', () => {
   let now = new Date('2026-11-12T05:00:00Z');
 
   const { entry, detailOf } = assignmentHelpers(() => ({ api, admin, reader: readonly }));
-  const { opened, roundOf, entriesOf, entryOf, record, recorded, closedStandIn } = verificationHelpers(() => ({ api, custodian, reader: readonly }));
+  const { opened, roundOf, entriesOf, entryOf, record, recorded, closeOpenRound } = verificationHelpers(() => ({ api, custodian, reader: readonly }));
 
   // A registered Asset in `room`, placed there on 1 October 2026, with `fields` besides.
   const registeredIn = async (room: { id: string }, fields: Record<string, unknown> = {}): Promise<string> => {
@@ -79,7 +79,7 @@ describe('Late Addition to the open Round (Seam A - F006-T5)', () => {
 
   afterEach(async () => {
     now = new Date('2026-11-12T05:00:00Z');
-    await closedStandIn();
+    await closeOpenRound();
   });
 
   afterAll(async () => {
@@ -226,7 +226,7 @@ describe('Late Addition to the open Round (Seam A - F006-T5)', () => {
 
     it('refuses a Late Addition to a Round that is not open, and saves nothing (AV-17)', async () => {
       const { outside, roundId } = await roundBeside();
-      await closedStandIn();
+      await closeOpenRound();
 
       await refusedWith(await add(roundId, { asset_id: outside, reason: 'หลังปิดรอบ' }), 409, 'VERIFICATION_ROUND_NOT_OPEN');
 

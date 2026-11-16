@@ -256,20 +256,28 @@ const ROUND_COUNTS = `CROSS JOIN LATERAL (
          WHERE e.verification_round_id = r.id
        ) counted`;
 
+const countsOf = (row: any): VerificationRoundCounts => ({
+  in_scope: row.in_scope,
+  found: row.found,
+  not_found: row.not_found,
+  not_yet_verified: row.in_scope - row.found - row.not_found,
+  with_discrepancy: row.with_discrepancy,
+});
+
 const summaryOf = (row: any): VerificationRoundSummary => ({
   id: row.id,
   name: row.name,
   fiscal_year: row.fiscal_year,
   start_date: row.start_date,
   state: row.state,
-  counts: {
-    in_scope: row.in_scope,
-    found: row.found,
-    not_found: row.not_found,
-    not_yet_verified: row.in_scope - row.found - row.not_found,
-    with_discrepancy: row.with_discrepancy,
-  },
+  counts: countsOf(row),
 });
+
+/** A Round's counts now, as its page shows them; a close stores them (#125 P4) and a void reads them (Q28). It locks nothing. */
+export async function roundCountsOf(db: pg.Pool | pg.PoolClient | any, roundId: string): Promise<VerificationRoundCounts> {
+  const res = await db.query(`SELECT counted.* FROM verification_rounds r ${ROUND_COUNTS} WHERE r.id = $1`, [roundId]);
+  return countsOf(res.rows[0]);
+}
 
 const entryOf = (id: string | null, name: string, isActive: boolean): ReferenceEntrySummary | null => (id ? { id, name, is_active: isActive } : null);
 
