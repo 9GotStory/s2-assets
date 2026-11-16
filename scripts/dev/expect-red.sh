@@ -8,6 +8,10 @@
 #   scripts/dev/expect-red.sh apps/api/src/routes/loan.routes.ts "'must not be blank'" "'blank'" \
 #     -- scripts/ci/integration.sh tests/integration/loan-list.test.ts -t "refuse a value"
 #
+# Check that the red names the test you broke the code for. Run a file whose tests share state, such as
+# a Seam C migration file, whole: a -t filter skips the test that sets the state up, and the rest go red
+# for that alone.
+#
 # <old text> must occur exactly once in <file> and is replaced as literal text, not a pattern. The file
 # is restored however the run ends, Ctrl-C included. Exits 0 when the test command fails (red) and 1
 # when it passes (the test did not notice the break); 2 for a usage error.
