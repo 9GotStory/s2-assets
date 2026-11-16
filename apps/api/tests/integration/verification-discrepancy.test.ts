@@ -204,9 +204,42 @@ describe('Observed Location and Discrepancies (Seam A - F006-T3)', () => {
       await refusedWith(roundId, assetId, { ...found, observed_location_id: unit.id }, 'observed_location_id must name an active entry');
       await refusedWith(roundId, assetId, { ...found, observed_location_id: closed.id }, 'observed_location_id must name an active entry');
       await refusedWith(roundId, assetId, { ...found, observed_location_id: 'ห้อง 101' }, 'observed_location_id must be a valid UUID');
-      for (const malformed of [{ label_missing_or_damaged: 'yes' }, { data_mismatch: 1 }, { observed_location_id: 42 }]) {
-        expect((await record(roundId, assetId, { ...found, ...malformed })).statusCode).toBe(400);
+      expect(await revisionCount(roundId, assetId)).toBe(0);
+    });
+
+    it('takes each flag as a boolean and the Observed Location as a string, refusing any other type', async () => {
+      const { assetIds: [assetId], roundId } = await roundOver();
+      const found = { result: 'FOUND', condition: 'NORMAL' };
+
+      await refusedWith(roundId, assetId, { ...found, label_missing_or_damaged: 'yes' }, 'Invalid request payload: label_missing_or_damaged:');
+      await refusedWith(roundId, assetId, { ...found, data_mismatch: 1, data_mismatch_note: 'ไม่ตรง' }, 'Invalid request payload: data_mismatch:');
+      await refusedWith(roundId, assetId, { ...found, observed_location_id: 42 }, 'Invalid request payload: observed_location_id:');
+      expect(await revisionCount(roundId, assetId)).toBe(0);
+    });
+
+    it('reads the Observed Location under its row lock: a Location closed by a write the result waits on is refused', async () => {
+      const { assetIds: [assetId], roundId } = await roundOver();
+      const closing = await room('ห้องที่กำลังปิด');
+      // How many writes wait on a lock of a Location row, as the active-entry check takes it.
+      const waitersOnLocation = async (): Promise<number> =>
+        (await api.pool.query(`SELECT count(*)::int AS n FROM pg_stat_activity WHERE wait_event_type = 'Lock' AND query LIKE '%FROM locations WHERE id%FOR SHARE%'`)).rows[0].n;
+
+      // The holder stands in for a deactivation in flight: it has closed the Location and not yet committed.
+      const holder = await api.pool.connect();
+      let pending: Promise<any> | undefined;
+      try {
+        await holder.query('BEGIN');
+        await holder.query('UPDATE locations SET is_active = false, version = version + 1 WHERE id = $1', [closing.id]);
+        pending = record(roundId, assetId, { result: 'FOUND', condition: 'NORMAL', observed_location_id: closing.id }, crypto.randomUUID(), staff);
+        await expect.poll(waitersOnLocation, { timeout: 10_000, interval: 50 }).toBe(1);
+      } finally {
+        await holder.query('COMMIT');
+        holder.release();
       }
+      const res = await pending!;
+
+      expect(res.statusCode).toBe(400);
+      expect(res.json().message).toContain('observed_location_id must name an active entry');
       expect(await revisionCount(roundId, assetId)).toBe(0);
     });
 

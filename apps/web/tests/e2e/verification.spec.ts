@@ -350,15 +350,20 @@ test.describe.serial('Verification journeys: Real SPA -> Composed API -> Postgre
     await expect(page.locator(`[data-testid="scope-entry-${scanner.id}"]`)).toBeVisible();
 
     // The snapshot Location filter walks the office room by room, with the Discrepancy filter or without it.
+    // Each step waits for its URL: a filter chosen before the page shows the last one would keep the last one's.
     await page.locator('#scope-entry-discrepancy-filter-ALL').click();
+    await expect(page).not.toHaveURL(/discrepancy=/);
+    await expect(page.locator('[data-testid^="scope-entry-result-"]')).toHaveCount(3);
     await page.locator('#scope-entry-location-filter').selectOption({ label: 'ห้องโถง E2E ตรวจ' });
-    await expect(page).toHaveURL(new RegExp(`location_id=${hall.id}`));
+    await expect(page).toHaveURL(new RegExp(`\\?location_id=${hall.id}$`));
     await expect(page.locator('[data-testid^="scope-entry-result-"]')).toHaveCount(1);
     await expect(page.locator(`[data-testid="scope-entry-${chair.id}"]`)).toBeVisible();
     await page.locator('#scope-entry-location-filter').selectOption({ label: 'ห้องการเงิน E2E ตรวจ' });
+    await expect(page).toHaveURL(new RegExp(`\\?location_id=${office.id}$`));
     await expect(page.locator('[data-testid^="scope-entry-result-"]')).toHaveCount(2);
     await page.locator('#scope-entry-discrepancy-filter-LOCATION_MISMATCH').click();
-    await expect(page).toHaveURL(new RegExp(`location_id=${office.id}`));
+    await expect(page).toHaveURL(new RegExp(`discrepancy=LOCATION_MISMATCH&location_id=${office.id}`));
     await expect(page.locator('[data-testid^="scope-entry-result-"]')).toHaveCount(1);
+    await expect(page.locator(`[data-testid="scope-entry-${scanner.id}"]`)).toBeVisible();
   });
 });

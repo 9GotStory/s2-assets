@@ -285,23 +285,22 @@ export async function recordingContextOf(db: pg.Pool | pg.PoolClient | any, asse
 /** The current result of each of `entryIds` that has one, by scope entry: its latest revision not voided. */
 export async function currentRevisionsOf(db: pg.Pool | pg.PoolClient | any, entryIds: string[]): Promise<Map<string, VerificationRevision>> {
   const res = await db.query(
-    `SELECT DISTINCT ON (v.verification_scope_entry_id) v.verification_scope_entry_id, v.id, v.revision_number, v.result, v.condition, v.note,
-            to_char(v.verification_date, 'YYYY-MM-DD') AS verification_date,
-            v.observed_location_id, ol.name AS observed_location_name, ol.is_active AS observed_location_active,
-            v.label_missing_or_damaged, v.data_mismatch, v.data_mismatch_note, ${discrepanciesOf('v')} AS discrepancies,
-            v.location_id, l.name AS location_name, l.is_active AS location_active, v.legacy_location_text,
-            v.organization_unit_id, o.name AS organization_unit_name, o.is_active AS organization_unit_active, v.legacy_organization_unit_text,
-            v.responsible_person_id, pe.name AS responsible_person_name, pe.is_active AS responsible_person_active, v.legacy_responsible_person_text,
-            v.loan_context, v.loan_item_id, v.loan_borrower_display, to_char(v.loan_due_date, 'YYYY-MM-DD') AS loan_due_date,
-            v.repair_record_id, v.repair_kind, v.recorded_by, u.username AS recorded_by_username, v.recorded_at
-     FROM verification_revisions v
-     LEFT JOIN locations ol ON ol.id = v.observed_location_id
-     LEFT JOIN locations l ON l.id = v.location_id
-     LEFT JOIN organization_units o ON o.id = v.organization_unit_id
-     LEFT JOIN persons pe ON pe.id = v.responsible_person_id
-     LEFT JOIN users u ON u.id = v.recorded_by
-     WHERE v.verification_scope_entry_id = ANY($1::uuid[]) AND NOT v.is_voided
-     ORDER BY v.verification_scope_entry_id, v.revision_number DESC`,
+    `SELECT e.id AS verification_scope_entry_id, cur.id, cur.revision_number, cur.result, cur.condition, cur.note,
+            to_char(cur.verification_date, 'YYYY-MM-DD') AS verification_date,
+            cur.observed_location_id, ol.name AS observed_location_name, ol.is_active AS observed_location_active,
+            cur.label_missing_or_damaged, cur.data_mismatch, cur.data_mismatch_note, ${discrepanciesOf('cur')} AS discrepancies,
+            cur.location_id, l.name AS location_name, l.is_active AS location_active, cur.legacy_location_text,
+            cur.organization_unit_id, o.name AS organization_unit_name, o.is_active AS organization_unit_active, cur.legacy_organization_unit_text,
+            cur.responsible_person_id, pe.name AS responsible_person_name, pe.is_active AS responsible_person_active, cur.legacy_responsible_person_text,
+            cur.loan_context, cur.loan_item_id, cur.loan_borrower_display, to_char(cur.loan_due_date, 'YYYY-MM-DD') AS loan_due_date,
+            cur.repair_record_id, cur.repair_kind, cur.recorded_by, u.username AS recorded_by_username, cur.recorded_at
+     FROM verification_scope_entries e ${CURRENT_REVISION}
+     LEFT JOIN locations ol ON ol.id = cur.observed_location_id
+     LEFT JOIN locations l ON l.id = cur.location_id
+     LEFT JOIN organization_units o ON o.id = cur.organization_unit_id
+     LEFT JOIN persons pe ON pe.id = cur.responsible_person_id
+     LEFT JOIN users u ON u.id = cur.recorded_by
+     WHERE e.id = ANY($1::uuid[]) AND cur.id IS NOT NULL`,
     [entryIds]
   );
   return new Map(res.rows.map((row: any) => [row.verification_scope_entry_id, revisionOf(row)]));

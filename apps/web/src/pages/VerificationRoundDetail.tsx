@@ -61,7 +61,40 @@ const filterLinkStyle = (isCurrent: boolean): React.CSSProperties => ({
   backgroundColor: isCurrent ? '#2563eb' : '#ffffff',
   color: isCurrent ? '#ffffff' : '#374151',
 });
-const filterNavStyle: React.CSSProperties = { display: 'flex', gap: '0.5rem', flexWrap: 'wrap', marginBottom: '0.75rem', fontSize: '0.875rem' };
+
+// One filter of the list as links, "ทั้งหมด" first. Links, not buttons: a filter is a URL that a back step or a
+// shared link keeps.
+const FilterLinks = <T extends string>({
+  label,
+  idPrefix,
+  values,
+  current,
+  allLabel,
+  valueLabel,
+  queryFor,
+}: {
+  label: string;
+  idPrefix: string;
+  values: readonly T[];
+  current: T | null;
+  allLabel: string;
+  valueLabel: (value: T) => string;
+  queryFor: (value: T | null) => string;
+}) => (
+  <nav aria-label={label} id={`${idPrefix}s`} style={{ display: 'flex', gap: '0.5rem', flexWrap: 'wrap', marginBottom: '0.75rem', fontSize: '0.875rem' }}>
+    {([null, ...values] as const).map((value) => (
+      <Link
+        key={value ?? 'ALL'}
+        to={`?${queryFor(value)}`}
+        id={`${idPrefix}-${value ?? 'ALL'}`}
+        aria-current={value === current ? 'page' : undefined}
+        style={filterLinkStyle(value === current)}
+      >
+        {value ? valueLabel(value) : allLabel}
+      </Link>
+    ))}
+  </nav>
+);
 
 const RESULT_COLORS: Record<VerificationResult, string> = { FOUND: '#166534', NOT_FOUND: '#991b1b', NOT_YET_VERIFIED: '#92400e' };
 
@@ -187,9 +220,8 @@ const VerificationRoundDetailContent: React.FC = () => {
   const entries = useQuery<ScopeEntryPage, HttpError>({
     queryKey: ['verification-round-entries', id, filters, offset],
     queryFn: ({ signal }) => {
-      const params = new URLSearchParams(listQuery(filters, 0));
+      const params = new URLSearchParams(listQuery(filters, offset));
       params.set('limit', String(PAGE_SIZE));
-      params.set('offset', String(offset));
       return readJson(`/verification-rounds/${id}/entries?${params.toString()}`, signal);
     },
     enabled: round.isSuccess,
@@ -345,33 +377,24 @@ const VerificationRoundDetailContent: React.FC = () => {
           </button>
         </form>
 
-        {/* Links, not buttons: a filter is a URL that a back step or a shared link keeps. */}
-        <nav aria-label="กรองตามผลตรวจ" id="scope-entry-result-filters" style={filterNavStyle}>
-          {([null, ...RESULT_FILTERS] as const).map((filter) => (
-            <Link
-              key={filter ?? 'ALL'}
-              to={`?${listQuery({ ...filters, result: filter }, 0)}`}
-              id={`scope-entry-result-filter-${filter ?? 'ALL'}`}
-              aria-current={filter === filters.result ? 'page' : undefined}
-              style={filterLinkStyle(filter === filters.result)}
-            >
-              {filter ? RESULT_LABELS[filter] : 'ทั้งหมด'}
-            </Link>
-          ))}
-        </nav>
-        <nav aria-label={`กรองตาม${DISCREPANCY_LABEL}`} id="scope-entry-discrepancy-filters" style={filterNavStyle}>
-          {([null, ...DISCREPANCIES] as const).map((filter) => (
-            <Link
-              key={filter ?? 'ALL'}
-              to={`?${listQuery({ ...filters, discrepancy: filter }, 0)}`}
-              id={`scope-entry-discrepancy-filter-${filter ?? 'ALL'}`}
-              aria-current={filter === filters.discrepancy ? 'page' : undefined}
-              style={filterLinkStyle(filter === filters.discrepancy)}
-            >
-              {filter ? DISCREPANCY_LABELS[filter] : `${DISCREPANCY_LABEL}ทั้งหมด`}
-            </Link>
-          ))}
-        </nav>
+        <FilterLinks
+          label="กรองตามผลตรวจ"
+          idPrefix="scope-entry-result-filter"
+          values={RESULT_FILTERS}
+          current={filters.result}
+          allLabel="ทั้งหมด"
+          valueLabel={(value) => RESULT_LABELS[value]}
+          queryFor={(value) => listQuery({ ...filters, result: value }, 0)}
+        />
+        <FilterLinks
+          label={`กรองตาม${DISCREPANCY_LABEL}`}
+          idPrefix="scope-entry-discrepancy-filter"
+          values={DISCREPANCIES}
+          current={filters.discrepancy}
+          allLabel={`${DISCREPANCY_LABEL}ทั้งหมด`}
+          valueLabel={(value) => DISCREPANCY_LABELS[value]}
+          queryFor={(value) => listQuery({ ...filters, discrepancy: value }, 0)}
+        />
         {snapshotLocations.length > 0 && (
           <div style={{ marginBottom: '0.75rem', fontSize: '0.875rem' }}>
             {/* The Location the snapshot holds, to walk the office room by room (#125 P5). */}

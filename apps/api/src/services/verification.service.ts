@@ -160,20 +160,20 @@ const normalizeResult = (input: RecordVerificationInput, today: string): ResultF
   if (observedLocationId !== null && !isValidUuid(observedLocationId)) {
     throw new ValidationError('observed_location_id must be a valid UUID');
   }
-  const flags = { label_missing_or_damaged: input.label_missing_or_damaged ?? false, data_mismatch: input.data_mismatch ?? false };
+  const tickedDiscrepancies = { label_missing_or_damaged: input.label_missing_or_damaged ?? false, data_mismatch: input.data_mismatch ?? false };
   if (input.result === 'NOT_FOUND') {
     // An Asset not seen has no Observed Location and no Discrepancy to tick (#125 AV-07, AV-08).
-    for (const [field, given] of [['observed_location_id', observedLocationId !== null], ...Object.entries(flags)] as const) {
+    for (const [field, given] of [['observed_location_id', observedLocationId !== null], ...Object.entries(tickedDiscrepancies)] as const) {
       if (given) {
         throw new ValidationError(`${field} must not be given when the Asset is Not Found`);
       }
     }
   }
   const dataMismatchNote = normalizeText(input.data_mismatch_note, 'data_mismatch_note', VERIFICATION_NOTE_MAX_LENGTH, '');
-  if (flags.data_mismatch && dataMismatchNote === null) {
+  if (tickedDiscrepancies.data_mismatch && dataMismatchNote === null) {
     throw new ValidationError('data_mismatch_note is required when data_mismatch is ticked');
   }
-  if (!flags.data_mismatch && dataMismatchNote !== null) {
+  if (!tickedDiscrepancies.data_mismatch && dataMismatchNote !== null) {
     throw new ValidationError('data_mismatch_note must not be given unless data_mismatch is ticked');
   }
   const date = input.verification_date ?? null;
@@ -187,7 +187,7 @@ const normalizeResult = (input: RecordVerificationInput, today: string): ResultF
     result: input.result,
     condition,
     observed_location_id: observedLocationId?.trim().toLowerCase() ?? null,
-    ...flags,
+    ...tickedDiscrepancies,
     data_mismatch_note: dataMismatchNote,
     note: normalizeText(input.note, 'note', VERIFICATION_NOTE_MAX_LENGTH, ''),
     verification_date: date,
