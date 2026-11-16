@@ -54,6 +54,18 @@ test the order on a write that changes a fact that already exists. In F005-T7 (#
 tests of a Repair Start and a Loan start stayed green with the check moved ahead of the lock; those of the
 two corrections, which read what was there before them, went red.
 
+When the rule's read itself locks the row of the fact it checks, as the active-entry check locks a
+Location `FOR SHARE`, that row orders the two writes: the test holds the other write's change to it
+uncommitted until the rule's read waits on it, as F006-T3 (#128) does for a Location deactivation.
+Holding another row that the write also takes makes the test wait on itself.
+
+## A journey step waits for the URL it changes
+
+A journey step that changes the URL, such as a filter link or a select that navigates, waits for that
+URL with `toHaveURL` before the next step acts: a page acts on the URL it last showed. In F006-T3
+(#128), a Location chosen right after the "ทั้งหมด" Discrepancy link kept the Discrepancy filter the
+link had just removed.
+
 ## A correction keeps every stored value it replaces
 
 A correction record lists the before and after of each stored value its write changes, side effects

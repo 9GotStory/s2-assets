@@ -88,8 +88,10 @@ every integration file that calls a route or names a response field the change t
 over `apps/api/tests/integration`): earlier tests pin those shapes and their data. Start the full
 run once, after the code-review fixes are committed: a full run started before the review has to be
 run again.
-When CI does not run on a pull request, run each job locally and record each job's exact result
-in the pull request: that record is the pull request's check. A change
+A pull request into a base other than `main` or `feature/*` gets no CI (`ci.yml`): run each job
+locally and record each job's exact result in the pull request: that record is its check. Into
+`main` or `feature/*`, the merge waits for CI Gate (`scripts/ci/require-ci-gate.sh`); when GitHub
+has created no run for the head 5 minutes after the pull request opened, close and reopen it. A change
 that touches only documentation needs only `git diff --check <base>...HEAD`. In both, `<base>` is
 the integration-branch commit the task started from.
 
