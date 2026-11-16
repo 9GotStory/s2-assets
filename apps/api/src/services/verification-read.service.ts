@@ -148,11 +148,15 @@ export interface LateAddition {
   recorded_at: string;
 }
 
+// How an Asset joined a Round: when the Round opened, or as a Late Addition (F006-T5, #125 Q11).
+export const JOINED_AS = ['OPENING', 'LATE_ADDITION'] as const;
+export type JoinedAs = (typeof JOINED_AS)[number];
+
 // One Asset in a Round's Scope Snapshot, with its current result.
 export interface ScopeEntry {
   id: string;
   asset_id: string;
-  joined_as: 'OPENING' | 'LATE_ADDITION';
+  joined_as: JoinedAs;
   // Null for an Asset that joined when the Round opened.
   late_addition: LateAddition | null;
   snapshot: ScopeSnapshot;
@@ -172,7 +176,7 @@ export interface ScopeEntryFilters {
   // A Discrepancy the current result notes (F006-T3, AV-19).
   discrepancy?: Discrepancy;
   // How the Asset joined the Round: at opening, or as a Late Addition (F006-T5, AV-21).
-  joined_as?: ScopeEntry['joined_as'];
+  joined_as?: JoinedAs;
   // The Location the Scope Snapshot holds, to walk the office room by room (P5).
   location_id?: string;
   limit: number;
@@ -200,7 +204,7 @@ const currentResultOf = (current: VerificationRevision | undefined): CurrentResu
 export interface AssetVerification extends CurrentResult {
   round: Pick<VerificationRoundSummary, 'id' | 'name' | 'fiscal_year' | 'start_date' | 'state'>;
   entry_id: string;
-  joined_as: ScopeEntry['joined_as'];
+  joined_as: JoinedAs;
   revision_count: number;
 }
 

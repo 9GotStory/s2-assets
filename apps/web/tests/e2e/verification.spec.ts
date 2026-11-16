@@ -485,10 +485,12 @@ test.describe.serial('Verification journeys: Real SPA -> Composed API -> Postgre
     // The Round page counts it, marks it with who added it and why, and filters by Late Addition.
     await page.goto(`${targetBaseUrl}/verification-rounds/${roundId}`);
     await expect(page.locator('[data-testid="verification-round-count-in-scope"]')).toContainText('2');
-    await expect(page.locator(`[data-testid="scope-entry-late-addition-${printer.id}"]`)).toHaveCount(0);
     const lateAddition = page.locator(`[data-testid="scope-entry-late-addition-${monitorId}"]`);
     await expect(lateAddition).toContainText('เพิ่มเข้ารอบภายหลัง โดย custodian_verification เมื่อ');
     await expect(lateAddition).toContainText('เหตุผล: ลงทะเบียนหลังเปิดรอบ\nพบที่ห้องประชุม');
+    // The Asset that joined when the Round opened is listed on the same page, with no Late Addition mark.
+    await expect(page.locator(`[data-testid="scope-entry-${printer.id}"]`)).toBeVisible();
+    await expect(page.locator(`[data-testid="scope-entry-late-addition-${printer.id}"]`)).toHaveCount(0);
     await page.locator('#scope-entry-joined-as-filter-LATE_ADDITION').click();
     await expect(page).toHaveURL(/joined_as=LATE_ADDITION/);
     await expect(page.locator('#scope-entry-list-count')).toContainText('พบ 1 รายการ');

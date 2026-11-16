@@ -7,7 +7,7 @@ import { isValidUuid, type CapabilityService } from '../services/capability.serv
 import { hasDisallowedControlChars } from '../services/control-characters.ts';
 import { RetryTokenConflictError } from '../services/service-errors.ts';
 import { ValidationError } from '../services/validation-error.ts';
-import { DISCREPANCIES, VerificationReadService, type Discrepancy } from '../services/verification-read.service.ts';
+import { DISCREPANCIES, JOINED_AS, VerificationReadService, type Discrepancy } from '../services/verification-read.service.ts';
 import {
   AnotherVerificationRoundOpenError,
   AssetAlreadyInVerificationScopeError,
@@ -38,7 +38,7 @@ const OpenVerificationRoundSchema = z
   .strict();
 
 // #125 Q11: what a Late Addition takes: a registered Asset not in the open Round, and why it is added.
-const AddLateSchema = z
+const LateAdditionSchema = z
   .object({
     asset_id: z.string(),
     reason: z.string(),
@@ -87,7 +87,7 @@ const ScopeEntryQuerySchema = z
       .optional(),
     result: z.enum(['FOUND', 'NOT_FOUND', 'NOT_YET_VERIFIED']).optional(),
     discrepancy: z.enum(DISCREPANCIES as [Discrepancy, ...Discrepancy[]]).optional(),
-    joined_as: z.enum(['OPENING', 'LATE_ADDITION']).optional(),
+    joined_as: z.enum(JOINED_AS).optional(),
     location_id: z
       .string()
       .refine(isValidUuid, 'must be a valid UUID')
@@ -158,14 +158,14 @@ export const verificationRoutes: FastifyPluginAsync<VerificationRoutesOptions> =
     if (!isValidUuid(id)) {
       return reply.status(400).send(invalidRoundId());
     }
-    const write = parseWrite(AddLateSchema, request);
+    const write = parseWrite(LateAdditionSchema, request);
     if ('refusal' in write) {
       return reply.status(400).send(write.refusal);
     }
 
     try {
       const { retry_token: _retryToken, ...input } = write.data;
-      return reply.status(201).send(await verificationService.addLate(request.user!.id, id.trim().toLowerCase(), input, { retryToken: write.retryToken }));
+      return reply.status(201).send(await verificationService.addLateAddition(request.user!.id, id.trim().toLowerCase(), input, { retryToken: write.retryToken }));
     } catch (err) {
       const refusal = refusalOf(err);
       if (!refusal) {

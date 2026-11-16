@@ -96,7 +96,7 @@ export interface VerificationCorrectionVersion {
 }
 
 // F006-T5 (#130): a Late Addition adds one registered Asset to the open Round, with a reason (#125 Q11, AV-21).
-export interface AddLateInput {
+export interface LateAdditionInput {
   asset_id: string;
   reason: string;
 }
@@ -365,33 +365,52 @@ const SNAPSHOT_COLUMNS = [
   'legacy_responsible_person_text',
 ] as const;
 
-// The registered Assets that pass `conditions`, as `s`, each with its id and its SNAPSHOT_COLUMNS now.
-const currentAssetsWhere = (conditions: string[]) => `(
+// How a scope entry joins its Round: when the Round opens, or as a Late Addition with its reason (#125 Q11).
+type Joining = { joined_as: 'OPENING'; reason: null } | { joined_as: 'LATE_ADDITION'; reason: string };
+
+/**
+ * Adds to a Round a scope entry for each registered Asset that passes `conditions`, over the Asset `a` and naming
+ * `params` from $5 on, with its identity and Current Assignment now (#125 Q4). An Asset already in the Round is left
+ * as it is: the unique scope entry decides, and an insert meeting an uncommitted one waits for it and, once that
+ * commits, adds nothing. Returns the entries added.
+ */
+async function insertScopeEntries(
+  client: pg.PoolClient,
+  roundId: string,
+  actorId: string,
+  joining: Joining,
+  conditions: string[],
+  params: unknown[]
+): Promise<{ id: string; version: number }[]> {
+  const res = await client.query(
+    `INSERT INTO verification_scope_entries (verification_round_id, asset_id, joined_as, reason, recorded_by, ${SNAPSHOT_COLUMNS.join(', ')})
+     SELECT $1, s.id, $3, $4, $2, ${SNAPSHOT_COLUMNS.map((column) => `s.${column}`).join(', ')}
+     FROM (
        SELECT a.id, a.asset_number, a.serial_number, a.name, a.category, ${assignmentSearch.columns}
        FROM assets a ${assignmentSearch.joins('a')}
        ${conditions.length > 0 ? `WHERE ${conditions.join(' AND ')}` : ''}
-     ) s`;
+     ) s
+     ON CONFLICT (verification_round_id, asset_id) DO NOTHING
+     RETURNING id, version`,
+    [roundId, actorId, joining.joined_as, joining.reason, ...params]
+  );
+  return res.rows;
+}
 
 /**
  * Takes the Scope Snapshot of an opening Round: each registered Asset that passes its filters, with its
  * identity and Current Assignment now (#125 Q3, Q4, P3). Returns how many Assets joined.
  */
 async function snapshotScope(client: pg.PoolClient, roundId: string, facts: OpeningFacts, actorId: string): Promise<number> {
-  const params: unknown[] = [roundId, actorId];
+  const params: unknown[] = [];
   const conditions: string[] = [];
   for (const { field, column } of FILTER_DIMENSIONS) {
     if (facts[field].length > 0) {
       params.push(facts[field]);
-      conditions.push(assignmentSearch.entryAmongFilter(column, `$${params.length}`));
+      conditions.push(assignmentSearch.entryAmongFilter(column, `$${4 + params.length}`));
     }
   }
-  const res = await client.query(
-    `INSERT INTO verification_scope_entries (verification_round_id, asset_id, joined_as, recorded_by, ${SNAPSHOT_COLUMNS.join(', ')})
-     SELECT $1, s.id, 'OPENING', $2, ${SNAPSHOT_COLUMNS.map((column) => `s.${column}`).join(', ')}
-     FROM ${currentAssetsWhere(conditions)}`,
-    params
-  );
-  return res.rowCount ?? 0;
+  return (await insertScopeEntries(client, roundId, actorId, { joined_as: 'OPENING', reason: null }, conditions, params)).length;
 }
 
 /**
@@ -484,7 +503,7 @@ export class VerificationService {
    * write that changes the Round waits for it. The unique scope entry decides between concurrent additions of one
    * Asset: an insert meeting an uncommitted one waits for it and, once that commits, adds nothing and is refused.
    */
-  async addLate(actorId: string, roundId: string, input: AddLateInput, { retryToken }: { retryToken: string }): Promise<VerificationScopeEntryVersion> {
+  async addLateAddition(actorId: string, roundId: string, input: LateAdditionInput, { retryToken }: { retryToken: string }): Promise<VerificationScopeEntryVersion> {
     if (!isValidUuid(input.asset_id)) {
       throw new ValidationError('asset_id must be a valid UUID');
     }
@@ -501,18 +520,11 @@ export class VerificationService {
         if (!(await assetExists(client, assetId))) {
           throw new VerificationTargetNotFoundError('Asset');
         }
-        const res = await client.query(
-          `INSERT INTO verification_scope_entries (verification_round_id, asset_id, joined_as, reason, recorded_by, ${SNAPSHOT_COLUMNS.join(', ')})
-           SELECT $1, s.id, 'LATE_ADDITION', $3, $4, ${SNAPSHOT_COLUMNS.map((column) => `s.${column}`).join(', ')}
-           FROM ${currentAssetsWhere(['a.id = $2'])}
-           ON CONFLICT (verification_round_id, asset_id) DO NOTHING
-           RETURNING id, version`,
-          [roundId, assetId, reason, actorId]
-        );
-        if (res.rows.length === 0) {
+        const [entry] = await insertScopeEntries(client, roundId, actorId, { joined_as: 'LATE_ADDITION', reason }, ['a.id = $5'], [assetId]);
+        if (!entry) {
           throw new AssetAlreadyInVerificationScopeError();
         }
-        return { verification_scope_entry_id: res.rows[0].id, version: res.rows[0].version };
+        return { verification_scope_entry_id: entry.id, version: entry.version };
       }
     );
   }

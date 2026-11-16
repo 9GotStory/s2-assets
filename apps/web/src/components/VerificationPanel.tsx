@@ -207,23 +207,22 @@ export const VerificationPanel: React.FC<VerificationPanelProps> = ({ assetId, p
           {canManage ? 'ครุภัณฑ์นี้ไม่อยู่ในรายการของรอบตรวจนี้' : 'ครุภัณฑ์นี้ไม่อยู่ในรายการของรอบตรวจนี้ กรุณาแจ้งผู้ดูแลพัสดุ'}
         </p>
       )}
-      {entry === null && canManage && openForm === null && (
+      {entry === null && canManage && (
         <div style={{ marginTop: '0.75rem' }}>
-          <button type="button" id="verification-late-addition-action" onClick={() => setOpenForm('LATE_ADDITION')} style={actionStyle}>
-            {LATE_ADDITION_LABEL}
-          </button>
-        </div>
-      )}
-      {entry === null && canManage && openForm === 'LATE_ADDITION' && (
-        <div style={{ marginTop: '0.75rem' }}>
-          <VerificationLateAdditionForm
-            assetId={assetId}
-            round={round}
-            csrfToken={csrfToken}
-            onAdded={afterSave}
-            onClose={() => setOpenForm(null)}
-            onPermissionRevoked={onPermissionRevoked}
-          />
+          {openForm === 'LATE_ADDITION' ? (
+            <VerificationLateAdditionForm
+              assetId={assetId}
+              round={round}
+              csrfToken={csrfToken}
+              onAdded={afterSave}
+              onClose={() => setOpenForm(null)}
+              onPermissionRevoked={onPermissionRevoked}
+            />
+          ) : (
+            <button type="button" id="verification-late-addition-action" onClick={() => setOpenForm('LATE_ADDITION')} style={actionStyle}>
+              {LATE_ADDITION_LABEL}
+            </button>
+          )}
         </div>
       )}
       {current && <RevisionFacts revision={current} testId="verification-panel-current" />}
