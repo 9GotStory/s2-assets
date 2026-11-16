@@ -70,6 +70,7 @@ export interface AssetDetailResponse {
   // F006-T2: the open Round's "ตรวจประจำปี" panel, null while no Round is open, and whether the viewer holds 'verification:record'.
   verification?: AssetVerificationPanel | null;
   can_record_verification?: boolean;
+  can_correct_verification?: boolean;
 }
 
 export const AssetDetail: React.FC = () => {
@@ -790,6 +791,7 @@ const AssetDetailContent: React.FC = () => {
             assetId={asset.id}
             panel={assetData.verification}
             canRecord={Boolean(assetData.can_record_verification && !isPermissionRevoked)}
+            canCorrect={Boolean(assetData.can_correct_verification && !isPermissionRevoked)}
             csrfToken={csrfToken}
             onRecorded={async () => {
               setRefreshError(null);

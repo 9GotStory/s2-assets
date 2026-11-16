@@ -135,6 +135,7 @@ describe('Open a Verification Round (Seam A - F006-T1)', () => {
         result: 'NOT_YET_VERIFIED',
         current: null,
         version: 1,
+        revision_count: 0,
       });
     });
 

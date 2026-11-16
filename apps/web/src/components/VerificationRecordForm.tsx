@@ -10,6 +10,7 @@ import {
   OBSERVED_LOCATION_LABEL,
   RECORD_VERIFICATION_LABEL,
   RESULT_LABELS,
+  REVERIFICATION_LABEL,
   VERIFICATION_DATE_LABEL,
   recordedByText,
   resultText,
@@ -22,7 +23,11 @@ export interface VerificationRecordFormProps {
   assetId: string;
   round: OpenVerificationRound;
   csrfToken: string | null;
+  // A Re-verification names the current revision it saw (F006-T4); a first result names none.
+  expectedRevisionId?: string;
   onRecorded: () => Promise<void>;
+  // Closes a Re-verification form; a first-result form clears instead.
+  onClose?: () => void;
   onPermissionRevoked?: (statusCode?: number) => void;
 }
 
@@ -38,14 +43,31 @@ const RecordedMeanwhile: React.FC<{ current: VerificationRevision }> = ({ curren
   </>
 );
 
+// The current result that changed while a Re-verification form was open: a newer result, or none after a void (#125 Q20).
+const ResultChanged: React.FC<{ current: VerificationRevision | null }> = ({ current }) => (
+  <>
+    บันทึกไม่ได้ เพราะผลตรวจล่าสุดของครุภัณฑ์นี้เปลี่ยนไปแล้ว:{' '}
+    {current ? (
+      <>
+        {resultText(current.result, current.condition)} {VERIFICATION_DATE_LABEL} <time dateTime={current.verification_date}>{thaiDate(current.verification_date)}</time> บันทึกโดย{' '}
+        {recordedByText(current)}
+      </>
+    ) : (
+      RESULT_LABELS.NOT_YET_VERIFIED
+    )}{' '}
+    กรุณาโหลดหน้าใหม่
+  </>
+);
+
 /**
  * "บันทึกผลตรวจ": records an Asset's first result in the open Round, Found with its Condition or Not Found
  * (F006-T2, #125 Q6, Q8). When Found, it takes the Observed Location from the Location Reference List, left out
  * when it matched, and the two Discrepancies Verification Staff tick (F006-T3, Q7). No photo or GPS location is
  * asked for (AV-10, AV-11); the server derives the Loan and Repair context, the assignment it compares with and
- * the Discrepancies that follow, and decides again everything this form checks.
+ * the Discrepancies that follow, and decides again everything this form checks. As "ตรวจซ้ำ" it opens empty, with
+ * nothing carried over, and records a Re-verification over the current revision it saw (F006-T4, #125 Q20).
  */
-export const VerificationRecordForm: React.FC<VerificationRecordFormProps> = ({ assetId, round, csrfToken, onRecorded, onPermissionRevoked }) => {
+export const VerificationRecordForm: React.FC<VerificationRecordFormProps> = ({ assetId, round, csrfToken, expectedRevisionId, onRecorded, onClose, onPermissionRevoked }) => {
   const [result, setResult] = useState<RecordedResult | ''>('');
   const [condition, setCondition] = useState<LoanCondition | ''>('');
   const [verificationDate, setVerificationDate] = useState(bangkokToday);
@@ -98,12 +120,13 @@ export const VerificationRecordForm: React.FC<VerificationRecordFormProps> = ({ 
     data_mismatch_note: found && dataMismatch ? dataMismatchNote.trim() : null,
     verification_date: verificationDate,
     note: note.trim() || null,
+    ...(expectedRevisionId ? { expected_revision_id: expectedRevisionId } : {}),
   });
 
   return (
     <LoanSaveForm
       idPrefix="verification-record"
-      heading={RECORD_VERIFICATION_LABEL}
+      heading={expectedRevisionId ? REVERIFICATION_LABEL : RECORD_VERIFICATION_LABEL}
       saveUrl={`/verification-rounds/${round.id}/assets/${assetId}/verifications`}
       csrfToken={csrfToken}
       requestError={requestError}
@@ -111,6 +134,9 @@ export const VerificationRecordForm: React.FC<VerificationRecordFormProps> = ({ 
       refusedList={(body) => {
         if (body?.code === 'ASSET_ALREADY_VERIFIED') {
           return <RecordedMeanwhile current={body.current as VerificationRevision} />;
+        }
+        if (body?.code === 'VERIFICATION_RESULT_CHANGED') {
+          return <ResultChanged current={body.current as VerificationRevision | null} />;
         }
         if (body?.code === 'VERIFICATION_ROUND_NOT_OPEN') {
           return <>บันทึกไม่ได้ เพราะรอบตรวจนี้ไม่ได้เปิดอยู่แล้ว กรุณาโหลดหน้าใหม่</>;
@@ -121,6 +147,10 @@ export const VerificationRecordForm: React.FC<VerificationRecordFormProps> = ({ 
       refusedMessage="ไม่สามารถบันทึกผลตรวจได้"
       onSaved={onRecorded}
       onCancel={() => {
+        if (onClose) {
+          onClose();
+          return;
+        }
         setResult('');
         setCondition('');
         setVerificationDate(bangkokToday());

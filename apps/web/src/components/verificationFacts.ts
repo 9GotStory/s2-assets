@@ -1,5 +1,5 @@
-// What the API answers about Verification Rounds (F006-T1), Asset Verifications (F006-T2) and their
-// Discrepancies (F006-T3), and their labels from GLOSSARY.md (#125).
+// What the API answers about Verification Rounds (F006-T1), Asset Verifications (F006-T2), their
+// Discrepancies (F006-T3) and their revisions (F006-T4), and their labels from GLOSSARY.md (#125).
 
 import type { PermanentAssignment, ReferenceEntry } from './ReferenceContextFields';
 import { thaiDate } from './assignmentFacts';
@@ -51,6 +51,21 @@ export interface VerificationRevision {
   recorded_by: string;
   recorded_by_username: string | null;
   recorded_at: string;
+}
+
+// The Verification Correction that voided a revision (F006-T4, #125 Q18).
+export interface VerificationCorrection {
+  id: string;
+  reason: string;
+  recorded_by: string;
+  recorded_by_username: string | null;
+  recorded_at: string;
+}
+
+// One revision as an entry's revisions list it (GET /verification-rounds/:id/assets/:assetId/verifications).
+export interface ListedVerificationRevision extends VerificationRevision {
+  is_voided: boolean;
+  correction: VerificationCorrection | null;
 }
 
 export interface VerificationRoundSummary {
@@ -108,6 +123,8 @@ export interface ScopeEntry {
   result: VerificationResult;
   current: VerificationRevision | null;
   version: number;
+  // Voided revisions included.
+  revision_count: number;
 }
 
 export interface ScopeEntryPage {
@@ -140,6 +157,7 @@ export interface AssetVerification {
   round: Pick<VerificationRoundSummary, 'id' | 'name' | 'fiscal_year' | 'start_date' | 'state'>;
   entry_id: string;
   joined_as: 'OPENING' | 'LATE_ADDITION';
+  revision_count: number;
   result: VerificationResult;
   current: VerificationRevision | null;
 }
@@ -156,6 +174,8 @@ export const START_DATE_LABEL = 'วันที่เริ่มตรวจ';
 export const WHOLE_REGISTER_LABEL = 'ทั้งทะเบียน';
 export const OBSERVED_LOCATION_LABEL = 'สถานที่ที่พบ';
 export const DISCREPANCY_LABEL = 'ข้อแตกต่าง';
+export const REVERIFICATION_LABEL = 'ตรวจซ้ำ';
+export const VERIFICATION_REVISIONS_LABEL = 'ประวัติผลตรวจ';
 
 export const DISCREPANCY_LABELS: Record<Discrepancy, string> = {
   LOCATION_MISMATCH: 'Location ไม่ตรงทะเบียน',

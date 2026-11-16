@@ -3,6 +3,7 @@ import { Link } from 'react-router';
 import { useQuery } from '@tanstack/react-query';
 import { thaiDate } from './assignmentFacts';
 import { RecordingContextLine, RevisionDiscrepancies } from './VerificationPanel';
+import { VerificationRevisionList } from './VerificationRevisionList';
 import {
   ASSET_VERIFICATIONS_LABEL,
   ROUND_STATE_LABELS,
@@ -24,7 +25,7 @@ export interface AssetVerificationSectionProps {
 
 /**
  * "ผลตรวจประจำปี": the Asset's current result in every Round it belongs to, newest first (F006-T2, #125 Q21),
- * with its Observed Location and Discrepancies (F006-T3).
+ * with its Observed Location and Discrepancies (F006-T3), and its revisions (F006-T4).
  */
 export const AssetVerificationSection: React.FC<AssetVerificationSectionProps> = ({ assetId, actorId, dataUpdatedAt, onPermissionRevoked }) => {
   const verifications = useQuery<AssetVerification[], Error & { status?: number }>({
@@ -67,7 +68,7 @@ export const AssetVerificationSection: React.FC<AssetVerificationSectionProps> =
           </p>
         ) : (
           <ol data-testid="asset-verifications" style={{ listStyle: 'none', margin: 0, padding: 0 }}>
-            {verifications.data.map(({ round, entry_id: entryId, result, current }) => {
+            {verifications.data.map(({ round, entry_id: entryId, revision_count: revisionCount, result, current }) => {
               return (
                 <li key={entryId} data-testid={`asset-verification-${round.id}`} style={{ borderTop: '1px solid #e5e7eb', padding: '0.75rem 0', fontSize: '0.875rem', color: '#374151', overflowWrap: 'anywhere' }}>
                   <div>
@@ -90,6 +91,16 @@ export const AssetVerificationSection: React.FC<AssetVerificationSectionProps> =
                     <div style={{ color: '#92400e' }}>
                       ขณะตรวจ: <RecordingContextLine context={current} />
                     </div>
+                  )}
+                  {revisionCount > 0 && (
+                    <VerificationRevisionList
+                      roundId={round.id}
+                      assetId={assetId}
+                      revisionCount={revisionCount}
+                      actorId={actorId}
+                      dataUpdatedAt={dataUpdatedAt}
+                      onPermissionRevoked={onPermissionRevoked}
+                    />
                   )}
                 </li>
               );

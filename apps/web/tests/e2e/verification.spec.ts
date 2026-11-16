@@ -24,7 +24,7 @@ const migrationFolder = path.resolve(__dirname, '../../../../packages/db/src/mig
 
 // F006-T1 (#126): an Asset Custodian opens a Verification Round and sees its Scope Snapshot; a Read-only User
 // sees the Round with no action. F006-T2 (#127): Verification Staff record a result from the Asset page a QR
-// label opens, at a phone viewport.
+// label opens, at a phone viewport. F006-T4 (#129): a Re-verification from the panel and a Verification Correction.
 test.describe.serial('Verification journeys: Real SPA -> Composed API -> PostgreSQL (Seam B)', () => {
   let container: StartedPostgreSqlContainer;
   let pool: pg.Pool;
@@ -365,5 +365,78 @@ test.describe.serial('Verification journeys: Real SPA -> Composed API -> Postgre
     await expect(page).toHaveURL(new RegExp(`discrepancy=LOCATION_MISMATCH&location_id=${office.id}`));
     await expect(page.locator('[data-testid^="scope-entry-result-"]')).toHaveCount(1);
     await expect(page.locator(`[data-testid="scope-entry-${scanner.id}"]`)).toBeVisible();
+  });
+
+  test('Journey F006-T4.1: Verification Staff re-verify an Asset as Not Found from the panel that shows its latest result; the revisions show both; an Asset Custodian voids the new result and the earlier one is current again', async ({ page, context }) => {
+    // Test only, until F006-T6 (#131) closes a Round through the API: the Round of an earlier journey must not stay open (#125 Q17).
+    await pool.query(`UPDATE verification_rounds SET state = 'CLOSED' WHERE state = 'OPEN'`);
+    const office = await referenceService.create('locations', adminUserId, 'ห้องพัสดุ E2E ตรวจซ้ำ');
+    const { asset: laptop } = await assetService.registerAsset(custodianUserId, { name: 'โน้ตบุ๊ก E2E ตรวจซ้ำ', asset_number: 'E2E-VR-301', location_id: office.id, effective_date: '2026-01-05' } as any);
+    const { verification_round_id: roundId } = await verificationService.open(
+      custodianUserId,
+      { name: 'ตรวจสอบพัสดุประจำปี 2569 ห้องพัสดุ', fiscal_year: 2569, location_ids: [office.id] },
+      { retryToken: crypto.randomUUID() }
+    );
+    await verificationService.record(custodianUserId, roundId, laptop.id, { result: 'FOUND', condition: 'NORMAL', note: 'ครั้งแรก' }, { retryToken: crypto.randomUUID() });
+    const revisions = page.locator(`[data-testid="verification-revisions-${roundId}-${laptop.id}"]`);
+
+    // The panel shows the latest result and "ตรวจซ้ำ"; Verification Staff are offered no void.
+    await loginAs(context, staffUserId);
+    await page.goto(`${targetBaseUrl}/assets/${laptop.id}`);
+    await expect(page.locator('[data-testid="verification-panel-current-result"]')).toHaveText('พบ · สภาพปกติ');
+    await expect(page.locator('#verification-record-form')).toHaveCount(0);
+    await expect(page.locator('#verification-void-action')).toHaveCount(0);
+    await page.locator('#verification-reverify-action').click();
+
+    // "ตรวจซ้ำ" opens an empty form: nothing is carried over from the earlier result.
+    await expect(page.locator('#verification-record-form').getByRole('heading', { name: 'ตรวจซ้ำ' })).toBeVisible();
+    await expect(page.locator('#verification-record-result-FOUND')).not.toBeChecked();
+    await expect(page.locator('#verification-record-result-NOT_FOUND')).not.toBeChecked();
+    await expect(page.locator('#verification-record-note')).toHaveValue('');
+    await page.locator('#verification-record-result-NOT_FOUND').check();
+    await page.locator('#verification-record-submit').click();
+
+    // The panel shows the new result, and the revisions show both, newest first.
+    await expect(page.locator('[data-testid="verification-panel-current-result"]')).toHaveText('ไม่พบในการตรวจ');
+    await expect(page.locator('[data-testid="verification-panel-current-recorded-by"]')).toHaveText('staff_verification');
+    await expect(page.locator('#verification-record-form')).toHaveCount(0);
+    await expect(revisions.locator('summary')).toHaveText('ประวัติผลตรวจ (2 ครั้ง)');
+    await revisions.locator('summary').click();
+    await expect(revisions.locator('[data-testid$="-facts-result"]')).toHaveText(['ไม่พบในการตรวจ', 'พบ · สภาพปกติ']);
+    await expect(revisions.locator('[data-testid$="-facts-recorded-by"]')).toHaveText(['staff_verification', 'custodian_verification']);
+    await expect(revisions.locator('[data-testid$="-voided"]')).toHaveCount(0);
+
+    // An Asset Custodian voids the new result with a reason; it stays struck through and the earlier result is current again.
+    await switchActor(page, context, custodianUserId);
+    await page.goto(`${targetBaseUrl}/assets/${laptop.id}`);
+    await page.locator('#verification-void-action').click();
+    await page.locator('#verification-void-submit').click();
+    await expect(page.locator('[data-testid="verification-void-form-error"]')).toContainText('เหตุผล');
+    await page.locator('#verification-void-reason').fill('บันทึกผิดเครื่อง');
+    await page.locator('#verification-void-submit').click();
+    await expect(page.locator('[data-testid="verification-panel-current-result"]')).toHaveText('พบ · สภาพปกติ');
+    await expect(page.locator('#verification-void-form')).toHaveCount(0);
+    await revisions.locator('summary').click();
+    await expect(revisions.locator(`[data-testid="verification-revisions-${roundId}-${laptop.id}-2-voided"]`)).toHaveText('ยกเลิกแล้ว');
+    await expect(revisions.locator(`[data-testid="verification-revisions-${roundId}-${laptop.id}-2-correction"]`)).toContainText('ยกเลิกโดย custodian_verification');
+    await expect(revisions.locator(`[data-testid="verification-revisions-${roundId}-${laptop.id}-2-correction"]`)).toContainText('เหตุผล: บันทึกผิดเครื่อง');
+    await expect(revisions.locator(`[data-testid="verification-revisions-${roundId}-${laptop.id}-2-facts"]`).locator('xpath=..')).toHaveCSS('text-decoration-line', 'line-through');
+    await expect(revisions.locator(`[data-testid="verification-revisions-${roundId}-${laptop.id}-1-voided"]`)).toHaveCount(0);
+
+    // The Round page counts the earlier result again, and its row opens the same revisions.
+    await page.goto(`${targetBaseUrl}/verification-rounds/${roundId}`);
+    await expect(page.locator('[data-testid="verification-round-count-found"]')).toContainText('1');
+    await expect(page.locator(`[data-testid="scope-entry-result-${laptop.id}"]`)).toHaveText('พบ · สภาพปกติ');
+    const rowRevisions = page.locator(`[data-testid="scope-entry-${laptop.id}"] [data-testid="verification-revisions-${roundId}-${laptop.id}"]`);
+    await rowRevisions.locator('summary').click();
+    await expect(rowRevisions.locator('[data-testid$="-facts-result"]')).toHaveText(['ไม่พบในการตรวจ', 'พบ · สภาพปกติ']);
+    await expect(rowRevisions.locator('[data-testid$="-voided"]')).toHaveCount(1);
+
+    // A Read-only User sees the result with neither action.
+    await switchActor(page, context, readonlyUserId);
+    await page.goto(`${targetBaseUrl}/assets/${laptop.id}`);
+    await expect(page.locator('[data-testid="verification-panel-current-result"]')).toHaveText('พบ · สภาพปกติ');
+    await expect(page.locator('#verification-reverify-action')).toHaveCount(0);
+    await expect(page.locator('#verification-void-action')).toHaveCount(0);
   });
 });

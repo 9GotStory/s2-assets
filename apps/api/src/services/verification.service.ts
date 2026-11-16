@@ -77,6 +77,20 @@ export interface RecordVerificationInput {
   note?: string | null;
   // Today when left out (Q8).
   verification_date?: string | null;
+  // F006-T4 (#129): a Re-verification names the current revision it saw; a first result names none (AV-23, Q20).
+  expected_revision_id?: string | null;
+}
+
+// F006-T4 (#129): a Verification Correction voids the current revision the user saw, with a reason (#125 Q18).
+export interface CorrectVerificationInput {
+  verification_revision_id: string;
+  reason: string;
+}
+
+// What a Verification Correction answers: its record and the scope entry's version after it.
+export interface VerificationCorrectionVersion {
+  verification_correction_id: string;
+  version: number;
 }
 
 // What recording a result answers: its revision and the version a later write on the result must expect.
@@ -121,12 +135,41 @@ export class AssetAlreadyVerifiedError extends Error {
   }
 }
 
-/** A Round or an Asset that does not exist. */
+/**
+ * A Re-verification or a Verification Correction whose seen revision is no longer the current one is refused,
+ * naming the latest result, or none when the Asset is Not Yet Verified again (#125 AV-23, Q18, Q20).
+ */
+export class VerificationResultChangedError extends Error {
+  statusCode = 409;
+  code = 'VERIFICATION_RESULT_CHANGED';
+  current: VerificationRevision | null;
+
+  constructor(current: VerificationRevision | null) {
+    super('The current result of the Asset has changed in this Verification Round');
+    this.name = 'VerificationResultChangedError';
+    this.current = current;
+  }
+}
+
+/** A revision voided already is not voided again (#125 Q18). The answer names the latest result, or none. */
+export class VerificationRevisionAlreadyVoidedError extends Error {
+  statusCode = 409;
+  code = 'VERIFICATION_REVISION_ALREADY_VOIDED';
+  current: VerificationRevision | null;
+
+  constructor(current: VerificationRevision | null) {
+    super('The Verification Revision is voided already');
+    this.name = 'VerificationRevisionAlreadyVoidedError';
+    this.current = current;
+  }
+}
+
+/** A Round, an Asset, or a revision of the Asset in the Round, that does not exist. */
 export class VerificationTargetNotFoundError extends Error {
   statusCode = 404;
   code = 'NOT_FOUND';
 
-  constructor(what: 'Verification Round' | 'Asset') {
+  constructor(what: 'Verification Round' | 'Asset' | 'Verification Revision') {
     super(`${what} not found`);
     this.name = 'VerificationTargetNotFoundError';
   }
@@ -143,6 +186,8 @@ interface ResultFacts {
   note: string | null;
   // Null for today: a replay on a later day still matches.
   verification_date: string | null;
+  // Null for a first result.
+  expected_revision_id: string | null;
 }
 
 const normalizeResult = (input: RecordVerificationInput, today: string): ResultFacts => {
@@ -183,6 +228,10 @@ const normalizeResult = (input: RecordVerificationInput, today: string): ResultF
   if (date !== null && date > today) {
     throw new ValidationError(`verification_date must not be after today (${today}, Asia/Bangkok)`);
   }
+  const expectedRevisionId = input.expected_revision_id ?? null;
+  if (expectedRevisionId !== null && !isValidUuid(expectedRevisionId)) {
+    throw new ValidationError('expected_revision_id must be a valid UUID');
+  }
   return {
     result: input.result,
     condition,
@@ -191,6 +240,7 @@ const normalizeResult = (input: RecordVerificationInput, today: string): ResultF
     data_mismatch_note: dataMismatchNote,
     note: normalizeText(input.note, 'note', VERIFICATION_NOTE_MAX_LENGTH, ''),
     verification_date: date,
+    expected_revision_id: expectedRevisionId?.trim().toLowerCase() ?? null,
   };
 };
 
@@ -302,9 +352,44 @@ async function snapshotScope(client: pg.PoolClient, roundId: string, facts: Open
 }
 
 /**
+ * Locks an open Round in share mode, so that results and Verification Corrections run beside each other and wait
+ * for a write that changes the Round. Refuses a Round that is not there or not open (#125 AV-17).
+ */
+async function lockOpenRound(client: pg.PoolClient, roundId: string): Promise<{ start_date: string }> {
+  const round = await client.query(`SELECT state, to_char(start_date, 'YYYY-MM-DD') AS start_date FROM verification_rounds WHERE id = $1 FOR SHARE`, [roundId]);
+  if (round.rows.length === 0) {
+    throw new VerificationTargetNotFoundError('Verification Round');
+  }
+  if (round.rows[0].state !== 'OPEN') {
+    throw new VerificationRoundNotOpenError();
+  }
+  return { start_date: round.rows[0].start_date };
+}
+
+/**
+ * Locks an Asset's scope entry in a Round for update, after its Round, and reads its current result under the
+ * lock: concurrent results and Verification Corrections of one Asset serialize, and the later finds the earlier.
+ */
+async function lockScopeEntry(client: pg.PoolClient, roundId: string, assetId: string): Promise<{ id: string; version: number; current: VerificationRevision | null }> {
+  const scoped = await client.query('SELECT id FROM verification_scope_entries WHERE verification_round_id = $1 AND asset_id = $2', [roundId, assetId]);
+  if (scoped.rows.length === 0) {
+    throw (await assetExists(client, assetId)) ? new AssetNotInVerificationScopeError() : new VerificationTargetNotFoundError('Asset');
+  }
+  const id: string = scoped.rows[0].id;
+  const entry = await client.query('SELECT version FROM verification_scope_entries WHERE id = $1 FOR UPDATE', [id]);
+  return { id, version: entry.rows[0].version, current: (await currentRevisionsOf(client, [id])).get(id) ?? null };
+}
+
+// The scope entry's next version, written: every change of its current result moves it.
+async function incrementEntryVersion(client: pg.PoolClient, entryId: string, version: number): Promise<number> {
+  await client.query('UPDATE verification_scope_entries SET version = $2 WHERE id = $1', [entryId, version + 1]);
+  return version + 1;
+}
+
+/**
  * F006-T1 (#126): opening a Verification Round over the whole register or chosen OrganizationUnits and
  * Locations, with its Scope Snapshot. F006-T2 (#127): recording an Asset's first result in the open Round.
- * The reads are in verification-read.service.ts.
+ * F006-T4 (#129): a Re-verification, and a Verification Correction that voids the current result. The reads are in verification-read.service.ts.
  */
 export class VerificationService {
   private readonly db: pg.Pool | any;
@@ -350,43 +435,37 @@ export class VerificationService {
   }
 
   /**
-   * Records an Asset's first result in a Round (#125 AV-05, AV-06, AV-23). The Round row is locked in share
-   * mode, then the scope entry for update, so concurrent first results for one Asset serialize and the later
-   * one finds the earlier. The server derives the Permanent Assignment in effect on the Verification Date and
+   * Records an Asset's first result in a Round (#125 AV-05, AV-06, AV-23), or a Re-verification over the current
+   * revision it saw, which becomes the earlier revision and stays unchanged (F006-T4, AV-12, AV-13, Q20). The
+   * Round row is locked in share mode, then the scope entry for update, so concurrent results for one Asset
+   * serialize and the later one finds the earlier. The server derives the Permanent Assignment in effect on the Verification Date and
    * the Loan and Repair context in the same transaction; neither refuses a result, and nothing but the
    * revision and the entry's version is written (AV-09, AV-14).
    */
   async record(actorId: string, roundId: string, assetId: string, input: RecordVerificationInput, { retryToken }: { retryToken: string }): Promise<VerificationRevisionVersion> {
     const today = bangkokDate(this.clock());
-    const facts = normalizeResult(input, today);
+    const { expected_revision_id: expectedRevisionId, ...facts } = normalizeResult(input, today);
+    // A first result keeps the fingerprint it had before Re-verification existed, so its replay still matches.
+    const payload = { version: 1, verification_round_id: roundId, asset_id: assetId, ...facts, ...(expectedRevisionId ? { expected_revision_id: expectedRevisionId } : {}) };
     return commitOnce(
       this.db,
-      { actorId, operation: 'verification:record', retryToken, payload: { version: 1, verification_round_id: roundId, asset_id: assetId, ...facts }, explicitContinuation: false },
+      { actorId, operation: 'verification:record', retryToken, payload, explicitContinuation: false },
       async (client) => {
-        const round = await client.query(`SELECT state, to_char(start_date, 'YYYY-MM-DD') AS start_date FROM verification_rounds WHERE id = $1 FOR SHARE`, [roundId]);
-        if (round.rows.length === 0) {
-          throw new VerificationTargetNotFoundError('Verification Round');
-        }
-        if (round.rows[0].state !== 'OPEN') {
-          throw new VerificationRoundNotOpenError();
-        }
+        const { start_date: startDate } = await lockOpenRound(client, roundId);
         const verificationDate = facts.verification_date ?? today;
-        if (verificationDate < round.rows[0].start_date) {
-          throw new ValidationError(`verification_date must not be before the start date of the Verification Round (${round.rows[0].start_date})`);
+        if (verificationDate < startDate) {
+          throw new ValidationError(`verification_date must not be before the start date of the Verification Round (${startDate})`);
         }
         if (facts.observed_location_id !== null && (await findUnassignableEntry(client, { location_id: facts.observed_location_id })) !== null) {
           throw new ValidationError('observed_location_id must name an active entry of the Location Reference List');
         }
 
-        const scoped = await client.query('SELECT id FROM verification_scope_entries WHERE verification_round_id = $1 AND asset_id = $2', [roundId, assetId]);
-        if (scoped.rows.length === 0) {
-          throw (await assetExists(client, assetId)) ? new AssetNotInVerificationScopeError() : new VerificationTargetNotFoundError('Asset');
-        }
-        const entryId: string = scoped.rows[0].id;
-        const entry = await client.query('SELECT version FROM verification_scope_entries WHERE id = $1 FOR UPDATE', [entryId]);
-        const current = (await currentRevisionsOf(client, [entryId])).get(entryId);
-        if (current) {
+        const { id: entryId, version: entryVersion, current } = await lockScopeEntry(client, roundId, assetId);
+        if (expectedRevisionId === null && current) {
           throw new AssetAlreadyVerifiedError(current);
+        }
+        if (expectedRevisionId !== null && current?.id !== expectedRevisionId) {
+          throw new VerificationResultChangedError(current);
         }
 
         const inEffect = (await readAssignmentsAt(client, [assetId], verificationDate)).get(assetId)!;
@@ -427,9 +506,55 @@ export class VerificationService {
             actorId,
           ]
         );
-        const version = entry.rows[0].version + 1;
-        await client.query('UPDATE verification_scope_entries SET version = $2 WHERE id = $1', [entryId, version]);
+        const version = await incrementEntryVersion(client, entryId, entryVersion);
         return { verification_revision_id: revision.rows[0].id, revision_number: revision.rows[0].revision_number, version };
+      }
+    );
+  }
+
+  /**
+   * Voids the current revision of an Asset in an open Round, with a reason (#125 Q18, AV-24). The revision stays,
+   * voided, with its Verification Correction; the latest revision not voided becomes the current result again, or
+   * the Asset is Not Yet Verified. It locks as a result does, so a void and a Re-verification of one Asset
+   * serialize, and a void of a revision that is no longer current is refused, naming the latest result. A
+   * Repair Record or Reassignment citing the revision is left as it is (P1).
+   */
+  async correct(actorId: string, roundId: string, assetId: string, input: CorrectVerificationInput, { retryToken }: { retryToken: string }): Promise<VerificationCorrectionVersion> {
+    if (!isValidUuid(input.verification_revision_id)) {
+      throw new ValidationError('verification_revision_id must be a valid UUID');
+    }
+    const revisionId = input.verification_revision_id.trim().toLowerCase();
+    const reason = normalizeText(input.reason, 'reason', VERIFICATION_NOTE_MAX_LENGTH, '');
+    if (reason === null) {
+      throw new ValidationError('A Verification Correction needs a reason');
+    }
+    return commitOnce(
+      this.db,
+      {
+        actorId,
+        operation: 'verification:correct',
+        retryToken,
+        payload: { version: 1, verification_round_id: roundId, asset_id: assetId, verification_revision_id: revisionId, reason },
+        explicitContinuation: false,
+      },
+      async (client) => {
+        await lockOpenRound(client, roundId);
+        const { id: entryId, version: entryVersion, current } = await lockScopeEntry(client, roundId, assetId);
+        if (current?.id !== revisionId) {
+          const target = await client.query('SELECT is_voided FROM verification_revisions WHERE id = $1 AND verification_scope_entry_id = $2', [revisionId, entryId]);
+          if (target.rows.length === 0) {
+            throw new VerificationTargetNotFoundError('Verification Revision');
+          }
+          throw target.rows[0].is_voided ? new VerificationRevisionAlreadyVoidedError(current) : new VerificationResultChangedError(current);
+        }
+
+        const correction = await client.query(`INSERT INTO verification_corrections (verification_revision_id, reason, recorded_by) VALUES ($1, $2, $3) RETURNING id`, [
+          revisionId,
+          reason,
+          actorId,
+        ]);
+        await client.query('UPDATE verification_revisions SET is_voided = true WHERE id = $1', [revisionId]);
+        return { verification_correction_id: correction.rows[0].id, version: await incrementEntryVersion(client, entryId, entryVersion) };
       }
     );
   }

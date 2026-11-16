@@ -750,6 +750,7 @@ export const assetRoutes: FastifyPluginAsync<AssetRoutesOptions> = async (
       let canRecordLoan = false;
       let canRecordRepair = false;
       let canRecordVerification = false;
+      let canCorrectVerification = false;
       let canViewAcquisition = false;
       if (request.user && capabilityService) {
         canCorrect = await capabilityService.hasCapability(request.user.id, 'asset:correct');
@@ -758,6 +759,7 @@ export const assetRoutes: FastifyPluginAsync<AssetRoutesOptions> = async (
         canRecordLoan = await capabilityService.hasCapability(request.user.id, 'loan:record');
         canRecordRepair = await capabilityService.hasCapability(request.user.id, 'repair:record');
         canRecordVerification = await capabilityService.hasCapability(request.user.id, 'verification:record');
+        canCorrectVerification = await capabilityService.hasCapability(request.user.id, 'verification:correct');
         canViewAcquisition = await capabilityService.hasCapability(request.user.id, 'acquisition:view');
       }
 
@@ -795,6 +797,8 @@ export const assetRoutes: FastifyPluginAsync<AssetRoutesOptions> = async (
         // F006-T2 (#127): the "ตรวจประจำปี" panel for the open Round, and whether the viewer may record a result.
         verification: await options.verificationReadService.panelOf(id.trim().toLowerCase()),
         can_record_verification: canRecordVerification,
+        // F006-T4 (#129): whether the viewer may void the panel's current result.
+        can_correct_verification: canCorrectVerification,
       });
     }
   );

@@ -73,6 +73,21 @@ export interface VerificationRevision {
   recorded_at: string;
 }
 
+// The Verification Correction that voided a revision (F006-T4, #125 Q18).
+export interface VerificationCorrection {
+  id: string;
+  reason: string;
+  recorded_by: string;
+  recorded_by_username: string | null;
+  recorded_at: string;
+}
+
+// One revision as an entry's revisions list it: voided or not, with the Verification Correction that voided it.
+export interface ListedVerificationRevision extends VerificationRevision {
+  is_voided: boolean;
+  correction: VerificationCorrection | null;
+}
+
 // A Round as the Round list shows it (#125 AV-17).
 export interface VerificationRoundSummary {
   id: string;
@@ -135,6 +150,8 @@ export interface ScopeEntry {
   current: VerificationRevision | null;
   // The version a write on the current result expects (#125 AV-23).
   version: number;
+  // How many revisions the entry has, voided ones too (F006-T4).
+  revision_count: number;
 }
 
 export interface ScopeEntryFilters {
@@ -172,6 +189,7 @@ export interface AssetVerification extends CurrentResult {
   round: Pick<VerificationRoundSummary, 'id' | 'name' | 'fiscal_year' | 'start_date' | 'state'>;
   entry_id: string;
   joined_as: ScopeEntry['joined_as'];
+  revision_count: number;
 }
 
 export interface ScopeEntryPage {
@@ -205,6 +223,9 @@ const CURRENT_REVISION = `LEFT JOIN LATERAL (
          WHERE v.verification_scope_entry_id = e.id AND NOT v.is_voided
          ORDER BY v.revision_number DESC LIMIT 1
        ) cur ON true`;
+
+// How many revisions the scope entry aliased `e` has, voided ones too.
+const revisionCount = (e: string) => `(SELECT count(*)::int FROM verification_revisions rc WHERE rc.verification_scope_entry_id = ${e}.id) AS revision_count`;
 
 // A Round's columns, for a row aliased `r` joined with ROUND_COUNTS.
 const ROUND_COLUMNS = `r.id, r.name, r.fiscal_year, to_char(r.start_date, 'YYYY-MM-DD') AS start_date, r.state,
@@ -282,24 +303,30 @@ export async function recordingContextOf(db: pg.Pool | pg.PoolClient | any, asse
   };
 }
 
+// A revision's columns, for a row aliased `v` joined with REVISION_JOINS.
+const revisionColumns = (v: string) => `${v}.id, ${v}.revision_number, ${v}.result, ${v}.condition, ${v}.note,
+            to_char(${v}.verification_date, 'YYYY-MM-DD') AS verification_date,
+            ${v}.observed_location_id, ol.name AS observed_location_name, ol.is_active AS observed_location_active,
+            ${v}.label_missing_or_damaged, ${v}.data_mismatch, ${v}.data_mismatch_note, ${discrepanciesOf(v)} AS discrepancies,
+            ${v}.location_id, l.name AS location_name, l.is_active AS location_active, ${v}.legacy_location_text,
+            ${v}.organization_unit_id, o.name AS organization_unit_name, o.is_active AS organization_unit_active, ${v}.legacy_organization_unit_text,
+            ${v}.responsible_person_id, pe.name AS responsible_person_name, pe.is_active AS responsible_person_active, ${v}.legacy_responsible_person_text,
+            ${v}.loan_context, ${v}.loan_item_id, ${v}.loan_borrower_display, to_char(${v}.loan_due_date, 'YYYY-MM-DD') AS loan_due_date,
+            ${v}.repair_record_id, ${v}.repair_kind, ${v}.recorded_by, u.username AS recorded_by_username, ${v}.recorded_at`;
+
+// The entries a revision aliased `v` names, each read by its current name, and the account that recorded it.
+const revisionJoins = (v: string) => `LEFT JOIN locations ol ON ol.id = ${v}.observed_location_id
+     LEFT JOIN locations l ON l.id = ${v}.location_id
+     LEFT JOIN organization_units o ON o.id = ${v}.organization_unit_id
+     LEFT JOIN persons pe ON pe.id = ${v}.responsible_person_id
+     LEFT JOIN users u ON u.id = ${v}.recorded_by`;
+
 /** The current result of each of `entryIds` that has one, by scope entry: its latest revision not voided. */
 export async function currentRevisionsOf(db: pg.Pool | pg.PoolClient | any, entryIds: string[]): Promise<Map<string, VerificationRevision>> {
   const res = await db.query(
-    `SELECT e.id AS verification_scope_entry_id, cur.id, cur.revision_number, cur.result, cur.condition, cur.note,
-            to_char(cur.verification_date, 'YYYY-MM-DD') AS verification_date,
-            cur.observed_location_id, ol.name AS observed_location_name, ol.is_active AS observed_location_active,
-            cur.label_missing_or_damaged, cur.data_mismatch, cur.data_mismatch_note, ${discrepanciesOf('cur')} AS discrepancies,
-            cur.location_id, l.name AS location_name, l.is_active AS location_active, cur.legacy_location_text,
-            cur.organization_unit_id, o.name AS organization_unit_name, o.is_active AS organization_unit_active, cur.legacy_organization_unit_text,
-            cur.responsible_person_id, pe.name AS responsible_person_name, pe.is_active AS responsible_person_active, cur.legacy_responsible_person_text,
-            cur.loan_context, cur.loan_item_id, cur.loan_borrower_display, to_char(cur.loan_due_date, 'YYYY-MM-DD') AS loan_due_date,
-            cur.repair_record_id, cur.repair_kind, cur.recorded_by, u.username AS recorded_by_username, cur.recorded_at
+    `SELECT e.id AS verification_scope_entry_id, ${revisionColumns('cur')}
      FROM verification_scope_entries e ${CURRENT_REVISION}
-     LEFT JOIN locations ol ON ol.id = cur.observed_location_id
-     LEFT JOIN locations l ON l.id = cur.location_id
-     LEFT JOIN organization_units o ON o.id = cur.organization_unit_id
-     LEFT JOIN persons pe ON pe.id = cur.responsible_person_id
-     LEFT JOIN users u ON u.id = cur.recorded_by
+     ${revisionJoins('cur')}
      WHERE e.id = ANY($1::uuid[]) AND cur.id IS NOT NULL`,
     [entryIds]
   );
@@ -320,7 +347,10 @@ const eventOf = (row: any): VerificationRoundEvent => ({
   recorded_at: row.recorded_at,
 });
 
-/** F006-T1 (#126), F006-T2 (#127), F006-T3 (#128): the reads of Verification Rounds, their Scope Snapshots, results and Discrepancies. */
+/**
+ * F006-T1 (#126), F006-T2 (#127), F006-T3 (#128), F006-T4 (#129): the reads of Verification Rounds, their Scope
+ * Snapshots, results, Discrepancies and revisions.
+ */
 export class VerificationReadService {
   private readonly db: pg.Pool | any;
 
@@ -431,7 +461,7 @@ export class VerificationReadService {
               p.location_id, l.name AS location_name, l.is_active AS location_active, p.legacy_location_text,
               p.organization_unit_id, o.name AS organization_unit_name, o.is_active AS organization_unit_active, p.legacy_organization_unit_text,
               p.responsible_person_id, pe.name AS responsible_person_name, pe.is_active AS responsible_person_active, p.legacy_responsible_person_text,
-              c.total_count
+              ${revisionCount('p')}, c.total_count
        FROM counted c
        LEFT JOIN paged p ON true
        LEFT JOIN locations l ON l.id = p.location_id
@@ -461,6 +491,7 @@ export class VerificationReadService {
         },
         ...currentResultOf(current.get(row.id)),
         version: row.version,
+        revision_count: row.revision_count,
       }));
     return { items, limit: filters.limit, offset: filters.offset, total_count: totalCount, has_more: filters.offset + items.length < totalCount };
   }
@@ -481,13 +512,49 @@ export class VerificationReadService {
     return { open_round: openRound, entry: { id: row.id, version: row.version, ...currentResultOf(current) }, context };
   }
 
+  /**
+   * Every revision of an Asset in a Round, newest first, each with whether it is voided and the Verification
+   * Correction that voided it (F006-T4, #125 Q18, Q21); or null when the Asset is not in the Round.
+   */
+  async revisionsOf(roundId: string, assetId: string): Promise<ListedVerificationRevision[] | null> {
+    const entry = await this.db.query('SELECT id FROM verification_scope_entries WHERE verification_round_id = $1 AND asset_id = $2', [roundId, assetId]);
+    if (entry.rows.length === 0) {
+      return null;
+    }
+    const res = await this.db.query(
+      `SELECT ${revisionColumns('v')}, v.is_voided,
+              c.id AS correction_id, c.reason AS correction_reason, c.recorded_by AS correction_recorded_by,
+              cu.username AS correction_recorded_by_username, c.recorded_at AS correction_recorded_at
+       FROM verification_revisions v
+       ${revisionJoins('v')}
+       LEFT JOIN verification_corrections c ON c.verification_revision_id = v.id
+       LEFT JOIN users cu ON cu.id = c.recorded_by
+       WHERE v.verification_scope_entry_id = $1
+       ORDER BY v.revision_number DESC`,
+      [entry.rows[0].id]
+    );
+    return res.rows.map((row: any) => ({
+      ...revisionOf(row),
+      is_voided: row.is_voided,
+      correction: row.correction_id
+        ? {
+            id: row.correction_id,
+            reason: row.correction_reason,
+            recorded_by: row.correction_recorded_by,
+            recorded_by_username: row.correction_recorded_by_username ?? null,
+            recorded_at: new Date(row.correction_recorded_at).toISOString(),
+          }
+        : null,
+    }));
+  }
+
   /** An Asset's current result in every Round it belongs to, newest start date first, or null when there is no such Asset (#125 Q21). */
   async verificationsOfAsset(assetId: string): Promise<AssetVerification[] | null> {
     if (!(await assetExists(this.db, assetId))) {
       return null;
     }
     const res = await this.db.query(
-      `SELECT e.id AS entry_id, e.joined_as, r.id, r.name, r.fiscal_year, to_char(r.start_date, 'YYYY-MM-DD') AS start_date, r.state
+      `SELECT e.id AS entry_id, e.joined_as, ${revisionCount('e')}, r.id, r.name, r.fiscal_year, to_char(r.start_date, 'YYYY-MM-DD') AS start_date, r.state
        FROM verification_scope_entries e JOIN verification_rounds r ON r.id = e.verification_round_id
        WHERE e.asset_id = $1
        ORDER BY r.start_date DESC, r.recorded_at DESC, r.id DESC`,
@@ -498,6 +565,7 @@ export class VerificationReadService {
       round: { id: row.id, name: row.name, fiscal_year: row.fiscal_year, start_date: row.start_date, state: row.state },
       entry_id: row.entry_id,
       joined_as: row.joined_as,
+      revision_count: row.revision_count,
       ...currentResultOf(current.get(row.entry_id)),
     }));
   }
