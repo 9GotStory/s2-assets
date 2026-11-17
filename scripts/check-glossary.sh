@@ -1,7 +1,8 @@
 #!/usr/bin/env bash
 # Fails when a line added to the application source uses a term that GLOSSARY.md avoids, such as a
-# name like "ReferenceContext" or a label like "โอนย้าย". Only lines added between <base> and <head>
-# are checked, and a name or path that already exists at <base> stays usable.
+# name like "ReferenceContext" or a label like "โอนย้าย", or when the web app exports a new *_LABEL
+# whose text GLOSSARY.md does not hold. Only lines added between <base> and <head> are checked, and a
+# name or path that already exists at <base> stays usable.
 #
 #   scripts/check-glossary.sh <base> [<head>]      (head defaults to HEAD; CI passes HEAD^1)
 set -euo pipefail
@@ -50,8 +51,37 @@ while IFS= read -r line; do
   done < <(grep -oiE -- "$token" <<<"${line:1}" || true)
 done < <(git diff --no-color --unified=0 "$base...$head" -- "${SOURCE[@]}")
 
+# A *_LABEL exported from the web app is text a user sees, such as a status, an action or a filter: a new one
+# needs its GLOSSARY.md entry in the same change (CODING_STANDARDS, "Each name says its concept in the
+# glossary's words"). A label that names no new concept, such as a form field, a heading or a button made of
+# terms already there, is exempt by a comment on the line before it: `// glossary: no entry — <why>`.
+label_pattern="^export const [A-Z0-9_]+_LABEL = '([^']+)'"
+glossary=$(git show "$head:GLOSSARY.md")
+unlisted=0
+prev=
+file=
+while IFS= read -r line; do
+  case $line in
+    '+++ b/'*) file=${line#+++ b/}; prev=; continue ;;
+    '--- '*|'+++ '*|'@@'*) prev=; continue ;;
+  esac
+  if [[ $line == +* && ${line:1} =~ $label_pattern ]]; then
+    text=${BASH_REMATCH[1]}
+    if [[ $prev != *'// glossary: no entry — '* ]] && ! grep -qF -- "$text" <<<"$glossary"; then
+      echo "check-glossary: $file: label \"$text\" has no GLOSSARY.md entry, in: ${line:1:160}"
+      unlisted=1
+    fi
+  fi
+  prev=$line
+done < <(git diff --no-color --unified=1 "$base...$head" -- ':(glob)apps/web/src/**')
+
 if ((found)); then
   echo "check-glossary: use the GLOSSARY.md term instead; a name that exists at $base stays usable." >&2
+fi
+if ((unlisted)); then
+  echo "check-glossary: add the term to GLOSSARY.md; a label that names no new concept takes \`// glossary: no entry — <why>\` on the line before." >&2
+fi
+if ((found || unlisted)); then
   exit 1
 fi
-echo "check-glossary: no avoided term added since $base"
+echo "check-glossary: no avoided term, and no label missing from GLOSSARY.md, added since $base"
