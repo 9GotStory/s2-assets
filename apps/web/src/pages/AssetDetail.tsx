@@ -795,6 +795,7 @@ const AssetDetailContent: React.FC = () => {
             canRecord={Boolean(assetData.can_record_verification && !isPermissionRevoked)}
             canCorrect={Boolean(assetData.can_correct_verification && !isPermissionRevoked)}
             canManage={Boolean(assetData.can_manage_verification && !isPermissionRevoked)}
+            canRecordRepair={Boolean(assetData.can_record_repair && !isPermissionRevoked)}
             csrfToken={csrfToken}
             onRecorded={async () => {
               setRefreshError(null);

@@ -10,11 +10,11 @@ import {
   REPAIR_KIND_LABELS,
   REPAIR_OUTCOME_LABEL,
   REPAIR_SOURCE_LABEL,
-  REPAIR_SOURCE_REFUSAL_LABELS,
   REPAIR_START_LABEL,
   UNDER_REPAIR_LABELS,
   UNDER_WARRANTY_LABELS,
   costError,
+  repairSourceRefusalText,
   type RepairKind,
   type RepairSourceRefusal,
   type RepairStartRefusal,
@@ -22,12 +22,14 @@ import {
   type UnderWarranty,
 } from './repairFacts';
 
-// The Loan Return recorded ชำรุด the form is opened from on the Loan page, cited as the Repair Source (F005-T5).
-export interface RepairStartSource {
-  loanReturnId: string;
-  returnDate: string;
-  conditionNote: string | null;
-}
+// What the form is opened from, cited as the Repair Source: a Loan Return recorded ชำรุด on the Loan page
+// (F005-T5), or a result Found ชำรุด on the Asset page or the Round page (F006-T7, #125 Q12).
+export type RepairStartSource =
+  | { kind: 'LOAN_RETURN'; loanReturnId: string; returnDate: string; conditionNote: string | null }
+  | { kind: 'VERIFICATION_REVISION'; verificationRevisionId: string; roundName: string; verificationDate: string; note: string | null };
+
+// The damage noted where the form is opened from, the symptom unless the Custodian changes it (#98 user story 24).
+const notedDamageOf = (source: RepairStartSource | undefined): string => (source?.kind === 'LOAN_RETURN' ? source.conditionNote : source?.note) ?? '';
 
 export interface RepairStartFormProps {
   assetId: string;
@@ -66,8 +68,7 @@ export const RepairStartForm: React.FC<RepairStartFormProps> = ({ assetId, repai
   const [startDate, setStartDate] = useState(bangkokToday);
   const [repairerKind, setRepairerKind] = useState<RepairerKind | ''>('');
   const [repairerName, setRepairerName] = useState('');
-  // The damage noted at the Loan Return is the symptom, unless the Custodian changes it (#98 user story 24).
-  const [symptomOrWork, setSymptomOrWork] = useState(repairSource?.conditionNote ?? '');
+  const [symptomOrWork, setSymptomOrWork] = useState(() => notedDamageOf(repairSource));
   const [underWarranty, setUnderWarranty] = useState<UnderWarranty>('UNSPECIFIED');
   const [warrantyEndDate, setWarrantyEndDate] = useState('');
   const [cost, setCost] = useState('');
@@ -104,7 +105,12 @@ export const RepairStartForm: React.FC<RepairStartFormProps> = ({ assetId, repai
     warranty_end_date: warrantyEndDate || null,
     cost: cost.trim() || null,
     ...assignmentNotesPayload(notes),
-    ...(repairSource ? { repair_source: { loan_return_id: repairSource.loanReturnId } } : {}),
+    ...(repairSource
+      ? {
+          repair_source:
+            repairSource.kind === 'LOAN_RETURN' ? { loan_return_id: repairSource.loanReturnId } : { verification_revision_id: repairSource.verificationRevisionId },
+        }
+      : {}),
     ...(withOutcome ? { outcome: repairOutcomePayload(outcome) } : {}),
   });
 
@@ -120,7 +126,7 @@ export const RepairStartForm: React.FC<RepairStartFormProps> = ({ assetId, repai
         if (body?.code === 'REPAIR_START_REFUSED') {
           return <RefusedRepairStart asset={body.asset} />;
         }
-        return body?.code === 'REPAIR_SOURCE_REFUSED' ? <>ส่งซ่อมไม่ได้ เพราะ{REPAIR_SOURCE_REFUSAL_LABELS[body.repair_source.reason as RepairSourceRefusal['reason']]}</> : null;
+        return body?.code === 'REPAIR_SOURCE_REFUSED' ? <>ส่งซ่อมไม่ได้ เพราะ{repairSourceRefusalText(body.repair_source as RepairSourceRefusal)}</> : null;
       }}
       forbiddenMessage="คุณไม่มีสิทธิ์ส่งซ่อม"
       refusedMessage="ไม่สามารถบันทึกการส่งซ่อมได้"
@@ -131,8 +137,18 @@ export const RepairStartForm: React.FC<RepairStartFormProps> = ({ assetId, repai
       {(isLocked) => (
         <fieldset disabled={isLocked} style={{ border: 'none', padding: 0, margin: '0 0 1rem 0' }}>
           {repairSource && (
-            <p id="repair-repair_source" style={{ ...fieldStyle, marginTop: 0, fontSize: '0.875rem', color: '#374151' }}>
-              {REPAIR_SOURCE_LABEL}: การคืนสภาพ{CONDITION_LABELS.DAMAGED} วันที่ <time dateTime={repairSource.returnDate}>{thaiDate(repairSource.returnDate)}</time>
+            <p id="repair-repair_source" style={{ ...fieldStyle, marginTop: 0, fontSize: '0.875rem', color: '#374151', overflowWrap: 'anywhere' }}>
+              {REPAIR_SOURCE_LABEL}:{' '}
+              {repairSource.kind === 'LOAN_RETURN' ? (
+                <>
+                  การคืนสภาพ{CONDITION_LABELS.DAMAGED} วันที่ <time dateTime={repairSource.returnDate}>{thaiDate(repairSource.returnDate)}</time>
+                </>
+              ) : (
+                <>
+                  ผลตรวจประจำปี {repairSource.roundName} พบสภาพ{CONDITION_LABELS.DAMAGED} วันที่ตรวจ{' '}
+                  <time dateTime={repairSource.verificationDate}>{thaiDate(repairSource.verificationDate)}</time>
+                </>
+              )}
             </p>
           )}
           <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '0.75rem' }}>

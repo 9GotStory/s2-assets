@@ -3,10 +3,13 @@ import { Link, useNavigate, useParams, useSearchParams } from 'react-router';
 import { QueryClient, QueryClientProvider, useQuery } from '@tanstack/react-query';
 import { REFERENCE_DIMENSIONS, entryLabel } from '../components/ReferenceContextFields';
 import { thaiDate, valueText } from '../components/assignmentFacts';
-import { RecordingContextLine, RevisionDiscrepancies } from '../components/VerificationPanel';
+import { REPAIR_START_LABEL } from '../components/repairFacts';
+import { RepairStartForm } from '../components/RepairStartForm';
+import { RecordingContextLine, RevisionDiscrepancies, SentForRepairLine, repairSourceOfResult } from '../components/VerificationPanel';
 import { VerificationRevisionList } from '../components/VerificationRevisionList';
 import { VerificationRoundActions } from '../components/VerificationRoundActions';
 import {
+  AWAITING_ACTION_LABEL,
   DISCREPANCIES,
   DISCREPANCY_LABEL,
   DISCREPANCY_LABELS,
@@ -21,6 +24,7 @@ import {
   VERIFICATION_DATE_LABEL,
   VERIFICATION_ROUND_LABEL,
   WHOLE_REGISTER_LABEL,
+  isFoundDamaged,
   recordedByText,
   recordedContextText,
   resultText,
@@ -41,23 +45,27 @@ const isDiscrepancyFilter = (value: string | null): value is Discrepancy => DISC
 // How an Asset joined, as the list filters by it (F006-T5, #125 AV-21): only Late Additions, or every entry.
 const JOINED_AS_FILTERS: readonly ScopeEntry['joined_as'][] = ['LATE_ADDITION'];
 const isJoinedAsFilter = (value: string | null): value is ScopeEntry['joined_as'] => JOINED_AS_FILTERS.includes(value as ScopeEntry['joined_as']);
+// "ยังไม่มี action ต่อ" takes one value; none shows every entry (F006-T7, #125 Q19).
+const AWAITING_ACTION_FILTERS = ['true'] as const;
 
-// What the entry list shows: a search, a result, a Discrepancy, how an Asset joined and a snapshot Location, each
-// null for any (#125 AV-19, AV-21, P5).
+// What the entry list shows: a search, a result, a Discrepancy, how an Asset joined, a snapshot Location and
+// whether the result awaits an action, each null for any (#125 AV-19, AV-21, P5, Q19).
 interface ListFilters {
   search: string;
   result: VerificationResult | null;
   discrepancy: Discrepancy | null;
   joinedAs: ScopeEntry['joined_as'] | null;
   locationId: string | null;
+  awaitingAction: 'true' | null;
 }
 
 // The list's URL query for its filters and a page.
-const listQuery = ({ search, result, discrepancy, joinedAs, locationId }: ListFilters, offset: number): string => {
+const listQuery = ({ search, result, discrepancy, joinedAs, locationId, awaitingAction }: ListFilters, offset: number): string => {
   const params = new URLSearchParams();
   if (search.trim()) params.set('search', search.trim());
   if (result) params.set('result', result);
   if (discrepancy) params.set('discrepancy', discrepancy);
+  if (awaitingAction) params.set('awaiting_action', awaitingAction);
   if (joinedAs) params.set('joined_as', joinedAs);
   if (locationId) params.set('location_id', locationId);
   if (offset > 0) params.set('offset', String(offset));
@@ -200,11 +208,27 @@ const RoundEventItem: React.FC<{ event: VerificationRoundEvent }> = ({ event }) 
   </li>
 );
 
+// What a row needs to send its Asset for repair (F006-T7): absent for a viewer without 'repair:record'.
+interface RowRepairAction {
+  roundName: string;
+  csrfToken: string | null;
+  onStarted: () => Promise<void>;
+  onPermissionRevoked: (statusCode?: number) => void;
+}
+
 // One Asset of the Scope Snapshot as the register showed it when it joined the Round (#125 Q4), with its current
 // result, its Observed Location and Discrepancies (Q7), the Loan or Repair context that result kept (Q14), its
-// revisions (F006-T4), and, for a Late Addition, who added it, when and why (F006-T5, AV-21).
-const ScopeEntryItem: React.FC<{ roundId: string; entry: ScopeEntry; dataUpdatedAt: number }> = ({ roundId, entry, dataUpdatedAt }) => {
+// revisions (F006-T4), and, for a Late Addition, who added it, when and why (F006-T5, AV-21). A result Found ชำรุด
+// shows "ส่งซ่อมแล้ว" once a Repair Record cites it, and offers "ส่งซ่อม" to holders of 'repair:record' (F006-T7, Q19, Q22).
+const ScopeEntryItem: React.FC<{ roundId: string; entry: ScopeEntry; dataUpdatedAt: number; repairAction: RowRepairAction | null }> = ({
+  roundId,
+  entry,
+  dataUpdatedAt,
+  repairAction,
+}) => {
   const { snapshot, current, late_addition: lateAddition } = entry;
+  const [isSending, setIsSending] = useState(false);
+  const mayRepair = repairAction !== null && current !== null && isFoundDamaged(current);
   return (
     <li data-testid={`scope-entry-${entry.asset_id}`} style={{ padding: '0.75rem 0', borderBottom: '1px solid #e5e7eb', fontSize: '0.875rem' }}>
       <div style={{ display: 'flex', justifyContent: 'space-between', gap: '0.75rem', flexWrap: 'wrap' }}>
@@ -226,11 +250,37 @@ const ScopeEntryItem: React.FC<{ roundId: string; entry: ScopeEntry; dataUpdated
         <div data-testid={`scope-entry-verification-${entry.asset_id}`} style={{ color: '#4b5563', marginTop: '0.25rem', overflowWrap: 'anywhere' }}>
           {VERIFICATION_DATE_LABEL} <time dateTime={current.verification_date}>{thaiDate(current.verification_date)}</time> บันทึกโดย {recordedByText(current)}
           <RevisionDiscrepancies revision={current} testId={`scope-entry-discrepancies-${entry.asset_id}`} />
+          <SentForRepairLine revision={current} testId={`scope-entry-sent-for-repair-${entry.asset_id}`} />
           {recordedContextText(current) && (
             <div style={{ color: '#92400e' }}>
               ขณะตรวจ: <RecordingContextLine context={current} />
             </div>
           )}
+        </div>
+      )}
+      {mayRepair && !isSending && (
+        <button
+          type="button"
+          id={`scope-entry-repair-action-${entry.asset_id}`}
+          onClick={() => setIsSending(true)}
+          style={{ marginTop: '0.5rem', padding: '0.375rem 0.75rem', backgroundColor: '#ffffff', color: '#1d4ed8', border: '1px solid #2563eb', borderRadius: '6px', fontSize: '0.875rem', cursor: 'pointer' }}
+        >
+          {REPAIR_START_LABEL}
+        </button>
+      )}
+      {mayRepair && isSending && (
+        <div style={{ marginTop: '0.5rem' }}>
+          <RepairStartForm
+            assetId={entry.asset_id}
+            repairSource={repairSourceOfResult(current, repairAction.roundName)}
+            csrfToken={repairAction.csrfToken}
+            onStarted={async () => {
+              await repairAction.onStarted();
+              setIsSending(false);
+            }}
+            onCancel={() => setIsSending(false)}
+            onPermissionRevoked={repairAction.onPermissionRevoked}
+          />
         </div>
       )}
       <div style={{ color: '#4b5563', marginTop: '0.25rem', overflowWrap: 'anywhere' }}>
@@ -263,6 +313,7 @@ const VerificationRoundDetailContent: React.FC = () => {
     discrepancy: isDiscrepancyFilter(discrepancyParam) ? discrepancyParam : null,
     joinedAs: isJoinedAsFilter(joinedAsParam) ? joinedAsParam : null,
     locationId: searchParams.get('location_id') || null,
+    awaitingAction: searchParams.get('awaiting_action') === 'true' ? 'true' : null,
   };
   const offset = Number(searchParams.get('offset') ?? 0) || 0;
   // What the search box shows until it is submitted; a new URL, such as going back, shows that URL's search.
@@ -286,7 +337,7 @@ const VerificationRoundDetailContent: React.FC = () => {
   });
 
   // The actions need this session's CSRF token, and wait for it: a request sent without it is refused as if the grant were gone.
-  const isHolder = round.data?.can_manage_verification === true || round.data?.can_correct_verification === true;
+  const isHolder = round.data?.can_manage_verification === true || round.data?.can_correct_verification === true || round.data?.can_record_repair === true;
   const session = useQuery<string | null>({
     queryKey: ['verification-round-session'],
     queryFn: async ({ signal }) => {
@@ -347,6 +398,22 @@ const VerificationRoundDetailContent: React.FC = () => {
     snapshot_locations: snapshotLocations,
   } = round.data;
   const page = entries.isError ? undefined : entries.data;
+  const repairAction: RowRepairAction | null = round.data.can_record_repair
+    ? {
+        roundName: name,
+        csrfToken,
+        onStarted: async () => {
+          await entries.refetch();
+        },
+        onPermissionRevoked: (status) => {
+          if (status === 401) {
+            navigate('/login', { replace: true });
+            return;
+          }
+          void round.refetch();
+        },
+      }
+    : null;
   const filterText = (label: string, chosen: { id: string; name: string; is_active: boolean }[]) => (chosen.length > 0 ? `${label}: ${chosen.map(entryLabel).join(', ')}` : null);
   const scopeText = [filterText('หน่วยงาน', roundFilters.organization_units), filterText('สถานที่', roundFilters.locations)].filter(Boolean).join(' และ ') || WHOLE_REGISTER_LABEL;
 
@@ -482,6 +549,15 @@ const VerificationRoundDetailContent: React.FC = () => {
           queryFor={(value) => listQuery({ ...filters, discrepancy: value }, 0)}
         />
         <FilterLinks
+          label={`กรองตาม${AWAITING_ACTION_LABEL}`}
+          idPrefix="scope-entry-awaiting-action-filter"
+          values={AWAITING_ACTION_FILTERS}
+          current={filters.awaitingAction}
+          allLabel="ทุกรายการในรอบ"
+          valueLabel={() => AWAITING_ACTION_LABEL}
+          queryFor={(value) => listQuery({ ...filters, awaitingAction: value }, 0)}
+        />
+        <FilterLinks
           label={`กรองตามรายการที่${LATE_ADDITION_LABEL}`}
           idPrefix="scope-entry-joined-as-filter"
           values={JOINED_AS_FILTERS}
@@ -518,6 +594,7 @@ const VerificationRoundDetailContent: React.FC = () => {
             filters.search.trim() && `ค้นหา “${filters.search.trim()}”`,
             filters.result && RESULT_LABELS[filters.result],
             filters.discrepancy && DISCREPANCY_LABELS[filters.discrepancy],
+            filters.awaitingAction && AWAITING_ACTION_LABEL,
             filters.joinedAs && LATE_ADDITION_LABEL,
             filters.locationId && `สถานที่ ${entryLabel(snapshotLocations.find((location) => location.id === filters.locationId) ?? { id: filters.locationId, name: filters.locationId, is_active: true })}`,
           ]
@@ -545,7 +622,7 @@ const VerificationRoundDetailContent: React.FC = () => {
             </div>
             <ul data-testid="scope-entry-list" style={{ listStyle: 'none', margin: 0, padding: 0 }}>
               {page.items.map((entry) => (
-                <ScopeEntryItem key={entry.id} roundId={round.data.id} entry={entry} dataUpdatedAt={entries.dataUpdatedAt} />
+                <ScopeEntryItem key={entry.id} roundId={round.data.id} entry={entry} dataUpdatedAt={entries.dataUpdatedAt} repairAction={repairAction} />
               ))}
             </ul>
             {page.total_count > PAGE_SIZE && (
@@ -572,6 +649,7 @@ const VerificationRoundDetailContent: React.FC = () => {
  * A Verification Round's page (F006-T1, F006-T2, F006-T3, F006-T5): its fields, counts, history and Scope Snapshot with
  * each Asset's current result, Discrepancies and Late Addition, filtered by result, Discrepancy, Late Addition and
  * snapshot Location. F006-T6: closing, reopening, editing and voiding the Round for holders, and a printable layout.
+ * F006-T7: "ส่งซ่อม" on a row Found ชำรุด for holders of 'repair:record', and the "ยังไม่มี action ต่อ" filter.
  */
 export const VerificationRoundDetail: React.FC = () => {
   const [queryClient] = useState(() => new QueryClient({ defaultOptions: { queries: { retry: false, refetchOnWindowFocus: true } } }));

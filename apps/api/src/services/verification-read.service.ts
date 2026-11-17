@@ -2,7 +2,7 @@ import pg from 'pg';
 import { assetExists, containsPattern } from './asset-lookups.ts';
 import type { PermanentAssignment, ReferenceEntrySummary } from './assignment.service.ts';
 import { loanContextOf, type LoanContext } from './loan-read.service.ts';
-import { underRepairOfAssets, type RepairKind } from './repair-read.service.ts';
+import { citedByLiveRepairRecord, repairRecordsCitingRevisions, underRepairOfAssets, type CitingRepairRecord, type RepairKind } from './repair-read.service.ts';
 
 export type VerificationRoundState = 'OPEN' | 'CLOSED' | 'VOIDED';
 export type VerificationRoundEventKind = 'OPENED' | 'EDITED' | 'CLOSED' | 'REOPENED' | 'VOIDED';
@@ -71,6 +71,10 @@ export interface VerificationRevision {
   recorded_by: string;
   recorded_by_username: string | null;
   recorded_at: string;
+  // F006-T7 (#125 Q19): the Repair Records that cite it as their Repair Source, voided ones too, oldest first, and
+  // "ส่งซ่อมแล้ว": one not voided cites it. Derived on read; on the current revision it is the result's follow-up.
+  repair_records: CitingRepairRecord[];
+  sent_for_repair: boolean;
 }
 
 // The Verification Correction that voided a revision (F006-T4, #125 Q18).
@@ -179,6 +183,8 @@ export interface ScopeEntryFilters {
   joined_as?: JoinedAs;
   // The Location the Scope Snapshot holds, to walk the office room by room (P5).
   location_id?: string;
+  // "ยังไม่มี action ต่อ": the current result is ชำรุด without "ส่งซ่อมแล้ว" (F006-T7, Q19).
+  awaiting_action?: true;
   limit: number;
   offset: number;
 }
@@ -226,6 +232,12 @@ const DISCREPANCY_CONDITIONS: Record<Discrepancy, (v: string) => string> = {
   DATA_MISMATCH: (v) => `${v}.data_mismatch`,
 };
 export const DISCREPANCIES = Object.keys(DISCREPANCY_CONDITIONS) as Discrepancy[];
+
+// "ส่งซ่อมแล้ว": a Repair Record not voided cites the revision aliased `v` (#125 Q19).
+const sentForRepair = (v: string) => citedByLiveRepairRecord(`${v}.id`);
+
+// "ยังไม่มี action ต่อ" of the current revision aliased `v`: ชำรุด without "ส่งซ่อมแล้ว" (#125 Q19).
+const awaitingAction = (v: string) => `(${DISCREPANCY_CONDITIONS.DAMAGED(v)} AND NOT ${sentForRepair(v)})`;
 
 // Every Discrepancy the revision aliased `v` notes, as a text array.
 const discrepanciesOf = (v: string) => `array_remove(ARRAY[${DISCREPANCIES.map((d) => `CASE WHEN ${DISCREPANCY_CONDITIONS[d](v)} THEN '${d}' END`).join(', ')}]::text[], NULL)`;
@@ -308,7 +320,15 @@ const revisionOf = (row: any): VerificationRevision => ({
   recorded_by: row.recorded_by,
   recorded_by_username: row.recorded_by_username ?? null,
   recorded_at: new Date(row.recorded_at).toISOString(),
+  repair_records: [],
+  sent_for_repair: row.sent_for_repair,
 });
+
+// `revisions` with the Repair Records that cite each.
+async function withRepairRecords<R extends VerificationRevision>(db: pg.Pool | pg.PoolClient | any, revisions: R[]): Promise<R[]> {
+  const citing = revisions.length > 0 ? await repairRecordsCitingRevisions(db, revisions.map(({ id }) => id)) : new Map<string, CitingRepairRecord[]>();
+  return revisions.map((revision) => ({ ...revision, repair_records: citing.get(revision.id) ?? [] }));
+}
 
 /** The open Round, or null when none is. */
 export async function openVerificationRoundOf(client: pg.PoolClient | pg.Pool): Promise<OpenVerificationRound | null> {
@@ -336,7 +356,8 @@ const revisionColumns = (v: string) => `${v}.id, ${v}.revision_number, ${v}.resu
             ${v}.organization_unit_id, o.name AS organization_unit_name, o.is_active AS organization_unit_active, ${v}.legacy_organization_unit_text,
             ${v}.responsible_person_id, pe.name AS responsible_person_name, pe.is_active AS responsible_person_active, ${v}.legacy_responsible_person_text,
             ${v}.loan_context, ${v}.loan_item_id, ${v}.loan_borrower_display, to_char(${v}.loan_due_date, 'YYYY-MM-DD') AS loan_due_date,
-            ${v}.repair_record_id, ${v}.repair_kind, ${v}.recorded_by, u.username AS recorded_by_username, ${v}.recorded_at`;
+            ${v}.repair_record_id, ${v}.repair_kind, ${v}.recorded_by, u.username AS recorded_by_username, ${v}.recorded_at,
+            ${sentForRepair(v)} AS sent_for_repair`;
 
 // The entries a revision aliased `v` names, each read by its current name, and the account that recorded it.
 const revisionJoins = (v: string) => `LEFT JOIN locations ol ON ol.id = ${v}.observed_location_id
@@ -354,7 +375,8 @@ export async function currentRevisionsOf(db: pg.Pool | pg.PoolClient | any, entr
      WHERE e.id = ANY($1::uuid[]) AND cur.id IS NOT NULL`,
     [entryIds]
   );
-  return new Map(res.rows.map((row: any) => [row.verification_scope_entry_id, revisionOf(row)]));
+  const revisions = await withRepairRecords(db, res.rows.map(revisionOf));
+  return new Map(res.rows.map((row: any, i: number) => [row.verification_scope_entry_id, revisions[i]]));
 }
 
 const eventOf = (row: any): VerificationRoundEvent => ({
@@ -472,6 +494,9 @@ export class VerificationReadService {
       params.push(filters.location_id);
       conditions.push(`e.location_id = $${params.length}`);
     }
+    if (filters.awaiting_action) {
+      conditions.push(awaitingAction('cur'));
+    }
     params.push(filters.limit, filters.offset);
 
     // The count joins the page, so a page past the end still says how many entries pass.
@@ -567,19 +592,24 @@ export class VerificationReadService {
        ORDER BY v.revision_number DESC`,
       [entry.rows[0].id]
     );
-    return res.rows.map((row: any) => ({
-      ...revisionOf(row),
-      is_voided: row.is_voided,
-      correction: row.correction_id
-        ? {
-            id: row.correction_id,
-            reason: row.correction_reason,
-            recorded_by: row.correction_recorded_by,
-            recorded_by_username: row.correction_recorded_by_username ?? null,
-            recorded_at: new Date(row.correction_recorded_at).toISOString(),
-          }
-        : null,
-    }));
+    return withRepairRecords(
+      this.db,
+      res.rows.map(
+        (row: any): ListedVerificationRevision => ({
+          ...revisionOf(row),
+          is_voided: row.is_voided,
+          correction: row.correction_id
+            ? {
+                id: row.correction_id,
+                reason: row.correction_reason,
+                recorded_by: row.correction_recorded_by,
+                recorded_by_username: row.correction_recorded_by_username ?? null,
+                recorded_at: new Date(row.correction_recorded_at).toISOString(),
+              }
+            : null,
+        })
+      )
+    );
   }
 
   /** An Asset's current result in every Round it belongs to, newest start date first, or null when there is no such Asset (#125 Q21). */

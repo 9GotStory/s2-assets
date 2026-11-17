@@ -12,6 +12,7 @@ import {
   REPAIR_SOURCE_LABEL,
   UNDER_WARRANTY_LABELS,
   costText,
+  isLoanReturnSource,
   type RepairCorrection,
   type RepairCorrectionField,
   type RepairKind,
@@ -34,6 +35,7 @@ const FIELD_LABELS: Record<string, string> = {
   document_reference: 'เอกสารอ้างอิง',
   remark: 'หมายเหตุ',
   repair_source_loan_return_id: REPAIR_SOURCE_LABEL,
+  repair_source_verification_revision_id: REPAIR_SOURCE_LABEL,
   outcome: REPAIR_OUTCOME_LABEL,
   outcome_date: OUTCOME_DATE_LABEL,
   note: 'หมายเหตุของผล',
@@ -43,7 +45,11 @@ const FIELD_LABELS: Record<string, string> = {
 const DATE_FIELDS = new Set(['start_date', 'warranty_end_date', 'outcome_date', 'next_recommended_maintenance_date']);
 
 const sourceText = (source: RepairSource): string =>
-  `การคืนสภาพ${CONDITION_LABELS[source.condition]} วันที่ ${thaiDate(source.return_date)}${source.is_voided ? ` (${VOIDED_LABEL})` : ''}`;
+  `${
+    isLoanReturnSource(source)
+      ? `การคืนสภาพ${CONDITION_LABELS[source.condition]} วันที่ ${thaiDate(source.return_date)}`
+      : `ผลตรวจประจำปี ${source.verification_round.name} วันที่ตรวจ ${thaiDate(source.verification_date)}`
+  }${source.is_voided ? ` (${VOIDED_LABEL})` : ''}`;
 
 // A value as the Repair Record page shows it. An outcome reads by the record's kind (#98 Q16).
 const valueText = (field: string, value: string | RepairSource | null, repairKind: RepairKind): string => {

@@ -10,10 +10,12 @@ import { CONDITION_LABELS, NOT_RETURNED_LABEL, ON_LOAN_LABEL, type AssetLoanItem
 import {
   REPAIR_KIND_LABELS,
   REPAIR_SOURCE_LABEL,
-  REPAIR_SOURCE_REFUSAL_LABELS,
   UNDER_REPAIR_LABELS,
   UNDER_WARRANTY_LABELS,
   costError,
+  isLoanReturnSource,
+  repairSourceIdOf,
+  repairSourceRefusalText,
   type RepairCorrectionTarget,
   type RepairKind,
   type RepairOutcomeValue,
@@ -126,7 +128,7 @@ const fieldsOf = (record: RepairRecord, target: RepairCorrectionTarget): Draft |
       cost: record.cost ?? '',
       document_reference: record.document_reference ?? '',
       remark: record.remark ?? '',
-      repair_source: record.repair_source?.loan_return_id ?? '',
+      repair_source: record.repair_source ? repairSourceIdOf(record.repair_source) : '',
     };
   }
   const { outcome } = record;
@@ -157,6 +159,7 @@ const changesOf = (stored: Draft, draft: Draft): Record<string, unknown> => {
     changes.repairer = { kind: draft.repairer_kind, name: draft.repairer_name.trim() || null };
   }
   for (const field of Object.keys(stored).filter((field) => !REPAIRER_FIELDS.includes(field) && differs(field))) {
+    // The form offers a result only as the Repair Source the record cites already, so a changed one is a Loan Return or none.
     if (field === 'repair_source') {
       changes.repair_source = draft.repair_source ? { loan_return_id: draft.repair_source } : null;
     } else {
@@ -251,11 +254,25 @@ export const RepairAmendForm: React.FC<RepairCorrectionFormProps> = ({ record, t
     return Object.keys(changesOf(stored, draft)).length === 0 ? 'ยังไม่มีค่าที่แก้ไข' : null;
   };
 
-  // The current Repair Source stays offered, voided or not, so that leaving it alone changes nothing.
+  // The current Repair Source stays offered, voided or not, so that leaving it alone changes nothing. A result is
+  // offered only as the current one (F006-T7): another is cited from its Round page or the Asset page.
   const current = record.repair_source;
+  const loanReturnOption = ({ id, return_date: returnDate }: { id: string; return_date: string }) => ({
+    id,
+    label: `การคืนสภาพ${CONDITION_LABELS.DAMAGED} วันที่ ${thaiDate(returnDate)}`,
+  });
   const sourceOptions = [
-    ...(current && !sources.data?.some(({ id }) => id === current.loan_return_id) ? [{ id: current.loan_return_id, return_date: current.return_date }] : []),
-    ...(sources.data ?? []),
+    ...(current && !sources.data?.some(({ id }) => id === repairSourceIdOf(current))
+      ? [
+          isLoanReturnSource(current)
+            ? loanReturnOption({ id: current.loan_return_id, return_date: current.return_date })
+            : {
+                id: current.verification_revision_id,
+                label: `ผลตรวจประจำปี ${current.verification_round.name} วันที่ตรวจ ${thaiDate(current.verification_date)}`,
+              },
+        ]
+      : []),
+    ...(sources.data ?? []).map(loanReturnOption),
   ];
 
   return (
@@ -267,7 +284,7 @@ export const RepairAmendForm: React.FC<RepairCorrectionFormProps> = ({ record, t
       requestError={requestError}
       requestBody={() => ({ expected_version: expectedVersion, action: 'AMEND', target, reason, changes: changesOf(stored, draft) })}
       refusedList={(body) =>
-        body?.code === 'REPAIR_SOURCE_REFUSED' ? <>แก้ไขไม่ได้ เพราะ{REPAIR_SOURCE_REFUSAL_LABELS[body.repair_source.reason as RepairSourceRefusal['reason']]}</> : null
+        body?.code === 'REPAIR_SOURCE_REFUSED' ? <>แก้ไขไม่ได้ เพราะ{repairSourceRefusalText(body.repair_source as RepairSourceRefusal)}</> : null
       }
       forbiddenMessage="คุณไม่มีสิทธิ์แก้ไขรายการซ่อม"
       refusedMessage="ไม่สามารถแก้ไขรายการได้"
@@ -358,9 +375,9 @@ export const RepairAmendForm: React.FC<RepairCorrectionFormProps> = ({ record, t
                 </label>
                 <select id="repair-amend-repair_source" value={draft.repair_source} onChange={(e) => set('repair_source')(e.target.value)} style={fieldInputStyle}>
                   <option value="">— ไม่มี —</option>
-                  {sourceOptions.map(({ id, return_date: returnDate }) => (
+                  {sourceOptions.map(({ id, label }) => (
                     <option key={id} value={id}>
-                      การคืนสภาพ{CONDITION_LABELS.DAMAGED} วันที่ {thaiDate(returnDate)}
+                      {label}
                     </option>
                   ))}
                 </select>

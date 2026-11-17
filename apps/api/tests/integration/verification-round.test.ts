@@ -74,6 +74,7 @@ describe('Open a Verification Round (Seam A - F006-T1)', () => {
         snapshot_locations: expect.any(Array),
         can_manage_verification: false,
         can_correct_verification: false,
+        can_record_repair: false,
         history: [
           {
             id: expect.stringMatching(UUID),

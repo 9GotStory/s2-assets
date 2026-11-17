@@ -27,7 +27,7 @@ const migrationFolder = path.resolve(__dirname, '../../../../packages/db/src/mig
 // sees the Round with no action. F006-T2 (#127): Verification Staff record a result from the Asset page a QR
 // label opens, at a phone viewport. F006-T4 (#129): a Re-verification from the panel and a Verification Correction.
 // F006-T5 (#130): a Late Addition from the Asset page of an Asset registered after the Round opened. F006-T6 (#131):
-// closing a Round over its summary, and reopening it with a reason.
+// closing a Round over its summary, and reopening it with a reason. F006-T7 (#132): "ส่งซ่อม" from a result Found ชำรุด.
 test.describe.serial('Verification journeys: Real SPA -> Composed API -> PostgreSQL (Seam B)', () => {
   let container: StartedPostgreSqlContainer;
   let pool: pg.Pool;
@@ -578,5 +578,77 @@ test.describe.serial('Verification journeys: Real SPA -> Composed API -> Postgre
     await page.locator('#verification-record-condition-NORMAL').check();
     await page.locator('#verification-record-submit').click();
     await expect(page.locator('[data-testid="verification-panel-current-result"]')).toHaveText('พบ · สภาพปกติ');
+  });
+
+  test('Journey F006-T7.1: an Asset Custodian sends Assets Found ชำรุด for repair from a Round page row and from the panel; the Repair Record shows its Round source, the result shows "ส่งซ่อมแล้ว", and "ยังไม่มี action ต่อ" empties; Verification Staff see no "ส่งซ่อม"', async ({ page, context }) => {
+    await closeOpenRound();
+    const room = await referenceService.create('locations', adminUserId, 'ห้องเรียน E2E ส่งซ่อม');
+    const { asset: projector } = await assetService.registerAsset(custodianUserId, { name: 'โปรเจกเตอร์ E2E ส่งซ่อม', asset_number: 'E2E-VR-701', location_id: room.id, effective_date: '2026-01-05' } as any);
+    const { asset: speaker } = await assetService.registerAsset(custodianUserId, { name: 'ลำโพง E2E ส่งซ่อม', asset_number: 'E2E-VR-702', location_id: room.id, effective_date: '2026-01-05' } as any);
+    const roundName = 'ตรวจสอบพัสดุประจำปี 2569 ส่งซ่อม';
+    const { verification_round_id: roundId } = await verificationService.open(custodianUserId, { name: roundName, fiscal_year: 2569, location_ids: [room.id] }, { retryToken: crypto.randomUUID() });
+    for (const [asset, note] of [
+      [projector, 'หลอดภาพไม่ติด'],
+      [speaker, null],
+    ] as const) {
+      await verificationService.record(staffUserId, roundId, asset.id, { result: 'FOUND', condition: 'DAMAGED', note }, { retryToken: crypto.randomUUID() });
+    }
+
+    // Verification Staff see the Discrepancy without "ส่งซ่อม" (#125 Q22).
+    await loginAs(context, staffUserId);
+    await page.goto(`${targetBaseUrl}/assets/${projector.id}`);
+    await expect(page.locator('[data-testid="verification-panel-current-discrepancies"]')).toContainText('ชำรุด');
+    await expect(page.locator('#verification-repair-action')).toHaveCount(0);
+    await page.goto(`${targetBaseUrl}/verification-rounds/${roundId}`);
+    await expect(page.locator(`[data-testid="scope-entry-${projector.id}"]`)).toBeVisible();
+    await expect(page.locator('[id^="scope-entry-repair-action-"]')).toHaveCount(0);
+
+    // The Custodian lists the results awaiting an action and sends the projector from its row.
+    await switchActor(page, context, custodianUserId);
+    await page.goto(`${targetBaseUrl}/verification-rounds/${roundId}`);
+    await page.locator('#scope-entry-awaiting-action-filter-true').click();
+    await expect(page).toHaveURL(/awaiting_action=true/);
+    await expect(page.locator('#scope-entry-list-count')).toContainText('พบ 2 รายการ');
+    await page.locator(`#scope-entry-repair-action-${projector.id}`).click();
+    await expect(page.locator('#repair-repair_source')).toContainText(`ที่มา: ผลตรวจประจำปี ${roundName} พบสภาพชำรุด วันที่ตรวจ`);
+    await expect(page.locator('#repair-symptom_or_work')).toHaveValue('หลอดภาพไม่ติด');
+    await page.locator('#repair-repair_kind').selectOption('REPAIR');
+    await page.getByLabel('ผู้ซ่อมภายนอก').check();
+    await page.locator('#repair-submit').click();
+
+    // The projector no longer awaits an action; the speaker still does.
+    await expect(page.locator('#scope-entry-list-count')).toContainText('พบ 1 รายการ');
+    await expect(page.locator(`[data-testid="scope-entry-${projector.id}"]`)).toHaveCount(0);
+    await expect(page.locator(`#scope-entry-repair-action-${speaker.id}`)).toBeVisible();
+    await page.locator('#scope-entry-awaiting-action-filter-ALL').click();
+    await expect(page.locator(`[data-testid="scope-entry-sent-for-repair-${projector.id}"]`)).toContainText('ส่งซ่อมแล้ว');
+    await expect(page.locator(`[data-testid="scope-entry-sent-for-repair-${speaker.id}"]`)).toHaveCount(0);
+
+    // From the speaker's panel the Custodian sends it too, and follows its link to the Repair Record.
+    await page.goto(`${targetBaseUrl}/assets/${speaker.id}`);
+    await page.locator('#verification-repair-action').click();
+    await expect(page.locator('#repair-repair_source')).toContainText(`ผลตรวจประจำปี ${roundName}`);
+    await expect(page.locator('#repair-symptom_or_work')).toHaveValue('');
+    await page.locator('#repair-repair_kind').selectOption('MAINTENANCE');
+    await page.getByLabel('ผู้ซ่อมภายใน').check();
+    await page.locator('#repair-symptom_or_work').fill('เสียงแตก');
+    await page.locator('#repair-submit').click();
+    const sent = page.locator('[data-testid="verification-panel-current-sent-for-repair"]');
+    await expect(sent).toContainText('ส่งซ่อมแล้ว');
+    await expect(page.locator('#repair-form')).toHaveCount(0);
+    await sent.getByRole('link').click();
+    await expect(page).toHaveURL(/\/repairs\/[0-9a-f-]{36}$/);
+    await expect(page.locator('#repair-source')).toContainText(`ผลตรวจประจำปี ${roundName} วันที่ตรวจ`);
+    await expect(page.locator('[data-testid="repair-source-voided"]')).toHaveCount(0);
+    await page.locator('#repair-source-round-link').click();
+    await expect(page).toHaveURL(`${targetBaseUrl}/verification-rounds/${roundId}`);
+
+    // A Read-only User sees "ส่งซ่อมแล้ว" with no action, and nothing awaits an action.
+    await switchActor(page, context, readonlyUserId);
+    await page.goto(`${targetBaseUrl}/verification-rounds/${roundId}?awaiting_action=true`);
+    await expect(page.locator('#scope-entry-list-count')).toHaveText('ไม่พบรายการ');
+    await page.goto(`${targetBaseUrl}/verification-rounds/${roundId}`);
+    await expect(page.locator(`[data-testid="scope-entry-sent-for-repair-${speaker.id}"]`)).toContainText('ส่งซ่อมแล้ว');
+    await expect(page.locator('[id^="scope-entry-repair-action-"]')).toHaveCount(0);
   });
 });
