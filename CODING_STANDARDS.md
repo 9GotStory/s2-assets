@@ -45,6 +45,9 @@ same-day pair on one page, and breaking the tiebreak left them green.
 
 When a write decides a rule on a fact that another write can change, and a shared lock orders the two,
 a Seam A test queues the other write first with `whileHolding` and shows that the rule sees its result.
+When the other write's own statement changes the fact, as a Verification Correction's `UPDATE … SET
+is_voided = true` does to a revision a Repair Record cites (#132), hold that statement with `whileWriting`
+and wait with `untilWaiting(table, 1, 'FOR SHARE')`.
 Without it, the rule can move ahead of the lock and every test stays green. In F005-T5 (#103), the
 Repair Source check read the Loan Return after the Asset lock that a Loan Correction also takes; no test
 failed when the check was moved before it, and only the Spec review found the gap.

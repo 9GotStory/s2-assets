@@ -4,6 +4,7 @@ import { startApiHarness, type Actor, type ApiHarness } from './support/api-harn
 import { assignmentHelpers } from './support/assignment-helpers.ts';
 import { withCapabilityAnswer } from './support/capability-helpers.ts';
 import { loanHelpers } from './support/loan-helpers.ts';
+import { lockHelpers } from './support/lock-helpers.ts';
 import { repairHelpers } from './support/repair-helpers.ts';
 import { verificationHelpers } from './support/verification-helpers.ts';
 
@@ -19,6 +20,7 @@ describe('Repair Source of a result (Seam A - F006-T7)', () => {
   const now = new Date('2026-11-12T05:00:00Z');
 
   const { entry } = assignmentHelpers(() => ({ api, admin, reader: readonly }));
+  const { whileWriting, untilWaiting } = lockHelpers(() => ({ api }));
   const { lent, loanOf, returned } = loanHelpers(() => ({ api, custodian, reader: readonly }), { loanDate: '2026-11-12', dueDate: '2026-11-30' });
   const { opened, roundOf, entriesOf, entryOf, recorded, closed, closeOpenRound } = verificationHelpers(() => ({ api, custodian, reader: readonly }));
   const { base, send, sent, recordOf, recordsOf, ended, correct, amendment, amended, voided } = repairHelpers(() => ({ api, custodian, reader: readonly }), {
@@ -87,31 +89,14 @@ describe('Repair Source of a result (Seam A - F006-T7)', () => {
     await api?.close();
   });
 
-  /**
-   * Holds a Verification Correction's own write on `revisionId`, its `UPDATE … SET is_voided = true`, uncommitted;
-   * starts `write`, waits until it stops at the revision's share lock, then commits the void. `lockHelpers` holds
-   * only a `FOR UPDATE` of a whole row, which a share lock waits on too, but would not void the revision.
-   */
+  // A Verification Correction's own write on the revision, held uncommitted while a citing write waits on its share lock.
   const whileVoiding = async <R>(revisionId: string, write: () => Promise<R>): Promise<R> => {
-    const holder = await api.pool.connect();
-    let pending: Promise<R> | undefined;
-    try {
-      await holder.query('BEGIN');
-      await holder.query('UPDATE verification_revisions SET is_voided = true WHERE id = $1', [revisionId]);
-      pending = write();
-      await expect
-        .poll(
-          async () =>
-            (await api.pool.query(`SELECT count(*)::int AS n FROM pg_stat_activity WHERE wait_event_type = 'Lock' AND query LIKE '%FROM verification_revisions%FOR SHARE%'`))
-              .rows[0].n,
-          { timeout: 10_000, interval: 50 }
-        )
-        .toBe(1);
-    } finally {
-      await holder.query('COMMIT');
-      holder.release();
-    }
-    return pending!;
+    const [result] = await whileWriting(
+      { sql: 'UPDATE verification_revisions SET is_voided = true WHERE id = $1', params: [revisionId] },
+      () => [write()],
+      () => untilWaiting('verification_revisions', 1, 'FOR SHARE')
+    );
+    return result;
   };
 
   describe('sending from a result Found ชำรุด', () => {
