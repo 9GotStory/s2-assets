@@ -115,7 +115,7 @@ export const AssignmentFactItem: React.FC<AssignmentFactItemProps> = ({ event, a
           </Link>{' '}
           {VERIFICATION_DATE_LABEL} <time dateTime={event.verification_revision.verification_date}>{thaiDate(event.verification_revision.verification_date)}</time>
           {event.verification_revision.is_voided && (
-            <span data-testid={`assignment-verification-source-voided-${event.id}`} style={{ marginLeft: '0.5rem', fontWeight: 600, color: '#b91c1c' }}>
+            <span data-testid={`assignment-cited-revision-voided-${event.id}`} style={{ marginLeft: '0.5rem', fontWeight: 600, color: '#b91c1c' }}>
               (ผลตรวจนั้นยกเลิกแล้ว)
             </span>
           )}

@@ -1,6 +1,6 @@
 // What the API answers about Repair Records (F005-T1, T2, T5, T6), and their labels from GLOSSARY.md (#98 Q14).
 
-import { thaiDate } from './assignmentFacts';
+import { thaiDate, type CitedVerificationRevisionView } from './assignmentFacts';
 import type { LoanCondition } from './loanFacts';
 import type { PermanentAssignment } from './ReferenceContextFields';
 
@@ -39,12 +39,7 @@ export interface LoanReturnRepairSource {
 }
 
 // The result Found ชำรุด that led to a Repair Record, with its Round, as it stands now (F006-T7, #125 Q12, P1).
-export interface VerificationRevisionRepairSource {
-  verification_revision_id: string;
-  verification_round: { id: string; name: string };
-  verification_date: string;
-  is_voided: boolean;
-}
+export type VerificationRevisionRepairSource = CitedVerificationRevisionView;
 
 // A record cites at most one.
 export type RepairSource = LoanReturnRepairSource | VerificationRevisionRepairSource;

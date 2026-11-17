@@ -241,7 +241,9 @@ describe('Reassignment from a result (Seam A - F006-T8)', () => {
       const unassigned = (await api.post(custodian, '/assets', { name: `ของ ${crypto.randomUUID()}` })).json().asset.id;
       const before = await assignmentOf(assetId);
 
-      expect((await movedFrom(assetId, elsewhere, 'not-a-uuid')).statusCode).toBe(400);
+      const notUuid = await movedFrom(assetId, elsewhere, 'not-a-uuid');
+      expect(notUuid.statusCode).toBe(400);
+      expect(notUuid.json()).toMatchObject({ code: 'VALIDATION_FAILED', message: expect.stringContaining('verification_revision_id must be a valid UUID') });
       const initial = await api.post(
         custodian,
         `/assets/${unassigned}/assignments`,
@@ -249,6 +251,7 @@ describe('Reassignment from a result (Seam A - F006-T8)', () => {
         { 'x-retry-token': crypto.randomUUID() }
       );
       expect(initial.statusCode).toBe(400);
+      expect(initial.json()).toMatchObject({ code: 'VALIDATION_FAILED', message: expect.stringContaining('Only a Reassignment may cite a Verification Revision') });
       const bulk = await api.post(
         custodian,
         '/assets/bulk-reassignments',
@@ -256,6 +259,7 @@ describe('Reassignment from a result (Seam A - F006-T8)', () => {
         { 'x-retry-token': crypto.randomUUID() }
       );
       expect(bulk.statusCode).toBe(400);
+      expect(bulk.json()).toMatchObject({ code: 'VALIDATION_FAILED', message: expect.stringContaining('verification_revision_id') });
       expect(await assignmentOf(assetId)).toEqual(before);
       expect((await assignmentOf(unassigned)).timeline).toEqual([]);
     });

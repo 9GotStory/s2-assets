@@ -5,6 +5,7 @@ import { loanContextOf, type LoanContext } from './loan-read.service.ts';
 import { repairRecordsCitingRevisions, underRepairOfAssets, type CitingRepairRecord, type RepairKind } from './repair-read.service.ts';
 import { citedByLiveReassignment } from './reassignment-citations.ts';
 import { citedByLiveRepairRecord } from './repair-source-citations.ts';
+import { DAMAGED_CONDITION, LOCATION_MISMATCH_CONDITION } from './verification-revision-read.ts';
 
 export type VerificationRoundState = 'OPEN' | 'CLOSED' | 'VOIDED';
 export type VerificationRoundEventKind = 'OPENED' | 'EDITED' | 'CLOSED' | 'REOPENED' | 'VOIDED';
@@ -229,12 +230,11 @@ export interface ScopeEntryPage {
   has_more: boolean;
 }
 
-// When the revision aliased `v` notes each Discrepancy (#125 AV-07, AV-08, Q26). "Location ไม่ตรงทะเบียน" compares
-// the Observed Location with the Location in effect on the Verification Date that the revision stored: an empty
-// or Legacy-text one counts as different, and a left-out Observed Location as matching.
+// When the revision aliased `v` notes each Discrepancy (#125 AV-07, AV-08, Q26); the two derived ones are shared with
+// the writes that cite a result.
 const DISCREPANCY_CONDITIONS: Record<Discrepancy, (v: string) => string> = {
-  LOCATION_MISMATCH: (v) => `(${v}.observed_location_id IS NOT NULL AND ${v}.observed_location_id IS DISTINCT FROM ${v}.location_id)`,
-  DAMAGED: (v) => `(${v}.result = 'FOUND' AND ${v}.condition = 'DAMAGED')`,
+  LOCATION_MISMATCH: LOCATION_MISMATCH_CONDITION,
+  DAMAGED: DAMAGED_CONDITION,
   LABEL_MISSING_OR_DAMAGED: (v) => `${v}.label_missing_or_damaged`,
   DATA_MISMATCH: (v) => `${v}.data_mismatch`,
 };

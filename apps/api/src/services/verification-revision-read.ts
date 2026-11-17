@@ -5,6 +5,13 @@ import pg from 'pg';
 // imports no reads at run time, so those modules read it while verification-read.service.ts reads theirs, without
 // an import cycle.
 
+// The two Discrepancies a result's stored values derive, as SQL over the revision aliased `v` (#125 AV-07, Q7, Q26):
+// verification-read.service.ts reads every result with them, and a citing write checks the one it needs.
+// "Location ไม่ตรงทะเบียน" compares the Observed Location with the Location in effect on the Verification Date that the
+// revision stored: an empty or Legacy-text one counts as different, and a left-out Observed Location as matching.
+export const LOCATION_MISMATCH_CONDITION = (v: string) => `(${v}.observed_location_id IS NOT NULL AND ${v}.observed_location_id IS DISTINCT FROM ${v}.location_id)`;
+export const DAMAGED_CONDITION = (v: string) => `(${v}.result = 'FOUND' AND ${v}.condition = 'DAMAGED')`;
+
 export interface CitedVerificationRevision {
   verification_revision_id: string;
   verification_round: { id: string; name: string };
@@ -12,8 +19,7 @@ export interface CitedVerificationRevision {
   asset_id: string;
   // Found ชำรุด, as a Repair Source must be (#125 Q12).
   is_damaged: boolean;
-  // "Location ไม่ตรงทะเบียน", as a result a Reassignment cites must have (#125 Q13): the Observed Location differs
-  // from the Location in effect that the revision stored, as verification-read.service.ts derives it.
+  // "Location ไม่ตรงทะเบียน", as a result a Reassignment cites must have (#125 Q13).
   has_location_mismatch: boolean;
   // Voided by a Verification Correction (#125 Q18).
   is_voided: boolean;
@@ -42,8 +48,7 @@ const citedOf = (row: any): CitedVerificationRevision => ({
 
 const CITED_REVISIONS = `SELECT v.id, r.id AS verification_round_id, r.name AS verification_round_name,
             to_char(v.verification_date, 'YYYY-MM-DD') AS verification_date, e.asset_id,
-            (v.result = 'FOUND' AND v.condition = 'DAMAGED') AS is_damaged,
-            (v.observed_location_id IS NOT NULL AND v.observed_location_id IS DISTINCT FROM v.location_id) AS has_location_mismatch, v.is_voided
+            ${DAMAGED_CONDITION('v')} AS is_damaged, ${LOCATION_MISMATCH_CONDITION('v')} AS has_location_mismatch, v.is_voided
      FROM verification_revisions v
      JOIN verification_scope_entries e ON e.id = v.verification_scope_entry_id
      JOIN verification_rounds r ON r.id = e.verification_round_id`;

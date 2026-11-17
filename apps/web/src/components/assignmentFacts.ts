@@ -51,13 +51,13 @@ export interface AssignmentEvent {
   bulk_reference: string | null;
   // The result with "Location ไม่ตรงทะเบียน" a Reassignment moved the Asset from, with its Round, as it stands now
   // (F006-T8, #125 Q13, P1); null for any other fact.
-  verification_revision: CitedVerificationRevision | null;
+  verification_revision: CitedVerificationRevisionView | null;
   changes: AssignmentChange[];
   corrections: AssignmentCorrection[];
 }
 
-// A result another record cites, with its Round and Verification Date, voided later or not (F006-T8, #125 P1).
-export interface CitedVerificationRevision {
+// A result another record cites, with its Round and Verification Date, voided later or not (F006-T7, F006-T8, #125 P1).
+export interface CitedVerificationRevisionView {
   verification_revision_id: string;
   verification_round: { id: string; name: string };
   verification_date: string;

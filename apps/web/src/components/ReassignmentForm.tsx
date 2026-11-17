@@ -5,7 +5,7 @@ import { REFERENCE_DIMENSIONS } from './ReferenceContextFields';
 import { KIND_LABELS, effectiveDateError, thaiDate, valuesAt, type AssignmentEvent } from './assignmentFacts';
 import type { OnLoan } from './loanFacts';
 import type { UnderRepair } from './repairFacts';
-import { VERIFICATION_DATE_LABEL } from './verificationFacts';
+import { DISCREPANCY_LABELS, VERIFICATION_DATE_LABEL } from './verificationFacts';
 
 // The result with "Location ไม่ตรงทะเบียน" that "ย้าย" opens the form from, cited by the Reassignment (F006-T8, #125 Q13).
 export interface ReassignmentSource {
@@ -16,15 +16,17 @@ export interface ReassignmentSource {
 }
 
 // Why the server refused the result a Reassignment cites (F006-T8).
-const CITED_REVISION_REFUSAL_LABELS: Record<string, string> = {
+type CitedRevisionRefusalReason = 'NOT_VERIFICATION_REVISION' | 'OTHER_ASSET' | 'VOIDED' | 'NO_LOCATION_MISMATCH';
+
+const CITED_REVISION_REFUSAL_LABELS: Record<CitedRevisionRefusalReason, string> = {
   NOT_VERIFICATION_REVISION: 'ไม่พบผลตรวจที่อ้างถึง',
   OTHER_ASSET: 'ผลตรวจนั้นเป็นของครุภัณฑ์อื่น',
   VOIDED: 'ผลตรวจนั้นยกเลิกแล้ว',
-  NO_LOCATION_MISMATCH: 'ผลตรวจนั้นไม่มี Location ไม่ตรงทะเบียน',
+  NO_LOCATION_MISMATCH: `ผลตรวจนั้นไม่มี${DISCREPANCY_LABELS.LOCATION_MISMATCH}`,
 };
 
 const citedRevisionRefusal = (body: any): string | null =>
-  body?.code === 'CITED_VERIFICATION_REVISION_REFUSED' ? `ย้ายจากผลตรวจนี้ไม่ได้ เพราะ${CITED_REVISION_REFUSAL_LABELS[body.verification_revision?.reason] ?? 'ผลตรวจนั้นอ้างถึงไม่ได้'}` : null;
+  body?.code === 'CITED_VERIFICATION_REVISION_REFUSED' ? `ย้ายจากผลตรวจนี้ไม่ได้ เพราะ${CITED_REVISION_REFUSAL_LABELS[body.verification_revision?.reason as CitedRevisionRefusalReason] ?? 'ผลตรวจนั้นอ้างถึงไม่ได้'}` : null;
 
 export interface ReassignmentFormProps {
   save: AssignmentSaveProps;
@@ -80,16 +82,16 @@ export const ReassignmentForm: React.FC<ReassignmentFormProps> = ({ save, timeli
         <>
           {source && (
             <p id="reassignment-verification-source" style={{ margin: '0 0 0.75rem 0', fontSize: '0.875rem', color: '#374151', overflowWrap: 'anywhere' }}>
-              ที่มา: ผลตรวจประจำปี {source.roundName} พบที่สถานที่อื่น {VERIFICATION_DATE_LABEL}{' '}
+              ที่มา: ผลตรวจประจำปี {source.roundName} {DISCREPANCY_LABELS.LOCATION_MISMATCH} {VERIFICATION_DATE_LABEL}{' '}
               <time dateTime={source.verificationDate}>{thaiDate(source.verificationDate)}</time>
             </p>
           )}
           <ReassignmentFields
-          draft={draft}
-          isLocked={isLocked}
-          priorValues={priorValues}
-          onLoanAssets={onLoan ? [{ id: save.assetId, label: 'ครุภัณฑ์นี้', onLoan }] : []}
-          underRepairAssets={underRepair ? [{ id: save.assetId, label: 'ครุภัณฑ์นี้', underRepair }] : []}
+            draft={draft}
+            isLocked={isLocked}
+            priorValues={priorValues}
+            onLoanAssets={onLoan ? [{ id: save.assetId, label: 'ครุภัณฑ์นี้', onLoan }] : []}
+            underRepairAssets={underRepair ? [{ id: save.assetId, label: 'ครุภัณฑ์นี้', underRepair }] : []}
           />
         </>
       )}

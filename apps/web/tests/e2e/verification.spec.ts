@@ -661,8 +661,16 @@ test.describe.serial('Verification journeys: Real SPA -> Composed API -> Postgre
     const { asset: chair } = await assetService.registerAsset(custodianUserId, { name: 'เก้าอี้ E2E ย้าย', asset_number: 'E2E-VR-802', location_id: room.id, effective_date: '2026-01-05' } as any);
     const roundName = 'ตรวจสอบพัสดุประจำปี 2569 ย้าย';
     const { verification_round_id: roundId } = await verificationService.open(custodianUserId, { name: roundName, fiscal_year: 2569, location_ids: [room.id] }, { retryToken: crypto.randomUUID() });
+    const revisionOf: Record<string, string> = {};
     for (const asset of [desk, chair]) {
-      await verificationService.record(staffUserId, roundId, asset.id, { result: 'FOUND', condition: 'NORMAL', observed_location_id: hall.id }, { retryToken: crypto.randomUUID() });
+      const { verification_revision_id: revisionId } = await verificationService.record(
+        staffUserId,
+        roundId,
+        asset.id,
+        { result: 'FOUND', condition: 'NORMAL', observed_location_id: hall.id },
+        { retryToken: crypto.randomUUID() }
+      );
+      revisionOf[asset.id] = revisionId;
     }
     const verificationDate = new Intl.DateTimeFormat('en-CA', { timeZone: 'Asia/Bangkok' }).format(new Date());
 
@@ -682,7 +690,7 @@ test.describe.serial('Verification journeys: Real SPA -> Composed API -> Postgre
     await expect(page).toHaveURL(/awaiting_action=true/);
     await expect(page.locator('#scope-entry-list-count')).toContainText('พบ 2 รายการ');
     await page.locator(`#scope-entry-reassign-action-${desk.id}`).click();
-    await expect(page.locator('#reassignment-verification-source')).toContainText(`ที่มา: ผลตรวจประจำปี ${roundName} พบที่สถานที่อื่น วันที่ตรวจ`);
+    await expect(page.locator('#reassignment-verification-source')).toContainText(`ที่มา: ผลตรวจประจำปี ${roundName} Location ไม่ตรงทะเบียน วันที่ตรวจ`);
     await expect(page.locator('#assignment-location_id')).toHaveValue(hall.id);
     await expect(page.locator('#assignment-effective_date')).toHaveValue(verificationDate);
     await expect(page.locator('#assignment-prior-location')).toContainText('ห้องประชุม E2E ย้าย');
@@ -699,26 +707,40 @@ test.describe.serial('Verification journeys: Real SPA -> Composed API -> Postgre
     // The result stays as recorded: its Discrepancy is still shown (Q15).
     await expect(page.locator(`[data-testid="scope-entry-discrepancies-${desk.id}"]`)).toContainText('Location ไม่ตรงทะเบียน');
 
-    // From the chair's panel the Custodian moves it too; the timeline names the Round and links to it.
+    // From the chair's panel the Custodian moves it too, a day before the check this time (P2: the date may change);
+    // the timeline names the Round and links to it.
     await page.goto(`${targetBaseUrl}/assets/${chair.id}`);
     await page.locator('#verification-reassign-action').click();
     await expect(page.locator('#reassignment-verification-source')).toContainText(`ผลตรวจประจำปี ${roundName}`);
     await expect(page.locator('#assignment-location_id')).toHaveValue(hall.id);
+    const dayBefore = new Date(`${verificationDate}T00:00:00Z`);
+    dayBefore.setUTCDate(dayBefore.getUTCDate() - 1);
+    await page.locator('#assignment-effective_date').fill(dayBefore.toISOString().slice(0, 10));
     await page.locator('#assignment-submit').click();
     await expect(page.locator('[data-testid="verification-panel-current-reassigned"]')).toContainText('ย้ายแล้ว');
     await expect(page.locator('#detail-location')).toContainText('ห้องโถง E2E ย้าย');
     const source = page.locator('[data-testid^="assignment-verification-source-"]');
     await expect(source).toHaveCount(1);
     await expect(source).toContainText(`ย้ายจากผลตรวจประจำปี ${roundName} วันที่ตรวจ`);
+    const saved = await pool.query(`SELECT to_char(effective_date, 'YYYY-MM-DD') AS effective_date FROM assignment_events WHERE verification_revision_id = $1`, [revisionOf[chair.id]]);
+    expect(saved.rows).toEqual([{ effective_date: dayBefore.toISOString().slice(0, 10) }]);
+    await expect(page.locator('[data-testid^="assignment-cited-revision-voided-"]')).toHaveCount(0);
+
+    // A Verification Correction voids the chair's result: the Reassignment stays and shows its source ยกเลิกแล้ว (P1).
+    await verificationService.correct(custodianUserId, roundId, chair.id, { verification_revision_id: revisionOf[chair.id], reason: 'บันทึกผิดครุภัณฑ์' }, { retryToken: crypto.randomUUID() });
+    await page.reload();
+    await expect(source).toContainText(`ย้ายจากผลตรวจประจำปี ${roundName}`);
+    await expect(page.locator('[data-testid^="assignment-cited-revision-voided-"]')).toContainText('ผลตรวจนั้นยกเลิกแล้ว');
+    await expect(page.locator('#detail-location')).toContainText('ห้องโถง E2E ย้าย');
     await source.getByRole('link').click();
     await expect(page).toHaveURL(`${targetBaseUrl}/verification-rounds/${roundId}`);
 
-    // A Read-only User sees "ย้ายแล้ว" with no action, and nothing awaits an action.
+    // A Read-only User sees "ย้ายแล้ว" with no action, and nothing awaits an action: the chair is Not Yet Verified again.
     await switchActor(page, context, readonlyUserId);
     await page.goto(`${targetBaseUrl}/verification-rounds/${roundId}?awaiting_action=true`);
     await expect(page.locator('#scope-entry-list-count')).toHaveText('ไม่พบรายการ');
     await page.goto(`${targetBaseUrl}/verification-rounds/${roundId}`);
-    await expect(page.locator(`[data-testid="scope-entry-reassigned-${chair.id}"]`)).toContainText('ย้ายแล้ว');
+    await expect(page.locator(`[data-testid="scope-entry-reassigned-${desk.id}"]`)).toContainText('ย้ายแล้ว');
     await expect(page.locator('[id^="scope-entry-reassign-action-"]')).toHaveCount(0);
   });
 });
