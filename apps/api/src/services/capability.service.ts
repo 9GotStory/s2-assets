@@ -42,17 +42,18 @@ export const KNOWN_CAPABILITIES = [
   'verification:record',
   'verification:manage',
   'verification:correct',
+  'retirement:record',
 ] as const;
 
 export type Capability = (typeof KNOWN_CAPABILITIES)[number];
 
 /**
- * Immutable role-to-capability mapping (Feature 002 T1–T7, Features 003 to 006 approved matrix).
+ * Immutable role-to-capability mapping (Feature 002 T1–T7, Features 003 to 007 approved matrix).
  *
  * - SYSTEM_MAINTAINER: grants 'system:maintain' (preserves foundation maintenance grant)
  * - ADMINISTRATOR: grants 'system:maintain', 'asset:view', 'asset:correct', 'asset:search', 'acquisition:view', 'evidence:view', 'evidence:correct', 'reference:maintain', 'assignment:correct' (#50 Q3: Assignment Correction), 'loan:correct' (#74 Q12: Loan Correction), 'repair:correct' (#98 Q2: Repair Correction), 'verification:correct' (#125 Q1: Verification Correction, Reopen and voiding a Verification Round)
  * - READ_ONLY: grants 'asset:view', 'asset:search', 'acquisition:view', 'evidence:view' (view and search for registry, acquisitions & evidence)
- * - ASSET_CUSTODIAN: grants 'asset:view', 'asset:duplicate-check', 'asset:register', 'asset:bulk-register', 'asset:correct', 'asset:search', 'acquisition:create', 'acquisition:view', 'evidence:view', 'evidence:create', 'evidence:correct', 'assignment:reassign', 'assignment:correct' (#50 Q3: Initial Assignment, Reassignment and Assignment Correction), 'loan:record' (#74 Q12: starting a Loan), 'loan:correct' (#74 Q12: Loan Correction), 'repair:record' (#98 Q2: a Repair Start and its Repair Outcome), 'repair:correct' (#98 Q2: Repair Correction), 'verification:record' (#125 Q1: an Asset Verification and a Re-verification), 'verification:manage' (#125 Q1: opening, editing and closing a Verification Round, and a Late Addition), 'verification:correct' (#125 Q1: Verification Correction, Reopen and voiding a Verification Round)
+ * - ASSET_CUSTODIAN: grants 'asset:view', 'asset:duplicate-check', 'asset:register', 'asset:bulk-register', 'asset:correct', 'asset:search', 'acquisition:create', 'acquisition:view', 'evidence:view', 'evidence:create', 'evidence:correct', 'assignment:reassign', 'assignment:correct' (#50 Q3: Initial Assignment, Reassignment and Assignment Correction), 'loan:record' (#74 Q12: starting a Loan), 'loan:correct' (#74 Q12: Loan Correction), 'repair:record' (#98 Q2: a Repair Start and its Repair Outcome), 'repair:correct' (#98 Q2: Repair Correction), 'verification:record' (#125 Q1: an Asset Verification and a Re-verification), 'verification:manage' (#125 Q1: opening, editing and closing a Verification Round, and a Late Addition), 'verification:correct' (#125 Q1: Verification Correction, Reopen and voiding a Verification Round), 'retirement:record' (#154 Q6: recording a Retirement)
  * - VERIFICATION_STAFF: grants 'asset:view', 'asset:search', 'verification:record' (#125 Q1: Verification Staff)
  * - Unknown roles: empty / unmapped
  */
@@ -99,6 +100,7 @@ export const ROLE_CAPABILITY_MAP: Readonly<Record<string, readonly string[]>> = 
     'verification:record',
     'verification:manage',
     'verification:correct',
+    'retirement:record',
   ] as const),
   VERIFICATION_STAFF: Object.freeze(['asset:view', 'asset:search', 'verification:record'] as const),
 });

@@ -1,0 +1,210 @@
+import { test, expect } from '@playwright/test';
+import { createServer, type ViteDevServer } from 'vite';
+import * as crypto from 'node:crypto';
+import * as path from 'node:path';
+import * as fs from 'node:fs';
+import { fileURLToPath } from 'node:url';
+import { PostgreSqlContainer, pg, type FastifyInstance, type StartedPostgreSqlContainer } from '../../../api/tests/journey-deps.ts';
+import { runMigrator } from '../../../../packages/db/src/migrator.ts';
+import { buildApp } from '../../../api/src/app.ts';
+import { UserService } from '../../../api/src/services/user.service.ts';
+import { SessionService } from '../../../api/src/services/session.service.ts';
+import { AssetService } from '../../../api/src/services/asset.service.ts';
+import { LoanService } from '../../../api/src/services/loan.service.ts';
+import { repositoryProxyConfig } from '../../vite.config.ts';
+
+const { Pool } = pg;
+
+const __filename = fileURLToPath(import.meta.url);
+const __dirname = path.dirname(__filename);
+const webRoot = path.resolve(__dirname, '../..');
+const migrationFolder = path.resolve(__dirname, '../../../../packages/db/src/migrations');
+
+// F007-T1 (#155): recording a Retirement from the Asset page, after resolving the Loan that kept the Asset,
+// and seeing the Retired Asset on its page and in the Asset list.
+test.describe.serial('Retirement journeys: Real SPA -> Composed API -> PostgreSQL (Seam B)', () => {
+  let container: StartedPostgreSqlContainer;
+  let pool: pg.Pool;
+  let fastifyApp: FastifyInstance;
+  let viteServer: ViteDevServer;
+  let targetBaseUrl: string;
+  let sessionService: SessionService;
+  let assetService: AssetService;
+  let loanService: LoanService;
+
+  let custodianUserId: string;
+  let readonlyUserId: string;
+
+  test.beforeAll(async () => {
+    test.setTimeout(120_000);
+
+    if (!process.env.TESTCONTAINERS_RYUK_DISABLED) {
+      process.env.TESTCONTAINERS_RYUK_DISABLED = 'true';
+    }
+    if (!process.env.DOCKER_HOST) {
+      const uid = typeof process.getuid === 'function' ? process.getuid() : 1001;
+      const podmanSocket = `/run/user/${uid}/podman/podman.sock`;
+      if (fs.existsSync(podmanSocket)) {
+        process.env.DOCKER_HOST = `unix://${podmanSocket}`;
+      }
+    }
+
+    container = await new PostgreSqlContainer('postgres:18.6-alpine').start();
+    const databaseUrl = container.getConnectionUri();
+    await runMigrator({ command: 'latest', databaseUrl, migrationFolder });
+
+    pool = new Pool({ connectionString: databaseUrl });
+    sessionService = new SessionService({ db: pool });
+    assetService = new AssetService({ db: pool });
+    loanService = new LoanService({ db: pool });
+
+    fastifyApp = await buildApp({
+      db: pool,
+      cookieSecret: 'test-secret-at-least-32-chars-long-retirement-e2e',
+      logger: false,
+    });
+    const fastifyAddr = await fastifyApp.listen({ port: 0, host: '127.0.0.1' });
+    const match = fastifyAddr.match(/:(\d+)$/);
+    const fastifyPort = match ? parseInt(match[1], 10) : 3000;
+
+    const passwordHash = await UserService.hashPassword('Password123!');
+    const createUser = async (username: string, role: string): Promise<string> => {
+      const res = await pool.query(
+        'INSERT INTO users (username, password_hash, is_active) VALUES ($1, $2, true) RETURNING id',
+        [username, passwordHash]
+      );
+      await pool.query('INSERT INTO user_roles (user_id, role_id) VALUES ($1, $2)', [res.rows[0].id, role]);
+      return res.rows[0].id;
+    };
+    custodianUserId = await createUser('custodian_retirement', 'ASSET_CUSTODIAN');
+    readonlyUserId = await createUser('readonly_retirement', 'READ_ONLY');
+
+    const testProxy: Record<string, any> = {};
+    for (const [route, opts] of Object.entries(repositoryProxyConfig)) {
+      testProxy[route] = { ...opts, target: `http://127.0.0.1:${fastifyPort}` };
+    }
+    viteServer = await createServer({
+      root: webRoot,
+      configFile: path.resolve(webRoot, 'vite.config.ts'),
+      server: { port: 0, strictPort: false, proxy: testProxy },
+    });
+    await viteServer.listen();
+    const address = viteServer.httpServer?.address();
+    targetBaseUrl =
+      typeof address === 'object' && address ? `http://localhost:${address.port}` : 'http://localhost:5173';
+    (fastifyApp as any).publicAppOrigin = targetBaseUrl;
+  });
+
+  test.afterAll(async () => {
+    if (viteServer) await viteServer.close();
+    if (fastifyApp) await fastifyApp.close();
+    if (pool) await pool.end();
+    if (container) await container.stop();
+  });
+
+  const loginAs = async (context: any, userId: string) => {
+    const session = await sessionService.createSession(userId);
+    await context.addCookies([{ name: 'session', value: session.token, url: targetBaseUrl }]);
+  };
+
+  const switchActor = async (page: any, context: any, userId: string) => {
+    await page.goto('about:blank');
+    await loginAs(context, userId);
+  };
+
+  const daysAgo = (days: number) => {
+    const today = new Intl.DateTimeFormat('en-CA', { timeZone: 'Asia/Bangkok', year: 'numeric', month: '2-digit', day: '2-digit' }).format(new Date());
+    return new Date(Date.parse(`${today}T00:00:00Z`) - days * 86_400_000).toISOString().slice(0, 10);
+  };
+
+  test('Journey F007-T1.1: a Custodian cannot retire an Asset On Loan, ends its LoanItem Not Returned, retires it, and finds it as "จำหน่ายแล้ว"; a Read-only User sees the Retirement with no action', async ({ page, context }) => {
+    const { asset: lost } = await assetService.registerAsset(custodianUserId, { name: 'เครื่องฉาย E2E จำหน่าย' } as any);
+    const { asset: kept } = await assetService.registerAsset(custodianUserId, { name: 'เครื่องฉาย E2E ยังใช้อยู่' } as any);
+    const { loan_id: loanId, items } = await loanService.start(
+      custodianUserId,
+      { assets: [{ asset_id: lost.id, condition: 'NORMAL' }], borrower: { kind: 'EXTERNAL', contact_name: 'คุณผู้ยืม E2E จำหน่าย' }, loan_date: daysAgo(5), due_date: '2099-12-31' },
+      { retryToken: crypto.randomUUID() }
+    );
+
+    // On Loan: "จำหน่าย" is offered, and says why it cannot go on, linking to the Loan instead of the form.
+    await loginAs(context, custodianUserId);
+    await page.goto(`${targetBaseUrl}/assets/${lost.id}`);
+    await expect(page.locator('[data-testid="retirement-history-empty"]')).toBeVisible();
+    await page.locator('#retirement-action').click();
+    await expect(page.locator('[data-testid="retirement-blocked"]')).toContainText('กำลังถูกยืม');
+    await expect(page.locator('#retirement-form')).toHaveCount(0);
+    await page.locator('#retirement-blocked-link').click();
+    await expect(page).toHaveURL(new RegExp(`/loans/${loanId}$`));
+
+    // It never came back: the Custodian ends the LoanItem Not Returned, as it really ended.
+    await page.locator('#loan-not-returned-action').click();
+    await page.locator(`#loan-not-returned-select-${items[0].id}`).check();
+    await page.locator('#loan-not-returned-date').fill(daysAgo(1));
+    await page.locator('#loan-not-returned-reason').fill('ผู้ยืมแจ้งว่าทำหาย');
+    await page.locator('#loan-not-returned-submit').click();
+    await expect(page.locator('[data-testid="loan-item-not-returned"]')).toContainText('ปิดโดยไม่ได้รับคืน');
+
+    // Now the Asset can be retired; the form asks for the Retirement Method first.
+    await page.goto(`${targetBaseUrl}/assets/${lost.id}`);
+    await expect(page.locator('#repair-action')).toBeVisible();
+    await expect(page.locator('#assignment-action')).toBeVisible();
+    await expect(page.locator('[data-testid="retired-banner"]')).toHaveCount(0);
+    await page.locator('#retirement-action').click();
+    await expect(page.locator('[data-testid="retirement-blocked"]')).toHaveCount(0);
+    await page.locator('#retirement-submit').click();
+    await expect(page.locator('[data-testid="retirement-form-error"]')).toContainText('กรุณาเลือกวิธีจำหน่าย');
+    await page.locator('#retirement-retirement_method').selectOption('DECLARED_LOSS');
+    await page.locator('#retirement-retirement_reference').fill('คำสั่งจำหน่ายเป็นสูญ 7/2569');
+    await page.locator('#retirement-note').fill('ผู้ยืมทำหาย ไม่ได้รับคืน');
+    await page.locator('#retirement-submit').click();
+
+    // Its page says "จำหน่ายแล้ว" at the top, shows the Retirement, and offers no new event.
+    const banner = page.locator('[data-testid="retired-banner"]');
+    await expect(banner).toContainText('จำหน่ายแล้ว');
+    await expect(banner).toContainText('จำหน่ายเป็นสูญ');
+    const history = page.locator('[data-testid="retirement-history"]');
+    await expect(history).toContainText('จำหน่ายเป็นสูญ');
+    await expect(history).toContainText('คำสั่งจำหน่ายเป็นสูญ 7/2569');
+    await expect(history).toContainText('custodian_retirement');
+    await expect(page.locator('[data-testid="current-assignment-as-at-retirement"]')).toContainText('ณ วันจำหน่าย');
+    await expect(page.locator('#retirement-action')).toHaveCount(0);
+    await expect(page.locator('#repair-action')).toHaveCount(0);
+    await expect(page.locator('#assignment-action')).toHaveCount(0);
+    await expect(page.locator('#loan-action')).toHaveCount(0);
+    // Its history and register correction stay.
+    await expect(page.locator('[data-testid="loan-history-not-returned"]')).toContainText('ปิดโดยไม่ได้รับคืน');
+    await expect(page.locator('#asset-correction-form')).toBeVisible();
+
+    // The Asset list shows every Asset, marks the Retired one, and the filter "จำหน่ายแล้ว" finds it alone.
+    await page.goto(`${targetBaseUrl}/assets/search`);
+    await page.locator('#search-field').selectOption('name');
+    await page.locator('#search-value').fill('เครื่องฉาย E2E');
+    await page.locator('#search-submit-btn').click();
+    await expect(page.locator('#results-count-summary')).toContainText('พบ 2 รายการ');
+    await expect(page.locator(`[data-testid="search-result-retired-${lost.id}"]`)).toContainText('จำหน่ายแล้ว');
+    await expect(page.locator(`[data-testid="search-result-retired-${kept.id}"]`)).toHaveCount(0);
+    await page.locator('#search-filter-retired').selectOption('true');
+    await page.locator('#search-submit-btn').click();
+    await expect(page.locator('#results-count-summary')).toContainText('พบ 1 รายการ');
+    await expect(page.locator(`[data-testid="search-result-row-${lost.id}"]`)).toBeVisible();
+    await page.locator('#search-filter-retired').selectOption('false');
+    await page.locator('#search-submit-btn').click();
+    await expect(page.locator('#results-count-summary')).toContainText('พบ 1 รายการ');
+    await expect(page.locator(`[data-testid="search-result-row-${kept.id}"]`)).toBeVisible();
+
+    // A Custodian is offered "จำหน่าย" on an Asset still in use; a Read-only User is not.
+    await page.goto(`${targetBaseUrl}/assets/${kept.id}`);
+    await expect(page.locator('#retirement-action')).toBeVisible();
+    await switchActor(page, context, readonlyUserId);
+    await page.goto(`${targetBaseUrl}/assets/${kept.id}`);
+    await expect(page.locator('[data-testid="retirement-history-empty"]')).toBeVisible();
+    await expect(page.locator('#retirement-action')).toHaveCount(0);
+
+    // The Read-only User opens the Retired Asset as its QR link would, and sees the Retirement with no action.
+    await page.goto(`${targetBaseUrl}/assets/${lost.id}`);
+    await expect(page.locator('[data-testid="retired-banner"]')).toContainText('จำหน่ายเป็นสูญ');
+    await expect(page.locator('[data-testid="retirement-history"]')).toContainText('คำสั่งจำหน่ายเป็นสูญ 7/2569');
+    await expect(page.locator('[data-testid="loan-history-not-returned"]')).toContainText('ปิดโดยไม่ได้รับคืน');
+    await expect(page.locator('#retirement-action')).toHaveCount(0);
+  });
+});

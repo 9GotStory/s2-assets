@@ -7,9 +7,10 @@ import type { AssignmentSaveProps } from './AssignmentSaveForm';
 import { InitialAssignmentForm } from './InitialAssignmentForm';
 import { ReassignmentForm } from './ReassignmentForm';
 import { REFERENCE_DIMENSIONS, entryLabel, type CurrentAssignment } from './ReferenceContextFields';
-import { CORRECTION_LABELS, KIND_LABELS, type AssignmentEvent } from './assignmentFacts';
+import { CORRECTION_LABELS, KIND_LABELS, thaiDate, type AssignmentEvent } from './assignmentFacts';
 import type { OnLoan } from './loanFacts';
 import type { UnderRepair } from './repairFacts';
+import { AS_AT_RETIREMENT_LABEL } from './retirementFacts';
 
 // The one form open in the section: recording a new fact, or correcting a fact of the timeline.
 type OpenForm = { type: 'RECORD'; kind: AssignmentEvent['kind'] } | { type: 'AMEND' | 'VOID'; eventId: string };
@@ -47,6 +48,8 @@ export interface AssignmentSectionProps {
   onLoan?: OnLoan | null;
   // The Repair Record that keeps the Asset Under Repair, for the same form's notice (F005-T4).
   underRepair?: UnderRepair | null;
+  // F007-T1: the Retirement Date of a Retired Asset, whose Permanent Assignment is shown as at its Retirement (#154 Q14).
+  retirementDate?: string | null;
   isLegacy: boolean;
   csrfToken: string | null;
   onRecorded: () => Promise<void>;
@@ -69,6 +72,7 @@ export const AssignmentSection: React.FC<AssignmentSectionProps> = ({
   hasAssignmentConflict,
   onLoan,
   underRepair,
+  retirementDate = null,
   isLegacy,
   csrfToken,
   onRecorded,
@@ -137,6 +141,12 @@ export const AssignmentSection: React.FC<AssignmentSectionProps> = ({
       >
         สถานที่ หน่วยงาน และผู้รับผิดชอบ
       </h2>
+
+      {retirementDate && (
+        <p data-testid="current-assignment-as-at-retirement" style={{ margin: '0 0 0.5rem 0', fontSize: '0.875rem', color: '#374151', fontWeight: 500 }}>
+          {AS_AT_RETIREMENT_LABEL} <time dateTime={retirementDate}>{thaiDate(retirementDate)}</time>
+        </p>
+      )}
 
       <dl
         data-testid="current-assignment"

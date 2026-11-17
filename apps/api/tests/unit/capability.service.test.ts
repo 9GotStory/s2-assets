@@ -75,7 +75,7 @@ describe('CapabilityService Unit Tests (T024 - US2)', () => {
       expect(ROLE_CAPABILITY_MAP.READ_ONLY).not.toContain('evidence:correct');
     });
 
-    it('maps ASSET_CUSTODIAN to asset:view, asset:duplicate-check, asset:register, asset:bulk-register, asset:correct, asset:search, acquisition:create, acquisition:view, evidence:view, evidence:create, evidence:correct, assignment:reassign, assignment:correct, loan:record, loan:correct, repair:record, repair:correct, verification:record, verification:manage, and verification:correct', () => {
+    it('maps ASSET_CUSTODIAN to asset:view, asset:duplicate-check, asset:register, asset:bulk-register, asset:correct, asset:search, acquisition:create, acquisition:view, evidence:view, evidence:create, evidence:correct, assignment:reassign, assignment:correct, loan:record, loan:correct, repair:record, repair:correct, verification:record, verification:manage, verification:correct, and retirement:record', () => {
       expect(ROLE_CAPABILITY_MAP.ASSET_CUSTODIAN).toEqual([
         'asset:view',
         'asset:duplicate-check',
@@ -97,6 +97,7 @@ describe('CapabilityService Unit Tests (T024 - US2)', () => {
         'verification:record',
         'verification:manage',
         'verification:correct',
+        'retirement:record',
       ]);
       // #98 Q2: only an Asset Custodian records a Repair Start.
       for (const role of ['SYSTEM_MAINTAINER', 'ADMINISTRATOR', 'READ_ONLY']) {
@@ -150,6 +151,15 @@ describe('CapabilityService Unit Tests (T024 - US2)', () => {
         expect(ROLE_CAPABILITY_MAP[role]).not.toContain('verification:correct');
       }
       expect(isKnownCapability('verification:correct')).toBe(true);
+    });
+
+    // F007-T1 (#154 Q6): only an Asset Custodian records a Retirement.
+    it('gives retirement:record to the Asset Custodian alone', () => {
+      expect(ROLE_CAPABILITY_MAP.ASSET_CUSTODIAN).toContain('retirement:record');
+      for (const role of ['SYSTEM_MAINTAINER', 'ADMINISTRATOR', 'READ_ONLY', 'VERIFICATION_STAFF']) {
+        expect(ROLE_CAPABILITY_MAP[role]).not.toContain('retirement:record');
+      }
+      expect(isKnownCapability('retirement:record')).toBe(true);
     });
 
     it('validates UUIDs correctly with isValidUuid', () => {

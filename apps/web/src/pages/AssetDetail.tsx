@@ -8,10 +8,13 @@ import { AssignmentSection } from '../components/AssignmentSection';
 import { EvidencePanel } from '../components/EvidencePanel';
 import { LoanSection } from '../components/LoanSection';
 import { RepairSection } from '../components/RepairSection';
+import { RetirementSection } from '../components/RetirementSection';
 import { VerificationPanel } from '../components/VerificationPanel';
 import { type CurrentAssignment } from '../components/ReferenceContextFields';
 import { type AssetNotReturned, type OnLoan, type StartLoanWarning } from '../components/loanFacts';
 import { type UnderRepair } from '../components/repairFacts';
+import { RETIRED_LABEL, RETIREMENT_METHOD_LABELS, type Retirement } from '../components/retirementFacts';
+import { thaiDate } from '../components/assignmentFacts';
 import { type AssetVerificationPanel } from '../components/verificationFacts';
 
 export interface AssetRecord {
@@ -73,6 +76,11 @@ export interface AssetDetailResponse {
   can_correct_verification?: boolean;
   // F006-T5: whether the viewer holds 'verification:manage', which adds an Asset to the open Round.
   can_manage_verification?: boolean;
+  // F007-T1: whether the Asset is Retired, by which Retirement, every Retirement of it, and whether the viewer may retire it.
+  retired?: boolean;
+  retirement?: Retirement | null;
+  retirements?: Retirement[];
+  can_retire?: boolean;
 }
 
 export const AssetDetail: React.FC = () => {
@@ -668,6 +676,18 @@ const AssetDetailContent: React.FC = () => {
           </p>
         </div>
 
+        {/* F007-T1 (#154 Q22): a Retired Asset says so before anything else */}
+        {assetData.retirement && (
+          <div
+            role="status"
+            data-testid="retired-banner"
+            style={{ marginBottom: '1.5rem', padding: '0.75rem 1rem', backgroundColor: '#1f2937', color: '#ffffff', borderRadius: '6px', fontWeight: 600 }}
+          >
+            {RETIRED_LABEL} เมื่อ <time dateTime={assetData.retirement.retirement_date}>{thaiDate(assetData.retirement.retirement_date)}</time> ·{' '}
+            {RETIREMENT_METHOD_LABELS[assetData.retirement.retirement_method]}
+          </div>
+        )}
+
         {/* Core Asset Details */}
         <section
           aria-labelledby="core-info-heading"
@@ -823,6 +843,7 @@ const AssetDetailContent: React.FC = () => {
           hasAssignmentConflict={Boolean(assetData.has_assignment_conflict)}
           onLoan={assetData.on_loan ?? null}
           underRepair={assetData.under_repair ?? null}
+          retirementDate={assetData.retirement?.retirement_date ?? null}
           isLegacy={isLegacy}
           csrfToken={csrfToken}
           onRecorded={async () => {
@@ -880,6 +901,24 @@ const AssetDetailContent: React.FC = () => {
 
         {/* Annual verification results (F006-T2): the Asset's current result in every Round */}
         <AssetVerificationSection assetId={asset.id} actorId={currentUser?.id ?? null} dataUpdatedAt={dataUpdatedAt} onPermissionRevoked={handlePermissionRevoked} />
+
+        {/* Retirements (F007-T1): the Asset's own history of leaving use, apart from the register's (#154 P3) */}
+        <RetirementSection
+          assetId={asset.id}
+          retirements={assetData.retirements ?? []}
+          canRetire={Boolean(assetData.can_retire && !isPermissionRevoked)}
+          onLoan={assetData.on_loan ?? null}
+          underRepair={assetData.under_repair ?? null}
+          csrfToken={csrfToken}
+          onRetired={async () => {
+            setRefreshError(null);
+            const refetchResult = await refetch();
+            if (refetchResult.isError) {
+              setRefreshError('บันทึกการจำหน่ายสำเร็จ แต่การดึงข้อมูลล่าสุดล้มเหลว กรุณากดปุ่มเพื่อโหลดข้อมูลใหม่');
+            }
+          }}
+          onPermissionRevoked={handlePermissionRevoked}
+        />
 
         {/* QR Code and Minimal Printing Panel (T8) */}
         <AssetQrLabel
