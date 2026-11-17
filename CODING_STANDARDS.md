@@ -143,3 +143,12 @@ functions. `loan-item-periods.ts` gives the period of a LoanItem to both `loan-r
 `repair-read.service.ts` (F005-T7, #105). The guards see the table only in the leaf, so name a CTE
 that holds the fragment after what it holds, not after the table: `JOIN loan_periods` reads to the guard
 as the table `loan_periods`.
+
+## A derived condition has one SQL source
+
+When a write checks a condition that a read also derives, such as a Discrepancy, "ส่งซ่อมแล้ว" or
+"ย้ายแล้ว", both use one SQL function from a leaf file (`verification-revision-read.ts`,
+`repair-source-citations.ts`, `reassignment-citations.ts`). Review looks for the condition's existing
+source outside the diff, where a copy shows only as new code. In F006-T7 (#132), the cited-revision
+read copied the "ชำรุด" condition of `DISCREPANCY_CONDITIONS` and shipped; F006-T8 (#133) copied
+"Location ไม่ตรงทะเบียน" the same way, and review caught it.

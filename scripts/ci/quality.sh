@@ -55,6 +55,7 @@ if [[ -n $base ]]; then
   note "diff checks against $base"
   git diff --check "$base" HEAD
   scripts/check-glossary.sh "$base"
+  note "diff checks against $base passed"
 fi
 
 note "building $DEV_IMAGE"
