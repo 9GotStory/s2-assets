@@ -169,6 +169,7 @@ describe('Recording a Loan Return (Seam A - F004-T2)', () => {
       const assetId = await registered();
       const { loanId, itemOf } = await lent([assetId]);
 
+      // eslint-disable-next-line no-restricted-syntax -- a refused-payload loop from before #155
       for (const extra of [{ returned_by: 'คุณสมชาย' }, { recorded_by: admin.id }]) {
         const res = await record(loanId, await body(loanId, [itemOf[assetId]], extra));
         expect(res.statusCode).toBe(400);
@@ -197,6 +198,7 @@ describe('Recording a Loan Return (Seam A - F004-T2)', () => {
       const { loanId, itemOf } = await lent([assetId]);
       const itemId = itemOf[assetId];
 
+      // eslint-disable-next-line no-restricted-syntax -- a refused-payload loop from before #155
       for (const items of [
         [],
         [normal(itemId), normal(itemId)],
@@ -227,6 +229,7 @@ describe('Recording a Loan Return (Seam A - F004-T2)', () => {
       const assetId = await registered();
       const { loanId, itemOf } = await lent([assetId]);
 
+      // eslint-disable-next-line no-restricted-syntax -- a refused-payload loop from before #155
       for (const item of [{}, { condition: null }, { condition: '' }, { condition: 'BROKEN' }, { condition: 'ปกติ' }]) {
         const res = await record(loanId, await body(loanId, [], { items: [{ loan_item_id: itemOf[assetId], ...item }] }));
         expect(res.statusCode).toBe(400);
@@ -533,6 +536,7 @@ describe('Recording a Loan Return (Seam A - F004-T2)', () => {
       const assetId = await registered();
       const { loanId } = await lent([assetId]);
 
+      // eslint-disable-next-line no-restricted-syntax -- a refused-payload loop from before #155
       for (const query of ['return_date=soon', 'return_date=2026-02-30', 'return_date=', `return_date=${TODAY}&return_date=${TODAY}`]) {
         const res = await api.get(readonly, `/loans/${loanId}?${query}`);
         expect(res.statusCode).toBe(400);

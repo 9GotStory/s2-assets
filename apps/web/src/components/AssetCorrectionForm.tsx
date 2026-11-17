@@ -606,6 +606,7 @@ export const AssetCorrectionForm: React.FC<AssetCorrectionFormProps> = ({
       }}
     >
       <h3
+        id="correction-heading"
         style={{
           marginTop: 0,
           marginBottom: '1rem',

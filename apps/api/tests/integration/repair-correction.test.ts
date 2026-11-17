@@ -136,6 +136,7 @@ describe('Repair Correction (Seam A - F005-T6)', () => {
       const repairRecordId = await sent(await registered(), { cost: '1500', repairer: { kind: 'EXTERNAL', name: 'ร้านซ่อมดี' } });
       const before = await unchanged(repairRecordId);
 
+      // eslint-disable-next-line no-restricted-syntax -- a refused-payload loop from before #155
       for (const changes of [{ cost: '1500.0' }, { repairer: { kind: 'EXTERNAL', name: ' ร้านซ่อมดี ' } }, { start_date: START }, {}]) {
         const res = await correct(repairRecordId, await amendment(repairRecordId, RECORD, changes));
         expect(res.statusCode).toBe(400);
@@ -160,6 +161,7 @@ describe('Repair Correction (Seam A - F005-T6)', () => {
       const open = await sent(await registered());
       const { repairRecordId } = await endedRecord();
 
+      // eslint-disable-next-line no-restricted-syntax -- a refused-payload loop from before #155
       for (const [id, startDate] of [
         [open, '2026-11-13'],
         [repairRecordId, '2026-11-04'],
@@ -178,6 +180,7 @@ describe('Repair Correction (Seam A - F005-T6)', () => {
       const repairRecordId = await sent(await registered());
       const before = await unchanged(repairRecordId);
 
+      // eslint-disable-next-line no-restricted-syntax -- a refused-payload loop from before #155
       for (const changes of [{ symptom_or_work: '  ' }, { repairer: { kind: 'EXTERNAL', name: 'ร้าน\nซ่อม' } }, { cost: '-1' }, { start_date: '2026-02-30' }]) {
         const res = await correct(repairRecordId, await amendment(repairRecordId, RECORD, changes));
         expect(res.statusCode).toBe(400);
@@ -341,6 +344,7 @@ describe('Repair Correction (Seam A - F005-T6)', () => {
       const target = await outcomeTarget(repairRecordId);
       const before = await unchanged(repairRecordId);
 
+      // eslint-disable-next-line no-restricted-syntax -- a refused-payload loop from before #155
       for (const changes of [{ outcome_date: '2026-11-13' }, { outcome_date: '2026-11-01' }, { next_recommended_maintenance_date: '2026-11-03' }, { outcome_date: '2027-05-01' }]) {
         const res = await correct(repairRecordId, await amendment(repairRecordId, target, changes));
         expect(res.statusCode).toBe(400);
@@ -480,6 +484,7 @@ describe('Repair Correction (Seam A - F005-T6)', () => {
       ] as const) {
         const before = await unchanged(repairRecordId);
         const changes = target.kind === 'REPAIR_RECORD' ? { remark: 'แก้' } : { note: 'แก้' };
+        // eslint-disable-next-line no-restricted-syntax -- a refused-payload loop from before #155
         for (const payload of [await amendment(repairRecordId, target, changes), await voiding(repairRecordId, target)]) {
           const res = await correct(repairRecordId, payload);
           expect(res.statusCode).toBe(400);

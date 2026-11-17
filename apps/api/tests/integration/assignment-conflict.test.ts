@@ -492,6 +492,7 @@ describe('Assignment Conflicts (Seam A - F003-T4)', () => {
     });
 
     it("refuses any value but 'true'", async () => {
+      // eslint-disable-next-line no-restricted-syntax -- a refused-payload loop from before #155
       for (const value of ['false', '1', '']) {
         const res = await api.get(readonly, `/assets/search?has_assignment_conflict=${value}`);
         expect(res.statusCode).toBe(400);

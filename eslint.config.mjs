@@ -43,6 +43,15 @@ const NEGATED = "[expression.argument.callee.object.property.name='not']";
 const NOT_NEGATED = "[expression.argument.callee.object.property.name!='not']";
 const ABSENCE = `ExpressionStatement:matches(${matcher('toHaveCount')}[expression.argument.arguments.0.value=0]${NOT_NEGATED}, ${matcher('toBeHidden')}${NOT_NEGATED}, ${matcher('toBeVisible')}${NEGATED}, ${matcher('toBeAttached')}${NEGATED})`;
 
+// #155 retro: a loop of refused payloads that asserts only a 400 or VALIDATION_FAILED stays green when
+// another rule refuses one of them. Each payload names the rule that refuses it, in the message or details.
+// A loop over a named array goes unseen.
+const REFUSAL_LOOP_NAMES_NO_RULE = {
+  selector:
+    "ForOfStatement[right.type='ArrayExpression']:has(:matches(Literal[value=400], Literal[value='VALIDATION_FAILED'])):not(:has(Identifier[name=/^(message|details)$/]))",
+  message: 'Assert which rule refused each payload, by its message or details: a code alone stays green when another rule refuses it (CODING_STANDARDS.md, #155).',
+};
+
 export default tseslint.config(
   {
     ignores: [
@@ -157,6 +166,7 @@ export default tseslint.config(
           selector: "CallExpression[callee.name='afterAll'][arguments.length>1]",
           message: 'Leave the afterAll timeout to hookTimeout in apps/api/vitest.config.ts: stopping a container can outlast a shorter one (#102).',
         },
+        REFUSAL_LOOP_NAMES_NO_RULE,
       ],
     },
   },

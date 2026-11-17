@@ -154,6 +154,7 @@ describe('Recording a Due Date Extension (Seam A - F004-T5)', () => {
       const { loanId, itemOf } = await lent([assetId]);
       const itemId = itemOf[assetId];
 
+      // eslint-disable-next-line no-restricted-syntax -- a refused-payload loop from before #155
       for (const items of [
         [],
         [{ loan_item_id: itemId }, { loan_item_id: itemId.toUpperCase() }],
@@ -180,6 +181,7 @@ describe('Recording a Due Date Extension (Seam A - F004-T5)', () => {
       const assetId = await registered();
       const { loanId, itemOf } = await lent([assetId]);
 
+      // eslint-disable-next-line no-restricted-syntax -- a refused-payload loop from before #155
       for (const reason of [over(2000), 'ก\u0007ข']) {
         const res = await extend(loanId, await body(loanId, [itemOf[assetId]], { reason }));
         expect(res.statusCode).toBe(400);
@@ -196,6 +198,7 @@ describe('Recording a Due Date Extension (Seam A - F004-T5)', () => {
       expect((await extend(loanId, await body(loanId, [itemOf[late]], { new_due_date: '2026-11-25' }))).statusCode).toBe(201);
       const before = await loanOf(loanId);
 
+      // eslint-disable-next-line no-restricted-syntax -- a refused-payload loop from before #155
       for (const newDate of [DUE, '2026-11-04', '2026-11-25', '2026-11-24']) {
         const res = await extend(loanId, await body(loanId, [itemOf[early], itemOf[late]], { new_due_date: newDate }));
         expect(res.statusCode, newDate).toBe(400);
@@ -219,6 +222,7 @@ describe('Recording a Due Date Extension (Seam A - F004-T5)', () => {
       const assetId = await registered();
       const { loanId, itemOf } = await lent([assetId]);
 
+      // eslint-disable-next-line no-restricted-syntax -- a refused-payload loop from before #155
       for (const newDate of ['2026-02-30', '20/11/2026', '', null]) {
         expect((await extend(loanId, await body(loanId, [itemOf[assetId]], { new_due_date: newDate }))).statusCode).toBe(400);
       }

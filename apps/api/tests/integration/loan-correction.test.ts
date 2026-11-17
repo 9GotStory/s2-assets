@@ -177,6 +177,7 @@ describe('Loan Correction (Seam A - F004-T6)', () => {
       });
 
       const before = await loanOf(loanId);
+      // eslint-disable-next-line no-restricted-syntax -- a refused-payload loop from before #155
       for (const changes of [{ authorizer_person_id: crypto.randomUUID() }, { borrower: { kind: 'INTERNAL', person_id: crypto.randomUUID() } }, { authorizer_person_id: 'ผู้อนุญาต' }]) {
         const res = await correct(loanId, await amendment(loanId, { kind: 'LOAN' }, changes));
         expect(res.statusCode).toBe(400);
@@ -292,6 +293,7 @@ describe('Loan Correction (Seam A - F004-T6)', () => {
       const early = await correct(loanId, await amendment(loanId, { kind: 'LOAN_ITEM', id: itemOf[assetId] }, { due_date: '2026-10-31' }));
       expect(early.statusCode).toBe(400);
       expect(early.json().message).toMatch(/Due Date/);
+      // eslint-disable-next-line no-restricted-syntax -- a refused-payload loop from before #155
       for (const changes of [{ asset_id: await registered() }, { return_date: TODAY }, { loan_date: LOAN_DATE }]) {
         expect((await correct(loanId, await amendment(loanId, { kind: 'LOAN_ITEM', id: itemOf[assetId] }, changes))).statusCode).toBe(400);
       }
@@ -506,6 +508,7 @@ describe('Loan Correction (Seam A - F004-T6)', () => {
       }
       expect((await correct(crypto.randomUUID(), await voiding(loanId, { kind: 'LOAN' }))).statusCode).toBe(404);
       expect((await correct('not-a-loan', await voiding(loanId, { kind: 'LOAN' }))).statusCode).toBe(400);
+      // eslint-disable-next-line no-restricted-syntax -- a refused-payload loop from before #155
       for (const target of [{ kind: 'LOAN_ITEM', id: 'item' }, { kind: 'LOAN_ITEM' }, { kind: 'ASSET', id: mine }, { kind: 'LOAN', id: loanId }]) {
         expect((await correct(loanId, await voiding(loanId, target))).statusCode).toBe(400);
       }
