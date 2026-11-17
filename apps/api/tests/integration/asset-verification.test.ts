@@ -133,6 +133,8 @@ describe('Record an Asset Verification (Seam A - F006-T2)', () => {
         recorded_by: staff.id,
         recorded_by_username: 'staff_asset_verification',
         recorded_at: expect.any(String),
+        repair_records: [],
+        sent_for_repair: false,
       });
       expect(Date.parse(entry.current.recorded_at)).toBeGreaterThanOrEqual(before - 1000);
       expect(await entryOf(roundId, other)).toMatchObject({ result: 'NOT_YET_VERIFIED', version: 1, current: null });

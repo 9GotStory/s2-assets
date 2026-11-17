@@ -1,10 +1,11 @@
 // What the API answers about Verification Rounds (F006-T1), Asset Verifications (F006-T2), their
-// Discrepancies (F006-T3) and their revisions (F006-T4), and their labels from GLOSSARY.md (#125).
+// Discrepancies (F006-T3), their revisions (F006-T4) and the Repair Records sent from them (F006-T7), and their
+// labels from GLOSSARY.md (#125).
 
 import type { PermanentAssignment, ReferenceEntry } from './ReferenceContextFields';
 import { thaiDate } from './assignmentFacts';
 import { CONDITION_LABELS, NOT_RETURNED_LABEL, ON_LOAN_LABEL, type LoanCondition } from './loanFacts';
-import { UNDER_REPAIR_LABELS, type RepairKind } from './repairFacts';
+import { UNDER_REPAIR_LABELS, type CitingRepairRecord, type RepairKind } from './repairFacts';
 
 export type VerificationRoundState = 'OPEN' | 'CLOSED' | 'VOIDED';
 export type VerificationRoundEventKind = 'OPENED' | 'EDITED' | 'CLOSED' | 'REOPENED' | 'VOIDED';
@@ -51,6 +52,10 @@ export interface VerificationRevision {
   recorded_by: string;
   recorded_by_username: string | null;
   recorded_at: string;
+  // The Repair Records that cite it as their Repair Source, voided ones too, and "ส่งซ่อมแล้ว": one not voided
+  // does (F006-T7, #125 Q19).
+  repair_records: CitingRepairRecord[];
+  sent_for_repair: boolean;
 }
 
 // The Verification Correction that voided a revision (F006-T4, #125 Q18).
@@ -108,6 +113,8 @@ export interface VerificationRound extends VerificationRoundSummary {
   // Whether the viewer holds 'verification:manage' (close, edit) and 'verification:correct' (Reopen, void), F006-T6.
   can_manage_verification: boolean;
   can_correct_verification: boolean;
+  // Whether the viewer holds 'repair:record', which "ส่งซ่อม" needs (F006-T7, #125 Q22).
+  can_record_repair: boolean;
 }
 
 // What the register showed of an Asset when it joined the Round.
@@ -190,6 +197,9 @@ export const DISCREPANCY_LABEL = 'ข้อแตกต่าง';
 export const REVERIFICATION_LABEL = 'ตรวจซ้ำ';
 export const VERIFICATION_REVISIONS_LABEL = 'ประวัติผลตรวจ';
 export const LATE_ADDITION_LABEL = 'เพิ่มเข้ารอบภายหลัง';
+// A result's follow-up (F006-T7, #125 Q19): derived from the Repair Records that cite it, never ticked.
+export const SENT_FOR_REPAIR_LABEL = 'ส่งซ่อมแล้ว';
+export const AWAITING_ACTION_LABEL = 'ยังไม่มี action ต่อ';
 
 export const DISCREPANCY_LABELS: Record<Discrepancy, string> = {
   LOCATION_MISMATCH: 'Location ไม่ตรงทะเบียน',
@@ -233,6 +243,9 @@ export const ROUND_FIELD_LABELS: Record<string, string> = {
 // A Round as a refusal or a heading names it: its name and fiscal year.
 export const roundLabel = ({ name, fiscal_year: fiscalYear }: Pick<VerificationRoundSummary, 'name' | 'fiscal_year'>): string =>
   `${name} (${FISCAL_YEAR_LABEL} ${fiscalYear})`;
+
+// Whether "ส่งซ่อม" applies to a result: Found ชำรุด (#125 Q12).
+export const isFoundDamaged = (revision: Pick<VerificationRevision, 'result' | 'condition'>): boolean => revision.result === 'FOUND' && revision.condition === 'DAMAGED';
 
 // A result as one label, with its Condition when Found: "พบ · สภาพปกติ".
 export const resultText = (result: VerificationResult, condition: LoanCondition | null | undefined): string =>

@@ -123,6 +123,11 @@ const ScopeEntryQuerySchema = z
     result: z.enum(['FOUND', 'NOT_FOUND', 'NOT_YET_VERIFIED']).optional(),
     discrepancy: z.enum(DISCREPANCIES as [Discrepancy, ...Discrepancy[]]).optional(),
     joined_as: z.enum(JOINED_AS).optional(),
+    // "ยังไม่มี action ต่อ" takes one value; leaving it out lists every entry (F006-T7, Q19).
+    awaiting_action: z
+      .literal('true')
+      .transform(() => true as const)
+      .optional(),
     location_id: z
       .string()
       .refine(isValidUuid, 'must be a valid UUID')
@@ -363,8 +368,8 @@ export const verificationRoutes: FastifyPluginAsync<VerificationRoutesOptions> =
 
   /**
    * GET /verification-rounds/:id
-   * One Round with its filters, counts and history (F006-T1), and whether the viewer may close and edit it, or
-   * reopen and void it (F006-T6).
+   * One Round with its filters, counts and history (F006-T1), whether the viewer may close and edit it, or
+   * reopen and void it (F006-T6), and whether they may send a result Found ชำรุด for repair (F006-T7).
    * Protected: requires 'asset:view' capability
    */
   fastify.get('/verification-rounds/:id', { preHandler: [requireCapability('asset:view')] }, async (request, reply) => {
@@ -379,13 +384,17 @@ export const verificationRoutes: FastifyPluginAsync<VerificationRoutesOptions> =
     }
     const canManageVerification = await capabilityService.hasCapability(request.user!.id, 'verification:manage');
     const canCorrectVerification = await capabilityService.hasCapability(request.user!.id, 'verification:correct');
-    return reply.status(200).send({ ...round, can_manage_verification: canManageVerification, can_correct_verification: canCorrectVerification });
+    // "ส่งซ่อม" on a row Found ชำรุด (F006-T7, #125 Q22).
+    const canRecordRepair = await capabilityService.hasCapability(request.user!.id, 'repair:record');
+    return reply
+      .status(200)
+      .send({ ...round, can_manage_verification: canManageVerification, can_correct_verification: canCorrectVerification, can_record_repair: canRecordRepair });
   });
 
   /**
    * GET /verification-rounds/:id/entries
    * A page of the Round's Scope Snapshot, searchable (F006-T1), filtered by result (F006-T2), Discrepancy and
-   * snapshot Location (F006-T3), and by Late Addition (F006-T5). The logger names a request by its path, so a search stays out of the logs.
+   * snapshot Location (F006-T3), by Late Addition (F006-T5), and by "ยังไม่มี action ต่อ" (F006-T7). The logger names a request by its path, so a search stays out of the logs.
    * Protected: requires 'asset:view' capability
    */
   fastify.get('/verification-rounds/:id/entries', { preHandler: [requireCapability('asset:view')] }, async (request, reply) => {

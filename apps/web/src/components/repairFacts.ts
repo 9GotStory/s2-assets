@@ -1,5 +1,6 @@
 // What the API answers about Repair Records (F005-T1, T2, T5, T6), and their labels from GLOSSARY.md (#98 Q14).
 
+import { thaiDate } from './assignmentFacts';
 import type { LoanCondition } from './loanFacts';
 import type { PermanentAssignment } from './ReferenceContextFields';
 
@@ -29,7 +30,7 @@ export interface RepairOutcome {
 }
 
 // The Loan Return recorded ชำรุด that led to a Repair Record, as it stands now (F005-T5, #98 Q5).
-export interface RepairSource {
+export interface LoanReturnRepairSource {
   loan_return_id: string;
   loan_id: string;
   return_date: string;
@@ -37,7 +38,28 @@ export interface RepairSource {
   is_voided: boolean;
 }
 
-// A Repair Record as the Loan page lists it beside the Loan Return it cites (F005-T5).
+// The result Found ชำรุด that led to a Repair Record, with its Round, as it stands now (F006-T7, #125 Q12, P1).
+export interface VerificationRevisionRepairSource {
+  verification_revision_id: string;
+  verification_round: { id: string; name: string };
+  verification_date: string;
+  is_voided: boolean;
+}
+
+// A record cites at most one.
+export type RepairSource = LoanReturnRepairSource | VerificationRevisionRepairSource;
+
+export const isLoanReturnSource = (source: RepairSource): source is LoanReturnRepairSource => 'loan_return_id' in source;
+
+// A result cited as a Repair Source, as one line: its Round and Verification Date.
+export const revisionSourceText = ({ verification_round: round, verification_date: date }: Pick<VerificationRevisionRepairSource, 'verification_round' | 'verification_date'>): string =>
+  `ผลตรวจประจำปี ${round.name} วันที่ตรวจ ${thaiDate(date)}`;
+
+// The id a Repair Source is cited by, whichever kind it is.
+export const repairSourceIdOf = (source: RepairSource): string => (isLoanReturnSource(source) ? source.loan_return_id : source.verification_revision_id);
+
+// A Repair Record as the Loan page lists it beside the Loan Return it cites (F005-T5), and a result beside the
+// Verification Revision it cites (F006-T7).
 export interface CitingRepairRecord {
   id: string;
   repair_kind: RepairKind;
@@ -102,7 +124,8 @@ export type RepairCorrectionTarget = { kind: 'REPAIR_RECORD' } | { kind: 'REPAIR
 
 // What a correction changed of one field. A Repair Source comes as it stands now.
 export type RepairCorrectionField =
-  | { field: 'repair_source_loan_return_id'; before: RepairSource | null; after: RepairSource | null }
+  | { field: 'repair_source_loan_return_id'; before: LoanReturnRepairSource | null; after: LoanReturnRepairSource | null }
+  | { field: 'repair_source_verification_revision_id'; before: VerificationRevisionRepairSource | null; after: VerificationRevisionRepairSource | null }
   | { field: string; before: string | null; after: string | null };
 
 export interface RepairCorrection {
@@ -139,18 +162,28 @@ export type RepairStartRefusal = { asset_id: string; name: string | null; asset_
   | { reason: 'UNDER_REPAIR'; repair_record_id: string; repair_kind: RepairKind }
 );
 
-// Why the server refused a Repair Source (F005-T5).
-export interface RepairSourceRefusal {
-  loan_return_id: string;
-  reason: 'NOT_LOAN_RETURN' | 'VOIDED' | 'OTHER_ASSET' | 'NOT_DAMAGED';
-}
+// Why the server refused a Repair Source (F005-T5, F006-T7).
+export type RepairSourceRefusal =
+  | { loan_return_id: string; reason: 'NOT_LOAN_RETURN' | 'VOIDED' | 'OTHER_ASSET' | 'NOT_DAMAGED' }
+  | { verification_revision_id: string; reason: 'NOT_VERIFICATION_REVISION' | 'VOIDED' | 'OTHER_ASSET' | 'NOT_DAMAGED' };
 
-export const REPAIR_SOURCE_REFUSAL_LABELS: Record<RepairSourceRefusal['reason'], string> = {
+const LOAN_RETURN_SOURCE_REFUSAL_LABELS: Record<Extract<RepairSourceRefusal, { loan_return_id: string }>['reason'], string> = {
   NOT_LOAN_RETURN: 'ไม่พบการคืนที่อ้างถึง',
   VOIDED: 'การคืนนั้นยกเลิกแล้ว',
   OTHER_ASSET: 'การคืนนั้นเป็นของครุภัณฑ์อื่น',
   NOT_DAMAGED: 'การคืนนั้นไม่ได้บันทึกสภาพชำรุด',
 };
+
+const REVISION_SOURCE_REFUSAL_LABELS: Record<Extract<RepairSourceRefusal, { verification_revision_id: string }>['reason'], string> = {
+  NOT_VERIFICATION_REVISION: 'ไม่พบผลตรวจที่อ้างถึง',
+  VOIDED: 'ผลตรวจนั้นยกเลิกแล้ว',
+  OTHER_ASSET: 'ผลตรวจนั้นเป็นของครุภัณฑ์อื่น',
+  NOT_DAMAGED: 'ผลตรวจนั้นไม่ได้พบสภาพชำรุด',
+};
+
+// Why a Repair Source was refused, as the sentence "ส่งซ่อมไม่ได้ เพราะ…" ends.
+export const repairSourceRefusalText = (refusal: RepairSourceRefusal): string =>
+  'loan_return_id' in refusal ? LOAN_RETURN_SOURCE_REFUSAL_LABELS[refusal.reason] : REVISION_SOURCE_REFUSAL_LABELS[refusal.reason];
 
 // Why the server refused a Repair Outcome.
 export interface RepairOutcomeRefusal {

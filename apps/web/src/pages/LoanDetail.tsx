@@ -394,7 +394,7 @@ const LoanDetailContent: React.FC = () => {
                     <div style={{ marginTop: '0.75rem' }}>
                       <RepairStartForm
                         assetId={item.asset.id}
-                        repairSource={{ loanReturnId: item.loan_return.id, returnDate: item.loan_return.return_date, conditionNote: item.loan_return.condition_note }}
+                        repairSource={{ kind: 'LOAN_RETURN', loanReturnId: item.loan_return.id, returnDate: item.loan_return.return_date, conditionNote: item.loan_return.condition_note }}
                         csrfToken={formProps.csrfToken}
                         onStarted={formProps.onRecorded}
                         onCancel={formProps.onCancel}

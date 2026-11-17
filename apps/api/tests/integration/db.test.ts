@@ -35,6 +35,7 @@ const MIGRATIONS = [
   '0018_verification_revisions',
   '0019_verification_discrepancies',
   '0020_verification_corrections',
+  '0021_repair_source_verification_revisions',
 ] as const;
 
 describe('Database Migrations Integration', () => {

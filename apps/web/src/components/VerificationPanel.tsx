@@ -1,20 +1,24 @@
 import React, { useState } from 'react';
 import { Link } from 'react-router';
+import { RepairStartForm } from './RepairStartForm';
 import { VerificationLateAdditionForm } from './VerificationLateAdditionForm';
 import { VerificationRecordForm } from './VerificationRecordForm';
 import { VerificationVoidForm } from './VerificationVoidForm';
 import { entryLabel } from './ReferenceContextFields';
 import { CORRECTION_LABELS, thaiDate } from './assignmentFacts';
+import { REPAIR_START_LABEL } from './repairFacts';
 import {
   DISCREPANCY_LABEL,
   LATE_ADDITION_LABEL,
   OBSERVED_LOCATION_LABEL,
   RESULT_LABELS,
   REVERIFICATION_LABEL,
+  SENT_FOR_REPAIR_LABEL,
   VERIFICATION_DATE_LABEL,
   VERIFICATION_PANEL_LABEL,
   VERIFICATION_ROUND_LABEL,
   discrepancyText,
+  isFoundDamaged,
   recordedByText,
   recordedContextText,
   resultText,
@@ -33,6 +37,8 @@ export interface VerificationPanelProps {
   canCorrect: boolean;
   // Whether the viewer holds 'verification:manage', which adds an Asset not in the Round (F006-T5).
   canManage: boolean;
+  // Whether the viewer holds 'repair:record', which sends a result Found ชำรุด for repair (F006-T7, #125 Q22).
+  canRecordRepair: boolean;
   csrfToken: string | null;
   onRecorded: () => Promise<void>;
   onPermissionRevoked?: (statusCode?: number) => void;
@@ -74,6 +80,33 @@ export const RecordingContextLine: React.FC<{ context: RecordingContext }> = ({ 
     </>
   );
 };
+
+// "ส่งซ่อมแล้ว" with a link to each Repair Record not voided that cites the result (F006-T7, #125 Q19); nothing when
+// none does.
+export const SentForRepairLine: React.FC<{ revision: VerificationRevision; testId: string }> = ({ revision, testId }) => {
+  if (!revision.sent_for_repair) {
+    return null;
+  }
+  return (
+    <div data-testid={testId} style={{ color: '#166534', fontWeight: 600, overflowWrap: 'anywhere' }}>
+      {SENT_FOR_REPAIR_LABEL}
+      {revision.repair_records
+        .filter(({ is_voided: isVoided }) => !isVoided)
+        .map(({ id, start_date: startDate }) => (
+          <React.Fragment key={id}>
+            {' '}
+            <Link to={`/repairs/${id}`} style={{ color: '#2563eb', textDecoration: 'underline', fontWeight: 400 }}>
+              ดูรายการซ่อม ({thaiDate(startDate)})
+            </Link>
+          </React.Fragment>
+        ))}
+    </div>
+  );
+};
+
+// What "ส่งซ่อม" opens the Repair Start form with: the result as its Repair Source (#125 Q12).
+export const repairSourceOfResult = (revision: VerificationRevision, roundName: string) =>
+  ({ kind: 'VERIFICATION_REVISION', verificationRevisionId: revision.id, roundName, verificationDate: revision.verification_date, note: revision.note }) as const;
 
 // Every Discrepancy a result notes, a line each (#125 Q7, AV-08).
 const DiscrepancyItems: React.FC<{ revision: VerificationRevision; testId: string }> = ({ revision, testId }) => (
@@ -127,6 +160,7 @@ export const RevisionFacts: React.FC<{ revision: VerificationRevision; testId: s
           <dt style={termStyle}>{DISCREPANCY_LABEL}:</dt>
           <dd style={{ ...valueStyle, color: '#991b1b', fontWeight: 600 }}>
             <DiscrepancyItems revision={revision} testId={`${testId}-discrepancies`} />
+            <SentForRepairLine revision={revision} testId={`${testId}-sent-for-repair`} />
           </dd>
         </>
       )}
@@ -166,12 +200,22 @@ export const RevisionFacts: React.FC<{ revision: VerificationRevision; testId: s
  * once it has one, or that the Asset is not in the Round; and the Loan or Repair context in each case. Beside the
  * result it offers "ตรวจซ้ำ" and, to holders of 'verification:correct', "ยกเลิกรายการ (บันทึกผิด)" (F006-T4, Q18, Q20).
  * Beside the note that the Asset is not in the Round it offers holders of 'verification:manage' "เพิ่มเข้ารอบภายหลัง"
- * (F006-T5, Q11).
+ * (F006-T5, Q11). Beside a result Found ชำรุด it offers holders of 'repair:record' "ส่งซ่อม" (F006-T7, Q12, Q22).
  */
-export const VerificationPanel: React.FC<VerificationPanelProps> = ({ assetId, panel, canRecord, canCorrect, canManage, csrfToken, onRecorded, onPermissionRevoked }) => {
+export const VerificationPanel: React.FC<VerificationPanelProps> = ({
+  assetId,
+  panel,
+  canRecord,
+  canCorrect,
+  canManage,
+  canRecordRepair,
+  csrfToken,
+  onRecorded,
+  onPermissionRevoked,
+}) => {
   const { open_round: round, entry, context } = panel;
   // The form open over the current result, or over the note that the Asset is not in the Round, if any.
-  const [openForm, setOpenForm] = useState<'REVERIFY' | 'VOID' | 'LATE_ADDITION' | null>(null);
+  const [openForm, setOpenForm] = useState<'REVERIFY' | 'VOID' | 'LATE_ADDITION' | 'REPAIR' | null>(null);
   const current = entry?.current ?? null;
   const afterSave = async () => {
     await onRecorded();
@@ -180,6 +224,7 @@ export const VerificationPanel: React.FC<VerificationPanelProps> = ({ assetId, p
   // The Asset page reads the Asset only once /auth/session-check has answered, so the CSRF token is there before
   // this form is (#135).
   const mayRecord = canRecord && entry !== null && entry.current === null;
+  const mayRepair = canRecordRepair && current !== null && isFoundDamaged(current);
 
   return (
     <section aria-labelledby="verification-panel-heading" id="verification-panel" style={{ marginBottom: '2rem', border: '2px solid #2563eb', borderRadius: '8px', padding: '1rem' }}>
@@ -226,8 +271,13 @@ export const VerificationPanel: React.FC<VerificationPanelProps> = ({ assetId, p
         </div>
       )}
       {current && <RevisionFacts revision={current} testId="verification-panel-current" />}
-      {current && openForm === null && (canRecord || canCorrect) && (
+      {current && openForm === null && (canRecord || canCorrect || mayRepair) && (
         <div style={{ display: 'flex', flexWrap: 'wrap', gap: '0.5rem', marginTop: '0.75rem' }}>
+          {mayRepair && (
+            <button type="button" id="verification-repair-action" onClick={() => setOpenForm('REPAIR')} style={actionStyle}>
+              {REPAIR_START_LABEL}
+            </button>
+          )}
           {canRecord && (
             <button type="button" id="verification-reverify-action" onClick={() => setOpenForm('REVERIFY')} style={actionStyle}>
               {REVERIFICATION_LABEL}
@@ -250,6 +300,19 @@ export const VerificationPanel: React.FC<VerificationPanelProps> = ({ assetId, p
             expectedRevisionId={current.id}
             onRecorded={afterSave}
             onClose={() => setOpenForm(null)}
+            onPermissionRevoked={onPermissionRevoked}
+          />
+        </div>
+      )}
+      {current && openForm === 'REPAIR' && mayRepair && (
+        <div style={{ marginTop: '0.75rem' }}>
+          <RepairStartForm
+            key={current.id}
+            assetId={assetId}
+            repairSource={repairSourceOfResult(current, round.name)}
+            csrfToken={csrfToken}
+            onStarted={afterSave}
+            onCancel={() => setOpenForm(null)}
             onPermissionRevoked={onPermissionRevoked}
           />
         </div>
