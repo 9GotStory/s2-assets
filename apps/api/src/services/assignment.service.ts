@@ -3,6 +3,7 @@ import { isValidUuid } from './capability.service.ts';
 import { hasDisallowedControlChars, hasStrictControlChars } from './control-characters.ts';
 import { findUnassignableEntry } from './reference.service.ts';
 import { ValidationError } from './validation-error.ts';
+import { citedRevisionViewOf, verificationRevisionsOf, type CitedVerificationRevisionView } from './verification-revision-read.ts';
 
 /**
  * An Asset's Permanent Assignment (ADR 0001): its Location, OrganizationUnit and Responsible
@@ -54,8 +55,11 @@ interface AssignmentFactInput {
 // The Initial Assignment a registration records with its dimension values (#50 Q11, Q17).
 export interface InitialAssignmentInput extends AssignmentInput, AssignmentFactInput {}
 
-// A Reassignment's request. Legacy text can be named here only for the service to refuse it.
-export interface ReassignmentInput extends AssignmentInput, AssignmentFactInput {}
+// A Reassignment's request. Legacy text can be named here only for the service to refuse it. A single
+// Reassignment may cite the result it moves an Asset from (F006-T8, #125 Q13).
+export interface ReassignmentInput extends AssignmentInput, AssignmentFactInput {
+  verification_revision_id?: string | null;
+}
 
 export interface InitialAssignmentFacts {
   values: AssignmentValues;
@@ -125,6 +129,10 @@ export interface AssignmentEvent {
   is_voided: boolean;
   // What the events of one Bulk Reassignment share; null for any other fact.
   bulk_reference: string | null;
+  // The result with "Location ไม่ตรงทะเบียน" a Reassignment moved the Asset from (F006-T8, AV-15, MR-12, #125
+  // Q13), with its Round and Verification Date; null for any other fact. Read as it stands now: voided later by a
+  // Verification Correction, the Reassignment still cites it (P1).
+  verification_revision: CitedVerificationRevisionView | null;
   changes: AssignmentChange[];
   corrections: AssignmentCorrection[];
 }
@@ -390,6 +398,9 @@ export interface ReassignmentFacts {
   effective_date: string;
   document_reference: string | null;
   remark: string | null;
+  // The result it moves the Asset from, when it cites one; left out otherwise, so a request that cites none keeps
+  // the retry fingerprint it had before citations existed.
+  verification_revision_id?: string;
 }
 
 /**
@@ -409,6 +420,10 @@ export function normalizeReassignment(input: ReassignmentInput, today: string): 
     throw new ValidationError('effective_date is required on a Reassignment: a date (YYYY-MM-DD), never unknown');
   }
   const values = normalizeAssignment(input);
+  const revisionId = input.verification_revision_id ?? null;
+  if (revisionId !== null && !isValidUuid(revisionId)) {
+    throw new ValidationError('verification_revision_id must be a valid UUID');
+  }
   return {
     targets: Object.fromEntries(
       REFERENCE_ID_FIELDS.filter((field) => input[field] !== undefined).map((field) => [field, values[field]])
@@ -416,6 +431,7 @@ export function normalizeReassignment(input: ReassignmentInput, today: string): 
     effective_date: normalizeEffectiveDate(input.effective_date, today, '') as string,
     document_reference: normalizeText(input.document_reference, 'document_reference', DOCUMENT_REFERENCE_MAX_LENGTH, ''),
     remark: normalizeText(input.remark, 'remark', REMARK_MAX_LENGTH, ''),
+    ...(revisionId !== null ? { verification_revision_id: revisionId.trim().toLowerCase() } : {}),
   };
 }
 
@@ -455,10 +471,11 @@ export async function recordReassignmentIfItChanges(
   );
 
   const eventRes = await client.query(
-    `INSERT INTO assignment_events (asset_id, kind, effective_date, recorded_by, provenance, document_reference, remark, bulk_reference)
-     VALUES ($1, 'REASSIGNMENT', $2, $3, 'RECORDED', $4, $5, $6)
+    `INSERT INTO assignment_events (asset_id, kind, effective_date, recorded_by, provenance, document_reference, remark, bulk_reference,
+                                    verification_revision_id)
+     VALUES ($1, 'REASSIGNMENT', $2, $3, 'RECORDED', $4, $5, $6, $7)
      RETURNING id`,
-    [assetId, facts.effective_date, actorId, facts.document_reference, facts.remark, bulkReference ?? null]
+    [assetId, facts.effective_date, actorId, facts.document_reference, facts.remark, bulkReference ?? null, facts.verification_revision_id ?? null]
   );
   const eventId: string = eventRes.rows[0].id;
   for (const { dimension, column, target, priorEntry, priorLegacy } of changes) {
@@ -479,6 +496,29 @@ export async function recordReassignment(client: pg.PoolClient | pg.Pool, input:
     throw new ValidationError('This Reassignment changes nothing at its Effective Date');
   }
   return eventId;
+}
+
+// A Reassignment as a result lists it beside the Verification Revision it cites (F006-T8, #125 Q19).
+export interface CitingReassignment {
+  id: string;
+  effective_date: string;
+  is_voided: boolean;
+}
+
+/** The Reassignments citing each of `revisionIds`, voided ones too, by revision, in the order of facts (F006-T8). */
+export async function reassignmentsCitingRevisions(db: pg.Pool | pg.PoolClient | any, revisionIds: string[]): Promise<Map<string, CitingReassignment[]>> {
+  const res = await db.query(
+    `SELECT e.verification_revision_id, e.id, to_char(e.effective_date, 'YYYY-MM-DD') AS effective_date, e.is_voided
+     FROM assignment_events e
+     WHERE e.verification_revision_id = ANY($1::uuid[])
+     ORDER BY e.effective_date, e.recorded_at, e.id`,
+    [revisionIds]
+  );
+  const citing = new Map<string, CitingReassignment[]>();
+  for (const { verification_revision_id: revisionId, ...reassignment } of res.rows) {
+    citing.set(revisionId, [...(citing.get(revisionId) ?? []), reassignment]);
+  }
+  return citing;
 }
 
 // An Asset under a batch's lock.
@@ -713,7 +753,7 @@ export async function readAssignmentTimeline(
   const eventsRes = await client.query(
     `SELECT e.id, e.kind, to_char(e.effective_date, 'YYYY-MM-DD') AS effective_date, e.recorded_at,
             e.recorded_by, u.username AS recorded_by_username, e.provenance, e.document_reference, e.remark, e.is_voided,
-            e.bulk_reference
+            e.bulk_reference, e.verification_revision_id
      FROM assignment_events e
      LEFT JOIN users u ON u.id = e.recorded_by
      WHERE e.asset_id = $1
@@ -759,6 +799,8 @@ export async function readAssignmentTimeline(
     correctionsRes.rows.flatMap((correction: any) => correction.changes)
   );
   const conflicts = await readAssignmentConflicts(client, assetId);
+  const citedIds = eventsRes.rows.map((row: any) => row.verification_revision_id).filter(Boolean);
+  const cited = citedIds.length > 0 ? await verificationRevisionsOf(client, citedIds) : new Map();
   const conflictOf = (eventId: string, key: AssignmentDimension): AssignmentChange['conflict'] => {
     const conflict = conflicts.find(({ event_id, dimension }) => event_id === eventId && dimension === key);
     return conflict ? { value_just_before: conflict.value_just_before } : null;
@@ -775,6 +817,7 @@ export async function readAssignmentTimeline(
     remark: row.remark ?? null,
     is_voided: row.is_voided,
     bulk_reference: row.bulk_reference ?? null,
+    verification_revision: cited.has(row.verification_revision_id) ? citedRevisionViewOf(cited.get(row.verification_revision_id)) : null,
     changes: DIMENSIONS.flatMap(({ key, dimension }) =>
       changesRes.rows
         .filter((change: any) => change.event_id === row.id && change.dimension === dimension)

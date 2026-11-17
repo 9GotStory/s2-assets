@@ -261,9 +261,13 @@ Discrepancy changes nothing in the register; a Reassignment or Repair Record may
 A current result whose ชำรุด a Repair Record not voided cites as its Repair Source. It is read from
 that record, never set by hand: voiding the record, or a new current result, ends it.
 
+**Reassigned** (ย้ายแล้ว):
+A current result whose Location ไม่ตรงทะเบียน a Reassignment not voided cites. It is read from that
+Reassignment, never set by hand: voiding the Reassignment, or a new current result, ends it.
+
 **Awaiting Action** (ยังไม่มี action ต่อ):
 A current result with a Discrepancy that no record follows yet: ชำรุด without Sent for Repair, or
-Location ไม่ตรงทะเบียน not yet followed by a Reassignment.
+Location ไม่ตรงทะเบียน without Reassigned.
 
 **Closed Round** (ปิดรอบแล้ว):
 A Verification Round no longer taking results, kept as a historical record until a Reopen. Not a

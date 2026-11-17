@@ -49,10 +49,17 @@ export interface ReassignmentDraft {
   requestFields: Record<string, unknown>;
 }
 
+// What a draft starts with instead of today and no change: "ย้าย" from a result fills in its Verification Date and
+// Observed Location (F006-T8, #125 P2).
+export interface ReassignmentDraftStart {
+  effectiveDate: string;
+  locationId: string;
+}
+
 /** What a user has entered for one Reassignment, for one Asset or for many. */
-export function useReassignmentDraft(actorId: string | null): ReassignmentDraft {
-  const [effectiveDate, setEffectiveDate] = useState(bangkokToday);
-  const [targets, setTargets] = useState<ReassignmentTargets>(NO_CHANGE);
+export function useReassignmentDraft(actorId: string | null, start?: ReassignmentDraftStart): ReassignmentDraft {
+  const [effectiveDate, setEffectiveDate] = useState(() => start?.effectiveDate ?? bangkokToday());
+  const [targets, setTargets] = useState<ReassignmentTargets>(() => (start ? { ...NO_CHANGE, location_id: start.locationId } : NO_CHANGE));
   const [notes, setNotes] = useState<AssignmentNotes>({ documentReference: '', remark: '' });
   const { lists, error: listError } = useReferenceLists(true, actorId);
 

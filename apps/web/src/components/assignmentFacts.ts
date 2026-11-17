@@ -49,8 +49,26 @@ export interface AssignmentEvent {
   is_voided: boolean;
   // What the events of one Bulk Reassignment share (F003-T5).
   bulk_reference: string | null;
+  // The result with "Location ไม่ตรงทะเบียน" a Reassignment moved the Asset from, with its Round, as it stands now
+  // (F006-T8, #125 Q13, P1); null for any other fact.
+  verification_revision: CitedVerificationRevisionView | null;
   changes: AssignmentChange[];
   corrections: AssignmentCorrection[];
+}
+
+// A result another record cites, with its Round and Verification Date, voided later or not (F006-T7, F006-T8, #125 P1).
+export interface CitedVerificationRevisionView {
+  verification_revision_id: string;
+  verification_round: { id: string; name: string };
+  verification_date: string;
+  is_voided: boolean;
+}
+
+// A Reassignment as a result lists it beside the revision it cites (F006-T8, #125 Q19).
+export interface CitingReassignment {
+  id: string;
+  effective_date: string;
+  is_voided: boolean;
 }
 
 // One Assignment Conflict a write would create (F003-T4). A null event_id is the fact being saved.

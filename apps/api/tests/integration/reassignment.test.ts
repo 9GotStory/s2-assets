@@ -195,6 +195,7 @@ describe('Reassign one Asset (Seam A - F003-T2)', () => {
         remark: 'ย้ายตามการปรับห้องทำงาน',
         is_voided: false,
         bulk_reference: null,
+        verification_revision: null,
         changes: [
           {
             dimension: 'location',

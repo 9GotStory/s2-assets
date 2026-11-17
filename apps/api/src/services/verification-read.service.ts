@@ -1,9 +1,11 @@
 import pg from 'pg';
 import { assetExists, containsPattern } from './asset-lookups.ts';
-import type { PermanentAssignment, ReferenceEntrySummary } from './assignment.service.ts';
+import { reassignmentsCitingRevisions, type CitingReassignment, type PermanentAssignment, type ReferenceEntrySummary } from './assignment.service.ts';
 import { loanContextOf, type LoanContext } from './loan-read.service.ts';
 import { repairRecordsCitingRevisions, underRepairOfAssets, type CitingRepairRecord, type RepairKind } from './repair-read.service.ts';
+import { citedByLiveReassignment } from './reassignment-citations.ts';
 import { citedByLiveRepairRecord } from './repair-source-citations.ts';
+import { DAMAGED_CONDITION, LOCATION_MISMATCH_CONDITION } from './verification-revision-read.ts';
 
 export type VerificationRoundState = 'OPEN' | 'CLOSED' | 'VOIDED';
 export type VerificationRoundEventKind = 'OPENED' | 'EDITED' | 'CLOSED' | 'REOPENED' | 'VOIDED';
@@ -76,6 +78,10 @@ export interface VerificationRevision {
   // "ส่งซ่อมแล้ว": one not voided cites it. Derived on read; on the current revision it is the result's follow-up.
   repair_records: CitingRepairRecord[];
   sent_for_repair: boolean;
+  // F006-T8 (#125 Q19): the Reassignments that cite it, voided ones too, in the order of facts, and "ย้ายแล้ว": one
+  // not voided cites it. Derived on read, as "ส่งซ่อมแล้ว" is.
+  reassignments: CitingReassignment[];
+  reassigned: boolean;
 }
 
 // The Verification Correction that voided a revision (F006-T4, #125 Q18).
@@ -184,7 +190,8 @@ export interface ScopeEntryFilters {
   joined_as?: JoinedAs;
   // The Location the Scope Snapshot holds, to walk the office room by room (P5).
   location_id?: string;
-  // "ยังไม่มี action ต่อ": the current result is ชำรุด without "ส่งซ่อมแล้ว" (F006-T7, Q19).
+  // "ยังไม่มี action ต่อ": the current result is ชำรุด without "ส่งซ่อมแล้ว" (F006-T7), or has "Location ไม่ตรงทะเบียน"
+  // without "ย้ายแล้ว" (F006-T8, Q19).
   awaiting_action?: true;
   limit: number;
   offset: number;
@@ -223,12 +230,11 @@ export interface ScopeEntryPage {
   has_more: boolean;
 }
 
-// When the revision aliased `v` notes each Discrepancy (#125 AV-07, AV-08, Q26). "Location ไม่ตรงทะเบียน" compares
-// the Observed Location with the Location in effect on the Verification Date that the revision stored: an empty
-// or Legacy-text one counts as different, and a left-out Observed Location as matching.
+// When the revision aliased `v` notes each Discrepancy (#125 AV-07, AV-08, Q26); the two derived ones are shared with
+// the writes that cite a result.
 const DISCREPANCY_CONDITIONS: Record<Discrepancy, (v: string) => string> = {
-  LOCATION_MISMATCH: (v) => `(${v}.observed_location_id IS NOT NULL AND ${v}.observed_location_id IS DISTINCT FROM ${v}.location_id)`,
-  DAMAGED: (v) => `(${v}.result = 'FOUND' AND ${v}.condition = 'DAMAGED')`,
+  LOCATION_MISMATCH: LOCATION_MISMATCH_CONDITION,
+  DAMAGED: DAMAGED_CONDITION,
   LABEL_MISSING_OR_DAMAGED: (v) => `${v}.label_missing_or_damaged`,
   DATA_MISMATCH: (v) => `${v}.data_mismatch`,
 };
@@ -237,8 +243,13 @@ export const DISCREPANCIES = Object.keys(DISCREPANCY_CONDITIONS) as Discrepancy[
 // "ส่งซ่อมแล้ว": a Repair Record not voided cites the revision aliased `v` (#125 Q19).
 const sentForRepair = (v: string) => citedByLiveRepairRecord(`${v}.id`);
 
-// "ยังไม่มี action ต่อ" of the current revision aliased `v`: ชำรุด without "ส่งซ่อมแล้ว" (#125 Q19).
-const awaitingAction = (v: string) => `(${DISCREPANCY_CONDITIONS.DAMAGED(v)} AND NOT ${sentForRepair(v)})`;
+// "ย้ายแล้ว": a Reassignment not voided cites the revision aliased `v` (#125 Q19).
+const reassigned = (v: string) => citedByLiveReassignment(`${v}.id`);
+
+// "ยังไม่มี action ต่อ" of the current revision aliased `v`: ชำรุด without "ส่งซ่อมแล้ว", or "Location ไม่ตรงทะเบียน"
+// without "ย้ายแล้ว" (#125 Q19).
+const awaitingAction = (v: string) =>
+  `((${DISCREPANCY_CONDITIONS.DAMAGED(v)} AND NOT ${sentForRepair(v)}) OR (${DISCREPANCY_CONDITIONS.LOCATION_MISMATCH(v)} AND NOT ${reassigned(v)}))`;
 
 // Every Discrepancy the revision aliased `v` notes, as a text array.
 const discrepanciesOf = (v: string) => `array_remove(ARRAY[${DISCREPANCIES.map((d) => `CASE WHEN ${DISCREPANCY_CONDITIONS[d](v)} THEN '${d}' END`).join(', ')}]::text[], NULL)`;
@@ -323,12 +334,19 @@ const revisionOf = (row: any): VerificationRevision => ({
   recorded_at: new Date(row.recorded_at).toISOString(),
   repair_records: [],
   sent_for_repair: row.sent_for_repair,
+  reassignments: [],
+  reassigned: row.reassigned,
 });
 
-// `revisions` with the Repair Records that cite each.
-async function withRepairRecords<R extends VerificationRevision>(db: pg.Pool | pg.PoolClient | any, revisions: R[]): Promise<R[]> {
-  const citing = revisions.length > 0 ? await repairRecordsCitingRevisions(db, revisions.map(({ id }) => id)) : new Map<string, CitingRepairRecord[]>();
-  return revisions.map((revision) => ({ ...revision, repair_records: citing.get(revision.id) ?? [] }));
+// `revisions` with the Repair Records and the Reassignments that cite each.
+async function withCitingRecords<R extends VerificationRevision>(db: pg.Pool | pg.PoolClient | any, revisions: R[]): Promise<R[]> {
+  if (revisions.length === 0) {
+    return revisions;
+  }
+  const ids = revisions.map(({ id }) => id);
+  const repairRecords = await repairRecordsCitingRevisions(db, ids);
+  const reassignments = await reassignmentsCitingRevisions(db, ids);
+  return revisions.map((revision) => ({ ...revision, repair_records: repairRecords.get(revision.id) ?? [], reassignments: reassignments.get(revision.id) ?? [] }));
 }
 
 /** The open Round, or null when none is. */
@@ -358,7 +376,7 @@ const revisionColumns = (v: string) => `${v}.id, ${v}.revision_number, ${v}.resu
             ${v}.responsible_person_id, pe.name AS responsible_person_name, pe.is_active AS responsible_person_active, ${v}.legacy_responsible_person_text,
             ${v}.loan_context, ${v}.loan_item_id, ${v}.loan_borrower_display, to_char(${v}.loan_due_date, 'YYYY-MM-DD') AS loan_due_date,
             ${v}.repair_record_id, ${v}.repair_kind, ${v}.recorded_by, u.username AS recorded_by_username, ${v}.recorded_at,
-            ${sentForRepair(v)} AS sent_for_repair`;
+            ${sentForRepair(v)} AS sent_for_repair, ${reassigned(v)} AS reassigned`;
 
 // The entries a revision aliased `v` names, each read by its current name, and the account that recorded it.
 const revisionJoins = (v: string) => `LEFT JOIN locations ol ON ol.id = ${v}.observed_location_id
@@ -376,7 +394,7 @@ export async function currentRevisionsOf(db: pg.Pool | pg.PoolClient | any, entr
      WHERE e.id = ANY($1::uuid[]) AND cur.id IS NOT NULL`,
     [entryIds]
   );
-  const revisions = await withRepairRecords(db, res.rows.map(revisionOf));
+  const revisions = await withCitingRecords(db, res.rows.map(revisionOf));
   return new Map(res.rows.map((row: any, i: number) => [row.verification_scope_entry_id, revisions[i]]));
 }
 
@@ -593,7 +611,7 @@ export class VerificationReadService {
        ORDER BY v.revision_number DESC`,
       [entry.rows[0].id]
     );
-    return withRepairRecords(
+    return withCitingRecords(
       this.db,
       res.rows.map(
         (row: any): ListedVerificationRevision => ({
