@@ -31,6 +31,12 @@ const MIGRATIONS = [
   '0014_repair_outcomes',
   '0015_repair_sources',
   '0016_repair_corrections',
+  '0017_verification_rounds',
+  '0018_verification_revisions',
+  '0019_verification_discrepancies',
+  '0020_verification_corrections',
+  '0021_repair_source_verification_revisions',
+  '0022_reassignment_verification_revisions',
 ] as const;
 
 describe('Database Migrations Integration', () => {
@@ -217,6 +223,26 @@ describe('Database Migrations Integration', () => {
       expect(acqColNames).toContain('notes');
       expect(acqColNames).toContain('recorded_at');
       expect(acqColNames).toContain('created_by');
+    } finally {
+      await client.end();
+    }
+  });
+
+  // PostgreSQL truncates a longer identifier to 63 bytes with only a NOTICE, so a name exactly that long was
+  // probably cut: a test or a later migration that names it in full misses it (F006-T2 retro).
+  it('gives no constraint, index, table or sequence a name PostgreSQL truncated to 63 bytes', async () => {
+    const client = new Client({ connectionString: databaseUrl });
+    await client.connect();
+    try {
+      const truncated = await client.query(`
+        SELECT conname AS name FROM pg_constraint c JOIN pg_namespace n ON n.oid = c.connamespace
+        WHERE n.nspname = 'public' AND octet_length(conname) = 63
+        UNION ALL
+        SELECT relname FROM pg_class c JOIN pg_namespace n ON n.oid = c.relnamespace
+        WHERE n.nspname = 'public' AND octet_length(relname) = 63
+        ORDER BY 1
+      `);
+      expect(truncated.rows.map(({ name }) => name)).toEqual([]);
     } finally {
       await client.end();
     }

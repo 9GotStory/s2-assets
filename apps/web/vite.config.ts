@@ -55,6 +55,16 @@ export const repositoryProxyConfig: Record<string, ProxyOptions> = {
       }
     },
   },
+  // F006-T1 (#126): Verification Rounds; the Round list and a Round page are the SPA routes /verification-rounds and /verification-rounds/:id.
+  '/verification-rounds': {
+    target: 'http://api:3000',
+    changeOrigin: true,
+    bypass: (req) => {
+      if (req.headers.accept?.includes('text/html')) {
+        return '/index.html';
+      }
+    },
+  },
   // T4 (#25): reference lists; the maintenance page is the SPA route /admin/references.
   '/references': {
     target: 'http://api:3000',

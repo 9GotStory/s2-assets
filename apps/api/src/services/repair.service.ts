@@ -10,6 +10,7 @@ import { repairConflictCheck } from './repair-conflict.ts';
 import { commitOnce } from './retryable-write.ts';
 import { NotFoundError, StaleBeforeConflictError } from './service-errors.ts';
 import { ValidationError } from './validation-error.ts';
+import { lockCitedVerificationRevision } from './verification-revision-read.ts';
 
 export const REPAIRER_NAME_MAX_LENGTH = 200;
 export const SYMPTOM_OR_WORK_MAX_LENGTH = REMARK_MAX_LENGTH;
@@ -29,8 +30,9 @@ export interface StartRepairInput {
   cost?: string | null;
   document_reference?: string | null;
   remark?: string | null;
-  // The Loan Return recorded ชำรุด that led to it, when there was one (F005-T5, LR-13, RM-08, #98 Q5).
-  repair_source?: { loan_return_id: string } | null;
+  // The Loan Return recorded ชำรุด (F005-T5, LR-13, RM-08, #98 Q5) or the result Found ชำรุด (F006-T7, AV-16,
+  // #125 Q12) that led to it, when there was one.
+  repair_source?: RepairSourceInput | null;
   // Work finished in one visit, or an old repair, is recorded with its outcome in one write (#98 Q1, Q22).
   outcome?: RepairOutcomeInput | null;
   // The Repair Conflicts the user saw in a warning and confirms (F005-T7, #98 Q17).
@@ -93,12 +95,24 @@ export async function underRepairRefusalOf(
   return repair ? { ...asset, reason: 'UNDER_REPAIR', repair_record_id: repair.repair_record_id, repair_kind: repair.repair_kind } : null;
 }
 
-// Why a Loan Return cannot be a Repair Source: it must be a non-voided Loan Return of a LoanItem of the
-// same Asset, recorded ชำรุด (#98). An id that names no Loan Return, a Not Returned among them, is NOT_LOAN_RETURN.
-export interface RepairSourceRefusal {
-  loan_return_id: string;
-  reason: 'NOT_LOAN_RETURN' | 'VOIDED' | 'OTHER_ASSET' | 'NOT_DAMAGED';
+// A Repair Source as a write names it: a Loan Return (F005-T5) or a Verification Revision (F006-T7).
+export type RepairSourceInput = { loan_return_id: string } | { verification_revision_id: string };
+
+// A Repair Source by the columns a Repair Record keeps it in; at most one is set (repair_records_one_repair_source).
+export interface RepairSourceColumns {
+  repair_source_loan_return_id: string | null;
+  repair_source_verification_revision_id: string | null;
 }
+
+export const REPAIR_SOURCE_COLUMNS = ['repair_source_loan_return_id', 'repair_source_verification_revision_id'] as const;
+
+// Why a fact cannot be a Repair Source: it must be a non-voided Loan Return of a LoanItem of the same Asset,
+// recorded ชำรุด (#98), or a non-voided Verification Revision of the same Asset, Found ชำรุด (#125 Q12). An id that
+// names no Loan Return, a Not Returned among them, is NOT_LOAN_RETURN; one that names no revision is
+// NOT_VERIFICATION_REVISION.
+export type RepairSourceRefusal =
+  | { loan_return_id: string; reason: 'NOT_LOAN_RETURN' | 'VOIDED' | 'OTHER_ASSET' | 'NOT_DAMAGED' }
+  | { verification_revision_id: string; reason: 'NOT_VERIFICATION_REVISION' | 'VOIDED' | 'OTHER_ASSET' | 'NOT_DAMAGED' };
 
 /** A Repair Start cites a Repair Source it cannot have. Nothing is saved, and the answer says why. */
 export class RepairSourceRefusedError extends Error {
@@ -107,7 +121,7 @@ export class RepairSourceRefusedError extends Error {
   repair_source: RepairSourceRefusal;
 
   constructor(repairSource: RepairSourceRefusal) {
-    super(`The Loan Return cannot be the Repair Source: ${repairSource.reason}`);
+    super(`${'loan_return_id' in repairSource ? 'The Loan Return' : 'The Verification Revision'} cannot be the Repair Source: ${repairSource.reason}`);
     this.name = 'RepairSourceRefusedError';
     this.repair_source = repairSource;
   }
@@ -154,7 +168,7 @@ interface RepairStartFacts {
   cost: string | null;
   document_reference: string | null;
   remark: string | null;
-  repair_source_loan_return_id: string | null;
+  repair_source: RepairSourceColumns;
   outcome: RepairOutcomeFacts | null;
 }
 
@@ -204,6 +218,18 @@ const normalizeOutcome = (input: RepairOutcomeInput, today: string): RepairOutco
   };
 };
 
+/** The columns of a Repair Source a write names, none set for none. The route lets a write name one kind at most. */
+export const normalizeRepairSource = (source: RepairSourceInput | null | undefined): RepairSourceColumns => {
+  const sourceId = (field: 'loan_return_id' | 'verification_revision_id'): string | null => {
+    const id = source && field in source ? (source as Record<string, string>)[field] : null;
+    if (id !== null && !isValidUuid(id)) {
+      throw new ValidationError(`repair_source.${field} must be a valid UUID`);
+    }
+    return id?.trim().toLowerCase() ?? null;
+  };
+  return { repair_source_loan_return_id: sourceId('loan_return_id'), repair_source_verification_revision_id: sourceId('verification_revision_id') };
+};
+
 const normalizeFacts = (input: StartRepairInput, today: string): RepairStartFacts => {
   if (!isValidUuid(input.asset_id)) {
     throw new ValidationError('asset_id must be a valid UUID');
@@ -223,10 +249,7 @@ const normalizeFacts = (input: StartRepairInput, today: string): RepairStartFact
   if (symptomOrWork === null) {
     throw new ValidationError('symptom_or_work is required');
   }
-  const sourceId = input.repair_source?.loan_return_id ?? null;
-  if (sourceId !== null && !isValidUuid(sourceId)) {
-    throw new ValidationError('repair_source.loan_return_id must be a valid UUID');
-  }
+  const repairSource = normalizeRepairSource(input.repair_source);
   const outcome = input.outcome ? normalizeOutcome(input.outcome, today) : null;
   if (outcome) {
     assertOutcomeNotBeforeStart(outcome.outcome_date, input.start_date);
@@ -243,19 +266,32 @@ const normalizeFacts = (input: StartRepairInput, today: string): RepairStartFact
     cost: normalizeCost(input.cost),
     document_reference: normalizeText(input.document_reference, 'document_reference', DOCUMENT_REFERENCE_MAX_LENGTH, ''),
     remark: normalizeText(input.remark, 'remark', REMARK_MAX_LENGTH, ''),
-    repair_source_loan_return_id: sourceId?.trim().toLowerCase() ?? null,
+    repair_source: repairSource,
     outcome,
   };
 };
+
+/**
+ * The Repair Source `source` names, if any, may be cited by a Repair Record of `assetId` (#98, #125 Q12). The caller
+ * holds the Asset locked.
+ */
+export async function assertRepairSource(client: pg.PoolClient, assetId: string, source: RepairSourceColumns): Promise<void> {
+  if (source.repair_source_loan_return_id) {
+    await assertLoanReturnSource(client, assetId, source.repair_source_loan_return_id);
+  }
+  if (source.repair_source_verification_revision_id) {
+    await assertVerificationRevisionSource(client, assetId, source.repair_source_verification_revision_id);
+  }
+}
 
 /**
  * #98: a Repair Source is a non-voided Loan Return of a LoanItem of the same Asset, recorded ชำรุด. The
  * caller holds the Asset locked, as a Loan Correction voiding that Loan Return locks it, so the check
  * holds until commit.
  */
-export async function assertRepairSource(client: pg.PoolClient, assetId: string, loanReturnId: string): Promise<void> {
+async function assertLoanReturnSource(client: pg.PoolClient, assetId: string, loanReturnId: string): Promise<void> {
   const cited = (await loanReturnsOf(client, [loanReturnId])).get(loanReturnId);
-  const refuse = (reason: RepairSourceRefusal['reason']) => new RepairSourceRefusedError({ loan_return_id: loanReturnId, reason });
+  const refuse = (reason: Extract<RepairSourceRefusal, { loan_return_id: string }>['reason']) => new RepairSourceRefusedError({ loan_return_id: loanReturnId, reason });
   if (!cited) {
     throw refuse('NOT_LOAN_RETURN');
   }
@@ -266,6 +302,29 @@ export async function assertRepairSource(client: pg.PoolClient, assetId: string,
     throw refuse('VOIDED');
   }
   if (cited.condition !== 'DAMAGED') {
+    throw refuse('NOT_DAMAGED');
+  }
+}
+
+/**
+ * #125 Q12: a Repair Source is a non-voided Verification Revision of the same Asset, Found ชำรุด, in a Round open
+ * or closed. The revision is read under a lock a Verification Correction voiding it also takes, so the check
+ * holds until commit.
+ */
+async function assertVerificationRevisionSource(client: pg.PoolClient, assetId: string, revisionId: string): Promise<void> {
+  const cited = await lockCitedVerificationRevision(client, revisionId);
+  const refuse = (reason: Extract<RepairSourceRefusal, { verification_revision_id: string }>['reason']) =>
+    new RepairSourceRefusedError({ verification_revision_id: revisionId, reason });
+  if (!cited) {
+    throw refuse('NOT_VERIFICATION_REVISION');
+  }
+  if (cited.asset_id !== assetId) {
+    throw refuse('OTHER_ASSET');
+  }
+  if (cited.is_voided) {
+    throw refuse('VOIDED');
+  }
+  if (!cited.is_damaged) {
     throw refuse('NOT_DAMAGED');
   }
 }
@@ -335,6 +394,7 @@ const AMENDABLE_COLUMNS = {
     document_reference: 'document_reference',
     remark: 'remark',
     repair_source_loan_return_id: 'repair_source_loan_return_id',
+    repair_source_verification_revision_id: 'repair_source_verification_revision_id',
   },
   REPAIR_OUTCOME: {
     outcome: 'outcome',
@@ -365,7 +425,7 @@ export async function readStoredRepairFact(client: pg.PoolClient, repairRecordId
       ? await client.query(
           `SELECT id, is_voided, repair_kind, to_char(start_date, 'YYYY-MM-DD') AS start_date, repairer_kind, repairer_name, symptom_or_work,
                   under_warranty, to_char(warranty_end_date, 'YYYY-MM-DD') AS warranty_end_date, cost::text AS cost, document_reference, remark,
-                  repair_source_loan_return_id
+                  repair_source_loan_return_id, repair_source_verification_revision_id
            FROM repair_records WHERE id = $1`,
           [repairRecordId]
         )
@@ -493,26 +553,23 @@ export class RepairService {
   }
 
   async start(actorId: string, input: StartRepairInput, { retryToken }: { retryToken: string }): Promise<RepairRecordVersion> {
-    const { outcome, repair_source_loan_return_id: sourceId, ...facts } = normalizeFacts(input, bangkokDate(this.clock()));
+    const { outcome, repair_source: source, ...facts } = normalizeFacts(input, bangkokDate(this.clock()));
     const confirmed = normalizeConfirmedConflicts(input.confirmed_conflicts);
     // A Repair Start without an outcome, a Repair Source or a confirmation keeps the fingerprint it had before each existed.
-    const payload = withConfirmedConflicts(
-      { version: 1, ...facts, ...(outcome ? { outcome } : {}), ...(sourceId ? { repair_source_loan_return_id: sourceId } : {}) },
-      confirmed
-    );
+    const cited = Object.fromEntries(Object.entries(source).filter(([, id]) => id !== null));
+    const payload = withConfirmedConflicts({ version: 1, ...facts, ...(outcome ? { outcome } : {}), ...cited }, confirmed);
     return commitOnce(
       this.db,
       { actorId, operation: 'repair:start', retryToken, payload, explicitContinuation: false },
       async (client) => {
         await this.assertRepairMayStart(client, facts.asset_id);
-        if (sourceId) {
-          await assertRepairSource(client, facts.asset_id, sourceId);
-        }
+        await assertRepairSource(client, facts.asset_id, source);
         const conflicts = await repairConflictCheck(client, facts.asset_id);
         const res = await client.query(
           `INSERT INTO repair_records (asset_id, repair_kind, start_date, repairer_kind, repairer_name, symptom_or_work, under_warranty,
-                                       warranty_end_date, cost, document_reference, remark, repair_source_loan_return_id, has_outcome, recorded_by)
-           VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14)
+                                       warranty_end_date, cost, document_reference, remark, repair_source_loan_return_id,
+                                       repair_source_verification_revision_id, has_outcome, recorded_by)
+           VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15)
            RETURNING id, version`,
           [
             facts.asset_id,
@@ -526,7 +583,8 @@ export class RepairService {
             facts.cost,
             facts.document_reference,
             facts.remark,
-            sourceId,
+            source.repair_source_loan_return_id,
+            source.repair_source_verification_revision_id,
             outcome !== null,
             actorId,
           ]

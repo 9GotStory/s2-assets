@@ -63,6 +63,7 @@ test_containers() { podman ps -aq --no-trunc --filter label=org.testcontainers=t
 # Removes the test containers that are not in the listing $1, and counts in `failures` any that stay.
 remove_new_test_containers() {
   local before=$1 id leaked
+  failures=${failures:-0}
   for id in $(comm -13 <(printf '%s\n' "$before") <(test_containers)); do
     note "removing test container $id"
     podman rm -f "$id" >/dev/null || failures=$((failures + 1))
@@ -72,4 +73,13 @@ remove_new_test_containers() {
     note "test containers still present: $leaked" >&2
     failures=$((failures + 1))
   fi
+}
+
+# Removes the job's new test containers whenever it exits, stopped by INT or TERM too: a stopped
+# background run left two PostgreSQL containers behind (F006-T2 retro). Call it once `before` holds
+# the listing taken before the tests start; it also stops the private Podman service.
+remove_test_containers_on_exit() {
+  trap 'remove_new_test_containers "$before"; stop_podman_service' EXIT
+  trap 'exit 130' INT
+  trap 'exit 143' TERM
 }

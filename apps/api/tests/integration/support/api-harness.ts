@@ -27,6 +27,7 @@ export interface ApiHarness {
   // Creates an active user holding `role`, with a real session and CSRF token.
   actor: (username: string, role: Role) => Promise<Actor>;
   post: (actor: Actor, url: string, payload: unknown, headers?: Record<string, string>) => Promise<LightMyRequestResponse>;
+  patch: (actor: Actor, url: string, payload: unknown, headers?: Record<string, string>) => Promise<LightMyRequestResponse>;
   get: (actor: Actor, url: string) => Promise<LightMyRequestResponse>;
   close: () => Promise<void>;
 }
@@ -82,6 +83,13 @@ export async function startApiHarness(options: { clock?: () => Date; logger?: Ap
     post: (actor, url, payload, headers = {}) =>
       app.inject({
         method: 'POST',
+        url,
+        headers: { cookie: actor.cookie, 'x-csrf-token': actor.csrf, 'content-type': 'application/json', ...headers },
+        payload: payload as any,
+      }),
+    patch: (actor, url, payload, headers = {}) =>
+      app.inject({
+        method: 'PATCH',
         url,
         headers: { cookie: actor.cookie, 'x-csrf-token': actor.csrf, 'content-type': 'application/json', ...headers },
         payload: payload as any,

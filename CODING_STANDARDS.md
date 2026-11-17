@@ -24,6 +24,15 @@ offered it, and a 404 came from a URL no route serves. Neither test could fail.
 A test that a value is absent searches for the whole value, such as the full phone number. In
 F004-T6 (#80), `not.toContain('090')` over JSON that holds UUIDs failed whenever a UUID held "090".
 
+## A refusal test sends a request only its rule refuses
+
+Each refused request breaks the rule under test and nothing else, so the test goes red when that
+rule goes; check it with `scripts/dev/expect-red.sh`, and several rules at once with its `--batch`
+mode, which tabulates which break went red. A loop of refused payloads that asserts only
+the error code hides which rule refused each one. In F006-T1 (#126), the filter-cap case sent 101
+random UUIDs, which the unknown-entry check refused as well, and it stayed green with the cap
+removed. It now names one real entry 1001 times.
+
 ## An order test of a paged list splits a tie across a page break
 
 A list query orders twice: its `LIMIT … OFFSET` picks the page's rows by one `ORDER BY`, and an
@@ -36,6 +45,9 @@ same-day pair on one page, and breaking the tiebreak left them green.
 
 When a write decides a rule on a fact that another write can change, and a shared lock orders the two,
 a Seam A test queues the other write first with `whileHolding` and shows that the rule sees its result.
+When the other write's own statement changes the fact, as a Verification Correction's `UPDATE … SET
+is_voided = true` does to a revision a Repair Record cites (#132), hold that statement with `whileWriting`
+and wait with `untilWaiting(table, 1, 'FOR SHARE')`.
 Without it, the rule can move ahead of the lock and every test stays green. In F005-T5 (#103), the
 Repair Source check read the Loan Return after the Asset lock that a Loan Correction also takes; no test
 failed when the check was moved before it, and only the Spec review found the gap.
@@ -45,6 +57,24 @@ write that creates a fact reads nothing of it before the lock, so moving its rea
 test the order on a write that changes a fact that already exists. In F005-T7 (#105), the Repair Conflict
 tests of a Repair Start and a Loan start stayed green with the check moved ahead of the lock; those of the
 two corrections, which read what was there before them, went red.
+
+When the rule's read itself locks the row of the fact it checks, as the active-entry check locks a
+Location `FOR SHARE`, that row orders the two writes: the test holds the other write's change to it
+uncommitted until the rule's read waits on it, as F006-T3 (#128) does for a Location deactivation.
+Holding another row that the write also takes makes the test wait on itself.
+
+A foreign key does not order a citing write against a void. Its check locks the cited row `FOR KEY
+SHARE`, and a void's `UPDATE … SET is_voided = true` changes no key, so it takes `FOR NO KEY UPDATE`
+and neither waits for the other (PostgreSQL 18, §13.3.2, Table 13.3). A write that cites a fact only
+while it is not voided takes a lock the void also takes before it checks, and its order test queues
+the void first. F006-T4 (#129) found this for the Verification Revision that T7 and T8 cite.
+
+## A journey step waits for the URL it changes
+
+A journey step that changes the URL, such as a filter link or a select that navigates, waits for that
+URL with `toHaveURL` before the next step acts: a page acts on the URL it last showed. In F006-T3
+(#128), a Location chosen right after the "ทั้งหมด" Discrepancy link kept the Discrepancy filter the
+link had just removed.
 
 ## A correction keeps every stored value it replaces
 
@@ -113,3 +143,12 @@ functions. `loan-item-periods.ts` gives the period of a LoanItem to both `loan-r
 `repair-read.service.ts` (F005-T7, #105). The guards see the table only in the leaf, so name a CTE
 that holds the fragment after what it holds, not after the table: `JOIN loan_periods` reads to the guard
 as the table `loan_periods`.
+
+## A derived condition has one SQL source
+
+When a write checks a condition that a read also derives, such as a Discrepancy, "ส่งซ่อมแล้ว" or
+"ย้ายแล้ว", both use one SQL function from a leaf file (`verification-revision-read.ts`,
+`repair-source-citations.ts`, `reassignment-citations.ts`). Review looks for the condition's existing
+source outside the diff, where a copy shows only as new code. In F006-T7 (#132), the cited-revision
+read copied the "ชำรุด" condition of `DISCREPANCY_CONDITIONS` and shipped; F006-T8 (#133) copied
+"Location ไม่ตรงทะเบียน" the same way, and review caught it.

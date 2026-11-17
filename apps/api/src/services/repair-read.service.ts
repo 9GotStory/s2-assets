@@ -3,6 +3,7 @@ import { assetExists, containsPattern } from './asset-lookups.ts';
 import { readAssignmentsAt, type PermanentAssignment } from './assignment.service.ts';
 import { loanItemPeriods } from './loan-item-periods.ts';
 import { loanReturnsOf, type CitedLoanReturn } from './loan-return-read.ts';
+import { citedRevisionViewOf, verificationRevisionsOf, type CitedVerificationRevision, type CitedVerificationRevisionView } from './verification-revision-read.ts';
 
 export type RepairKind = 'REPAIR' | 'MAINTENANCE';
 export type RepairerKind = 'INTERNAL' | 'EXTERNAL';
@@ -33,7 +34,13 @@ export interface RepairOutcome {
 
 // The Loan Return recorded ชำรุด that led to a Repair Record (F005-T5, LR-13, RM-08), with its Loan. It is
 // read as it stands now: voided later by a Loan Correction, the record still cites it (#98 Q5).
-export type RepairSource = Omit<CitedLoanReturn, 'asset_id'>;
+export type LoanReturnRepairSource = Omit<CitedLoanReturn, 'asset_id'>;
+
+// The result Found ชำรุด that led to a Repair Record (F006-T7, AV-16, #125 Q12), with its Round and Verification
+// Date. It is read as it stands now: voided later by a Verification Correction, the record still cites it (P1).
+export type VerificationRevisionRepairSource = CitedVerificationRevisionView;
+
+export type RepairSource = LoanReturnRepairSource | VerificationRevisionRepairSource;
 
 // A Repair Record as every reader sees it: no field is withheld, cost and Repairer included (#98 Q2).
 export interface RepairRecord {
@@ -49,7 +56,7 @@ export interface RepairRecord {
   cost: string | null;
   document_reference: string | null;
   remark: string | null;
-  // Null when it was sent with none, as from the Asset page (#98 Q5).
+  // Null when it was sent with none, as from the Asset page (#98 Q5). A record cites at most one.
   repair_source: RepairSource | null;
   recorded_by: string;
   recorded_by_username: string | null;
@@ -99,7 +106,8 @@ export interface RepairRecordConflict {
 
 // What a correction changed of one field. A Repair Source is read as it stands now, as the record reads it.
 export type RepairCorrectionField =
-  | { field: 'repair_source_loan_return_id'; before: RepairSource | null; after: RepairSource | null }
+  | { field: 'repair_source_loan_return_id'; before: LoanReturnRepairSource | null; after: LoanReturnRepairSource | null }
+  | { field: 'repair_source_verification_revision_id'; before: VerificationRevisionRepairSource | null; after: VerificationRevisionRepairSource | null }
   | { field: string; before: string | null; after: string | null };
 
 // One Repair Correction of a Repair Record or its Repair Outcome (#98 Q18): who, when, why, and the before and after.
@@ -201,7 +209,7 @@ export async function readRepairConflictsOfAssets(db: pg.Pool | pg.PoolClient | 
 
 const RECORD_COLUMNS = `r.id, r.asset_id, a.name AS asset_name, a.asset_number, r.repair_kind, to_char(r.start_date, 'YYYY-MM-DD') AS start_date,
   r.repairer_kind, r.repairer_name, r.symptom_or_work, r.under_warranty, to_char(r.warranty_end_date, 'YYYY-MM-DD') AS warranty_end_date,
-  r.cost::text AS cost, r.document_reference, r.remark, r.repair_source_loan_return_id, r.recorded_by, u.username AS recorded_by_username, r.recorded_at, r.is_voided, r.version,
+  r.cost::text AS cost, r.document_reference, r.remark, r.repair_source_loan_return_id, r.repair_source_verification_revision_id, r.recorded_by, u.username AS recorded_by_username, r.recorded_at, r.is_voided, r.version,
   o.id AS outcome_id, o.outcome, to_char(o.outcome_date, 'YYYY-MM-DD') AS outcome_date, o.note AS outcome_note,
   o.document_reference AS outcome_document_reference, to_char(o.next_recommended_maintenance_date, 'YYYY-MM-DD') AS next_recommended_maintenance_date,
   o.cost_before::text AS outcome_cost_before, o.recorded_by AS outcome_recorded_by, ou.username AS outcome_recorded_by_username, o.recorded_at AS outcome_recorded_at`;
@@ -247,7 +255,13 @@ async function voidedOutcomesOf(db: pg.Pool | any, repairRecordIds: string[]): P
   return voided;
 }
 
-const repairSourceOf = (cited: CitedLoanReturn | undefined): RepairSource | null => {
+// The Repair Sources some records or corrections cite, each kind by its id, read through its own module.
+interface RepairSources {
+  loanReturns: Map<string, CitedLoanReturn>;
+  revisions: Map<string, CitedVerificationRevision>;
+}
+
+const loanReturnSourceOf = (cited: CitedLoanReturn | undefined): LoanReturnRepairSource | null => {
   if (!cited) {
     return null;
   }
@@ -255,7 +269,9 @@ const repairSourceOf = (cited: CitedLoanReturn | undefined): RepairSource | null
   return source;
 };
 
-const recordOf = (row: any, sources: Map<string, CitedLoanReturn>, voidedOutcomes: Map<string, RepairOutcome[]>, conflicts: Map<string, RepairConflict[]>): RepairRecord => ({
+const revisionSourceOf = (cited: CitedVerificationRevision | undefined): VerificationRevisionRepairSource | null => (cited ? citedRevisionViewOf(cited) : null);
+
+const recordOf = (row: any, sources: RepairSources, voidedOutcomes: Map<string, RepairOutcome[]>, conflicts: Map<string, RepairConflict[]>): RepairRecord => ({
   id: row.id,
   asset: { id: row.asset_id, name: row.asset_name, asset_number: row.asset_number },
   repair_kind: row.repair_kind,
@@ -267,7 +283,8 @@ const recordOf = (row: any, sources: Map<string, CitedLoanReturn>, voidedOutcome
   cost: row.cost,
   document_reference: row.document_reference,
   remark: row.remark,
-  repair_source: repairSourceOf(sources.get(row.repair_source_loan_return_id)),
+  repair_source:
+    loanReturnSourceOf(sources.loanReturns.get(row.repair_source_loan_return_id)) ?? revisionSourceOf(sources.revisions.get(row.repair_source_verification_revision_id)),
   recorded_by: row.recorded_by,
   recorded_by_username: row.recorded_by_username ?? null,
   recorded_at: new Date(row.recorded_at).toISOString(),
@@ -278,15 +295,23 @@ const recordOf = (row: any, sources: Map<string, CitedLoanReturn>, voidedOutcome
   conflicts: conflicts.get(row.id) ?? [],
 });
 
-// Repair Sources by Loan Return, read through the Loan module.
-const sourcesOf = async (db: pg.Pool | any, loanReturnIds: string[]): Promise<Map<string, CitedLoanReturn>> => {
-  const ids = [...new Set(loanReturnIds)];
-  return ids.length > 0 ? loanReturnsOf(db, ids) : new Map<string, CitedLoanReturn>();
+// Repair Sources by Loan Return, read through the Loan module, and by Verification Revision.
+const sourcesOf = async (db: pg.Pool | any, loanReturnIds: string[], revisionIds: string[]): Promise<RepairSources> => {
+  const loanReturns = [...new Set(loanReturnIds)];
+  const revisions = [...new Set(revisionIds)];
+  return {
+    loanReturns: loanReturns.length > 0 ? await loanReturnsOf(db, loanReturns) : new Map(),
+    revisions: revisions.length > 0 ? await verificationRevisionsOf(db, revisions) : new Map(),
+  };
 };
 
-// Repair Records from their rows, each with its Repair Source read through the Loan module and its Repair Conflicts.
+// Repair Records from their rows, each with its Repair Source and its Repair Conflicts.
 async function recordsOf(db: pg.Pool | any, rows: any[]): Promise<RepairRecord[]> {
-  const sources = await sourcesOf(db, rows.map((row) => row.repair_source_loan_return_id).filter(Boolean));
+  const sources = await sourcesOf(
+    db,
+    rows.map((row) => row.repair_source_loan_return_id).filter(Boolean),
+    rows.map((row) => row.repair_source_verification_revision_id).filter(Boolean)
+  );
   const voidedOutcomes = rows.length > 0 ? await voidedOutcomesOf(db, rows.map((row) => row.id)) : new Map<string, RepairOutcome[]>();
   const conflicts = new Map<string, RepairConflict[]>();
   if (rows.length > 0) {
@@ -297,7 +322,8 @@ async function recordsOf(db: pg.Pool | any, rows: any[]): Promise<RepairRecord[]
   return rows.map((row) => recordOf(row, sources, voidedOutcomes, conflicts));
 }
 
-const SOURCE_FIELD = 'repair_source_loan_return_id';
+const LOAN_RETURN_SOURCE_FIELD = 'repair_source_loan_return_id';
+const REVISION_SOURCE_FIELD = 'repair_source_verification_revision_id';
 
 /** The corrections of a Repair Record and of its Repair Outcomes, oldest first, each Repair Source as it stands now. */
 async function readCorrectionsOf(db: pg.Pool | any, repairRecordId: string): Promise<RepairCorrection[]> {
@@ -312,17 +338,21 @@ async function readCorrectionsOf(db: pg.Pool | any, repairRecordId: string): Pro
      ORDER BY c.recorded_at, c.id`,
     [repairRecordId]
   );
-  const sources = await sourcesOf(
-    db,
-    res.rows.flatMap(({ changes }: any) => changes.filter(({ field }: any) => field === SOURCE_FIELD).flatMap(({ before, after }: any) => [before, after].filter(Boolean)))
-  );
-  const sourceOf = (id: string | null) => (id ? repairSourceOf(sources.get(id)) : null);
+  const citedIn = (sourceField: string): string[] =>
+    res.rows.flatMap(({ changes }: any) => changes.filter(({ field }: any) => field === sourceField).flatMap(({ before, after }: any) => [before, after].filter(Boolean)));
+  const sources = await sourcesOf(db, citedIn(LOAN_RETURN_SOURCE_FIELD), citedIn(REVISION_SOURCE_FIELD));
+  const sourceOf = (field: string, id: string | null) =>
+    id === null ? null : field === LOAN_RETURN_SOURCE_FIELD ? loanReturnSourceOf(sources.loanReturns.get(id)) : revisionSourceOf(sources.revisions.get(id));
   return res.rows.map((row: any) => ({
     id: row.id,
     target: { kind: row.target_kind, id: row.target_id },
     action: row.action,
     reason: row.reason,
-    changes: row.changes.map((change: any) => (change.field === SOURCE_FIELD ? { field: SOURCE_FIELD, before: sourceOf(change.before), after: sourceOf(change.after) } : change)),
+    changes: row.changes.map((change: any) =>
+      [LOAN_RETURN_SOURCE_FIELD, REVISION_SOURCE_FIELD].includes(change.field)
+        ? { field: change.field, before: sourceOf(change.field, change.before), after: sourceOf(change.field, change.after) }
+        : change
+    ),
     recorded_by: row.recorded_by,
     recorded_by_username: row.recorded_by_username ?? null,
     recorded_at: new Date(row.recorded_at).toISOString(),
@@ -393,7 +423,8 @@ export async function latestRepairOutcomesOf(db: pg.Pool | pg.PoolClient | any, 
   );
 }
 
-// A Repair Record as the Loan page lists it beside the Loan Return it cites (F005-T5, RM-08, #98 Q5).
+// A Repair Record as the Loan page lists it beside the Loan Return it cites (F005-T5, RM-08, #98 Q5), and a result
+// beside the Verification Revision it cites (F006-T7, #125 Q19).
 export interface CitingRepairRecord {
   id: string;
   repair_kind: RepairKind;
@@ -401,21 +432,33 @@ export interface CitingRepairRecord {
   is_voided: boolean;
 }
 
-/** The Repair Records citing each of `loanReturnIds` as their Repair Source, oldest Start Date first. */
-export async function repairRecordsCiting(db: pg.Pool | pg.PoolClient | any, loanReturnIds: string[]): Promise<Map<string, CitingRepairRecord[]>> {
+// The Repair Records citing each of `sourceIds` in the Repair Source column `column`, by source, oldest Start Date first.
+async function repairRecordsCitingIn(
+  db: pg.Pool | pg.PoolClient | any,
+  column: 'repair_source_loan_return_id' | 'repair_source_verification_revision_id',
+  sourceIds: string[]
+): Promise<Map<string, CitingRepairRecord[]>> {
   const res = await db.query(
-    `SELECT r.repair_source_loan_return_id, r.id, r.repair_kind, to_char(r.start_date, 'YYYY-MM-DD') AS start_date, r.is_voided
+    `SELECT r.${column} AS source_id, r.id, r.repair_kind, to_char(r.start_date, 'YYYY-MM-DD') AS start_date, r.is_voided
      FROM repair_records r
-     WHERE r.repair_source_loan_return_id = ANY($1::uuid[])
+     WHERE r.${column} = ANY($1::uuid[])
      ORDER BY r.start_date, r.recorded_at, r.id`,
-    [loanReturnIds]
+    [sourceIds]
   );
   const citing = new Map<string, CitingRepairRecord[]>();
-  for (const { repair_source_loan_return_id: loanReturnId, ...record } of res.rows) {
-    citing.set(loanReturnId, [...(citing.get(loanReturnId) ?? []), record]);
+  for (const { source_id: sourceId, ...record } of res.rows) {
+    citing.set(sourceId, [...(citing.get(sourceId) ?? []), record]);
   }
   return citing;
 }
+
+/** The Repair Records citing each of `loanReturnIds` as their Repair Source, oldest Start Date first. */
+export const repairRecordsCiting = (db: pg.Pool | pg.PoolClient | any, loanReturnIds: string[]): Promise<Map<string, CitingRepairRecord[]>> =>
+  repairRecordsCitingIn(db, 'repair_source_loan_return_id', loanReturnIds);
+
+/** The Repair Records citing each of `revisionIds` as their Repair Source, oldest Start Date first (F006-T7, #125 Q19). */
+export const repairRecordsCitingRevisions = (db: pg.Pool | pg.PoolClient | any, revisionIds: string[]): Promise<Map<string, CitingRepairRecord[]>> =>
+  repairRecordsCitingIn(db, 'repair_source_verification_revision_id', revisionIds);
 
 /**
  * F005-T1 (#99), T2 (#100), T6 (#104): reading Repair Records, their outcomes and corrections. The only

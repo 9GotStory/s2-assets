@@ -45,8 +45,14 @@ const RecordRepairOutcomeSchema = z
   })
   .strict();
 
+// A Repair Source: a Loan Return recorded ชำรุด (F005-T5, #98 Q5) or a result Found ชำรุด (F006-T7, #125 Q12), one at most.
+const RepairSourceSchema = z
+  .union([z.object({ loan_return_id: z.string() }).strict(), z.object({ verification_revision_id: z.string() }).strict()])
+  .nullable()
+  .optional();
+
 // #98 Q22: what a Repair Start takes, with its Repair Outcome when both are recorded at once (Q1), and
-// its Repair Source when a Loan Return recorded ชำรุด led to it (F005-T5, Q5).
+// its Repair Source when a Loan Return or a result recorded ชำรุด led to it (F005-T5, Q5; F006-T7).
 const StartRepairSchema = z
   .object({
     asset_id: z.string(),
@@ -64,7 +70,7 @@ const StartRepairSchema = z
     cost: z.string().nullable().optional(),
     document_reference: z.string().nullable().optional(),
     remark: z.string().nullable().optional(),
-    repair_source: z.object({ loan_return_id: z.string() }).strict().nullable().optional(),
+    repair_source: RepairSourceSchema,
     outcome: z.object(repairOutcomeFields).strict().nullable().optional(),
     confirmed_conflicts: ConfirmedConflictsSchema,
     retry_token: z.string().optional(),
@@ -98,7 +104,7 @@ const RepairCorrectionSchema = z
         cost: z.string().nullable().optional(),
         document_reference: z.string().nullable().optional(),
         remark: z.string().nullable().optional(),
-        repair_source: z.object({ loan_return_id: z.string() }).strict().nullable().optional(),
+        repair_source: RepairSourceSchema,
         outcome: z.enum(['USABLE', 'NOT_USABLE']).optional(),
         outcome_date: z.string().optional(),
         note: z.string().nullable().optional(),

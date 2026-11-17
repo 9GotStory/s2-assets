@@ -21,11 +21,13 @@ import {
 import { isValidUuid, CapabilityService } from '../services/capability.service.ts';
 import type { LoanReadService } from '../services/loan-read.service.ts';
 import type { RepairReadService } from '../services/repair-read.service.ts';
+import type { VerificationReadService } from '../services/verification-read.service.ts';
 
 export interface AssetRoutesOptions {
   assetService?: AssetService;
   loanReadService: LoanReadService;
   repairReadService: RepairReadService;
+  verificationReadService: VerificationReadService;
   capabilityService?: CapabilityService;
   db?: any;
   publicAppOrigin?: string;
@@ -747,6 +749,9 @@ export const assetRoutes: FastifyPluginAsync<AssetRoutesOptions> = async (
       let canCorrectAssignment = false;
       let canRecordLoan = false;
       let canRecordRepair = false;
+      let canRecordVerification = false;
+      let canCorrectVerification = false;
+      let canManageVerification = false;
       let canViewAcquisition = false;
       if (request.user && capabilityService) {
         canCorrect = await capabilityService.hasCapability(request.user.id, 'asset:correct');
@@ -754,6 +759,9 @@ export const assetRoutes: FastifyPluginAsync<AssetRoutesOptions> = async (
         canCorrectAssignment = await capabilityService.hasCapability(request.user.id, 'assignment:correct');
         canRecordLoan = await capabilityService.hasCapability(request.user.id, 'loan:record');
         canRecordRepair = await capabilityService.hasCapability(request.user.id, 'repair:record');
+        canRecordVerification = await capabilityService.hasCapability(request.user.id, 'verification:record');
+        canCorrectVerification = await capabilityService.hasCapability(request.user.id, 'verification:correct');
+        canManageVerification = await capabilityService.hasCapability(request.user.id, 'verification:manage');
         canViewAcquisition = await capabilityService.hasCapability(request.user.id, 'acquisition:view');
       }
 
@@ -788,6 +796,13 @@ export const assetRoutes: FastifyPluginAsync<AssetRoutesOptions> = async (
         // F005-T7: whether any of its Repair Records is in a Repair Conflict.
         has_repair_conflict: await options.repairReadService.hasRepairConflict(id.trim().toLowerCase()),
         can_record_repair: canRecordRepair,
+        // F006-T2 (#127): the "ตรวจประจำปี" panel for the open Round, and whether the viewer may record a result.
+        verification: await options.verificationReadService.panelOf(id.trim().toLowerCase()),
+        can_record_verification: canRecordVerification,
+        // F006-T4 (#129): whether the viewer may void the panel's current result.
+        can_correct_verification: canCorrectVerification,
+        // F006-T5 (#130): whether the viewer may add the Asset to the open Round when it is not in it.
+        can_manage_verification: canManageVerification,
       });
     }
   );

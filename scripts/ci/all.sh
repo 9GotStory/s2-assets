@@ -70,7 +70,7 @@ run_job() {
 quality_args=()
 [[ -z $base ]] || quality_args=(--base "$base")
 
-run_job quality '^ *Tests +' scripts/ci/quality.sh "${quality_args[@]}"
+run_job quality '^quality\.sh: diff checks against .* passed|^ *Tests +' scripts/ci/quality.sh "${quality_args[@]}"
 run_job integration '^ *(Test Files|Tests) +' scripts/ci/integration.sh
 run_job e2e '^ *[0-9]+ (passed|failed|flaky|skipped|did not run)' scripts/ci/e2e.sh
 run_job security 'no HIGH or CRITICAL finding|findings, or a failed scan' scripts/ci/security-scan.sh

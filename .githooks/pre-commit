@@ -1,0 +1,10 @@
+#!/usr/bin/env bash
+# Lint and typecheck before each commit, so a commit never waits for scripts/ci/all.sh to find a
+# lint error (F006-T1 retro). A commit of Markdown files alone needs only the whitespace check
+# (CLAUDE.md, Checks). Enable once per clone: git config core.hooksPath .githooks
+set -euo pipefail
+cd "$(git rev-parse --show-toplevel)"
+if ! git diff --cached --name-only --diff-filter=d | grep -qv '\.md$'; then
+  exec git diff --cached --check
+fi
+exec scripts/ci/quality.sh --quick

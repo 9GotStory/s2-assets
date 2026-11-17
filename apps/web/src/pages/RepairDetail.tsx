@@ -23,12 +23,14 @@ import {
   UNDER_REPAIR_LABELS,
   UNDER_WARRANTY_LABELS,
   costText,
+  isLoanReturnSource,
   repairerText,
   type RepairCorrectionTarget,
   type RepairKind,
   type RepairOutcome,
   type RepairRecord,
 } from '../components/repairFacts';
+import { VERIFICATION_DATE_LABEL } from '../components/verificationFacts';
 
 const THAI_DATE_TIME = new Intl.DateTimeFormat('th-TH', { dateStyle: 'long', timeStyle: 'short', timeZone: 'Asia/Bangkok' });
 
@@ -312,10 +314,10 @@ const RepairDetailContent: React.FC = () => {
           <dd id="repair-remark" style={{ ...valueStyle, whiteSpace: 'pre-line' }}>
             {orNone(remark)}
           </dd>
-          {/* A Loan Return voided later stays cited, struck through: nothing cascades (#98 Q5). */}
+          {/* A Loan Return or result voided later stays cited, struck through: nothing cascades (#98 Q5, #125 P1). */}
           <dt style={termStyle}>{REPAIR_SOURCE_LABEL}:</dt>
           <dd id="repair-source" style={valueStyle}>
-            {repairSource ? (
+            {repairSource && isLoanReturnSource(repairSource) && (
               <>
                 <span style={repairSource.is_voided ? voidedStyle : undefined}>
                   การคืนสภาพ{CONDITION_LABELS[repairSource.condition]} วันที่ <time dateTime={repairSource.return_date}>{thaiDate(repairSource.return_date)}</time>
@@ -325,9 +327,20 @@ const RepairDetailContent: React.FC = () => {
                   ดูการยืม
                 </Link>
               </>
-            ) : (
-              <span style={noneStyle}>ไม่มี</span>
             )}
+            {repairSource && !isLoanReturnSource(repairSource) && (
+              <>
+                <span style={repairSource.is_voided ? voidedStyle : undefined}>
+                  ผลตรวจประจำปี{' '}
+                  <Link to={`/verification-rounds/${repairSource.verification_round.id}`} id="repair-source-round-link" style={{ color: '#2563eb', textDecoration: 'underline' }}>
+                    {repairSource.verification_round.name}
+                  </Link>{' '}
+                  {VERIFICATION_DATE_LABEL} <time dateTime={repairSource.verification_date}>{thaiDate(repairSource.verification_date)}</time>
+                </span>
+                {repairSource.is_voided && <VoidedMark testId="repair-source-voided" />}
+              </>
+            )}
+            {!repairSource && <span style={noneStyle}>ไม่มี</span>}
           </dd>
           <dt style={termStyle}>ผู้บันทึก:</dt>
           <dd id="repair-recorded-by" style={valueStyle}>

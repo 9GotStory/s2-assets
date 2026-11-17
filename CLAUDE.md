@@ -63,13 +63,9 @@ with `/code-review` → `/pr` → `/retro`.
   `feature/<NNN>-<slug>` after its row in `docs/09-feature-map.md` (for example
   `feature/003-asset-assignment-movement`). Branch each task from its feature's integration
   branch and target its pull request there. When a pull request stays in scope and its checks
-  pass, merge it yourself:
-  - run `gh pr merge <n> --repo 9GotStory/s2-assets --merge --match-head-commit <headRefOid>
-    --delete-branch` as a standalone command, which also deletes the task branch on GitHub;
-  - then run `scripts/dev/verify-merge.sh <n>`, which fetches and confirms that the merge
-    commit's second parent is `<headRefOid>` and that it changes exactly the pull request's files;
-  - then delete the local task branch: `git checkout <integration branch> && git pull --ff-only
-    && git branch -d <task branch>`.
+  pass, merge it yourself with `scripts/dev/merge-pr.sh <n> <headRefOid>` as a standalone
+  command: it merges, verifies the merge commit and deletes the task branch, in order, stopping
+  at the first step that fails.
 
   A feature the Product Owner has not accepted goes into `main` only on their word.
 
@@ -82,11 +78,17 @@ each job's script in `scripts/ci/`, `security-scan.sh` included, and those two c
 finding reaches the Product Owner with the ticket's other decisions.
 To run one test file or a typecheck, use the same scripts:
 `scripts/ci/integration.sh tests/integration/<file>`, `scripts/ci/e2e.sh tests/e2e/<spec>`,
-`scripts/ci/quality.sh --quick`. Before the full run, run every integration file that calls a
-route or names a response field the change touches (`grep -l` over `apps/api/tests/integration`):
-earlier tests pin those shapes and their data.
-When CI does not run on a pull request, run each job locally and record each job's exact result
-in the pull request: that record is the pull request's check. A change
+`scripts/ci/quality.sh --quick`; `.githooks/pre-commit` runs that last one before each commit
+(enable it once per clone with `git config core.hooksPath .githooks`). Before the full run, run
+every integration file that calls a route or names a response field the change touches (`grep -l`
+over `apps/api/tests/integration`): earlier tests pin those shapes and their data. Start the full
+run once, after the code-review fixes are committed: a full run started before the review has to be
+run again.
+A pull request into a base other than `main` or `feature/*` gets no CI (`ci.yml`): run each job
+locally and record each job's exact result in the pull request: that record is its check. Into
+`main` or `feature/*`, the merge waits for CI Gate (`scripts/ci/require-ci-gate.sh`):
+`scripts/dev/await-ci.sh <n>` waits for the run and prints the head to merge with. When GitHub has
+created no run for the head 5 minutes after the pull request opened, it says so: close and reopen. A change
 that touches only documentation needs only `git diff --check <base>...HEAD`. In both, `<base>` is
 the integration-branch commit the task started from.
 

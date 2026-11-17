@@ -7,6 +7,7 @@ import { type RepairKind, type RepairOutcomeValue, type RepairerKind, type Under
 import {
   OUTCOME_NOTE_MAX_LENGTH,
   REPAIRER_NAME_MAX_LENGTH,
+  REPAIR_SOURCE_COLUMNS,
   SYMPTOM_OR_WORK_MAX_LENGTH,
   amendRepairFact,
   assertRepairSource,
@@ -14,6 +15,7 @@ import {
   incrementRepairVersion,
   lockRepairRecordForWrite,
   normalizeCost,
+  normalizeRepairSource,
   readStoredRepairFact,
   recordRepairCorrection,
   underRepairRefusalOf,
@@ -21,6 +23,7 @@ import {
   type BrokenRepairDateRule,
   type CorrectedField,
   type RepairCorrectionTarget,
+  type RepairSourceInput,
   type RepairStartRefusal,
   type StoredRepairFact,
 } from './repair.service.ts';
@@ -42,7 +45,8 @@ export interface RepairAmendmentInput {
   cost?: string | null;
   document_reference?: string | null;
   remark?: string | null;
-  repair_source?: { loan_return_id: string } | null;
+  // F006-T7: a Loan Return or a Verification Revision; either replaces the one the record cites.
+  repair_source?: RepairSourceInput | null;
   outcome?: RepairOutcomeValue;
   outcome_date?: string;
   note?: string | null;
@@ -111,7 +115,7 @@ const CORRECTED_FIELDS: Record<RepairCorrectionTarget['kind'], string[]> = {
     'cost',
     'document_reference',
     'remark',
-    'repair_source_loan_return_id',
+    ...REPAIR_SOURCE_COLUMNS,
   ],
   REPAIR_OUTCOME: ['outcome', 'outcome_date', 'note', 'document_reference', 'next_recommended_maintenance_date'],
 };
@@ -201,12 +205,9 @@ const normalizeValues = (kind: RepairCorrectionTarget['kind'], changes: RepairAm
   if (remark !== undefined) {
     values.remark = normalizeText(remark, 'remark', REMARK_MAX_LENGTH, '');
   }
+  // A record cites at most one Repair Source, so naming one clears the other (#125 Q12).
   if (repair_source !== undefined) {
-    const sourceId = repair_source?.loan_return_id ?? null;
-    if (sourceId !== null && !isValidUuid(sourceId)) {
-      throw new ValidationError('repair_source.loan_return_id must be a valid UUID');
-    }
-    values.repair_source_loan_return_id = sourceId?.trim().toLowerCase() ?? null;
+    Object.assign(values, normalizeRepairSource(repair_source));
   }
   if (outcome !== undefined) {
     values.outcome = outcome;
@@ -298,9 +299,10 @@ export class RepairCorrectionService {
         if (facts.values) {
           changes = changedFields(fact, facts.values);
           assertNextDateAfterOutcomeDate(fact, facts.values);
-          const sourceId = changes.find(({ field }) => field === 'repair_source_loan_return_id')?.after;
-          if (sourceId) {
-            await assertRepairSource(client, record.asset_id, sourceId);
+          // Only a Repair Source the amendment changes is checked: one cited already stays, voided or not.
+          if (changes.some(({ field, after }) => (REPAIR_SOURCE_COLUMNS as readonly string[]).includes(field) && after !== null)) {
+            const { repair_source_loan_return_id = null, repair_source_verification_revision_id = null } = facts.values;
+            await assertRepairSource(client, record.asset_id, { repair_source_loan_return_id, repair_source_verification_revision_id });
           }
           await amendRepairFact(client, target, fact.id, Object.fromEntries(changes.map(({ field, after }) => [field, after])));
         } else {
