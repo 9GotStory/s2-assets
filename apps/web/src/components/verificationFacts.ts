@@ -188,9 +188,12 @@ export interface AssetVerification {
 }
 
 export const VERIFICATION_ROUND_LABEL = 'รอบตรวจ';
+// glossary: no entry — the Asset page heading names Feature 006, Annual Asset Verification, not a new term
 export const VERIFICATION_PANEL_LABEL = 'ตรวจประจำปี';
+// glossary: no entry — a heading made of the term ผลตรวจ (Asset Verification)
 export const ASSET_VERIFICATIONS_LABEL = 'ผลตรวจประจำปี';
 export const VERIFICATION_DATE_LABEL = 'วันที่ตรวจ';
+// glossary: no entry — the action that records a ผลตรวจ (Asset Verification)
 export const RECORD_VERIFICATION_LABEL = 'บันทึกผลตรวจ';
 export const OPEN_VERIFICATION_ROUND_LABEL = 'เปิดรอบตรวจ';
 export const SCOPE_SNAPSHOT_LABEL = 'รายการในรอบ';
