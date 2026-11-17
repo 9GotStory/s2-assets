@@ -300,9 +300,9 @@ export class RepairCorrectionService {
           changes = changedFields(fact, facts.values);
           assertNextDateAfterOutcomeDate(fact, facts.values);
           // Only a Repair Source the amendment changes is checked: one cited already stays, voided or not.
-          const cited = changes.filter(({ field, after }) => (REPAIR_SOURCE_COLUMNS as readonly string[]).includes(field) && after !== null);
-          for (const { field, after } of cited) {
-            await assertRepairSource(client, record.asset_id, { repair_source_loan_return_id: null, repair_source_verification_revision_id: null, [field]: after });
+          if (changes.some(({ field, after }) => (REPAIR_SOURCE_COLUMNS as readonly string[]).includes(field) && after !== null)) {
+            const { repair_source_loan_return_id = null, repair_source_verification_revision_id = null } = facts.values;
+            await assertRepairSource(client, record.asset_id, { repair_source_loan_return_id, repair_source_verification_revision_id });
           }
           await amendRepairFact(client, target, fact.id, Object.fromEntries(changes.map(({ field, after }) => [field, after])));
         } else {

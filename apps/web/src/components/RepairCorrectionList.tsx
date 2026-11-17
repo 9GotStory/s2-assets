@@ -13,6 +13,7 @@ import {
   UNDER_WARRANTY_LABELS,
   costText,
   isLoanReturnSource,
+  revisionSourceText,
   type RepairCorrection,
   type RepairCorrectionField,
   type RepairKind,
@@ -48,7 +49,7 @@ const sourceText = (source: RepairSource): string =>
   `${
     isLoanReturnSource(source)
       ? `การคืนสภาพ${CONDITION_LABELS[source.condition]} วันที่ ${thaiDate(source.return_date)}`
-      : `ผลตรวจประจำปี ${source.verification_round.name} วันที่ตรวจ ${thaiDate(source.verification_date)}`
+      : revisionSourceText(source)
   }${source.is_voided ? ` (${VOIDED_LABEL})` : ''}`;
 
 // A value as the Repair Record page shows it. An outcome reads by the record's kind (#98 Q16).

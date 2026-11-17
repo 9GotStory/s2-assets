@@ -16,6 +16,7 @@ import {
   isLoanReturnSource,
   repairSourceIdOf,
   repairSourceRefusalText,
+  revisionSourceText,
   type RepairCorrectionTarget,
   type RepairKind,
   type RepairOutcomeValue,
@@ -266,10 +267,7 @@ export const RepairAmendForm: React.FC<RepairCorrectionFormProps> = ({ record, t
       ? [
           isLoanReturnSource(current)
             ? loanReturnOption({ id: current.loan_return_id, return_date: current.return_date })
-            : {
-                id: current.verification_revision_id,
-                label: `ผลตรวจประจำปี ${current.verification_round.name} วันที่ตรวจ ${thaiDate(current.verification_date)}`,
-              },
+            : { id: current.verification_revision_id, label: revisionSourceText(current) },
         ]
       : []),
     ...(sources.data ?? []).map(loanReturnOption),

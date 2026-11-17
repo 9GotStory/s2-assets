@@ -87,6 +87,33 @@ describe('Repair Source of a result (Seam A - F006-T7)', () => {
     await api?.close();
   });
 
+  /**
+   * Holds a Verification Correction's own write on `revisionId`, its `UPDATE … SET is_voided = true`, uncommitted;
+   * starts `write`, waits until it stops at the revision's share lock, then commits the void. `lockHelpers` holds
+   * only a `FOR UPDATE` of a whole row, which a share lock waits on too, but would not void the revision.
+   */
+  const whileVoiding = async <R>(revisionId: string, write: () => Promise<R>): Promise<R> => {
+    const holder = await api.pool.connect();
+    let pending: Promise<R> | undefined;
+    try {
+      await holder.query('BEGIN');
+      await holder.query('UPDATE verification_revisions SET is_voided = true WHERE id = $1', [revisionId]);
+      pending = write();
+      await expect
+        .poll(
+          async () =>
+            (await api.pool.query(`SELECT count(*)::int AS n FROM pg_stat_activity WHERE wait_event_type = 'Lock' AND query LIKE '%FROM verification_revisions%FOR SHARE%'`))
+              .rows[0].n,
+          { timeout: 10_000, interval: 50 }
+        )
+        .toBe(1);
+    } finally {
+      await holder.query('COMMIT');
+      holder.release();
+    }
+    return pending!;
+  };
+
   describe('sending from a result Found ชำรุด', () => {
     it('cites the revision as its Repair Source, which the record shows with its Round and Verification Date', async () => {
       const { assetId, roundId, revisionId } = await damagedResult();
@@ -206,28 +233,9 @@ describe('Repair Source of a result (Seam A - F006-T7)', () => {
 
     it('reads the revision under a lock its void takes, so a Verification Correction voiding it first is seen', async () => {
       const { assetId, revisionId } = await damagedResult();
-      const holder = await api.pool.connect();
-      let pending: ReturnType<typeof send> | undefined;
-      try {
-        // The void's own write on the revision, not yet committed.
-        await holder.query('BEGIN');
-        await holder.query('UPDATE verification_revisions SET is_voided = true WHERE id = $1', [revisionId]);
-        pending = send(base(assetId, fromResult(revisionId)));
-        await expect
-          .poll(
-            async () =>
-              (
-                await api.pool.query(`SELECT count(*)::int AS n FROM pg_stat_activity WHERE wait_event_type = 'Lock' AND query LIKE '%FROM verification_revisions%FOR SHARE%'`)
-              ).rows[0].n,
-            { timeout: 10_000, interval: 50 }
-          )
-          .toBe(1);
-      } finally {
-        await holder.query('COMMIT');
-        holder.release();
-      }
 
-      const refused = await pending!;
+      const refused = await whileVoiding(revisionId, () => send(base(assetId, fromResult(revisionId))));
+
       expect(refused.statusCode).toBe(409);
       expect(refused.json()).toMatchObject({ code: 'REPAIR_SOURCE_REFUSED', repair_source: { verification_revision_id: revisionId, reason: 'VOIDED' } });
       expect(await recordsOf(assetId)).toEqual([]);
@@ -323,6 +331,19 @@ describe('Repair Source of a result (Seam A - F006-T7)', () => {
         ['repair_source_verification_revision_id', false, true],
       ]);
       expect((await entryOf(roundId, assetId)).current.sent_for_repair).toBe(false);
+    });
+
+    it('reads the revision an amendment cites under a lock its void takes, so a void queued first is seen', async () => {
+      const { assetId, revisionId } = await damagedResult();
+      const repairRecordId = await sent(assetId);
+      const body = await amendment(repairRecordId, RECORD, fromResult(revisionId));
+      const before = await recordOf(repairRecordId);
+
+      const refused = await whileVoiding(revisionId, () => correct(repairRecordId, body));
+
+      expect(refused.statusCode).toBe(409);
+      expect(refused.json()).toMatchObject({ code: 'REPAIR_SOURCE_REFUSED', repair_source: { verification_revision_id: revisionId, reason: 'VOIDED' } });
+      expect(await recordOf(repairRecordId)).toEqual(before);
     });
 
     it('refuses an amendment to a result that cannot be a Repair Source, and changes nothing', async () => {

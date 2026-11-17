@@ -1,5 +1,6 @@
 // What the API answers about Repair Records (F005-T1, T2, T5, T6), and their labels from GLOSSARY.md (#98 Q14).
 
+import { thaiDate } from './assignmentFacts';
 import type { LoanCondition } from './loanFacts';
 import type { PermanentAssignment } from './ReferenceContextFields';
 
@@ -49,6 +50,10 @@ export interface VerificationRevisionRepairSource {
 export type RepairSource = LoanReturnRepairSource | VerificationRevisionRepairSource;
 
 export const isLoanReturnSource = (source: RepairSource): source is LoanReturnRepairSource => 'loan_return_id' in source;
+
+// A result cited as a Repair Source, as one line: its Round and Verification Date.
+export const revisionSourceText = ({ verification_round: round, verification_date: date }: Pick<VerificationRevisionRepairSource, 'verification_round' | 'verification_date'>): string =>
+  `ผลตรวจประจำปี ${round.name} วันที่ตรวจ ${thaiDate(date)}`;
 
 // The id a Repair Source is cited by, whichever kind it is.
 export const repairSourceIdOf = (source: RepairSource): string => (isLoanReturnSource(source) ? source.loan_return_id : source.verification_revision_id);
@@ -162,14 +167,14 @@ export type RepairSourceRefusal =
   | { loan_return_id: string; reason: 'NOT_LOAN_RETURN' | 'VOIDED' | 'OTHER_ASSET' | 'NOT_DAMAGED' }
   | { verification_revision_id: string; reason: 'NOT_VERIFICATION_REVISION' | 'VOIDED' | 'OTHER_ASSET' | 'NOT_DAMAGED' };
 
-const LOAN_RETURN_SOURCE_REFUSAL_LABELS: Record<string, string> = {
+const LOAN_RETURN_SOURCE_REFUSAL_LABELS: Record<Extract<RepairSourceRefusal, { loan_return_id: string }>['reason'], string> = {
   NOT_LOAN_RETURN: 'ไม่พบการคืนที่อ้างถึง',
   VOIDED: 'การคืนนั้นยกเลิกแล้ว',
   OTHER_ASSET: 'การคืนนั้นเป็นของครุภัณฑ์อื่น',
   NOT_DAMAGED: 'การคืนนั้นไม่ได้บันทึกสภาพชำรุด',
 };
 
-const REVISION_SOURCE_REFUSAL_LABELS: Record<string, string> = {
+const REVISION_SOURCE_REFUSAL_LABELS: Record<Extract<RepairSourceRefusal, { verification_revision_id: string }>['reason'], string> = {
   NOT_VERIFICATION_REVISION: 'ไม่พบผลตรวจที่อ้างถึง',
   VOIDED: 'ผลตรวจนั้นยกเลิกแล้ว',
   OTHER_ASSET: 'ผลตรวจนั้นเป็นของครุภัณฑ์อื่น',
@@ -178,7 +183,7 @@ const REVISION_SOURCE_REFUSAL_LABELS: Record<string, string> = {
 
 // Why a Repair Source was refused, as the sentence "ส่งซ่อมไม่ได้ เพราะ…" ends.
 export const repairSourceRefusalText = (refusal: RepairSourceRefusal): string =>
-  ('loan_return_id' in refusal ? LOAN_RETURN_SOURCE_REFUSAL_LABELS : REVISION_SOURCE_REFUSAL_LABELS)[refusal.reason];
+  'loan_return_id' in refusal ? LOAN_RETURN_SOURCE_REFUSAL_LABELS[refusal.reason] : REVISION_SOURCE_REFUSAL_LABELS[refusal.reason];
 
 // Why the server refused a Repair Outcome.
 export interface RepairOutcomeRefusal {

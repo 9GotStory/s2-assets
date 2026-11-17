@@ -403,13 +403,6 @@ export const repairSearch = {
   },
 };
 
-/**
- * F006-T7 (#125 Q19): SQL that holds when a Repair Record not voided cites, as its Repair Source, the Verification
- * Revision whose id is the SQL expression `revisionId`: "ส่งซ่อมแล้ว".
- */
-export const citedByLiveRepairRecord = (revisionId: string): string =>
-  `EXISTS (SELECT 1 FROM repair_records sr WHERE sr.repair_source_verification_revision_id = ${revisionId} AND NOT sr.is_voided)`;
-
 // An Asset's latest Repair Outcome, as the Start Loan warning reads it (#98 Q20).
 export interface LatestRepairOutcome {
   repair_record_id: string;

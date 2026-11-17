@@ -291,7 +291,7 @@ export async function assertRepairSource(client: pg.PoolClient, assetId: string,
  */
 async function assertLoanReturnSource(client: pg.PoolClient, assetId: string, loanReturnId: string): Promise<void> {
   const cited = (await loanReturnsOf(client, [loanReturnId])).get(loanReturnId);
-  const refuse = (reason: 'NOT_LOAN_RETURN' | 'VOIDED' | 'OTHER_ASSET' | 'NOT_DAMAGED') => new RepairSourceRefusedError({ loan_return_id: loanReturnId, reason });
+  const refuse = (reason: Extract<RepairSourceRefusal, { loan_return_id: string }>['reason']) => new RepairSourceRefusedError({ loan_return_id: loanReturnId, reason });
   if (!cited) {
     throw refuse('NOT_LOAN_RETURN');
   }
@@ -313,7 +313,7 @@ async function assertLoanReturnSource(client: pg.PoolClient, assetId: string, lo
  */
 async function assertVerificationRevisionSource(client: pg.PoolClient, assetId: string, revisionId: string): Promise<void> {
   const cited = await lockCitedVerificationRevision(client, revisionId);
-  const refuse = (reason: 'NOT_VERIFICATION_REVISION' | 'VOIDED' | 'OTHER_ASSET' | 'NOT_DAMAGED') =>
+  const refuse = (reason: Extract<RepairSourceRefusal, { verification_revision_id: string }>['reason']) =>
     new RepairSourceRefusedError({ verification_revision_id: revisionId, reason });
   if (!cited) {
     throw refuse('NOT_VERIFICATION_REVISION');

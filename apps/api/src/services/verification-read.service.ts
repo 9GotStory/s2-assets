@@ -2,7 +2,8 @@ import pg from 'pg';
 import { assetExists, containsPattern } from './asset-lookups.ts';
 import type { PermanentAssignment, ReferenceEntrySummary } from './assignment.service.ts';
 import { loanContextOf, type LoanContext } from './loan-read.service.ts';
-import { citedByLiveRepairRecord, repairRecordsCitingRevisions, underRepairOfAssets, type CitingRepairRecord, type RepairKind } from './repair-read.service.ts';
+import { repairRecordsCitingRevisions, underRepairOfAssets, type CitingRepairRecord, type RepairKind } from './repair-read.service.ts';
+import { citedByLiveRepairRecord } from './repair-source-citations.ts';
 
 export type VerificationRoundState = 'OPEN' | 'CLOSED' | 'VOIDED';
 export type VerificationRoundEventKind = 'OPENED' | 'EDITED' | 'CLOSED' | 'REOPENED' | 'VOIDED';
