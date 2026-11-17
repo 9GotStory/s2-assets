@@ -289,7 +289,7 @@ _Avoid_: disposal workflow, write-off, delete asset
 An Asset with a Retirement not voided. It is read from that Retirement, never set by hand. A
 Retired Asset takes no new business event, but it can still be found, opened from its QR label,
 read with its whole history and corrected. Not Found, Not Returned and ซ่อมไม่ได้ never make an
-Asset Retired.
+Asset Retired. An Asset that is not Retired is ยังไม่จำหน่าย.
 
 **Retirement Date** (วันที่จำหน่าย):
 The Thai calendar day a Retirement took effect, which may be earlier than its Recorded At but never

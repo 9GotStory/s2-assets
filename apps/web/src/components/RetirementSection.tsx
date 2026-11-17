@@ -1,10 +1,9 @@
 import React, { useState } from 'react';
-import { Link } from 'react-router';
 import { VoidedMark } from './LoanBadges';
-import { RetirementForm } from './RetirementForm';
+import { RetirementBlockedText, RetirementForm, type RetirementBlocker } from './RetirementForm';
 import { thaiDate } from './assignmentFacts';
-import { ON_LOAN_LABEL, voidedStyle, type OnLoan } from './loanFacts';
-import { UNDER_REPAIR_LABELS, type UnderRepair } from './repairFacts';
+import { voidedStyle, type OnLoan } from './loanFacts';
+import type { UnderRepair } from './repairFacts';
 import { RETIREMENT_DATE_LABEL, RETIREMENT_LABEL, RETIREMENT_METHOD_LABELS, RETIREMENT_REFERENCE_LABEL, RETIREMENT_SECTION_LABEL, type Retirement } from './retirementFacts';
 
 const THAI_DATE_TIME = new Intl.DateTimeFormat('th-TH', { dateStyle: 'long', timeStyle: 'short', timeZone: 'Asia/Bangkok' });
@@ -32,6 +31,11 @@ export const RetirementSection: React.FC<RetirementSectionProps> = ({ assetId, r
   const [isOpen, setIsOpen] = useState(false);
   // The action waits for the CSRF token, so that a save never goes without it (#135).
   const mayRetire = canRetire && csrfToken !== null;
+  const blocker: RetirementBlocker | null = onLoan
+    ? { reason: 'ON_LOAN', loan_id: onLoan.loan_id }
+    : underRepair
+      ? { reason: 'UNDER_REPAIR', repair_record_id: underRepair.repair_record_id, repair_kind: underRepair.repair_kind }
+      : null;
 
   return (
     <section aria-labelledby="retirement-heading" id="retirement-section" style={{ marginBottom: '2rem' }}>
@@ -83,31 +87,15 @@ export const RetirementSection: React.FC<RetirementSectionProps> = ({ assetId, r
           {RETIREMENT_LABEL}
         </button>
       )}
-      {mayRetire && isOpen && (onLoan || underRepair) && (
+      {mayRetire && isOpen && blocker && (
         <div role="note" data-testid="retirement-blocked" style={{ padding: '0.75rem 1rem', backgroundColor: '#fef3c7', color: '#92400e', borderRadius: '6px', fontSize: '0.875rem' }}>
-          {onLoan ? (
-            <>
-              จำหน่ายไม่ได้ เพราะครุภัณฑ์นี้{ON_LOAN_LABEL} ต้องบันทึกการคืน หรือปิดโดยไม่ได้รับคืน ก่อน{' '}
-              <Link to={`/loans/${onLoan.loan_id}`} id="retirement-blocked-link" style={{ color: '#2563eb', textDecoration: 'underline' }}>
-                ดูการยืม
-              </Link>
-            </>
-          ) : (
-            underRepair && (
-              <>
-                จำหน่ายไม่ได้ เพราะครุภัณฑ์นี้{UNDER_REPAIR_LABELS[underRepair.repair_kind]} ต้องบันทึกผลการซ่อมก่อน{' '}
-                <Link to={`/repairs/${underRepair.repair_record_id}`} id="retirement-blocked-link" style={{ color: '#2563eb', textDecoration: 'underline' }}>
-                  ดูรายการซ่อม
-                </Link>
-              </>
-            )
-          )}{' '}
+          <RetirementBlockedText blocker={blocker} linkId="retirement-blocked-link" />{' '}
           <button type="button" id="retirement-blocked-close" onClick={() => setIsOpen(false)}>
             ปิด
           </button>
         </div>
       )}
-      {mayRetire && isOpen && !onLoan && !underRepair && (
+      {mayRetire && isOpen && !blocker && (
         <RetirementForm
           assetId={assetId}
           csrfToken={csrfToken}

@@ -8,9 +8,6 @@ import { commitOnce } from './retryable-write.ts';
 import { NotFoundError } from './service-errors.ts';
 import { ValidationError } from './validation-error.ts';
 
-export const RETIREMENT_REFERENCE_MAX_LENGTH = DOCUMENT_REFERENCE_MAX_LENGTH;
-export const RETIREMENT_NOTE_MAX_LENGTH = REMARK_MAX_LENGTH;
-
 export interface RecordRetirementInput {
   retirement_date: string;
   retirement_method: RetirementMethod;
@@ -64,8 +61,8 @@ const normalizeFacts = (input: RecordRetirementInput, today: string): Retirement
   return {
     retirement_date: input.retirement_date,
     retirement_method: input.retirement_method,
-    retirement_reference: normalizeText(input.retirement_reference, 'retirement_reference', RETIREMENT_REFERENCE_MAX_LENGTH, ''),
-    note: normalizeText(input.note, 'note', RETIREMENT_NOTE_MAX_LENGTH, ''),
+    retirement_reference: normalizeText(input.retirement_reference, 'retirement_reference', DOCUMENT_REFERENCE_MAX_LENGTH, ''),
+    note: normalizeText(input.note, 'note', REMARK_MAX_LENGTH, ''),
   };
 };
 

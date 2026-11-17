@@ -8,7 +8,7 @@ import { ON_LOAN_LABEL, type OnLoan, type StartLoanWarning } from '../components
 import { UnderRepairBadge } from '../components/RepairBadges';
 import { UNDER_REPAIR_FILTER_LABEL, type UnderRepair } from '../components/repairFacts';
 import { RetiredBadge } from '../components/RetirementBadges';
-import { NOT_RETIRED_LABEL, RETIRED_LABEL } from '../components/retirementFacts';
+import { NOT_RETIRED_LABEL, RETIRED_LABEL, RETIREMENT_STATUS_FILTER_LABEL } from '../components/retirementFacts';
 import {
   REFERENCE_DIMENSIONS,
   entryLabel,
@@ -872,7 +872,7 @@ export const AssetSearch: React.FC = () => {
                 color: '#374151',
               }}
             >
-              สถานะการจำหน่าย
+              {RETIREMENT_STATUS_FILTER_LABEL}
               <select
                 id="search-filter-retired"
                 value={selectedFilters.retired}

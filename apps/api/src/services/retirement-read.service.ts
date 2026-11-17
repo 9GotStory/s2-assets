@@ -26,12 +26,19 @@ export interface AssetRetirements {
   retirements: Retirement[];
 }
 
-// Retired, for a Retirement row aliased `t`: it is not voided (DR-07, #154 Q1). Every read and write of
-// Retired uses this one condition.
-const IS_CURRENT = 'NOT t.is_voided';
+// A Retirement row aliased `t` that makes its Asset Retired: it is not voided (DR-07, #154 Q1). Every read and
+// write of Retired uses this one condition.
+const IS_NOT_VOIDED = 'NOT t.is_voided';
 
-const RETIREMENT_COLUMNS = `t.id, t.asset_id, to_char(t.retirement_date, 'YYYY-MM-DD') AS retirement_date, t.retirement_method,
-       t.retirement_reference, t.note, t.recorded_by, u.username AS recorded_by_username, t.recorded_at, t.is_voided, t.version`;
+// The Asset of a row aliased `a` is Retired.
+const ASSET_IS_RETIRED = `EXISTS (SELECT 1 FROM retirements t WHERE t.asset_id = a.id AND ${IS_NOT_VOIDED})`;
+
+// Retirements aliased `t` as the Asset page shows them, with who recorded each.
+const RETIREMENT_SELECT = `SELECT t.id, t.asset_id, to_char(t.retirement_date, 'YYYY-MM-DD') AS retirement_date, t.retirement_method,
+       t.retirement_reference, t.note, t.recorded_by, u.username AS recorded_by_username, t.recorded_at, t.is_voided, t.version,
+       ${IS_NOT_VOIDED} AS is_not_voided
+     FROM retirements t
+     LEFT JOIN users u ON u.id = t.recorded_by`;
 
 const retirementOf = (row: any): Retirement => ({
   id: row.id,
@@ -49,10 +56,8 @@ const retirementOf = (row: any): Retirement => ({
 /** The Retirement not voided of each of `assetIds` that is Retired. A write reads it under the Asset's lock. */
 export async function currentRetirementsOf(db: pg.Pool | pg.PoolClient | any, assetIds: string[]): Promise<Map<string, Retirement>> {
   const res = await db.query(
-    `SELECT ${RETIREMENT_COLUMNS}
-     FROM retirements t
-     LEFT JOIN users u ON u.id = t.recorded_by
-     WHERE t.asset_id = ANY($1::uuid[]) AND ${IS_CURRENT}`,
+    `${RETIREMENT_SELECT}
+     WHERE t.asset_id = ANY($1::uuid[]) AND ${IS_NOT_VOIDED}`,
     [assetIds]
   );
   return new Map(res.rows.map((row: any): [string, Retirement] => [row.asset_id, retirementOf(row)]));
@@ -68,8 +73,8 @@ export interface AssetSearchRetirementFacts {
  * row aliased `a`, and what each result row says.
  */
 export const retirementSearch = {
-  retiredFilter: `EXISTS (SELECT 1 FROM retirements t WHERE t.asset_id = a.id AND ${IS_CURRENT})`,
-  notRetiredFilter: `NOT EXISTS (SELECT 1 FROM retirements t WHERE t.asset_id = a.id AND ${IS_CURRENT})`,
+  retiredFilter: ASSET_IS_RETIRED,
+  notRetiredFilter: `NOT ${ASSET_IS_RETIRED}`,
   factsOf: async (db: pg.Pool | any, assetIds: string[]): Promise<(assetId: string) => AssetSearchRetirementFacts> => {
     const current = await currentRetirementsOf(db, assetIds);
     return (assetId) => ({ retired: current.has(assetId) });
@@ -87,15 +92,13 @@ export class RetirementReadService {
   /** Whether the Asset is Retired, its current Retirement, and every Retirement of it, oldest first. */
   async ofAsset(assetId: string): Promise<AssetRetirements> {
     const res = await this.db.query(
-      `SELECT ${RETIREMENT_COLUMNS}, ${IS_CURRENT} AS is_current
-       FROM retirements t
-       LEFT JOIN users u ON u.id = t.recorded_by
+      `${RETIREMENT_SELECT}
        WHERE t.asset_id = $1
        ORDER BY t.recorded_at, t.id`,
       [assetId]
     );
     const retirements = res.rows.map(retirementOf);
-    const current = res.rows.find((row: any) => row.is_current);
+    const current = res.rows.find((row: any) => row.is_not_voided);
     const retirement = current ? retirementOf(current) : null;
     return { retired: retirement !== null, retirement, retirements };
   }

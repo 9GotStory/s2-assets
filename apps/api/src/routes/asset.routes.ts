@@ -819,7 +819,7 @@ export const assetRoutes: FastifyPluginAsync<AssetRoutesOptions> = async (
         // F007-T1 (#155): whether the Asset is Retired, by which Retirement, every Retirement of it, and whether the
         // viewer may retire it. While it is On Loan or Under Repair the page says why instead (#154 Q22).
         ...retirements,
-        can_retire: canRecordRetirement && !retirements.retired,
+        can_retire: canRecordRetirement && mayTakeNewEvent,
       });
     }
   );

@@ -3,8 +3,9 @@ import { Link } from 'react-router';
 import { LoanSaveForm } from './LoanSaveForm';
 import { fieldInputStyle, fieldLabelStyle } from './ReferenceContextFields';
 import { bangkokToday } from './assignmentFacts';
-import { ON_LOAN_LABEL } from './loanFacts';
-import { UNDER_REPAIR_LABELS } from './repairFacts';
+import type { RepairKind } from './repairFacts';
+import { NOT_RETURNED_LABEL, ON_LOAN_LABEL } from './loanFacts';
+import { RECORD_REPAIR_OUTCOME_LABEL, UNDER_REPAIR_LABELS } from './repairFacts';
 import {
   RETIRED_LABEL,
   RETIREMENT_DATE_LABEL,
@@ -27,24 +28,33 @@ export interface RetirementFormProps {
 
 const fieldStyle: React.CSSProperties = { marginBottom: '0.75rem' };
 
-// A refused Retirement names what keeps the Asset, with a link to it (#154 Q3, Q22).
-export const RefusedRetirement: React.FC<{ asset: RetirementRefusal }> = ({ asset }) => {
-  if (asset.reason === 'ALREADY_RETIRED') {
-    return <>จำหน่ายไม่ได้ เพราะครุภัณฑ์นี้{RETIRED_LABEL}</>;
-  }
-  if (asset.reason === 'ON_LOAN') {
-    return (
-      <>
-        จำหน่ายไม่ได้ เพราะ{ON_LOAN_LABEL} ต้องบันทึกการคืนหรือปิดโดยไม่ได้รับคืนก่อน <Link to={`/loans/${asset.loan_id}`}>ดูการยืม</Link>
-      </>
-    );
-  }
-  return (
+// What keeps an Asset from a Retirement until it is resolved as it really ended (DR-14, DR-15, DR-16).
+export type RetirementBlocker = { reason: 'ON_LOAN'; loan_id: string } | { reason: 'UNDER_REPAIR'; repair_record_id: string; repair_kind: RepairKind };
+
+const linkStyle: React.CSSProperties = { color: '#2563eb', textDecoration: 'underline' };
+
+// Why the Asset cannot be retired now, with a link to the Loan or the Repair Record that keeps it (#154 Q3, Q22).
+// The section says it before the form opens, and a refused save says the same.
+export const RetirementBlockedText: React.FC<{ blocker: RetirementBlocker; linkId?: string }> = ({ blocker, linkId }) =>
+  blocker.reason === 'ON_LOAN' ? (
     <>
-      จำหน่ายไม่ได้ เพราะ{UNDER_REPAIR_LABELS[asset.repair_kind]} ต้องบันทึกผลการซ่อมก่อน <Link to={`/repairs/${asset.repair_record_id}`}>ดูรายการซ่อม</Link>
+      จำหน่ายไม่ได้ เพราะครุภัณฑ์นี้{ON_LOAN_LABEL} ต้องบันทึกการคืนหรือ{NOT_RETURNED_LABEL}ก่อน{' '}
+      <Link to={`/loans/${blocker.loan_id}`} id={linkId} style={linkStyle}>
+        ดูการยืม
+      </Link>
+    </>
+  ) : (
+    <>
+      จำหน่ายไม่ได้ เพราะครุภัณฑ์นี้{UNDER_REPAIR_LABELS[blocker.repair_kind]} ต้อง{RECORD_REPAIR_OUTCOME_LABEL}ก่อน{' '}
+      <Link to={`/repairs/${blocker.repair_record_id}`} id={linkId} style={linkStyle}>
+        ดูรายการซ่อม
+      </Link>
     </>
   );
-};
+
+// A refused Retirement names what keeps the Asset (#154 Q3, P2).
+const RefusedRetirement: React.FC<{ asset: RetirementRefusal }> = ({ asset }) =>
+  asset.reason === 'ALREADY_RETIRED' ? <>จำหน่ายไม่ได้ เพราะครุภัณฑ์นี้{RETIRED_LABEL}</> : <RetirementBlockedText blocker={asset} />;
 
 /**
  * "จำหน่าย": records that the Asset left use for good, after its external disposal process finished

@@ -123,10 +123,15 @@ describe('Retirement (Seam A - F007-T1)', () => {
       const { retirement_date: _date, ...noDate } = base();
       const { retirement_method: _method, ...noMethod } = base();
 
-      for (const payload of [noDate, noMethod, base({ retirement_method: 'DONATION' }), base({ retirement_method: null })]) {
+      for (const [payload, field] of [
+        [noDate, 'retirement_date'],
+        [noMethod, 'retirement_method'],
+        [base({ retirement_method: 'DONATION' }), 'retirement_method'],
+        [base({ retirement_method: null }), 'retirement_method'],
+      ] as const) {
         const res = await retire(assetId, payload);
         expect(res.statusCode).toBe(400);
-        expect(res.json().code).toBe('VALIDATION_FAILED');
+        expect(res.json()).toMatchObject({ code: 'VALIDATION_FAILED', message: expect.stringContaining(`${field}:`) });
       }
       expect(await retirementsOf(assetId)).toEqual(NONE);
     });
@@ -164,8 +169,14 @@ describe('Retirement (Seam A - F007-T1)', () => {
     it('takes no file and no field it does not know', async () => {
       const assetId = await registered();
 
-      for (const payload of [base({ document: 'base64…' }), base({ asset_id: assetId }), base({ status: 'RETIRED' })]) {
-        expect((await retire(assetId, payload)).statusCode).toBe(400);
+      for (const [payload, key] of [
+        [base({ document: 'base64…' }), 'document'],
+        [base({ asset_id: assetId }), 'asset_id'],
+        [base({ status: 'RETIRED' }), 'status'],
+      ] as const) {
+        const res = await retire(assetId, payload);
+        expect(res.statusCode).toBe(400);
+        expect(res.json()).toMatchObject({ code: 'VALIDATION_FAILED', message: expect.stringContaining(`"${key}"`) });
       }
       expect(await retirementsOf(assetId)).toEqual(NONE);
     });
@@ -301,10 +312,14 @@ describe('Retirement (Seam A - F007-T1)', () => {
       expect((await recordOf(repairRecordId)).outcome).toBeNull();
     });
 
-    it('retires an Asset whose last Repair Outcome is ซ่อมไม่ได้, or ใช้งานได้, and changes no Repair Record', async () => {
-      for (const outcome of ['NOT_USABLE', 'USABLE']) {
+    it('retires an Asset whose last Repair Outcome is ซ่อมไม่ได้ or ใช้งานไม่ได้, or ใช้งานได้, and changes no Repair Record', async () => {
+      for (const [repair_kind, outcome] of [
+        ['REPAIR', 'NOT_USABLE'],
+        ['MAINTENANCE', 'NOT_USABLE'],
+        ['REPAIR', 'USABLE'],
+      ] as const) {
         const assetId = await registered();
-        const repairRecordId = await sent(assetId);
+        const repairRecordId = await sent(assetId, { repair_kind });
         await ended(repairRecordId, { outcome, outcome_date: '2026-11-10' });
         const recordBefore = await recordOf(repairRecordId);
 
@@ -469,11 +484,15 @@ describe('Retirement (Seam A - F007-T1)', () => {
     });
 
     it('refuses any other Retirement status, and a repeated one', async () => {
-      for (const query of ['&retired=yes', '&retired=', '&retired=true&retired=false']) {
+      for (const query of ['&retired=yes', '&retired=']) {
         const res = await api.get(readonly, `/assets/search?field=name&value=x${query}`);
         expect(res.statusCode).toBe(400);
-        expect(res.json().error.code).toBe('VALIDATION_FAILED');
+        expect(res.json().error).toMatchObject({ code: 'VALIDATION_FAILED', details: { retired: expect.any(String) } });
       }
+      // A repeated one meets the list's rule for every parameter.
+      const repeated = await api.get(readonly, '/assets/search?field=name&value=x&retired=true&retired=false');
+      expect(repeated.statusCode).toBe(400);
+      expect(repeated.json().error).toMatchObject({ code: 'VALIDATION_FAILED', details: { query: 'Duplicate parameter not allowed' } });
     });
   });
 

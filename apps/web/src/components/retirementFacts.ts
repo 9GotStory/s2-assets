@@ -29,8 +29,9 @@ export type RetirementRefusal = { asset_id: string; name: string | null; asset_n
 
 export const RETIREMENT_LABEL = 'จำหน่าย';
 export const RETIRED_LABEL = 'จำหน่ายแล้ว';
-// glossary: no entry — the Asset list's filter value for an Asset that is not Retired
 export const NOT_RETIRED_LABEL = 'ยังไม่จำหน่าย';
+// glossary: no entry — the Asset list's filter of Retired, made of the term จำหน่าย (Retirement)
+export const RETIREMENT_STATUS_FILTER_LABEL = 'สถานะการจำหน่าย';
 // glossary: no entry — the Asset page heading made of the term จำหน่าย (Retirement)
 export const RETIREMENT_SECTION_LABEL = 'การจำหน่าย';
 // glossary: no entry — the Permanent Assignment of a Retired Asset, read as it stood at its Retirement (#154 Q14)
