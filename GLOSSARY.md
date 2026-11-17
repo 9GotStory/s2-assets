@@ -267,7 +267,7 @@ Reassignment, never set by hand: voiding the Reassignment, or a new current resu
 
 **Awaiting Action** (ยังไม่มี action ต่อ):
 A current result with a Discrepancy that no record follows yet: ชำรุด without Sent for Repair, or
-Location ไม่ตรงทะเบียน without Reassigned.
+Location ไม่ตรงทะเบียน without Reassigned. A result of a Retired Asset is never Awaiting Action.
 
 **Closed Round** (ปิดรอบแล้ว):
 A Verification Round no longer taking results, kept as a historical record until a Reopen. Not a
@@ -276,6 +276,43 @@ Closed Loan.
 **Reopen** (เปิดรอบอีกครั้ง):
 Opening a Closed Round again, with a reason, so its results can be changed and it can be closed
 again.
+
+## Retirement
+
+**Retirement** (จำหน่าย):
+A business event recording that an Asset left use for good through an external disposal process
+that has already finished, from its Retirement Date. The system keeps the result; it runs no
+part of the process. It is not a deletion: the Asset and all its history stay.
+_Avoid_: disposal workflow, write-off, delete asset
+
+**Retired** (จำหน่ายแล้ว):
+An Asset with a Retirement not voided. It is read from that Retirement, never set by hand. A
+Retired Asset takes no new business event, but it can still be found, opened from its QR label,
+read with its whole history and corrected. Not Found, Not Returned and ซ่อมไม่ได้ never make an
+Asset Retired.
+
+**Retirement Date** (วันที่จำหน่าย):
+The Thai calendar day a Retirement took effect, which may be earlier than its Recorded At but never
+later than today.
+
+**Retirement Method** (วิธีจำหน่าย):
+How an Asset was disposed of: ขาย, แลกเปลี่ยน, โอนให้หน่วยงานอื่น, แปรสภาพหรือทำลาย or จำหน่ายเป็นสูญ.
+โอนให้หน่วยงานอื่น hands the Asset to another agency; it is not a Reassignment.
+
+**Retirement Reference** (เอกสารอ้างอิง):
+The external document behind a Retirement, such as the number and date of an order, noted as text
+when there is one. The system neither stores nor produces the document.
+
+**Retirement Correction** (แก้ไขรายการที่บันทึกผิด):
+A traceable fix, with a reason, to a Retirement that was wrong as recorded, up to voiding one that
+never happened (ยกเลิกรายการ), which leaves the Asset no longer Retired. It is not a business event.
+A voided Retirement stays shown as ยกเลิกแล้ว, struck through.
+
+**Retirement Conflict** (วันจำหน่ายขัดกับประวัติ):
+A Retirement whose Retirement Date is earlier than the business date of another fact of the same
+Asset not voided, such as a Reassignment, a Loan, a Loan Return, a Repair Record or a Found result,
+usually because the Retirement was backdated. Facts on the same day are not one. It goes away once
+a correction fixes whichever fact was wrong; the system never guesses which one.
 
 ## Roles
 
