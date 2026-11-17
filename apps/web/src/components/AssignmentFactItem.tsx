@@ -1,5 +1,7 @@
 import React from 'react';
+import { Link } from 'react-router';
 import { REFERENCE_DIMENSIONS } from './ReferenceContextFields';
+import { VERIFICATION_DATE_LABEL } from './verificationFacts';
 import {
   BULK_REASSIGNMENT_LABEL,
   CORRECTION_LABELS,
@@ -104,6 +106,21 @@ export const AssignmentFactItem: React.FC<AssignmentFactItemProps> = ({ event, a
           </span>
         )}
       </div>
+      {/* A Reassignment moved from a result names its Round (F006-T8, #125 Q13, Q21); a result voided later stays named (P1). */}
+      {event.verification_revision && (
+        <div data-testid={`assignment-verification-source-${event.id}`} style={{ overflowWrap: 'anywhere' }}>
+          ย้ายจากผลตรวจประจำปี{' '}
+          <Link to={`/verification-rounds/${event.verification_revision.verification_round.id}`} style={{ color: '#2563eb', textDecoration: 'underline' }}>
+            {event.verification_revision.verification_round.name}
+          </Link>{' '}
+          {VERIFICATION_DATE_LABEL} <time dateTime={event.verification_revision.verification_date}>{thaiDate(event.verification_revision.verification_date)}</time>
+          {event.verification_revision.is_voided && (
+            <span data-testid={`assignment-verification-source-voided-${event.id}`} style={{ marginLeft: '0.5rem', fontWeight: 600, color: '#b91c1c' }}>
+              (ผลตรวจนั้นยกเลิกแล้ว)
+            </span>
+          )}
+        </div>
+      )}
       <div>
         วันที่มีผล:{' '}
         {event.effective_date ? (

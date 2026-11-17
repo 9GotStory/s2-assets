@@ -1,6 +1,7 @@
 import React, { useState } from 'react';
 import { Link } from 'react-router';
 import { RepairStartForm } from './RepairStartForm';
+import { ResultReassignmentForm } from './ResultReassignmentForm';
 import { VerificationLateAdditionForm } from './VerificationLateAdditionForm';
 import { VerificationRecordForm } from './VerificationRecordForm';
 import { VerificationVoidForm } from './VerificationVoidForm';
@@ -11,6 +12,8 @@ import {
   DISCREPANCY_LABEL,
   LATE_ADDITION_LABEL,
   OBSERVED_LOCATION_LABEL,
+  REASSIGNED_LABEL,
+  REASSIGN_LABEL,
   RESULT_LABELS,
   REVERIFICATION_LABEL,
   SENT_FOR_REPAIR_LABEL,
@@ -18,6 +21,7 @@ import {
   VERIFICATION_PANEL_LABEL,
   VERIFICATION_ROUND_LABEL,
   discrepancyText,
+  hasLocationMismatch,
   isFoundDamaged,
   recordedByText,
   recordedContextText,
@@ -39,6 +43,10 @@ export interface VerificationPanelProps {
   canManage: boolean;
   // Whether the viewer holds 'repair:record', which sends a result Found ชำรุด for repair (F006-T7, #125 Q22).
   canRecordRepair: boolean;
+  // Whether the viewer holds 'assignment:reassign', which moves an Asset from a result with "Location ไม่ตรงทะเบียน"
+  // (F006-T8, #125 Q22), and who they are, for the Reassignment form's reads.
+  canReassign: boolean;
+  actorId: string | null;
   csrfToken: string | null;
   onRecorded: () => Promise<void>;
   onPermissionRevoked?: (statusCode?: number) => void;
@@ -104,6 +112,27 @@ export const SentForRepairLine: React.FC<{ revision: VerificationRevision; testI
   );
 };
 
+// "ย้ายแล้ว" with the Effective Date of each Reassignment not voided that cites the result (F006-T8, #125 Q19); nothing
+// when none does.
+export const ReassignedLine: React.FC<{ revision: VerificationRevision; testId: string }> = ({ revision, testId }) => {
+  if (!revision.reassigned) {
+    return null;
+  }
+  return (
+    <div data-testid={testId} style={{ color: '#166534', fontWeight: 600, overflowWrap: 'anywhere' }}>
+      {REASSIGNED_LABEL}
+      {revision.reassignments
+        .filter(({ is_voided: isVoided }) => !isVoided)
+        .map(({ id, effective_date: effectiveDate }) => (
+          <span key={id} style={{ fontWeight: 400 }}>
+            {' '}
+            (วันที่มีผล {thaiDate(effectiveDate)})
+          </span>
+        ))}
+    </div>
+  );
+};
+
 // What "ส่งซ่อม" opens the Repair Start form with: the result as its Repair Source (#125 Q12).
 export const repairSourceOfResult = (revision: VerificationRevision, roundName: string) =>
   ({ kind: 'VERIFICATION_REVISION', verificationRevisionId: revision.id, roundName, verificationDate: revision.verification_date, note: revision.note }) as const;
@@ -161,6 +190,7 @@ export const RevisionFacts: React.FC<{ revision: VerificationRevision; testId: s
           <dd style={{ ...valueStyle, color: '#991b1b', fontWeight: 600 }}>
             <DiscrepancyItems revision={revision} testId={`${testId}-discrepancies`} />
             <SentForRepairLine revision={revision} testId={`${testId}-sent-for-repair`} />
+            <ReassignedLine revision={revision} testId={`${testId}-reassigned`} />
           </dd>
         </>
       )}
@@ -200,7 +230,8 @@ export const RevisionFacts: React.FC<{ revision: VerificationRevision; testId: s
  * once it has one, or that the Asset is not in the Round; and the Loan or Repair context in each case. Beside the
  * result it offers "ตรวจซ้ำ" and, to holders of 'verification:correct', "ยกเลิกรายการ (บันทึกผิด)" (F006-T4, Q18, Q20).
  * Beside the note that the Asset is not in the Round it offers holders of 'verification:manage' "เพิ่มเข้ารอบภายหลัง"
- * (F006-T5, Q11). Beside a result Found ชำรุด it offers holders of 'repair:record' "ส่งซ่อม" (F006-T7, Q12, Q22).
+ * (F006-T5, Q11). Beside a result Found ชำรุด it offers holders of 'repair:record' "ส่งซ่อม" (F006-T7, Q12, Q22), and
+ * beside one with "Location ไม่ตรงทะเบียน" holders of 'assignment:reassign' "ย้าย" (F006-T8, Q13, Q22).
  */
 export const VerificationPanel: React.FC<VerificationPanelProps> = ({
   assetId,
@@ -209,13 +240,15 @@ export const VerificationPanel: React.FC<VerificationPanelProps> = ({
   canCorrect,
   canManage,
   canRecordRepair,
+  canReassign,
+  actorId,
   csrfToken,
   onRecorded,
   onPermissionRevoked,
 }) => {
   const { open_round: round, entry, context } = panel;
   // The form open over the current result, or over the note that the Asset is not in the Round, if any.
-  const [openForm, setOpenForm] = useState<'REVERIFY' | 'VOID' | 'LATE_ADDITION' | 'REPAIR' | null>(null);
+  const [openForm, setOpenForm] = useState<'REVERIFY' | 'VOID' | 'LATE_ADDITION' | 'REPAIR' | 'REASSIGN' | null>(null);
   const current = entry?.current ?? null;
   const afterSave = async () => {
     await onRecorded();
@@ -225,6 +258,7 @@ export const VerificationPanel: React.FC<VerificationPanelProps> = ({
   // this form is (#135).
   const mayRecord = canRecord && entry !== null && entry.current === null;
   const mayRepair = canRecordRepair && current !== null && isFoundDamaged(current);
+  const mayReassign = canReassign && current !== null && hasLocationMismatch(current);
 
   return (
     <section aria-labelledby="verification-panel-heading" id="verification-panel" style={{ marginBottom: '2rem', border: '2px solid #2563eb', borderRadius: '8px', padding: '1rem' }}>
@@ -271,8 +305,13 @@ export const VerificationPanel: React.FC<VerificationPanelProps> = ({
         </div>
       )}
       {current && <RevisionFacts revision={current} testId="verification-panel-current" />}
-      {current && openForm === null && (canRecord || canCorrect || mayRepair) && (
+      {current && openForm === null && (canRecord || canCorrect || mayRepair || mayReassign) && (
         <div style={{ display: 'flex', flexWrap: 'wrap', gap: '0.5rem', marginTop: '0.75rem' }}>
+          {mayReassign && (
+            <button type="button" id="verification-reassign-action" onClick={() => setOpenForm('REASSIGN')} style={actionStyle}>
+              {REASSIGN_LABEL}
+            </button>
+          )}
           {mayRepair && (
             <button type="button" id="verification-repair-action" onClick={() => setOpenForm('REPAIR')} style={actionStyle}>
               {REPAIR_START_LABEL}
@@ -312,6 +351,21 @@ export const VerificationPanel: React.FC<VerificationPanelProps> = ({
             repairSource={repairSourceOfResult(current, round.name)}
             csrfToken={csrfToken}
             onStarted={afterSave}
+            onCancel={() => setOpenForm(null)}
+            onPermissionRevoked={onPermissionRevoked}
+          />
+        </div>
+      )}
+      {current && openForm === 'REASSIGN' && mayReassign && (
+        <div style={{ marginTop: '0.75rem' }}>
+          <ResultReassignmentForm
+            key={current.id}
+            assetId={assetId}
+            revision={current}
+            roundName={round.name}
+            actorId={actorId}
+            csrfToken={csrfToken}
+            onRecorded={afterSave}
             onCancel={() => setOpenForm(null)}
             onPermissionRevoked={onPermissionRevoked}
           />

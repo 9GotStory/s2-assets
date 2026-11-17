@@ -1,8 +1,9 @@
 import pg from 'pg';
 
-// A Verification Revision as another module cites it by id: a Repair Record's Repair Source (F006-T7, #132). This
-// module reads no Repair table and imports no reads at run time, so the Repair modules read it while
-// verification-read.service.ts reads theirs, without an import cycle.
+// A Verification Revision as another module cites it by id: a Repair Record's Repair Source (F006-T7, #132), and the
+// result a Reassignment moves an Asset from (F006-T8, #133). This module reads no Repair or assignment table and
+// imports no reads at run time, so those modules read it while verification-read.service.ts reads theirs, without
+// an import cycle.
 
 export interface CitedVerificationRevision {
   verification_revision_id: string;
@@ -11,9 +12,23 @@ export interface CitedVerificationRevision {
   asset_id: string;
   // Found ชำรุด, as a Repair Source must be (#125 Q12).
   is_damaged: boolean;
+  // "Location ไม่ตรงทะเบียน", as a result a Reassignment cites must have (#125 Q13): the Observed Location differs
+  // from the Location in effect that the revision stored, as verification-read.service.ts derives it.
+  has_location_mismatch: boolean;
   // Voided by a Verification Correction (#125 Q18).
   is_voided: boolean;
 }
+
+// A cited revision as the citing record shows it: which result, of which Round and Verification Date, and whether a
+// Verification Correction has voided it since (P1).
+export type CitedVerificationRevisionView = Pick<CitedVerificationRevision, 'verification_revision_id' | 'verification_round' | 'verification_date' | 'is_voided'>;
+
+export const citedRevisionViewOf = ({ verification_revision_id, verification_round, verification_date, is_voided }: CitedVerificationRevision): CitedVerificationRevisionView => ({
+  verification_revision_id,
+  verification_round,
+  verification_date,
+  is_voided,
+});
 
 const citedOf = (row: any): CitedVerificationRevision => ({
   verification_revision_id: row.id,
@@ -21,12 +36,14 @@ const citedOf = (row: any): CitedVerificationRevision => ({
   verification_date: row.verification_date,
   asset_id: row.asset_id,
   is_damaged: row.is_damaged,
+  has_location_mismatch: row.has_location_mismatch,
   is_voided: row.is_voided,
 });
 
 const CITED_REVISIONS = `SELECT v.id, r.id AS verification_round_id, r.name AS verification_round_name,
             to_char(v.verification_date, 'YYYY-MM-DD') AS verification_date, e.asset_id,
-            (v.result = 'FOUND' AND v.condition = 'DAMAGED') AS is_damaged, v.is_voided
+            (v.result = 'FOUND' AND v.condition = 'DAMAGED') AS is_damaged,
+            (v.observed_location_id IS NOT NULL AND v.observed_location_id IS DISTINCT FROM v.location_id) AS has_location_mismatch, v.is_voided
      FROM verification_revisions v
      JOIN verification_scope_entries e ON e.id = v.verification_scope_entry_id
      JOIN verification_rounds r ON r.id = e.verification_round_id`;

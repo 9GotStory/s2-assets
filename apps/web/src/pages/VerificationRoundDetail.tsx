@@ -5,7 +5,8 @@ import { REFERENCE_DIMENSIONS, entryLabel } from '../components/ReferenceContext
 import { thaiDate, valueText } from '../components/assignmentFacts';
 import { REPAIR_START_LABEL } from '../components/repairFacts';
 import { RepairStartForm } from '../components/RepairStartForm';
-import { RecordingContextLine, RevisionDiscrepancies, SentForRepairLine, repairSourceOfResult } from '../components/VerificationPanel';
+import { ResultReassignmentForm } from '../components/ResultReassignmentForm';
+import { ReassignedLine, RecordingContextLine, RevisionDiscrepancies, SentForRepairLine, repairSourceOfResult } from '../components/VerificationPanel';
 import { VerificationRevisionList } from '../components/VerificationRevisionList';
 import { VerificationRoundActions } from '../components/VerificationRoundActions';
 import {
@@ -23,7 +24,9 @@ import {
   START_DATE_LABEL,
   VERIFICATION_DATE_LABEL,
   VERIFICATION_ROUND_LABEL,
+  REASSIGN_LABEL,
   WHOLE_REGISTER_LABEL,
+  hasLocationMismatch,
   isFoundDamaged,
   recordedByText,
   recordedContextText,
@@ -216,19 +219,44 @@ interface RowRepairAction {
   onPermissionRevoked: (statusCode?: number) => void;
 }
 
+// What a row needs to move its Asset (F006-T8): absent for a viewer without 'assignment:reassign'.
+interface RowReassignAction {
+  roundName: string;
+  actorId: string | null;
+  csrfToken: string | null;
+  onRecorded: () => Promise<void>;
+  onPermissionRevoked: (statusCode?: number) => void;
+}
+
+const rowActionStyle: React.CSSProperties = {
+  marginTop: '0.5rem',
+  padding: '0.375rem 0.75rem',
+  backgroundColor: '#ffffff',
+  color: '#1d4ed8',
+  border: '1px solid #2563eb',
+  borderRadius: '6px',
+  fontSize: '0.875rem',
+  cursor: 'pointer',
+};
+
 // One Asset of the Scope Snapshot as the register showed it when it joined the Round (#125 Q4), with its current
 // result, its Observed Location and Discrepancies (Q7), the Loan or Repair context that result kept (Q14), its
 // revisions (F006-T4), and, for a Late Addition, who added it, when and why (F006-T5, AV-21). A result Found ชำรุด
 // shows "ส่งซ่อมแล้ว" once a Repair Record cites it, and offers "ส่งซ่อม" to holders of 'repair:record' (F006-T7, Q19, Q22).
-const ScopeEntryItem: React.FC<{ roundId: string; entry: ScopeEntry; dataUpdatedAt: number; repairAction: RowRepairAction | null }> = ({
-  roundId,
-  entry,
-  dataUpdatedAt,
-  repairAction,
-}) => {
+// A result with "Location ไม่ตรงทะเบียน" shows "ย้ายแล้ว" once a Reassignment cites it, and offers "ย้าย" to holders of
+// 'assignment:reassign' (F006-T8, Q13, Q19, Q22).
+const ScopeEntryItem: React.FC<{
+  roundId: string;
+  entry: ScopeEntry;
+  dataUpdatedAt: number;
+  repairAction: RowRepairAction | null;
+  reassignAction: RowReassignAction | null;
+}> = ({ roundId, entry, dataUpdatedAt, repairAction, reassignAction }) => {
   const { snapshot, current, late_addition: lateAddition } = entry;
-  const [isSending, setIsSending] = useState(false);
+  // The action form open on the row, if any.
+  const [openForm, setOpenForm] = useState<'REPAIR' | 'REASSIGN' | null>(null);
   const mayRepair = repairAction !== null && current !== null && isFoundDamaged(current);
+  const mayReassign = reassignAction !== null && current !== null && hasLocationMismatch(current);
   return (
     <li data-testid={`scope-entry-${entry.asset_id}`} style={{ padding: '0.75rem 0', borderBottom: '1px solid #e5e7eb', fontSize: '0.875rem' }}>
       <div style={{ display: 'flex', justifyContent: 'space-between', gap: '0.75rem', flexWrap: 'wrap' }}>
@@ -251,6 +279,7 @@ const ScopeEntryItem: React.FC<{ roundId: string; entry: ScopeEntry; dataUpdated
           {VERIFICATION_DATE_LABEL} <time dateTime={current.verification_date}>{thaiDate(current.verification_date)}</time> บันทึกโดย {recordedByText(current)}
           <RevisionDiscrepancies revision={current} testId={`scope-entry-discrepancies-${entry.asset_id}`} />
           <SentForRepairLine revision={current} testId={`scope-entry-sent-for-repair-${entry.asset_id}`} />
+          <ReassignedLine revision={current} testId={`scope-entry-reassigned-${entry.asset_id}`} />
           {recordedContextText(current) && (
             <div style={{ color: '#92400e' }}>
               ขณะตรวจ: <RecordingContextLine context={current} />
@@ -258,17 +287,21 @@ const ScopeEntryItem: React.FC<{ roundId: string; entry: ScopeEntry; dataUpdated
           )}
         </div>
       )}
-      {mayRepair && !isSending && (
-        <button
-          type="button"
-          id={`scope-entry-repair-action-${entry.asset_id}`}
-          onClick={() => setIsSending(true)}
-          style={{ marginTop: '0.5rem', padding: '0.375rem 0.75rem', backgroundColor: '#ffffff', color: '#1d4ed8', border: '1px solid #2563eb', borderRadius: '6px', fontSize: '0.875rem', cursor: 'pointer' }}
-        >
-          {REPAIR_START_LABEL}
-        </button>
+      {openForm === null && (mayRepair || mayReassign) && (
+        <div style={{ display: 'flex', flexWrap: 'wrap', gap: '0.5rem' }}>
+          {mayReassign && (
+            <button type="button" id={`scope-entry-reassign-action-${entry.asset_id}`} onClick={() => setOpenForm('REASSIGN')} style={rowActionStyle}>
+              {REASSIGN_LABEL}
+            </button>
+          )}
+          {mayRepair && (
+            <button type="button" id={`scope-entry-repair-action-${entry.asset_id}`} onClick={() => setOpenForm('REPAIR')} style={rowActionStyle}>
+              {REPAIR_START_LABEL}
+            </button>
+          )}
+        </div>
       )}
-      {mayRepair && isSending && (
+      {mayRepair && openForm === 'REPAIR' && (
         <div style={{ marginTop: '0.5rem' }}>
           <RepairStartForm
             assetId={entry.asset_id}
@@ -276,10 +309,27 @@ const ScopeEntryItem: React.FC<{ roundId: string; entry: ScopeEntry; dataUpdated
             csrfToken={repairAction.csrfToken}
             onStarted={async () => {
               await repairAction.onStarted();
-              setIsSending(false);
+              setOpenForm(null);
             }}
-            onCancel={() => setIsSending(false)}
+            onCancel={() => setOpenForm(null)}
             onPermissionRevoked={repairAction.onPermissionRevoked}
+          />
+        </div>
+      )}
+      {mayReassign && openForm === 'REASSIGN' && (
+        <div style={{ marginTop: '0.5rem' }}>
+          <ResultReassignmentForm
+            assetId={entry.asset_id}
+            revision={current}
+            roundName={reassignAction.roundName}
+            actorId={reassignAction.actorId}
+            csrfToken={reassignAction.csrfToken}
+            onRecorded={async () => {
+              await reassignAction.onRecorded();
+              setOpenForm(null);
+            }}
+            onCancel={() => setOpenForm(null)}
+            onPermissionRevoked={reassignAction.onPermissionRevoked}
           />
         </div>
       )}
@@ -337,16 +387,25 @@ const VerificationRoundDetailContent: React.FC = () => {
   });
 
   // The actions need this session's CSRF token, and wait for it: a request sent without it is refused as if the grant were gone.
-  const isHolder = round.data?.can_manage_verification === true || round.data?.can_correct_verification === true || round.data?.can_record_repair === true;
-  const session = useQuery<string | null>({
+  const isHolder =
+    round.data?.can_manage_verification === true ||
+    round.data?.can_correct_verification === true ||
+    round.data?.can_record_repair === true ||
+    round.data?.can_reassign === true;
+  // The Reassignment form also needs who the viewer is, for its reads (F006-T8).
+  const session = useQuery<{ csrfToken: string | null; actorId: string | null } | null>({
     queryKey: ['verification-round-session'],
     queryFn: async ({ signal }) => {
       const res = await fetch('/auth/session-check', { credentials: 'include', signal });
-      return res.ok ? ((await res.json()).csrfToken ?? null) : null;
+      if (!res.ok) {
+        return null;
+      }
+      const body = await res.json();
+      return { csrfToken: body.csrfToken ?? null, actorId: body.user?.id ?? null };
     },
     enabled: isHolder && !round.isError,
   });
-  const csrfToken = session.data ?? null;
+  const csrfToken = session.data?.csrfToken ?? null;
 
   const isSignedOut = round.error?.status === 401 || entries.error?.status === 401;
   useEffect(() => {
@@ -398,6 +457,14 @@ const VerificationRoundDetailContent: React.FC = () => {
     snapshot_locations: snapshotLocations,
   } = round.data;
   const page = entries.isError ? undefined : entries.data;
+  // A row action whose grant is gone: a lost session goes to login, and a lost capability reads the Round again.
+  const onRowPermissionRevoked = (status?: number) => {
+    if (status === 401) {
+      navigate('/login', { replace: true });
+      return;
+    }
+    void round.refetch();
+  };
   const repairAction: RowRepairAction | null = round.data.can_record_repair
     ? {
         roundName: name,
@@ -405,13 +472,18 @@ const VerificationRoundDetailContent: React.FC = () => {
         onStarted: async () => {
           await entries.refetch();
         },
-        onPermissionRevoked: (status) => {
-          if (status === 401) {
-            navigate('/login', { replace: true });
-            return;
-          }
-          void round.refetch();
+        onPermissionRevoked: onRowPermissionRevoked,
+      }
+    : null;
+  const reassignAction: RowReassignAction | null = round.data.can_reassign
+    ? {
+        roundName: name,
+        actorId: session.data?.actorId ?? null,
+        csrfToken,
+        onRecorded: async () => {
+          await entries.refetch();
         },
+        onPermissionRevoked: onRowPermissionRevoked,
       }
     : null;
   const filterText = (label: string, chosen: { id: string; name: string; is_active: boolean }[]) => (chosen.length > 0 ? `${label}: ${chosen.map(entryLabel).join(', ')}` : null);
@@ -622,7 +694,7 @@ const VerificationRoundDetailContent: React.FC = () => {
             </div>
             <ul data-testid="scope-entry-list" style={{ listStyle: 'none', margin: 0, padding: 0 }}>
               {page.items.map((entry) => (
-                <ScopeEntryItem key={entry.id} roundId={round.data.id} entry={entry} dataUpdatedAt={entries.dataUpdatedAt} repairAction={repairAction} />
+                <ScopeEntryItem key={entry.id} roundId={round.data.id} entry={entry} dataUpdatedAt={entries.dataUpdatedAt} repairAction={repairAction} reassignAction={reassignAction} />
               ))}
             </ul>
             {page.total_count > PAGE_SIZE && (
@@ -650,6 +722,7 @@ const VerificationRoundDetailContent: React.FC = () => {
  * each Asset's current result, Discrepancies and Late Addition, filtered by result, Discrepancy, Late Addition and
  * snapshot Location. F006-T6: closing, reopening, editing and voiding the Round for holders, and a printable layout.
  * F006-T7: "ส่งซ่อม" on a row Found ชำรุด for holders of 'repair:record', and the "ยังไม่มี action ต่อ" filter.
+ * F006-T8: "ย้าย" on a row with "Location ไม่ตรงทะเบียน" for holders of 'assignment:reassign'.
  */
 export const VerificationRoundDetail: React.FC = () => {
   const [queryClient] = useState(() => new QueryClient({ defaultOptions: { queries: { retry: false, refetchOnWindowFocus: true } } }));

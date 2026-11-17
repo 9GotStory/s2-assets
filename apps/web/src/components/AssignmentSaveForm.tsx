@@ -21,6 +21,8 @@ export interface AssignmentSaveFormProps extends AssignmentSaveProps {
   cancelLabel?: string;
   // Why this request cannot be sent, or null when it can. The server decides again.
   requestError: () => string | null;
+  // What a refusal this form knows says, or null to show the server's message.
+  refusalMessage?: (body: any) => string | null;
   requestBody: () => Record<string, unknown>;
   children: (isLocked: boolean) => React.ReactNode;
 }
@@ -73,6 +75,7 @@ export const AssignmentSaveForm: React.FC<AssignmentSaveFormProps> = ({
   cancelLabel = 'ยกเลิก',
   requestError,
   requestBody,
+  refusalMessage,
   children,
 }) => {
   // The version this form was opened against: a later read never rebases it silently (US 27).
@@ -132,7 +135,7 @@ export const AssignmentSaveForm: React.FC<AssignmentSaveFormProps> = ({
       setFailure(
         body?.code === 'STALE_BEFORE_CONFLICT'
           ? { message: 'มีการบันทึกรายการอื่นของครุภัณฑ์นี้หลังจากเปิดฟอร์ม กรุณาโหลดข้อมูลล่าสุดแล้วตรวจสอบอีกครั้ง', next: 'reload' }
-          : { message: body?.message || 'ไม่สามารถบันทึกรายการได้' }
+          : { message: refusalMessage?.(body) ?? (body?.message || 'ไม่สามารถบันทึกรายการได้') }
       );
       return;
     }

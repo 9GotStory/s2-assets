@@ -11,7 +11,11 @@ import {
 } from '../services/asset.service.ts';
 import { AssignmentConflictWarningError } from '../services/assignment-conflict.ts';
 import { AssignmentCorrectionService, type CorrectAssignmentInput } from '../services/assignment-correction.service.ts';
-import { AssignmentRecordingService, type RecordAssignmentInput } from '../services/assignment-recording.service.ts';
+import {
+  AssignmentRecordingService,
+  CitedVerificationRevisionRefusedError,
+  type RecordAssignmentInput,
+} from '../services/assignment-recording.service.ts';
 import {
   BulkReassignmentService,
   InitialAssignmentRequiredError,
@@ -43,6 +47,8 @@ const RecordAssignmentSchema = z
     kind: z.enum(['INITIAL', 'REASSIGNMENT']),
     ...assignmentWriteFields,
     ...assignmentFactFields,
+    // The result a single Reassignment moves the Asset from (F006-T8, #125 Q13); a Bulk Reassignment cites none.
+    verification_revision_id: z.string().nullable().optional(),
   })
   .strict();
 
@@ -111,6 +117,9 @@ const refusalOf = (err: unknown) => {
   if (err instanceof AssignmentConflictWarningError) {
     return { ...errorBody(err.statusCode, err.code, err.message), conflicts: err.conflicts };
   }
+  if (err instanceof CitedVerificationRevisionRefusedError) {
+    return { ...errorBody(err.statusCode, err.code, err.message), verification_revision: err.verification_revision };
+  }
   if (err instanceof InitialAssignmentRequiredError) {
     return { ...errorBody(err.statusCode, err.code, err.message), assets: err.assets };
   }
@@ -125,7 +134,8 @@ export const assignmentRoutes: FastifyPluginAsync<AssignmentRoutesOptions> = asy
 
   /**
    * POST /:id/assignments
-   * Records an Initial Assignment or a Reassignment for one Asset (F003-T2).
+   * Records an Initial Assignment or a Reassignment for one Asset (F003-T2); a Reassignment may cite the result it
+   * moves the Asset from (F006-T8).
    * Protected: requires 'assignment:reassign' capability (Asset Custodian)
    */
   fastify.post('/:id/assignments', { preHandler: [requireCapability('assignment:reassign')] }, async (request, reply) => {

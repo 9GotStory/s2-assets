@@ -166,6 +166,7 @@ describe('Initial Assignment (Seam A - F003-T1)', () => {
           remark: null,
           is_voided: false,
           bulk_reference: null,
+          verification_revision: null,
           corrections: [],
           changes: [
             {

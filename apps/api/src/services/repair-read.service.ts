@@ -3,7 +3,7 @@ import { assetExists, containsPattern } from './asset-lookups.ts';
 import { readAssignmentsAt, type PermanentAssignment } from './assignment.service.ts';
 import { loanItemPeriods } from './loan-item-periods.ts';
 import { loanReturnsOf, type CitedLoanReturn } from './loan-return-read.ts';
-import { verificationRevisionsOf, type CitedVerificationRevision } from './verification-revision-read.ts';
+import { citedRevisionViewOf, verificationRevisionsOf, type CitedVerificationRevision, type CitedVerificationRevisionView } from './verification-revision-read.ts';
 
 export type RepairKind = 'REPAIR' | 'MAINTENANCE';
 export type RepairerKind = 'INTERNAL' | 'EXTERNAL';
@@ -38,7 +38,7 @@ export type LoanReturnRepairSource = Omit<CitedLoanReturn, 'asset_id'>;
 
 // The result Found ชำรุด that led to a Repair Record (F006-T7, AV-16, #125 Q12), with its Round and Verification
 // Date. It is read as it stands now: voided later by a Verification Correction, the record still cites it (P1).
-export type VerificationRevisionRepairSource = Omit<CitedVerificationRevision, 'asset_id' | 'is_damaged'>;
+export type VerificationRevisionRepairSource = CitedVerificationRevisionView;
 
 export type RepairSource = LoanReturnRepairSource | VerificationRevisionRepairSource;
 
@@ -269,13 +269,7 @@ const loanReturnSourceOf = (cited: CitedLoanReturn | undefined): LoanReturnRepai
   return source;
 };
 
-const revisionSourceOf = (cited: CitedVerificationRevision | undefined): VerificationRevisionRepairSource | null => {
-  if (!cited) {
-    return null;
-  }
-  const { asset_id: _assetId, is_damaged: _isDamaged, ...source } = cited;
-  return source;
-};
+const revisionSourceOf = (cited: CitedVerificationRevision | undefined): VerificationRevisionRepairSource | null => (cited ? citedRevisionViewOf(cited) : null);
 
 const recordOf = (row: any, sources: RepairSources, voidedOutcomes: Map<string, RepairOutcome[]>, conflicts: Map<string, RepairConflict[]>): RepairRecord => ({
   id: row.id,

@@ -1,9 +1,9 @@
 // What the API answers about Verification Rounds (F006-T1), Asset Verifications (F006-T2), their
-// Discrepancies (F006-T3), their revisions (F006-T4) and the Repair Records sent from them (F006-T7), and their
-// labels from GLOSSARY.md (#125).
+// Discrepancies (F006-T3), their revisions (F006-T4), the Repair Records sent from them (F006-T7) and the
+// Reassignments moved from them (F006-T8), and their labels from GLOSSARY.md (#125).
 
 import type { PermanentAssignment, ReferenceEntry } from './ReferenceContextFields';
-import { thaiDate } from './assignmentFacts';
+import { thaiDate, type CitingReassignment } from './assignmentFacts';
 import { CONDITION_LABELS, NOT_RETURNED_LABEL, ON_LOAN_LABEL, type LoanCondition } from './loanFacts';
 import { UNDER_REPAIR_LABELS, type CitingRepairRecord, type RepairKind } from './repairFacts';
 
@@ -56,6 +56,9 @@ export interface VerificationRevision {
   // does (F006-T7, #125 Q19).
   repair_records: CitingRepairRecord[];
   sent_for_repair: boolean;
+  // The Reassignments that cite it, voided ones too, and "ย้ายแล้ว": one not voided does (F006-T8, #125 Q19).
+  reassignments: CitingReassignment[];
+  reassigned: boolean;
 }
 
 // The Verification Correction that voided a revision (F006-T4, #125 Q18).
@@ -115,6 +118,8 @@ export interface VerificationRound extends VerificationRoundSummary {
   can_correct_verification: boolean;
   // Whether the viewer holds 'repair:record', which "ส่งซ่อม" needs (F006-T7, #125 Q22).
   can_record_repair: boolean;
+  // Whether the viewer holds 'assignment:reassign', which "ย้าย" needs (F006-T8, #125 Q22).
+  can_reassign: boolean;
 }
 
 // What the register showed of an Asset when it joined the Round.
@@ -197,8 +202,12 @@ export const DISCREPANCY_LABEL = 'ข้อแตกต่าง';
 export const REVERIFICATION_LABEL = 'ตรวจซ้ำ';
 export const VERIFICATION_REVISIONS_LABEL = 'ประวัติผลตรวจ';
 export const LATE_ADDITION_LABEL = 'เพิ่มเข้ารอบภายหลัง';
-// A result's follow-up (F006-T7, #125 Q19): derived from the Repair Records that cite it, never ticked.
+// A result's follow-up (F006-T7, F006-T8, #125 Q19): derived from the Repair Records and Reassignments that cite
+// it, never ticked.
 export const SENT_FOR_REPAIR_LABEL = 'ส่งซ่อมแล้ว';
+export const REASSIGNED_LABEL = 'ย้ายแล้ว';
+// The action that opens the Reassignment form from a result (#125 Q13).
+export const REASSIGN_LABEL = 'ย้าย';
 export const AWAITING_ACTION_LABEL = 'ยังไม่มี action ต่อ';
 
 export const DISCREPANCY_LABELS: Record<Discrepancy, string> = {
@@ -246,6 +255,9 @@ export const roundLabel = ({ name, fiscal_year: fiscalYear }: Pick<VerificationR
 
 // Whether "ส่งซ่อม" applies to a result: Found ชำรุด (#125 Q12).
 export const isFoundDamaged = (revision: Pick<VerificationRevision, 'result' | 'condition'>): boolean => revision.result === 'FOUND' && revision.condition === 'DAMAGED';
+
+// Whether "ย้าย" applies to a result: it has "Location ไม่ตรงทะเบียน" (#125 Q13).
+export const hasLocationMismatch = (revision: Pick<VerificationRevision, 'discrepancies'>): boolean => revision.discrepancies.includes('LOCATION_MISMATCH');
 
 // A result as one label, with its Condition when Found: "พบ · สภาพปกติ".
 export const resultText = (result: VerificationResult, condition: LoanCondition | null | undefined): string =>
