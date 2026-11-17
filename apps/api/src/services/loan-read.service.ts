@@ -378,6 +378,21 @@ async function onLoanOfAssets(db: pg.Pool | any, assetIds: string[], today: stri
   );
 }
 
+// The Outstanding LoanItem that keeps an Asset On Loan, with its Loan (F007-T1, DR-14).
+export interface OutstandingLoanItem {
+  loan_item_id: string;
+  loan_id: string;
+}
+
+/**
+ * The Outstanding LoanItem of each of `assetIds` that is On Loan (LR-11 allows one). A Not Returned ending does
+ * not keep it (DR-16), and a voided Loan voids its items.
+ */
+export async function outstandingLoanItemsOf(db: pg.Pool | pg.PoolClient | any, assetIds: string[]): Promise<Map<string, OutstandingLoanItem>> {
+  const res = await db.query(`SELECT li.asset_id, li.id, li.loan_id FROM loan_items li WHERE li.asset_id = ANY($1::uuid[]) AND ${ITEM_IS_OUTSTANDING}`, [assetIds]);
+  return new Map(res.rows.map((row: any): [string, OutstandingLoanItem] => [row.asset_id, { loan_item_id: row.id, loan_id: row.loan_id }]));
+}
+
 // The LoanItem that holds an Asset, as an Asset Verification keeps it (F006-T2, #125 Q14): On Loan, or Not
 // Returned and not come back, with its Borrower as the Asset page names them now and its current Due Date.
 export interface LoanContext {

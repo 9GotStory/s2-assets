@@ -7,6 +7,8 @@ import { LoanStartForm } from '../components/LoanStartForm';
 import { ON_LOAN_LABEL, type OnLoan, type StartLoanWarning } from '../components/loanFacts';
 import { UnderRepairBadge } from '../components/RepairBadges';
 import { UNDER_REPAIR_FILTER_LABEL, type UnderRepair } from '../components/repairFacts';
+import { RetiredBadge } from '../components/RetirementBadges';
+import { NOT_RETIRED_LABEL, RETIRED_LABEL, RETIREMENT_STATUS_FILTER_LABEL } from '../components/retirementFacts';
 import {
   REFERENCE_DIMENSIONS,
   entryLabel,
@@ -31,6 +33,8 @@ export interface SearchAssetItem {
   start_loan_warning: StartLoanWarning | null;
   // F005-T4 (#102): the Repair Record that keeps it Under Repair.
   under_repair: UnderRepair | null;
+  // F007-T1 (#155): whether it is Retired.
+  retired: boolean;
 }
 
 export interface SearchAssetResult {
@@ -57,7 +61,8 @@ export type SearchFieldType =
 // T4 (#25): one exact entry per dimension, '' for any; the server combines them with AND. F003-T4
 // (#54): has_assignment_conflict is 'true' to list only Assets with an Assignment Conflict, '' for any.
 // F004-T4 (#78): on_loan likewise, for "กำลังถูกยืม"; F005-T4 (#102): under_repair, for Under Repair.
-export type AssetListFilters = Record<ReferenceIdField | 'has_assignment_conflict' | 'on_loan' | 'under_repair', string>;
+// F007-T1 (#155): retired is 'true' for "จำหน่ายแล้ว", 'false' for "ยังไม่จำหน่าย", '' for "ทั้งหมด".
+export type AssetListFilters = Record<ReferenceIdField | 'has_assignment_conflict' | 'on_loan' | 'under_repair' | 'retired', string>;
 
 const NO_FILTERS: AssetListFilters = {
   location_id: '',
@@ -66,6 +71,7 @@ const NO_FILTERS: AssetListFilters = {
   has_assignment_conflict: '',
   on_loan: '',
   under_repair: '',
+  retired: '',
 };
 
 // The rows chosen act through one of these, opened above the results.
@@ -854,6 +860,30 @@ export const AssetSearch: React.FC = () => {
               />
               {UNDER_REPAIR_FILTER_LABEL}
             </label>
+            <label
+              htmlFor="search-filter-retired"
+              style={{
+                display: 'flex',
+                alignItems: 'center',
+                gap: '0.375rem',
+                marginTop: '0.5rem',
+                fontSize: '0.875rem',
+                fontWeight: 500,
+                color: '#374151',
+              }}
+            >
+              {RETIREMENT_STATUS_FILTER_LABEL}
+              <select
+                id="search-filter-retired"
+                value={selectedFilters.retired}
+                onChange={(e) => setSelectedFilters((current) => ({ ...current, retired: e.target.value }))}
+                style={{ padding: '0.25rem 0.5rem', borderRadius: '4px', border: '1px solid #d1d5db', fontSize: '0.875rem', backgroundColor: '#ffffff' }}
+              >
+                <option value="">ทั้งหมด</option>
+                <option value="false">{NOT_RETIRED_LABEL}</option>
+                <option value="true">{RETIRED_LABEL}</option>
+              </select>
+            </label>
             {referenceLists.error && (
               <div role="alert" style={{ marginTop: '0.5rem', fontSize: '0.8125rem', color: '#b91c1c' }}>
                 {referenceLists.error}
@@ -1021,6 +1051,7 @@ export const AssetSearch: React.FC = () => {
                           {item.under_repair && (
                             <UnderRepairBadge repairKind={item.under_repair.repair_kind} testId={`search-result-under-repair-${item.id}`} />
                           )}
+                          {item.retired && <RetiredBadge testId={`search-result-retired-${item.id}`} />}
                         </td>
                         <td style={{ padding: '0.75rem 1rem', color: '#6b7280' }}>
                           {item.serial_number || '-'}

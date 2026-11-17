@@ -22,6 +22,7 @@ import {
 import { containsPattern } from './asset-lookups.ts';
 import { loanSearch, type AssetSearchLoanFacts } from './loan-read.service.ts';
 import { repairSearch, type AssetSearchRepairFacts } from './repair-read.service.ts';
+import { retirementSearch, type AssetSearchRetirementFacts } from './retirement-read.service.ts';
 import { canonicalJson } from './canonical-json.ts';
 import { NotFoundError, RetryTokenConflictError, StaleBeforeConflictError } from './service-errors.ts';
 import { ValidationError } from './validation-error.ts';
@@ -206,7 +207,7 @@ export type SearchAssetField =
   | 'name'
   | (typeof LEGACY_TEXT_FIELDS)[number];
 
-export interface SearchAssetItem extends CurrentAssignment, AssetSearchLoanFacts, AssetSearchRepairFacts {
+export interface SearchAssetItem extends CurrentAssignment, AssetSearchLoanFacts, AssetSearchRepairFacts, AssetSearchRetirementFacts {
   id: string;
   name: string | null;
   asset_number: string | null;
@@ -226,6 +227,8 @@ export interface SearchAssetInput {
   on_loan?: boolean;
   // F005-T4 (#102): only Assets Under Repair, of either kind.
   under_repair?: boolean;
+  // F007-T1 (#155, #154 P6): only Retired Assets when true, only those not Retired when false, every Asset when left out.
+  retired?: boolean;
   limit?: number | string;
   offset?: number | string;
 }
@@ -1859,6 +1862,9 @@ export class AssetService {
     if (input.under_repair) {
       conditions.push(repairSearch.underRepairFilter);
     }
+    if (input.retired !== undefined) {
+      conditions.push(input.retired ? retirementSearch.retiredFilter : retirementSearch.notRetiredFilter);
+    }
     const whereClause = conditions.length > 0 ? `WHERE ${conditions.join(' AND ')}` : '';
 
     const limitParamIndex = params.length + 1;
@@ -1894,6 +1900,7 @@ export class AssetService {
     const rows = res.rows.filter((row: any) => row.id != null);
     const loanFactsOf = await loanSearch.factsOf(this.db, rows.map((row: any) => row.id), this.today());
     const repairFactsOf = await repairSearch.factsOf(this.db, rows.map((row: any) => row.id));
+    const retirementFactsOf = await retirementSearch.factsOf(this.db, rows.map((row: any) => row.id));
     const items: SearchAssetItem[] = rows.map((row: any) => ({
       id: row.id,
       name: row.name ?? null,
@@ -1902,6 +1909,7 @@ export class AssetService {
       ...assignmentSearch.current(row),
       ...loanFactsOf(row.id),
       ...repairFactsOf(row.id),
+      ...retirementFactsOf(row.id),
     }));
 
     const hasMore = parsedOffset + items.length < totalCount;
