@@ -158,6 +158,7 @@ describe('The Repair list (Seam A - F005-T3)', () => {
     });
 
     it('refuse a value they do not know, a blank search, and one with a control character free text refuses', async () => {
+      // eslint-disable-next-line no-restricted-syntax -- a refused-payload loop from before #155
       for (const query of [
         'has_outcome=',
         'has_outcome=1',
@@ -215,6 +216,7 @@ describe('The Repair list (Seam A - F005-T3)', () => {
     });
 
     it('refuse a malformed or out-of-range page, a repeated parameter and an unknown one', async () => {
+      // eslint-disable-next-line no-restricted-syntax -- a refused-payload loop from before #155
       for (const query of [
         'limit=0',
         'limit=101',

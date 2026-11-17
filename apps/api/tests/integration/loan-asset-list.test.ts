@@ -135,6 +135,7 @@ describe('On Loan on the Asset list (Seam A - F004-T4)', () => {
     });
 
     it("takes only 'true'", async () => {
+      // eslint-disable-next-line no-restricted-syntax -- a refused-payload loop from before #155
       for (const value of ['false', '1', '']) {
         const res = await api.get(readonly, `/assets/search?on_loan=${value}`);
         expect(res.statusCode).toBe(400);

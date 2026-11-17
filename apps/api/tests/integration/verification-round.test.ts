@@ -298,6 +298,7 @@ describe('Open a Verification Round (Seam A - F006-T1)', () => {
       const { fiscal_year: _year, ...noYear } = opening();
       const before = (await roundsOf()).items.length;
 
+      // eslint-disable-next-line no-restricted-syntax -- a refused-payload loop from before #155
       for (const payload of [
         noName,
         opening({ name: '   ' }),
@@ -427,6 +428,7 @@ describe('Open a Verification Round (Seam A - F006-T1)', () => {
       await registered();
       const roundId = await opened();
 
+      // eslint-disable-next-line no-restricted-syntax -- a refused-payload loop from before #155
       for (const query of ['search=%20%20', `search=${'a'.repeat(4097)}`, 'search=a%07b', 'limit=0', 'limit=101', 'offset=-1', 'limit=1&limit=2', 'status=FOUND']) {
         const res = await api.get(readonly, `/verification-rounds/${roundId}/entries?${query}`);
         expect(res.statusCode, query).toBe(400);
@@ -466,6 +468,7 @@ describe('Open a Verification Round (Seam A - F006-T1)', () => {
         expect(res.statusCode).toBe(404);
         expect(res.json().code).toBe('NOT_FOUND');
       }
+      // eslint-disable-next-line no-restricted-syntax -- a refused-payload loop from before #155
       for (const url of ['/verification-rounds/not-a-uuid', '/verification-rounds/not-a-uuid/entries']) {
         expect((await api.get(readonly, url)).statusCode).toBe(400);
       }

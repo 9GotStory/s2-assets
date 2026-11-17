@@ -3,8 +3,9 @@
 #
 #   scripts/ci/quality.sh [--quick] [--base <rev>] [--remove-images]
 #
-# The steps: build the tooling image and assert its Node and pnpm; install the frozen lockfile; lint;
-# typecheck; API unit tests; the API and Web production builds; the API and migration images.
+# The steps: build the tooling image and assert its Node and pnpm; install the frozen lockfile; lint and
+# scripts/check-aria-labels.sh; typecheck; API unit tests; the API and Web production builds; the API
+# and migration images.
 #   --quick          stop after the typecheck, for the implementation loop.
 #   --base <rev>     first run `git diff --check` and scripts/check-glossary.sh against <rev>.
 #   --remove-images  remove the three images afterwards, as CI does.
@@ -70,6 +71,7 @@ in_tooling pnpm install --frozen-lockfile
 
 note "lint"
 in_tooling pnpm run lint
+scripts/check-aria-labels.sh
 note "typecheck"
 in_tooling pnpm run typecheck
 $quick && exit 0

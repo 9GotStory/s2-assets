@@ -554,6 +554,7 @@ describe('Close, Reopen, edit and void a Verification Round (Seam A - F006-T6)',
       await refusedWith(await edit('not-a-uuid', { expected_version: 1, name: 'ชื่อ' }), 400, 'INVALID_ID');
 
       const { roundId } = await roundOver();
+      // eslint-disable-next-line no-restricted-syntax -- a refused-payload loop from before #155
       for (const expected of [0, 1.5, '1', null]) {
         await refusedWith(await close(roundId, { expected_version: expected }), 400, 'VALIDATION_FAILED');
       }

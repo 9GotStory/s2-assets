@@ -227,7 +227,9 @@ describe('Retirement (Seam A - F007-T1)', () => {
       const assetId = await registered();
 
       for (const date of ['2026-02-30', '17/11/2569', '', '2026-11-1']) {
-        expect((await retire(assetId, base({ retirement_date: date }))).statusCode).toBe(400);
+        const res = await retire(assetId, base({ retirement_date: date }));
+        expect(res.statusCode).toBe(400);
+        expect(res.json()).toMatchObject({ code: 'VALIDATION_FAILED', message: 'retirement_date must be a date (YYYY-MM-DD)' });
       }
       expect(await retirementsOf(assetId)).toEqual(NONE);
     });

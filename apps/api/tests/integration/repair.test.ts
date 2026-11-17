@@ -115,6 +115,7 @@ describe('Repair Start (Seam A - F005-T1)', () => {
       const { repairer: _repairer, ...noRepairer } = base(assetId);
       const { symptom_or_work: _symptom, ...noSymptom } = base(assetId);
 
+      // eslint-disable-next-line no-restricted-syntax -- a refused-payload loop from before #155
       for (const payload of [
         noKind,
         base(assetId, { repair_kind: 'CLEANING' }),
@@ -143,6 +144,7 @@ describe('Repair Start (Seam A - F005-T1)', () => {
 
       const assetId = await registered();
       // A cost is one line: a line break or tab at its end is refused, not trimmed away.
+      // eslint-disable-next-line no-restricted-syntax -- a refused-payload loop from before #155
       for (const cost of ['-1', '-0.01', '1.234', '01', '1e3', '1,500', 'abc', '10000000000', '1500\n', '\t12']) {
         const res = await send(base(assetId, { cost }));
         expect(res.statusCode).toBe(400);
@@ -166,6 +168,7 @@ describe('Repair Start (Seam A - F005-T1)', () => {
 
     it('bounds text, and takes text at its bounds', async () => {
       const assetId = await registered();
+      // eslint-disable-next-line no-restricted-syntax -- a refused-payload loop from before #155
       for (const overrides of [
         { repairer: { kind: 'EXTERNAL', name: over(200) } },
         { symptom_or_work: over(2000) },
@@ -190,9 +193,11 @@ describe('Repair Start (Seam A - F005-T1)', () => {
 
     it('refuses every control character in the Repairer name, even at its ends, and keeps line breaks and tabs inside free text', async () => {
       const assetId = await registered();
+      // eslint-disable-next-line no-restricted-syntax -- a refused-payload loop from before #155
       for (const name of ['ร้าน\nซ่อม', 'ร้านซ่อม\n', 'ร้าน\tซ่อม', 'ร้าน\u0007ซ่อม']) {
         expect((await send(base(assetId, { repairer: { kind: 'EXTERNAL', name } }))).statusCode).toBe(400);
       }
+      // eslint-disable-next-line no-restricted-syntax -- a refused-payload loop from before #155
       for (const field of ['symptom_or_work', 'document_reference', 'remark']) {
         expect((await send(base(assetId, { [field]: 'จอ\u0007ดับ' }))).statusCode).toBe(400);
       }
@@ -249,6 +254,7 @@ describe('Repair Start (Seam A - F005-T1)', () => {
       const assetId = await registered();
       const { start_date: _date, ...noDate } = base(assetId);
 
+      // eslint-disable-next-line no-restricted-syntax -- a refused-payload loop from before #155
       for (const payload of [noDate, base(assetId, { start_date: '2026-02-29' }), base(assetId, { start_date: '11/11/2026' })]) {
         expect((await send(payload)).statusCode).toBe(400);
       }

@@ -124,6 +124,7 @@ describe('Repair Outcome (Seam A - F005-T2)', () => {
       const post = (payload: Record<string, unknown>) =>
         api.post(custodian, `/repairs/${repairRecordId}/outcome`, { expected_version: version, ...payload }, { 'x-retry-token': crypto.randomUUID() });
 
+      // eslint-disable-next-line no-restricted-syntax -- a refused-payload loop from before #155
       for (const payload of [
         { outcome_date: TODAY },
         { outcome: 'USABLE' },
@@ -142,6 +143,7 @@ describe('Repair Outcome (Seam A - F005-T2)', () => {
     it('bounds the note and document reference, and refuses a control character in them', async () => {
       const repairRecordId = await sent(await registered());
 
+      // eslint-disable-next-line no-restricted-syntax -- a refused-payload loop from before #155
       for (const fields of [{ note: over(2000) }, { document_reference: over(500) }, { note: 'ok\u0007' }]) {
         const res = await recordOutcome(repairRecordId, fields);
         expect(res.statusCode).toBe(400);
@@ -212,6 +214,7 @@ describe('Repair Outcome (Seam A - F005-T2)', () => {
     it('refuses an Outcome Date or Next Recommended Maintenance Date that is no calendar date', async () => {
       const repairRecordId = await sent(await registered());
 
+      // eslint-disable-next-line no-restricted-syntax -- a refused-payload loop from before #155
       for (const fields of [{ outcome_date: '2026-02-30' }, { outcome_date: '' }, { next_recommended_maintenance_date: 'soon' }]) {
         expect((await recordOutcome(repairRecordId, fields)).statusCode).toBe(400);
       }
@@ -260,6 +263,7 @@ describe('Repair Outcome (Seam A - F005-T2)', () => {
     it('refuses a cost that is not baht with at most two decimals, and saves nothing', async () => {
       const repairRecordId = await sent(await registered(), { cost: '800' });
 
+      // eslint-disable-next-line no-restricted-syntax -- a refused-payload loop from before #155
       for (const cost of ['-1', '1.234', 'abc', '10000000000']) {
         expect((await recordOutcome(repairRecordId, { cost })).statusCode).toBe(400);
       }
@@ -304,6 +308,7 @@ describe('Repair Outcome (Seam A - F005-T2)', () => {
     it('holds the outcome rules, and saves neither the record nor its outcome when one fails', async () => {
       const assetId = await registered();
 
+      // eslint-disable-next-line no-restricted-syntax -- a refused-payload loop from before #155
       for (const outcome of [
         { outcome: 'USABLE', outcome_date: '2026-11-01' },
         { outcome: 'USABLE', outcome_date: '2026-11-12' },
@@ -433,6 +438,7 @@ describe('Repair Outcome (Seam A - F005-T2)', () => {
     it('refuses an Outcome Date that is no calendar date', async () => {
       const repairRecordId = await sent(await registered());
 
+      // eslint-disable-next-line no-restricted-syntax -- a refused-payload loop from before #155
       for (const query of ['outcome_date=soon', 'outcome_date=2026-02-30', 'outcome_date=']) {
         expect((await api.get(readonly, `/repairs/${repairRecordId}?${query}`)).statusCode).toBe(400);
       }

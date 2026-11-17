@@ -114,6 +114,7 @@ describe('Under Repair on the Asset list (Seam A - F005-T4)', () => {
     });
 
     it("takes only 'true'", async () => {
+      // eslint-disable-next-line no-restricted-syntax -- a refused-payload loop from before #155
       for (const value of ['false', '1', '']) {
         expect((await api.get(readonly, `/assets/search?under_repair=${value}`)).statusCode).toBe(400);
       }

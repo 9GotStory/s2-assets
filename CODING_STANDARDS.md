@@ -29,9 +29,11 @@ F004-T6 (#80), `not.toContain('090')` over JSON that holds UUIDs failed whenever
 Each refused request breaks the rule under test and nothing else, so the test goes red when that
 rule goes; check it with `scripts/dev/expect-red.sh`, and several rules at once with its `--batch`
 mode, which tabulates which break went red. A loop of refused payloads that asserts only
-the error code hides which rule refused each one. In F006-T1 (#126), the filter-cap case sent 101
-random UUIDs, which the unknown-entry check refused as well, and it stayed green with the cap
-removed. It now names one real entry 1001 times.
+the error code hides which rule refused each one; ESLint flags such a loop over a literal array
+(`eslint.config.mjs`, #155), and one from before #155 carries an exemption until a ticket
+touches its file. In F006-T1 (#126), the filter-cap case sent 101 random UUIDs, which the
+unknown-entry check refused as well, and it stayed green with the cap removed. It now names one
+real entry 1001 times.
 
 ## An order test of a paged list splits a tie across a page break
 

@@ -142,6 +142,7 @@ describe('Recording Not Returned (Seam A - F004-T5)', () => {
       const { loanId, itemOf } = await lent([assetId]);
       const itemId = itemOf[assetId];
 
+      // eslint-disable-next-line no-restricted-syntax -- a refused-payload loop from before #155
       for (const items of [
         [],
         [{ loan_item_id: itemId }, { loan_item_id: itemId.toUpperCase() }],

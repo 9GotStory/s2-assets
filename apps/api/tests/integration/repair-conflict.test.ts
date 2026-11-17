@@ -165,6 +165,7 @@ describe('Repair Conflict (Seam A - F005-T7)', () => {
     it('refuses a confirmation that names no id, or names both kinds at once', async () => {
       const assetId = await registered();
 
+      // eslint-disable-next-line no-restricted-syntax -- a refused-payload loop from before #155
       for (const confirmed of [{ conflicting_repair_record_id: 'not-an-id' }, { conflicting_loan_item_id: crypto.randomUUID(), conflicting_repair_record_id: crypto.randomUUID() }]) {
         expect((await send(base(assetId, { confirmed_conflicts: [confirmed] }))).statusCode).toBe(400);
       }

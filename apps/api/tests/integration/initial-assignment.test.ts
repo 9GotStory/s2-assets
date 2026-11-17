@@ -237,6 +237,7 @@ describe('Initial Assignment (Seam A - F003-T1)', () => {
     });
 
     it('refuses an Effective Date, document reference or remark that comes without a dimension value', async () => {
+      // eslint-disable-next-line no-restricted-syntax -- a refused-payload loop from before #155
       for (const extra of [
         { effective_date: '2026-11-01' },
         { effective_date: null },
@@ -258,6 +259,7 @@ describe('Initial Assignment (Seam A - F003-T1)', () => {
       const register = (name: string, effective: Record<string, unknown>) =>
         post(custodian, '/assets', { name, location_id: room.id, ...effective });
 
+      // eslint-disable-next-line no-restricted-syntax -- a refused-payload loop from before #155
       for (const effective of [
         {},
         { effective_date: '' },
@@ -334,6 +336,7 @@ describe('Initial Assignment (Seam A - F003-T1)', () => {
 
     it('refuses an overlong or control-character document reference or remark without writing', async () => {
       const room = await entry('locations', 'ห้องเอกสารผิดรูป');
+      // eslint-disable-next-line no-restricted-syntax -- a refused-payload loop from before #155
       for (const extra of [
         { document_reference: 'x'.repeat(501) },
         { document_reference: 'bad\u0007ref' },
@@ -358,6 +361,7 @@ describe('Initial Assignment (Seam A - F003-T1)', () => {
     it("takes each entry from its own dimension's list", async () => {
       const room = await entry('locations', 'ห้องที่ไม่ใช่หน่วยงาน');
       const person = await entry('persons', 'นายที่ไม่ใช่สถานที่');
+      // eslint-disable-next-line no-restricted-syntax -- a refused-payload loop from before #155
       for (const values of [
         { organization_unit_id: room.id },
         { responsible_person_id: room.id },

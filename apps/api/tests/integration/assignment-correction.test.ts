@@ -281,6 +281,7 @@ describe('Correct or void an assignment fact (Seam A - F003-T3)', () => {
 
       it('must be a real date', async () => {
         const { assetId, reassignment } = await reassigned('ห้องวันผิดรูป');
+        // eslint-disable-next-line no-restricted-syntax -- a refused-payload loop from before #155
         for (const effective_date of ['2026-02-30', 'วันนี้', 20260101]) {
           const res = await amend(assetId, reassignment.id, 2, { effective_date });
           expect(res.statusCode, String(effective_date)).toBe(400);
@@ -365,6 +366,7 @@ describe('Correct or void an assignment fact (Seam A - F003-T3)', () => {
         const [initial] = await timelineOf(assetId);
         const before = await assignmentOf(assetId);
 
+        // eslint-disable-next-line no-restricted-syntax -- a refused-payload loop from before #155
         for (const changes of [
           { location: { prior: valueOf(room) } },
           { location: { new: valueOf(null) } },
@@ -518,6 +520,7 @@ describe('Correct or void an assignment fact (Seam A - F003-T3)', () => {
       it('refuses a change whose new value would equal its prior value: that fact changes nothing (MR-01)', async () => {
         const { assetId, roomA, event } = await reassignedInThreeDimensions('ค่าเท่ากัน');
         const before = await assignmentOf(assetId);
+        // eslint-disable-next-line no-restricted-syntax -- a refused-payload loop from before #155
         for (const changes of [{ location: { new: valueOf(roomA) } }, { organization_unit: { new: valueOf(null), prior: valueOf(null) } }]) {
           const res = await amend(assetId, event.id, 2, { changes });
           expect(res.statusCode, JSON.stringify(changes)).toBe(400);
@@ -543,7 +546,9 @@ describe('Correct or void an assignment fact (Seam A - F003-T3)', () => {
         const unit = await entry('organization-units', 'กลุ่มงานคนละรายการ');
         const before = await assignmentOf(assetId);
 
+        // eslint-disable-next-line no-restricted-syntax -- a refused-payload loop from before #155
         for (const value of [valueOf(unit), { entry_id: '00000000-0000-4000-8000-000000000000' }, { entry_id: 'not-a-uuid' }]) {
+          // eslint-disable-next-line no-restricted-syntax -- a refused-payload loop from before #155
           for (const side of ['new', 'prior']) {
             const res = await amend(assetId, reassignment.id, 2, { changes: { location: { [side]: value } } });
             expect(res.statusCode, JSON.stringify({ side, value })).toBe(400);
@@ -558,6 +563,7 @@ describe('Correct or void an assignment fact (Seam A - F003-T3)', () => {
         const { assetId, roomA, roomB, reassignment } = await reassigned('ห้องไม่เปลี่ยน');
         const before = await assignmentOf(assetId);
 
+        // eslint-disable-next-line no-restricted-syntax -- a refused-payload loop from before #155
         for (const fields of [
           {},
           { effective_date: '2026-06-01' },
@@ -577,6 +583,7 @@ describe('Correct or void an assignment fact (Seam A - F003-T3)', () => {
         const { assetId, reassignment } = await reassigned('ห้องเหตุผล');
         const before = await assignmentOf(assetId);
 
+        // eslint-disable-next-line no-restricted-syntax -- a refused-payload loop from before #155
         for (const reason of [undefined, null, '', '   ', 'ก'.repeat(2001), 'มี\u0007อักขระควบคุม']) {
           const payload = { action: 'AMEND', expected_assignment_version: 2, remark: 'เปลี่ยน', ...(reason === undefined ? {} : { reason }) };
           const amended = await correct(assetId, reassignment.id, payload);
@@ -593,6 +600,7 @@ describe('Correct or void an assignment fact (Seam A - F003-T3)', () => {
       it('bounds the document reference and remark, with control characters refused', async () => {
         const { assetId, reassignment } = await reassigned('ห้องข้อความ');
         const before = await assignmentOf(assetId);
+        // eslint-disable-next-line no-restricted-syntax -- a refused-payload loop from before #155
         for (const fields of [
           { document_reference: 'ก'.repeat(501) },
           { remark: 'ก'.repeat(2001) },
@@ -759,6 +767,7 @@ describe('Correct or void an assignment fact (Seam A - F003-T3)', () => {
       const other = await reassigned('ห้องชนิดรายการ อื่น');
       const before = await assignmentOf(assetId);
 
+      // eslint-disable-next-line no-restricted-syntax -- a refused-payload loop from before #155
       for (const extra of [{ kind: 'INITIAL' }, { asset_id: other.assetId }, { recorded_by: admin.id }, { is_voided: true }]) {
         const res = await amend(assetId, reassignment.id, 2, { remark: 'แก้', ...extra });
         expect(res.statusCode, JSON.stringify(extra)).toBe(400);
