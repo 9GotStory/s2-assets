@@ -2,6 +2,7 @@ import type { FastifyPluginAsync } from 'fastify';
 import { z } from 'zod';
 import { requireCapability } from '../middleware/authorization.ts';
 import { errorBody, parseWrite } from './write-request.ts';
+import { RETIREMENT_CONFLICT_KINDS, RetirementConflictWarningError } from '../services/retirement-conflict.ts';
 import { RETIREMENT_METHODS } from '../services/retirement-read.service.ts';
 import { isValidUuid } from '../services/capability.service.ts';
 import { RetirementRefusedError, RetirementService, type CorrectRetirementInput, type RecordRetirementInput } from '../services/retirement.service.ts';
@@ -12,6 +13,11 @@ export interface RetirementRoutesOptions {
   retirementService: RetirementService;
 }
 
+// F007-T6 (#160, #154 Q21): the Retirement Conflicts a warning listed that the user confirms, each by its fact.
+const ConfirmedRetirementConflictsSchema = z
+  .array(z.object({ conflicting_fact_kind: z.enum(RETIREMENT_CONFLICT_KINDS), conflicting_fact_id: z.string() }).strict())
+  .optional();
+
 // #154 Q2, Q4, Q15: what a Retirement takes. The Asset is named by the path.
 const RecordRetirementSchema = z
   .object({
@@ -19,6 +25,7 @@ const RecordRetirementSchema = z
     retirement_method: z.enum(RETIREMENT_METHODS),
     retirement_reference: z.string().nullable().optional(),
     note: z.string().nullable().optional(),
+    confirmed_conflicts: ConfirmedRetirementConflictsSchema,
     retry_token: z.string().optional(),
   })
   .strict();
@@ -39,6 +46,7 @@ const CorrectRetirementSchema = z
       })
       .strict()
       .optional(),
+    confirmed_conflicts: ConfirmedRetirementConflictsSchema,
     retry_token: z.string().optional(),
   })
   .strict();
@@ -47,6 +55,9 @@ const CorrectRetirementSchema = z
 const refusalOf = (err: unknown) => {
   if (err instanceof RetirementRefusedError) {
     return { ...errorBody(err.statusCode, err.code, err.message), asset: err.asset };
+  }
+  if (err instanceof RetirementConflictWarningError) {
+    return { ...errorBody(err.statusCode, err.code, err.message), retirement_conflicts: err.retirement_conflicts };
   }
   if (err instanceof StaleBeforeConflictError) {
     return {

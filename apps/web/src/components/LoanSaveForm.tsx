@@ -2,6 +2,7 @@ import React, { useRef, useState } from 'react';
 import { ConflictWarning } from './LoanConflicts';
 import type { WarnedLoanConflict } from './loanFacts';
 import type { WarnedRepairConflict } from './repairFacts';
+import type { RetirementConflict } from './retirementFacts';
 
 export interface LoanSaveFormProps {
   // Names this form's elements: `${idPrefix}-form`, `${idPrefix}-submit`, and so on.
@@ -39,19 +40,22 @@ interface SaveFailure {
 
 type SaveRequest = Record<string, unknown> & { retry_token: string };
 
-// The Loan Conflicts and Repair Conflicts a save would create, and the request they were found for.
+// The Loan Conflicts, Repair Conflicts and Retirement Conflicts a save would create, and the request they were found for.
 interface PendingConflicts {
   request: SaveRequest;
   conflicts: WarnedLoanConflict[];
   repairConflicts: WarnedRepairConflict[];
+  retirementConflicts: RetirementConflict[];
 }
 
-// What a confirmation names: the other side of each conflict the warning listed (#74 Q20, #98 Q17).
-const confirmedConflictsOf = ({ conflicts, repairConflicts }: PendingConflicts) => [
+// What a confirmation names: the other side of each conflict the warning listed (#74 Q20, #98 Q17), or the fact of
+// each Retirement Conflict (F007-T6, #154 Q21).
+const confirmedConflictsOf = ({ conflicts, repairConflicts, retirementConflicts }: PendingConflicts) => [
   ...conflicts.map(({ conflicting }) => ({ conflicting_loan_item_id: conflicting.loan_item_id })),
   ...repairConflicts.map(({ conflicting }) =>
     conflicting.kind === 'LOAN_ITEM' ? { conflicting_loan_item_id: conflicting.loan_item_id } : { conflicting_repair_record_id: conflicting.repair_record_id }
   ),
+  ...retirementConflicts.map(({ kind, fact_id: factId }) => ({ conflicting_fact_kind: kind, conflicting_fact_id: factId })),
 ];
 
 const recoveryButtonStyle: React.CSSProperties = {
@@ -69,8 +73,8 @@ const recoveryButtonStyle: React.CSSProperties = {
 /**
  * The form around one Loan write: its heading, save and cancel, and what happens to a save. A retry
  * after an unknown outcome resends the same request under the same token, so one action records one
- * fact. A stale save is refused until the latest facts are read. A save that would create Loan Conflicts
- * or Repair Conflicts waits for confirmation, with the fields locked so that what is confirmed is the
+ * fact. A stale save is refused until the latest facts are read. A save that would create Loan Conflicts,
+ * Repair Conflicts or Retirement Conflicts waits for confirmation, with the fields locked so that what is confirmed is the
  * request warned about, under the same retry token (#74 Q20, #98 Q17).
  */
 export const LoanSaveForm: React.FC<LoanSaveFormProps> = ({
@@ -142,8 +146,13 @@ export const LoanSaveForm: React.FC<LoanSaveFormProps> = ({
     if (res.status === 400 || res.status === 404 || res.status === 409) {
       uncertainRef.current = null;
       const body = await res.json().catch(() => null);
-      if (body?.code === 'LOAN_CONFLICTS_FOUND' || body?.code === 'REPAIR_CONFLICTS_FOUND') {
-        setConflictWarning({ request, conflicts: body.conflicts ?? [], repairConflicts: body.repair_conflicts ?? [] });
+      if (body?.code === 'LOAN_CONFLICTS_FOUND' || body?.code === 'REPAIR_CONFLICTS_FOUND' || body?.code === 'RETIREMENT_CONFLICTS_FOUND') {
+        setConflictWarning({
+          request,
+          conflicts: body.conflicts ?? [],
+          repairConflicts: body.repair_conflicts ?? [],
+          retirementConflicts: body.retirement_conflicts ?? [],
+        });
         return;
       }
       if (body?.code === 'STALE_BEFORE_CONFLICT' && onRefresh) {
@@ -229,6 +238,7 @@ export const LoanSaveForm: React.FC<LoanSaveFormProps> = ({
         <ConflictWarning
           conflicts={conflictWarning.conflicts}
           repairConflicts={conflictWarning.repairConflicts}
+          retirementConflicts={conflictWarning.retirementConflicts}
           // The refused warning stored nothing, so the same token carries the confirmed request.
           onConfirm={() => void send({ ...conflictWarning.request, confirmed_conflicts: confirmedConflictsOf(conflictWarning) })}
           onBack={() => setConflictWarning(null)}

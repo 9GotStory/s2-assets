@@ -1,12 +1,21 @@
 import React, { useState } from 'react';
 import { VoidedMark } from './LoanBadges';
 import { RetirementAmendForm, RetirementVoidForm } from './RetirementCorrectionForms';
+import { RetirementConflictNotice } from './RetirementConflicts';
 import { RetirementCorrectionList } from './RetirementCorrectionList';
 import { RetirementBlockedText, RetirementForm, type RetirementBlocker } from './RetirementForm';
 import { CORRECTION_LABELS, thaiDate } from './assignmentFacts';
 import { voidedStyle, type OnLoan } from './loanFacts';
 import type { UnderRepair } from './repairFacts';
-import { RETIREMENT_DATE_LABEL, RETIREMENT_LABEL, RETIREMENT_METHOD_LABELS, RETIREMENT_REFERENCE_LABEL, RETIREMENT_SECTION_LABEL, type Retirement } from './retirementFacts';
+import {
+  RETIREMENT_DATE_LABEL,
+  RETIREMENT_LABEL,
+  RETIREMENT_METHOD_LABELS,
+  RETIREMENT_REFERENCE_LABEL,
+  RETIREMENT_SECTION_LABEL,
+  type Retirement,
+  type RetirementConflict,
+} from './retirementFacts';
 
 const THAI_DATE_TIME = new Intl.DateTimeFormat('th-TH', { dateStyle: 'long', timeStyle: 'short', timeZone: 'Asia/Bangkok' });
 
@@ -25,6 +34,8 @@ export interface RetirementSectionProps {
   assetId: string;
   // Every Retirement of the Asset, oldest first, voided ones included (#154 P3).
   retirements: Retirement[];
+  // The Retirement Conflicts of the Retirement not voided (F007-T6).
+  retirementConflicts: RetirementConflict[];
   // Whether the viewer holds 'retirement:record' and the Asset is not Retired.
   canRetire: boolean;
   // Whether the viewer holds 'retirement:correct' (F007-T5).
@@ -45,11 +56,12 @@ export interface RetirementSectionProps {
  * and "จำหน่าย" for a Custodian. While the Asset is On Loan or Under Repair the section says why it cannot be
  * retired and links to what keeps it, instead of the form; the server refuses it there too. F007-T5: each
  * Retirement shows its corrections, and the one not voided offers "แก้ไขรายการที่บันทึกผิด" and "ยกเลิกรายการ"
- * to holders of 'retirement:correct'.
+ * to holders of 'retirement:correct'. F007-T6: the one not voided shows its Retirement Conflicts.
  */
 export const RetirementSection: React.FC<RetirementSectionProps> = ({
   assetId,
   retirements,
+  retirementConflicts,
   canRetire,
   canCorrectRetirement,
   onLoan,
@@ -117,6 +129,7 @@ export const RetirementSection: React.FC<RetirementSectionProps> = ({
                 บันทึกเมื่อ <time dateTime={retirement.recorded_at}>{THAI_DATE_TIME.format(new Date(retirement.recorded_at))}</time> โดย{' '}
                 {retirement.recorded_by_username ?? retirement.recorded_by}
               </div>
+              {!retirement.is_voided && <RetirementConflictNotice conflicts={retirementConflicts} />}
               {retirement.corrections.length > 0 && <RetirementCorrectionList retirementId={retirement.id} corrections={retirement.corrections} />}
               {mayCorrect(retirement) && openCorrection === null && (
                 <div style={{ marginTop: '0.5rem' }}>

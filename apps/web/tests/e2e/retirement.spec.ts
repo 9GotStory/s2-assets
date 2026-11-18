@@ -498,4 +498,76 @@ test.describe.serial('Retirement journeys: Real SPA -> Composed API -> PostgreSQ
     await expect(page.locator('#retirement-amend-action')).toHaveCount(0);
     await expect(page.locator('#retirement-void-action')).toHaveCount(0);
   });
+
+  test('Journey F007-T6.1: a backdated Retirement is warned of a later Loan Return and confirmed; the page shows "วันจำหน่ายขัดกับประวัติ" with a link to the Loan and the Asset list filter finds it; amending the Retirement Date makes it go away', async ({ page, context }) => {
+    const tag = `E2E ${crypto.randomUUID().slice(0, 8)}`;
+    const { asset } = await assetService.registerAsset(custodianUserId, { name: `${tag} ตู้ที่จำหน่ายย้อนหลัง` } as any);
+    const { asset: kept } = await assetService.registerAsset(custodianUserId, { name: `${tag} ตู้ที่ยังใช้อยู่` } as any);
+    const loan = await loanService.start(
+      custodianUserId,
+      { assets: [{ asset_id: asset.id, condition: 'NORMAL' as const }], borrower: { kind: 'EXTERNAL', contact_name: 'คุณผู้ยืม E2E จำหน่าย 6' }, loan_date: daysAgo(6), due_date: daysAgo(3) },
+      { retryToken: crypto.randomUUID() }
+    );
+    await new LoanReturnService({ db: pool }).record(
+      custodianUserId,
+      loan.loan_id,
+      { expected_version: loan.version, return_date: daysAgo(3), items: loan.items.map(({ id }) => ({ loan_item_id: id, condition: 'NORMAL' as const })) },
+      { retryToken: crypto.randomUUID() }
+    );
+
+    // The Custodian retires it as of a day before its Loan Return: the form warns and saves nothing until confirmed.
+    await loginAs(context, custodianUserId);
+    await page.goto(`${targetBaseUrl}/assets/${asset.id}`);
+    await page.locator('#retirement-action').click();
+    await page.locator('#retirement-retirement_date').fill(daysAgo(5));
+    await page.locator('#retirement-retirement_method').selectOption('SALE');
+    await page.locator('#retirement-submit').click();
+    const warning = page.getByTestId('conflict-warning');
+    await expect(warning).toContainText('การบันทึกนี้จะทำให้วันจำหน่ายขัดกับประวัติ 1 รายการ');
+    await expect(warning).toContainText('คืน');
+    await expect(warning.getByRole('link', { name: 'ดูการยืม' })).toHaveAttribute('href', `/loans/${loan.loan_id}`);
+    await expect(page.locator('[data-testid="retired-banner"]')).toHaveCount(0);
+    await page.locator('#conflict-confirm').click();
+
+    // Saved: the section names the Loan Return it falls before, with a link to the Loan.
+    await expect(page.locator('#retirement-form')).toHaveCount(0);
+    await expect(page.locator('[data-testid="retired-banner"]')).toContainText('ขาย');
+    const conflicts = page.getByTestId('retirement-conflicts');
+    await expect(conflicts).toContainText('วันจำหน่ายขัดกับประวัติ');
+    await expect(conflicts.getByRole('listitem')).toHaveCount(1);
+    await expect(conflicts.getByRole('link', { name: 'ดูการยืม' })).toHaveAttribute('href', `/loans/${loan.loan_id}`);
+
+    // The Asset list filter "วันจำหน่ายขัดกับประวัติ" finds it and not the other Asset.
+    await page.goto(`${targetBaseUrl}/assets/search`);
+    await page.locator('#search-field').selectOption('name');
+    await page.locator('#search-value').fill(tag);
+    await page.locator('#search-submit-btn').click();
+    await expect(page.locator(`[data-testid="search-result-row-${kept.id}"]`)).toBeVisible();
+    await page.locator('#search-filter-has_retirement_conflict').check();
+    await page.locator('#search-submit-btn').click();
+    await expect(page.locator(`[data-testid="search-result-row-${asset.id}"]`)).toBeVisible();
+    await expect(page.locator(`[data-testid="search-result-row-${kept.id}"]`)).toHaveCount(0);
+
+    // Amending the Retirement Date to before the Loan Date warns of that fact alone, and saves once confirmed.
+    await page.goto(`${targetBaseUrl}/assets/${asset.id}`);
+    await expect(conflicts).toBeVisible();
+    await page.locator('#retirement-amend-action').click();
+    await page.locator('#retirement-amend-retirement_date').fill(daysAgo(7));
+    await page.locator('#retirement-amend-reason').fill('วันที่ตามคำสั่งจำหน่ายผิด');
+    await page.locator('#retirement-amend-submit').click();
+    await expect(warning).toContainText('การบันทึกนี้จะทำให้วันจำหน่ายขัดกับประวัติ 1 รายการ');
+    await expect(warning).toContainText('ยืม');
+    await page.locator('#conflict-confirm').click();
+    await expect(page.locator('#retirement-amend-form')).toHaveCount(0);
+    await expect(conflicts.getByRole('listitem')).toHaveCount(2);
+
+    // Amending it to the day of the Loan Return makes the conflict go away by itself.
+    await page.locator('#retirement-amend-action').click();
+    await page.locator('#retirement-amend-retirement_date').fill(daysAgo(3));
+    await page.locator('#retirement-amend-reason').fill('วันที่ตามคำสั่งจำหน่ายผิด');
+    await page.locator('#retirement-amend-submit').click();
+    await expect(page.locator('#retirement-amend-form')).toHaveCount(0);
+    await expect(page.locator('[data-testid="retired-banner"]')).toBeVisible();
+    await expect(conflicts).toHaveCount(0);
+  });
 });
