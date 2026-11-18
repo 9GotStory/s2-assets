@@ -26,7 +26,7 @@ describe('Retirement Correction (Seam A - F007-T5)', () => {
   const { registered, lent, start } = loanHelpers(() => ({ api, custodian, reader: readonly }), { loanDate: '2026-11-01', dueDate: '2026-11-30' });
   const { sent, recordsOf } = repairHelpers(() => ({ api, custodian, reader: readonly }), { startDate: '2026-11-03' });
   const { entries, assignmentOf } = assignmentHelpers(() => ({ api, admin, reader: readonly }));
-  const { placed, reassign } = assignmentWriteHelpers(() => ({ api, custodian, reader: readonly }), { effectiveDate: '2026-01-05' });
+  const { placed, reassign, bulk } = assignmentWriteHelpers(() => ({ api, custodian, reader: readonly }), { effectiveDate: '2026-01-05' });
   const { opened, scopeOf, entryOf, recorded, closeOpenRound } = verificationHelpers(() => ({ api, custodian, reader: readonly }));
   const { base, retire, retired, correct, voided } = retirementHelpers(() => ({ api, custodian }), { retirementDate: '2026-11-10' });
 
@@ -267,16 +267,21 @@ describe('Retirement Correction (Seam A - F007-T5)', () => {
       expect(await detailOf(assetId, custodian)).toMatchObject({ can_retire: true, can_reassign: true, can_record_loan: true, can_record_repair: true, can_record_verification: true, can_manage_verification: true });
     });
 
-    it('lets the guards of a Loan start, a Repair Start and a Reassignment through again', async () => {
+    it('lets the guards of a Loan start, a Repair Start, a Reassignment, an Initial Assignment and a Bulk Reassignment through again', async () => {
       const [room, other] = await entries('locations', `ห้องหลังยกเลิกการจำหน่าย ${crypto.randomUUID()}`, 2);
-      const [lending, repairing, moving] = [await placed(room), await placed(room), await placed(room)];
-      for (const assetId of [lending, repairing, moving]) {
+      const [lending, repairing, moving, bulkMoving] = [await placed(room), await placed(room), await placed(room), await placed(room)];
+      const unplaced = await registered();
+      for (const assetId of [lending, repairing, moving, bulkMoving, unplaced]) {
         await voided(await retired(assetId));
       }
 
       expect((await start([lending])).statusCode).toBe(201);
       expect((await sent(repairing)) as string).toMatch(UUID);
       expect((await reassign(moving, { effective_date: '2026-11-12', location_id: other.id })).statusCode).toBe(201);
+      expect((await reassign(unplaced, { effective_date: '2026-11-12', location_id: room.id }, 'INITIAL')).statusCode).toBe(201);
+      const preview = await api.post(custodian, '/assets/bulk-reassignments/preview', { asset_ids: [bulkMoving], effective_date: '2026-11-12', location_id: other.id });
+      expect(preview.statusCode).toBe(200);
+      expect((await bulk([bulkMoving], { effective_date: '2026-11-12', location_id: other.id })).statusCode).toBe(201);
     });
 
     it('changes no other record: the Asset, its history, its assignment, Loans and Repair Records stay as they were', async () => {
@@ -388,6 +393,24 @@ describe('Retirement Correction (Seam A - F007-T5)', () => {
 
       expect(voidRes.statusCode).toBe(201);
       expect(retirement.statusCode).toBe(201);
+    });
+
+    it('reads the Retirement after a void queued first at the Asset row, so an amendment against the version before it is stale', async () => {
+      const { assetId, retirementId, before } = await retiredAsset();
+
+      const [voidRes, amended] = await whileHolding(
+        'assets',
+        assetId,
+        () => [correct(retirementId, voiding()), untilWaiting('assets', 1).then(() => correct(retirementId, amendment({ note: 'ช้าไป' })))],
+        () => untilWaiting('assets', 2)
+      );
+
+      expect(voidRes.statusCode).toBe(201);
+      expect(amended.statusCode).toBe(409);
+      expect(amended.json()).toMatchObject({ code: 'STALE_BEFORE_CONFLICT', current_values: { version: 2 }, expected_values: { version: 1 } });
+      const { retirements } = await retirementsOf(assetId);
+      expect(retirements[0]).toMatchObject({ is_voided: true, note: before.retirement.note });
+      expect(retirements[0].corrections).toHaveLength(1);
     });
 
     it('lets a Loan start queued behind a void at the Asset row through', async () => {

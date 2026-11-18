@@ -823,7 +823,8 @@ export const assetRoutes: FastifyPluginAsync<AssetRoutesOptions> = async (
         // viewer may retire it. While it is On Loan or Under Repair the page says why instead (#154 Q22).
         ...retirements,
         can_retire: canRecordRetirement && mayTakeNewEvent,
-        // F007-T5 (#159): whether the viewer may amend or void a Retirement not voided (#154 Q6).
+        // F007-T5 (#159): whether the viewer holds 'retirement:correct'; the page offers it on a Retirement not
+        // voided (#154 Q6).
         can_correct_retirement: canCorrectRetirement,
       });
     }

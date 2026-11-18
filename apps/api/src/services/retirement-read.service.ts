@@ -174,8 +174,9 @@ export class RetirementReadService {
           recorded_by_username: row.recorded_by_username,
           recorded_at: new Date(row.recorded_at).toISOString(),
         }));
-    const retirements = res.rows.map((row: any): AssetRetirement => ({ ...retirementOf(row), corrections: correctionsOf(row.id) }));
-    const retirement = retirements.find((_: AssetRetirement, i: number) => res.rows[i].is_not_voided) ?? null;
+    const retirements: AssetRetirement[] = res.rows.map((row: any) => ({ ...retirementOf(row), corrections: correctionsOf(row.id) }));
+    const current = res.rows.find((row: any) => row.is_not_voided);
+    const retirement = retirements.find(({ id }) => id === current?.id) ?? null;
     return { retired: retirement !== null, retirement, retirements };
   }
 }

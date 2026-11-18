@@ -181,6 +181,7 @@ export class RetirementService {
 
   // Locks the Retirement's Asset exclusively, the lock recording a Retirement takes, then reads the Retirement
   // under it: its version must be the one the client read, and a voided one is corrected no more (#154 P2, Q24).
+  // Every Retirement write takes that lock first, so it alone orders them.
   private async lockRetirementForCorrection(client: pg.PoolClient, retirementId: string, expectedVersion: number): Promise<StoredRetirement> {
     const found = await client.query('SELECT asset_id FROM retirements WHERE id = $1', [retirementId]);
     if (!found.rows[0]) {
@@ -189,7 +190,7 @@ export class RetirementService {
     await lockAssetsInIdentifierOrder(client, [found.rows[0].asset_id]);
     const res = await client.query(
       `SELECT id, asset_id, to_char(retirement_date, 'YYYY-MM-DD') AS retirement_date, retirement_method, retirement_reference, note, is_voided, version
-       FROM retirements WHERE id = $1 FOR UPDATE`,
+       FROM retirements WHERE id = $1`,
       [retirementId]
     );
     const retirement: StoredRetirement = res.rows[0];

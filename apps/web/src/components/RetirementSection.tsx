@@ -1,66 +1,14 @@
 import React, { useState } from 'react';
 import { VoidedMark } from './LoanBadges';
 import { RetirementAmendForm, RetirementVoidForm } from './RetirementCorrectionForms';
+import { RetirementCorrectionList } from './RetirementCorrectionList';
 import { RetirementBlockedText, RetirementForm, type RetirementBlocker } from './RetirementForm';
 import { CORRECTION_LABELS, thaiDate } from './assignmentFacts';
 import { voidedStyle, type OnLoan } from './loanFacts';
 import type { UnderRepair } from './repairFacts';
-import {
-  RETIREMENT_DATE_LABEL,
-  RETIREMENT_LABEL,
-  RETIREMENT_METHOD_LABEL,
-  RETIREMENT_METHOD_LABELS,
-  RETIREMENT_REFERENCE_LABEL,
-  RETIREMENT_SECTION_LABEL,
-  type Retirement,
-  type RetirementCorrection,
-  type RetirementMethod,
-} from './retirementFacts';
+import { RETIREMENT_DATE_LABEL, RETIREMENT_LABEL, RETIREMENT_METHOD_LABELS, RETIREMENT_REFERENCE_LABEL, RETIREMENT_SECTION_LABEL, type Retirement } from './retirementFacts';
 
 const THAI_DATE_TIME = new Intl.DateTimeFormat('th-TH', { dateStyle: 'long', timeStyle: 'short', timeZone: 'Asia/Bangkok' });
-
-const FIELD_LABELS: Record<string, string> = {
-  retirement_date: RETIREMENT_DATE_LABEL,
-  retirement_method: RETIREMENT_METHOD_LABEL,
-  retirement_reference: RETIREMENT_REFERENCE_LABEL,
-  note: 'หมายเหตุ',
-};
-
-// A value as the section shows it.
-const valueText = (field: string, value: string | null): string => {
-  if (value === null) {
-    return 'ไม่ระบุ';
-  }
-  if (field === 'retirement_date') {
-    return thaiDate(value);
-  }
-  return field === 'retirement_method' ? RETIREMENT_METHOD_LABELS[value as RetirementMethod] : value;
-};
-
-// A Retirement's corrections, oldest first, each with its reason, who, when, and before and after (DR-12).
-const CorrectionList: React.FC<{ retirementId: string; corrections: RetirementCorrection[] }> = ({ retirementId, corrections }) => (
-  <ol data-testid={`retirement-corrections-${retirementId}`} style={{ listStyle: 'none', margin: '0.5rem 0 0 0', padding: '0 0 0 0.75rem', borderLeft: '2px solid #e5e7eb' }}>
-    {corrections.map((correction) => (
-      <li key={correction.id} data-testid="retirement-correction" style={{ padding: '0.25rem 0' }}>
-        <div style={{ fontWeight: 600 }}>{CORRECTION_LABELS[correction.action]}</div>
-        <div style={{ color: '#6b7280' }}>
-          บันทึกเมื่อ <time dateTime={correction.recorded_at}>{THAI_DATE_TIME.format(new Date(correction.recorded_at))}</time> โดย{' '}
-          {correction.recorded_by_username ?? correction.recorded_by}
-        </div>
-        <div style={{ whiteSpace: 'pre-wrap' }}>เหตุผล: {correction.reason}</div>
-        {correction.changes.length > 0 && (
-          <ul style={{ margin: '0.125rem 0 0 0', paddingLeft: '1.25rem' }}>
-            {correction.changes.map((change) => (
-              <li key={change.field} style={{ whiteSpace: 'pre-wrap' }}>
-                {FIELD_LABELS[change.field] ?? change.field}: {valueText(change.field, change.before)} แก้เป็น {valueText(change.field, change.after)}
-              </li>
-            ))}
-          </ul>
-        )}
-      </li>
-    ))}
-  </ol>
-);
 
 const correctionActionStyle: React.CSSProperties = {
   marginRight: '0.5rem',
@@ -169,7 +117,7 @@ export const RetirementSection: React.FC<RetirementSectionProps> = ({
                 บันทึกเมื่อ <time dateTime={retirement.recorded_at}>{THAI_DATE_TIME.format(new Date(retirement.recorded_at))}</time> โดย{' '}
                 {retirement.recorded_by_username ?? retirement.recorded_by}
               </div>
-              {retirement.corrections.length > 0 && <CorrectionList retirementId={retirement.id} corrections={retirement.corrections} />}
+              {retirement.corrections.length > 0 && <RetirementCorrectionList retirementId={retirement.id} corrections={retirement.corrections} />}
               {mayCorrect(retirement) && openCorrection === null && (
                 <div style={{ marginTop: '0.5rem' }}>
                   <button type="button" id="retirement-amend-action" onClick={() => setOpenCorrection('AMEND')} style={correctionActionStyle}>
