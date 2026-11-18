@@ -81,6 +81,8 @@ export interface AssetDetailResponse {
   retirement?: Retirement | null;
   retirements?: Retirement[];
   can_retire?: boolean;
+  // F007-T5: whether the viewer may amend or void a Retirement not voided.
+  can_correct_retirement?: boolean;
 }
 
 export const AssetDetail: React.FC = () => {
@@ -907,6 +909,7 @@ const AssetDetailContent: React.FC = () => {
           assetId={asset.id}
           retirements={assetData.retirements ?? []}
           canRetire={Boolean(assetData.can_retire && !isPermissionRevoked)}
+          canCorrectRetirement={Boolean(assetData.can_correct_retirement && !isPermissionRevoked)}
           onLoan={assetData.on_loan ?? null}
           underRepair={assetData.under_repair ?? null}
           csrfToken={csrfToken}
@@ -916,6 +919,10 @@ const AssetDetailContent: React.FC = () => {
             if (refetchResult.isError) {
               setRefreshError('บันทึกการจำหน่ายสำเร็จ แต่การดึงข้อมูลล่าสุดล้มเหลว กรุณากดปุ่มเพื่อโหลดข้อมูลใหม่');
             }
+          }}
+          onRefresh={async (retirementId) => {
+            const refetchResult = await refetch();
+            return refetchResult.isError ? null : (refetchResult.data?.retirements?.find(({ id }) => id === retirementId)?.version ?? null);
           }}
           onPermissionRevoked={handlePermissionRevoked}
         />

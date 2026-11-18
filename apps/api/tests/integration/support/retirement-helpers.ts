@@ -25,5 +25,15 @@ export function retirementHelpers(context: () => { api: ApiHarness; custodian: A
     return res.json().retirement_id;
   };
 
-  return { base, retire, retired };
+  // A Retirement Correction (F007-T5): an amendment or a void of the Retirement, against the version given.
+  const correct = (retirementId: string, payload: Record<string, unknown>, token: string = crypto.randomUUID(), actor: Actor = context().custodian) =>
+    context().api.post(actor, `/retirements/${retirementId}/corrections`, payload, { 'x-retry-token': token });
+
+  // The Retirement voided with a reason, so its Asset is no longer Retired.
+  const voided = async (retirementId: string, expectedVersion = 1): Promise<void> => {
+    const res = await correct(retirementId, { expected_version: expectedVersion, action: 'VOID', reason: 'ไม่ได้จำหน่ายจริง' });
+    expect(res.statusCode).toBe(201);
+  };
+
+  return { base, retire, retired, correct, voided };
 }

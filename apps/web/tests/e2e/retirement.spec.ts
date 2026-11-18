@@ -29,7 +29,8 @@ const migrationFolder = path.resolve(__dirname, '../../../../packages/db/src/mig
 // and seeing the Retired Asset on its page and in the Asset list. F007-T2 (#156): a Retired Asset in the
 // Loan form, on the Loan page and on the Repair Record page. F007-T3 (#157): a Retired Asset in a Bulk
 // Reassignment, and a Reassignment refused once its Asset is Retired. F007-T4 (#158): an Asset retired while a
-// Verification Round is open, in the Round's entries and in its "ตรวจประจำปี" panel.
+// Verification Round is open, in the Round's entries and in its "ตรวจประจำปี" panel. F007-T5 (#159): a Retirement
+// amended and then voided from the Asset page, with its corrections.
 test.describe.serial('Retirement journeys: Real SPA -> Composed API -> PostgreSQL (Seam B)', () => {
   let container: StartedPostgreSqlContainer;
   let pool: pg.Pool;
@@ -436,5 +437,65 @@ test.describe.serial('Retirement journeys: Real SPA -> Composed API -> PostgreSQ
     await expect(page.getByTestId('verification-panel-retired')).toContainText('จำหน่ายแล้ว เพิ่มเข้ารอบภายหลังไม่ได้');
     await expect(page.getByTestId('verification-panel-not-in-round')).toHaveText('ครุภัณฑ์นี้ไม่อยู่ในรายการของรอบตรวจนี้');
     await expect(page.locator('#verification-late-addition-action')).toHaveCount(0);
+  });
+
+  test('Journey F007-T5.1: a Custodian amends a Retirement with a reason and then voids it; the Asset page loses the banner, offers its actions again, and shows the voided Retirement struck through with its corrections', async ({ page, context }) => {
+    const { asset } = await assetService.registerAsset(custodianUserId, { name: 'โต๊ะ E2E จำหน่ายผิด' } as any);
+    const { retirement_id: retirementId } = await new RetirementService({ db: pool }).record(
+      custodianUserId,
+      asset.id,
+      { retirement_date: daysAgo(2), retirement_method: 'SALE', retirement_reference: 'คำสั่ง 9/2569' },
+      { retryToken: crypto.randomUUID() }
+    );
+
+    // A Read-only User sees the Retirement with neither correction.
+    await loginAs(context, readonlyUserId);
+    await page.goto(`${targetBaseUrl}/assets/${asset.id}`);
+    await expect(page.locator('[data-testid="retired-banner"]')).toContainText('ขาย');
+    await expect(page.locator('#retirement-amend-action')).toHaveCount(0);
+    await expect(page.locator('#retirement-void-action')).toHaveCount(0);
+
+    // The Custodian amends its Retirement Method and Retirement Reference, with a reason; the form refuses one that
+    // changes nothing first.
+    await switchActor(page, context, custodianUserId);
+    await page.goto(`${targetBaseUrl}/assets/${asset.id}`);
+    await page.locator('#retirement-amend-action').click();
+    await page.locator('#retirement-amend-reason').fill('เลือกวิธีจำหน่ายผิด');
+    await page.locator('#retirement-amend-submit').click();
+    await expect(page.locator('[data-testid="retirement-amend-form-error"]')).toContainText('ยังไม่มีค่าที่แก้ไข');
+    await page.locator('#retirement-amend-retirement_method').selectOption('EXCHANGE');
+    await page.locator('#retirement-amend-retirement_reference').fill('คำสั่ง 10/2569');
+    await page.locator('#retirement-amend-submit').click();
+    await expect(page.locator('#retirement-amend-form')).toHaveCount(0);
+    await expect(page.locator('[data-testid="retired-banner"]')).toContainText('แลกเปลี่ยน');
+    const corrections = page.getByTestId(`retirement-corrections-${retirementId}`);
+    await expect(corrections).toContainText('แก้ไขรายการที่บันทึกผิด');
+    await expect(corrections).toContainText('เหตุผล: เลือกวิธีจำหน่ายผิด');
+    await expect(corrections).toContainText('วิธีจำหน่าย: ขาย แก้เป็น แลกเปลี่ยน');
+    await expect(corrections).toContainText('เอกสารอ้างอิง: คำสั่ง 9/2569 แก้เป็น คำสั่ง 10/2569');
+    await expect(corrections).toContainText('custodian_retirement');
+
+    // It never happened: the Custodian voids it with a reason.
+    await expect(page.locator('#repair-action')).toHaveCount(0);
+    await page.locator('#retirement-void-action').click();
+    await page.locator('#retirement-void-submit').click();
+    await expect(page.locator('[data-testid="retirement-void-form-error"]')).toContainText('กรุณาระบุเหตุผลที่ยกเลิกรายการ');
+    await page.locator('#retirement-void-reason').fill('บันทึกผิดครุภัณฑ์');
+    await page.locator('#retirement-void-submit').click();
+
+    // The banner goes, the actions come back, and the Retirement stays shown struck through with both corrections.
+    await expect(page.locator('[data-testid="retired-banner"]')).toHaveCount(0);
+    await expect(page.locator('#repair-action')).toBeVisible();
+    await expect(page.locator('#assignment-action')).toBeVisible();
+    await expect(page.locator('#loan-action')).toBeVisible();
+    await expect(page.locator('#retirement-action')).toBeVisible();
+    const voided = page.getByTestId(`retirement-${retirementId}`);
+    await expect(page.getByTestId(`retirement-voided-${retirementId}`)).toHaveText('ยกเลิกแล้ว');
+    await expect(voided.locator('span').first()).toHaveCSS('text-decoration-line', 'line-through');
+    await expect(corrections.getByTestId('retirement-correction')).toHaveCount(2);
+    await expect(corrections).toContainText('ยกเลิกรายการ (บันทึกผิด)');
+    await expect(corrections).toContainText('เหตุผล: บันทึกผิดครุภัณฑ์');
+    await expect(page.locator('#retirement-amend-action')).toHaveCount(0);
+    await expect(page.locator('#retirement-void-action')).toHaveCount(0);
   });
 });
