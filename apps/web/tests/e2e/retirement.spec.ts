@@ -14,6 +14,7 @@ import { LoanService } from '../../../api/src/services/loan.service.ts';
 import { LoanReturnService } from '../../../api/src/services/loan-return.service.ts';
 import { RepairService } from '../../../api/src/services/repair.service.ts';
 import { RetirementService } from '../../../api/src/services/retirement.service.ts';
+import { VerificationService } from '../../../api/src/services/verification.service.ts';
 import { ReferenceService } from '../../../api/src/services/reference.service.ts';
 import { repositoryProxyConfig } from '../../vite.config.ts';
 
@@ -27,7 +28,8 @@ const migrationFolder = path.resolve(__dirname, '../../../../packages/db/src/mig
 // F007-T1 (#155): recording a Retirement from the Asset page, after resolving the Loan that kept the Asset,
 // and seeing the Retired Asset on its page and in the Asset list. F007-T2 (#156): a Retired Asset in the
 // Loan form, on the Loan page and on the Repair Record page. F007-T3 (#157): a Retired Asset in a Bulk
-// Reassignment, and a Reassignment refused once its Asset is Retired.
+// Reassignment, and a Reassignment refused once its Asset is Retired. F007-T4 (#158): an Asset retired while a
+// Verification Round is open, in the Round's entries and in its "ตรวจประจำปี" panel.
 test.describe.serial('Retirement journeys: Real SPA -> Composed API -> PostgreSQL (Seam B)', () => {
   let container: StartedPostgreSqlContainer;
   let pool: pg.Pool;
@@ -344,5 +346,95 @@ test.describe.serial('Retirement journeys: Real SPA -> Composed API -> PostgreSQ
     await page.locator('#assignment-submit').click();
     await expect(page.getByTestId('assignment-form-error')).toContainText('บันทึกไม่ได้ เพราะครุภัณฑ์นี้จำหน่ายแล้ว');
     expect(await eventsOf()).toBe(2);
+  });
+
+  test('Journey F007-T4.1: an Asset retired while a Round is open shows "จำหน่ายแล้ว" in the Round with no "ส่งซ่อม" or "ย้าย", its "ตรวจประจำปี" panel offers no recording, and a result form opened before its Retirement is refused', async ({ page, context }) => {
+    const tag = `E2E ${crypto.randomUUID().slice(0, 8)}`;
+    const referenceService = new ReferenceService({ db: pool });
+    const verificationService = new VerificationService({ db: pool });
+    const room = await referenceService.create('locations', adminUserId, `${tag} ห้องตรวจ`);
+    const seen = await referenceService.create('locations', adminUserId, `${tag} ห้องที่พบ`);
+    const placed = async (name: string) =>
+      (await assetService.registerAsset(custodianUserId, { name: `${tag} ${name}`, location_id: room.id, effective_date: daysAgo(30) } as any)).asset;
+    const gone = await placed('ก ตู้ที่จำหน่ายแล้ว');
+    const kept = await placed('ข ตู้ที่ยังใช้อยู่');
+    const pending = await placed('ค ตู้ที่จำหน่ายก่อนตรวจ');
+    const late = await placed('ง ตู้ที่จำหน่ายขณะเปิดฟอร์ม');
+    const outside = (await assetService.registerAsset(custodianUserId, { name: `${tag} จ ตู้นอกรอบ` } as any)).asset;
+    const { verification_round_id: roundId } = await verificationService.open(
+      custodianUserId,
+      { name: `${tag} ตรวจประจำปี`, fiscal_year: 2569, location_ids: [room.id] },
+      { retryToken: crypto.randomUUID() }
+    );
+    // Both found ชำรุด in another room: each result would offer "ส่งซ่อม" and "ย้าย".
+    for (const { id } of [gone, kept]) {
+      await verificationService.record(custodianUserId, roundId, id, { result: 'FOUND', condition: 'DAMAGED', observed_location_id: seen.id }, { retryToken: crypto.randomUUID() });
+    }
+    const retire = (assetId: string) =>
+      new RetirementService({ db: pool }).record(custodianUserId, assetId, { retirement_date: daysAgo(0), retirement_method: 'SALE' }, { retryToken: crypto.randomUUID() });
+    await retire(gone.id);
+    await retire(pending.id);
+    const revisionsOf = async (assetId: string): Promise<number> =>
+      (await pool.query('SELECT count(*)::int AS n FROM verification_revisions v JOIN verification_scope_entries e ON e.id = v.verification_scope_entry_id WHERE e.asset_id = $1', [assetId])).rows[0].n;
+
+    // The Round keeps every Asset; the Retired ones show "จำหน่ายแล้ว" and the Retired result offers neither action.
+    await loginAs(context, custodianUserId);
+    await page.goto(`${targetBaseUrl}/verification-rounds/${roundId}`);
+    await expect(page.getByTestId(`scope-entry-retired-${gone.id}`)).toContainText('จำหน่ายแล้ว');
+    await expect(page.getByTestId(`scope-entry-retired-${pending.id}`)).toContainText('จำหน่ายแล้ว');
+    await expect(page.getByTestId(`scope-entry-retired-${kept.id}`)).toHaveCount(0);
+    await expect(page.getByTestId(`scope-entry-result-${pending.id}`)).toContainText('ยังไม่ได้ตรวจ');
+    await expect(page.locator(`#scope-entry-repair-action-${kept.id}`)).toBeVisible();
+    await expect(page.locator(`#scope-entry-reassign-action-${kept.id}`)).toBeVisible();
+    await expect(page.locator(`#scope-entry-repair-action-${gone.id}`)).toHaveCount(0);
+    await expect(page.locator(`#scope-entry-reassign-action-${gone.id}`)).toHaveCount(0);
+
+    // "ยังไม่มี action ต่อ" leaves the Retired result out.
+    await page.goto(`${targetBaseUrl}/verification-rounds/${roundId}?awaiting_action=true`);
+    await expect(page.getByTestId(`scope-entry-${kept.id}`)).toBeVisible();
+    await expect(page.getByTestId(`scope-entry-${gone.id}`)).toHaveCount(0);
+
+    // The panel of the Retired Asset with no result says so and offers no recording.
+    await page.goto(`${targetBaseUrl}/assets/${pending.id}`);
+    await expect(page.getByTestId('verification-panel-retired')).toContainText('จำหน่ายแล้ว บันทึกผลตรวจใหม่ไม่ได้');
+    await expect(page.getByTestId('verification-panel-not-yet-verified')).toContainText('ยังไม่ได้ตรวจ');
+    await expect(page.locator('#verification-record-form')).toHaveCount(0);
+
+    // The panel of the Asset in use offers each action on its result; that of the Retired one only the
+    // Verification Correction.
+    await page.goto(`${targetBaseUrl}/assets/${kept.id}`);
+    for (const action of ['#verification-void-action', '#verification-reverify-action', '#verification-repair-action', '#verification-reassign-action']) {
+      await expect(page.locator(action)).toBeVisible();
+    }
+    await page.goto(`${targetBaseUrl}/assets/${gone.id}`);
+    await expect(page.getByTestId('verification-panel-retired')).toContainText('จำหน่ายแล้ว');
+    await expect(page.locator('#verification-void-action')).toBeVisible();
+    await expect(page.locator('#verification-reverify-action')).toHaveCount(0);
+    await expect(page.locator('#verification-repair-action')).toHaveCount(0);
+    await expect(page.locator('#verification-reassign-action')).toHaveCount(0);
+
+    // A result form opened before the Asset's Retirement is refused once it commits, saving nothing.
+    await page.goto(`${targetBaseUrl}/assets/${late.id}`);
+    await expect(page.locator('#verification-record-form')).toBeVisible();
+    await expect(page.getByTestId('verification-panel-retired')).toHaveCount(0);
+    await page.locator('#verification-record-result-NOT_FOUND').check();
+    await retire(late.id);
+    await page.locator('#verification-record-submit').click();
+    await expect(page.getByTestId('verification-record-refused')).toContainText('บันทึกไม่ได้ เพราะครุภัณฑ์นี้จำหน่ายแล้ว');
+    expect(await revisionsOf(late.id)).toBe(0);
+
+    // A Late Addition form opened before the Asset's Retirement is refused the same way, adding nothing; then the
+    // panel offers none.
+    await page.goto(`${targetBaseUrl}/assets/${outside.id}`);
+    await page.locator('#verification-late-addition-action').click();
+    await page.locator('#verification-late-addition-reason').fill('พบภายหลังว่าตกหล่น E2E');
+    await retire(outside.id);
+    await page.locator('#verification-late-addition-submit').click();
+    await expect(page.getByTestId('verification-late-addition-refused')).toContainText('เพิ่มไม่ได้ เพราะครุภัณฑ์นี้จำหน่ายแล้ว');
+    expect((await pool.query('SELECT count(*)::int AS n FROM verification_scope_entries WHERE asset_id = $1', [outside.id])).rows[0].n).toBe(0);
+    await page.goto(`${targetBaseUrl}/assets/${outside.id}`);
+    await expect(page.getByTestId('verification-panel-retired')).toContainText('จำหน่ายแล้ว เพิ่มเข้ารอบภายหลังไม่ได้');
+    await expect(page.getByTestId('verification-panel-not-in-round')).toHaveText('ครุภัณฑ์นี้ไม่อยู่ในรายการของรอบตรวจนี้');
+    await expect(page.locator('#verification-late-addition-action')).toHaveCount(0);
   });
 });

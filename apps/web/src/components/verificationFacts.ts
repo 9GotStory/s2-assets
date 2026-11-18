@@ -150,6 +150,8 @@ export interface ScopeEntry {
   version: number;
   // Voided revisions included.
   revision_count: number;
+  // F007-T4 (#154 Q12): the Asset is Retired now; it stays in the Round and takes no new result.
+  retired: boolean;
 }
 
 export interface ScopeEntryPage {
@@ -175,6 +177,8 @@ export interface AssetVerificationPanel {
   entry: { id: string; version: number; result: VerificationResult; current: VerificationRevision | null } | null;
   // The context a result recorded now would keep.
   context: RecordingContext;
+  // F007-T4 (#154 Q12): the Asset is Retired, so the panel offers no recording and no Late Addition.
+  retired: boolean;
 }
 
 // An Asset's result in one Round it belongs to (GET /assets/:id/verifications, F006-T2).

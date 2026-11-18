@@ -4,6 +4,7 @@ import { LoanSaveForm } from './LoanSaveForm';
 import { fetchReferenceList, fieldInputStyle, fieldLabelStyle, type ReferenceEntry } from './ReferenceContextFields';
 import { bangkokToday, thaiDate } from './assignmentFacts';
 import { CONDITION_LABELS, type LoanCondition } from './loanFacts';
+import { retiredRefusal } from './RetiredReason';
 import {
   DISCREPANCY_LABEL,
   DISCREPANCY_LABELS,
@@ -127,7 +128,11 @@ export const VerificationRecordForm: React.FC<VerificationRecordFormProps> = ({ 
         if (body?.code === 'VERIFICATION_ROUND_NOT_OPEN') {
           return <>บันทึกไม่ได้ เพราะรอบตรวจนี้ไม่ได้เปิดอยู่แล้ว กรุณาโหลดหน้าใหม่</>;
         }
-        return body?.code === 'ASSET_NOT_IN_VERIFICATION_SCOPE' ? <>บันทึกไม่ได้ เพราะครุภัณฑ์นี้ไม่อยู่ในรอบตรวจ</> : null;
+        if (body?.code === 'ASSET_NOT_IN_VERIFICATION_SCOPE') {
+          return <>บันทึกไม่ได้ เพราะครุภัณฑ์นี้ไม่อยู่ในรอบตรวจ</>;
+        }
+        // Retired since the form opened (F007-T4, #154 Q12).
+        return retiredRefusal(body);
       }}
       forbiddenMessage="คุณไม่มีสิทธิ์บันทึกผลตรวจ"
       refusedMessage="ไม่สามารถบันทึกผลตรวจได้"

@@ -30,8 +30,11 @@ export interface AssetRetirements {
 // write of Retired uses this one condition.
 const IS_NOT_VOIDED = 'NOT t.is_voided';
 
+/** The Asset `assetId`, an SQL expression such as `e.asset_id`, is Retired: the SQL fragment for a read that joins it. */
+export const assetIsRetired = (assetId: string) => `EXISTS (SELECT 1 FROM retirements t WHERE t.asset_id = ${assetId} AND ${IS_NOT_VOIDED})`;
+
 // The Asset of a row aliased `a` is Retired.
-const ASSET_IS_RETIRED = `EXISTS (SELECT 1 FROM retirements t WHERE t.asset_id = a.id AND ${IS_NOT_VOIDED})`;
+const ASSET_IS_RETIRED = assetIsRetired('a.id');
 
 // Retirements aliased `t` as the Asset page shows them, with who recorded each.
 const RETIREMENT_SELECT = `SELECT t.id, t.asset_id, to_char(t.retirement_date, 'YYYY-MM-DD') AS retirement_date, t.retirement_method,

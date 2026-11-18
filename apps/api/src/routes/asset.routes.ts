@@ -811,11 +811,12 @@ export const assetRoutes: FastifyPluginAsync<AssetRoutesOptions> = async (
         can_record_repair: canRecordRepair && mayTakeNewEvent,
         // F006-T2 (#127): the "ตรวจประจำปี" panel for the open Round, and whether the viewer may record a result.
         verification: await options.verificationReadService.panelOf(id.trim().toLowerCase()),
-        can_record_verification: canRecordVerification,
-        // F006-T4 (#129): whether the viewer may void the panel's current result.
+        can_record_verification: canRecordVerification && mayTakeNewEvent,
+        // F006-T4 (#129): whether the viewer may void the panel's current result. F007-T4 (#154 Q12): still for a
+        // Retired Asset.
         can_correct_verification: canCorrectVerification,
         // F006-T5 (#130): whether the viewer may add the Asset to the open Round when it is not in it.
-        can_manage_verification: canManageVerification,
+        can_manage_verification: canManageVerification && mayTakeNewEvent,
         // F007-T1 (#155): whether the Asset is Retired, by which Retirement, every Retirement of it, and whether the
         // viewer may retire it. While it is On Loan or Under Repair the page says why instead (#154 Q22).
         ...retirements,
