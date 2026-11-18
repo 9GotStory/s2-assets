@@ -125,6 +125,7 @@ describe('Late Addition to the open Round (Seam A - F006-T5)', () => {
         current: null,
         version: 1,
         revision_count: 0,
+        retired: false,
       });
       expect(Date.parse(added.late_addition.recorded_at)).toBeGreaterThanOrEqual(before - 1000);
       expect(Date.parse(added.late_addition.recorded_at)).toBeLessThanOrEqual(Date.now());

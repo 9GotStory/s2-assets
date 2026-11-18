@@ -6,6 +6,7 @@ import { thaiDate, valueText } from '../components/assignmentFacts';
 import { REPAIR_START_LABEL } from '../components/repairFacts';
 import { RepairStartForm } from '../components/RepairStartForm';
 import { ResultReassignmentForm } from '../components/ResultReassignmentForm';
+import { RetiredBadge } from '../components/RetirementBadges';
 import { ReassignedLine, RecordingContextLine, RevisionDiscrepancies, SentForRepairLine, repairSourceOfResult } from '../components/VerificationPanel';
 import { VerificationRevisionList } from '../components/VerificationRevisionList';
 import { VerificationRoundActions } from '../components/VerificationRoundActions';
@@ -244,7 +245,8 @@ const rowActionStyle: React.CSSProperties = {
 // revisions (F006-T4), and, for a Late Addition, who added it, when and why (F006-T5, AV-21). A result Found ชำรุด
 // shows "ส่งซ่อมแล้ว" once a Repair Record cites it, and offers "ส่งซ่อม" to holders of 'repair:record' (F006-T7, Q19, Q22).
 // A result with "Location ไม่ตรงทะเบียน" shows "ย้ายแล้ว" once a Reassignment cites it, and offers "ย้าย" to holders of
-// 'assignment:reassign' (F006-T8, Q13, Q19, Q22).
+// 'assignment:reassign' (F006-T8, Q13, Q19, Q22). An Asset retired since it joined shows "จำหน่ายแล้ว" and is offered
+// neither, since it can no longer be repaired or moved (F007-T4, #154 Q12).
 const ScopeEntryItem: React.FC<{
   roundId: string;
   entry: ScopeEntry;
@@ -255,14 +257,17 @@ const ScopeEntryItem: React.FC<{
   const { snapshot, current, late_addition: lateAddition } = entry;
   // The action form open on the row, if any.
   const [openForm, setOpenForm] = useState<'REPAIR' | 'REASSIGN' | null>(null);
-  const mayRepair = repairAction !== null && current !== null && isFoundDamaged(current);
-  const mayReassign = reassignAction !== null && current !== null && hasLocationMismatch(current);
+  const mayRepair = repairAction !== null && !entry.retired && current !== null && isFoundDamaged(current);
+  const mayReassign = reassignAction !== null && !entry.retired && current !== null && hasLocationMismatch(current);
   return (
     <li data-testid={`scope-entry-${entry.asset_id}`} style={{ padding: '0.75rem 0', borderBottom: '1px solid #e5e7eb', fontSize: '0.875rem' }}>
       <div style={{ display: 'flex', justifyContent: 'space-between', gap: '0.75rem', flexWrap: 'wrap' }}>
-        <Link to={`/assets/${entry.asset_id}`} style={{ color: '#2563eb', textDecoration: 'underline', fontWeight: 600, overflowWrap: 'anywhere' }}>
-          {snapshot.name ?? snapshot.asset_number ?? entry.asset_id}
-        </Link>
+        <span style={{ display: 'inline-flex', alignItems: 'center', flexWrap: 'wrap', gap: '0.5rem', minWidth: 0 }}>
+          <Link to={`/assets/${entry.asset_id}`} style={{ color: '#2563eb', textDecoration: 'underline', fontWeight: 600, overflowWrap: 'anywhere' }}>
+            {snapshot.name ?? snapshot.asset_number ?? entry.asset_id}
+          </Link>
+          {entry.retired && <RetiredBadge testId={`scope-entry-retired-${entry.asset_id}`} />}
+        </span>
         <span data-testid={`scope-entry-result-${entry.asset_id}`} style={{ color: RESULT_COLORS[entry.result], fontWeight: 600, whiteSpace: 'nowrap' }}>
           {resultText(entry.result, current?.condition)}
         </span>

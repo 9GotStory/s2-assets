@@ -5,6 +5,7 @@ import { invalidQueryBody, pageQueryFields } from './list-query.ts';
 import { errorBody, parseWrite } from './write-request.ts';
 import { isValidUuid, type CapabilityService } from '../services/capability.service.ts';
 import { hasDisallowedControlChars } from '../services/control-characters.ts';
+import { AssetRetiredError } from '../services/retirement-read.service.ts';
 import { RetryTokenConflictError, StaleBeforeConflictError } from '../services/service-errors.ts';
 import { ValidationError } from '../services/validation-error.ts';
 import { DISCREPANCIES, JOINED_AS, VerificationReadService, type Discrepancy } from '../services/verification-read.service.ts';
@@ -147,6 +148,9 @@ const refusalOf = (err: unknown) => {
   }
   if (err instanceof StaleBeforeConflictError) {
     return { ...errorBody(err.statusCode, err.code, err.message), current_values: err.current_values, expected_values: err.expected_values };
+  }
+  if (err instanceof AssetRetiredError) {
+    return { ...errorBody(err.statusCode, err.code, err.message), asset: err.asset };
   }
   if (
     err instanceof EmptyVerificationScopeError ||

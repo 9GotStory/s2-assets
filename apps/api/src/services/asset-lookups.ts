@@ -13,6 +13,16 @@ export async function assetExists(db: pg.Pool | any, assetId: string): Promise<b
   return res.rows.length > 0;
 }
 
+/**
+ * Locks a registered Asset in share mode, as a write that adds a fact about it without changing it does: a
+ * Retirement locks the Asset for update, so the two serialize and the later sees the earlier (#154 Q24). Answers
+ * what a refusal names the Asset by, or null for none.
+ */
+export async function lockAssetForShare(client: pg.PoolClient, assetId: string): Promise<{ id: string; name: string | null; asset_number: string | null } | null> {
+  const res = await client.query('SELECT id, name, asset_number FROM assets WHERE id = $1 FOR SHARE', [assetId]);
+  return res.rows[0] ?? null;
+}
+
 // An Asset as a warning names it.
 export interface WarnedAsset {
   asset_id: string;

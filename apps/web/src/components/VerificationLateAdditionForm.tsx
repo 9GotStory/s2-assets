@@ -1,6 +1,7 @@
 import React, { useState } from 'react';
 import { LoanSaveForm } from './LoanSaveForm';
 import { ReasonField } from './OutstandingItemFields';
+import { RetiredReason } from './RetiredReason';
 import { LATE_ADDITION_LABEL, RESULT_LABELS, type OpenVerificationRound } from './verificationFacts';
 
 export interface VerificationLateAdditionFormProps {
@@ -29,6 +30,14 @@ export const VerificationLateAdditionForm: React.FC<VerificationLateAdditionForm
       refusedList={(body) => {
         if (body?.code === 'ASSET_ALREADY_IN_VERIFICATION_SCOPE') {
           return <>ครุภัณฑ์นี้อยู่ในรอบตรวจนี้แล้ว กรุณาโหลดหน้าใหม่</>;
+        }
+        if (body?.code === 'ASSET_RETIRED') {
+          // Retired since the form opened (F007-T4, DR-10, #154 Q12).
+          return (
+            <>
+              เพิ่มไม่ได้ เพราะครุภัณฑ์นี้<RetiredReason assetId={body.asset.asset_id} />
+            </>
+          );
         }
         return body?.code === 'VERIFICATION_ROUND_NOT_OPEN' ? <>เพิ่มไม่ได้ เพราะรอบตรวจนี้ไม่ได้เปิดอยู่แล้ว กรุณาโหลดหน้าใหม่</> : null;
       }}

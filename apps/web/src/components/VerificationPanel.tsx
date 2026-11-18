@@ -1,6 +1,7 @@
 import React, { useState } from 'react';
 import { Link } from 'react-router';
 import { RepairStartForm } from './RepairStartForm';
+import { RetiredBadge } from './RetirementBadges';
 import { ResultReassignmentForm } from './ResultReassignmentForm';
 import { VerificationLateAdditionForm } from './VerificationLateAdditionForm';
 import { VerificationRecordForm } from './VerificationRecordForm';
@@ -231,7 +232,8 @@ export const RevisionFacts: React.FC<{ revision: VerificationRevision; testId: s
  * result it offers "ตรวจซ้ำ" and, to holders of 'verification:correct', "ยกเลิกรายการ (บันทึกผิด)" (F006-T4, Q18, Q20).
  * Beside the note that the Asset is not in the Round it offers holders of 'verification:manage' "เพิ่มเข้ารอบภายหลัง"
  * (F006-T5, Q11). Beside a result Found ชำรุด it offers holders of 'repair:record' "ส่งซ่อม" (F006-T7, Q12, Q22), and
- * beside one with "Location ไม่ตรงทะเบียน" holders of 'assignment:reassign' "ย้าย" (F006-T8, Q13, Q22).
+ * beside one with "Location ไม่ตรงทะเบียน" holders of 'assignment:reassign' "ย้าย" (F006-T8, Q13, Q22). For a Retired Asset
+ * it shows "จำหน่ายแล้ว"; the server then grants none of these but the Verification Correction (F007-T4, #154 Q12).
  */
 export const VerificationPanel: React.FC<VerificationPanelProps> = ({
   assetId,
@@ -246,7 +248,7 @@ export const VerificationPanel: React.FC<VerificationPanelProps> = ({
   onRecorded,
   onPermissionRevoked,
 }) => {
-  const { open_round: round, entry, context } = panel;
+  const { open_round: round, entry, context, retired } = panel;
   // The form open over the current result, or over the note that the Asset is not in the Round, if any.
   const [openForm, setOpenForm] = useState<'REVERIFY' | 'VOID' | 'LATE_ADDITION' | 'REPAIR' | 'REASSIGN' | null>(null);
   const current = entry?.current ?? null;
@@ -272,6 +274,12 @@ export const VerificationPanel: React.FC<VerificationPanelProps> = ({
         </Link>
       </p>
 
+      {retired && (
+        <p data-testid="verification-panel-retired" role="note" style={{ margin: '0 0 0.75rem 0', fontSize: '0.875rem', color: '#374151' }}>
+          <RetiredBadge testId="verification-panel-retired-badge" /> {entry ? 'บันทึกผลตรวจใหม่ไม่ได้' : `${LATE_ADDITION_LABEL}ไม่ได้`}
+        </p>
+      )}
+
       {recordedContextText(context) && (
         <div data-testid="verification-panel-context" style={{ margin: '0 0 0.75rem 0', padding: '0.5rem 0.75rem', backgroundColor: '#fef3c7', borderRadius: '6px', fontSize: '0.875rem', color: '#92400e', overflowWrap: 'anywhere' }}>
           <div>
@@ -283,7 +291,7 @@ export const VerificationPanel: React.FC<VerificationPanelProps> = ({
 
       {entry === null && (
         <p data-testid="verification-panel-not-in-round" role="note" style={{ margin: 0, fontSize: '0.9375rem', color: '#991b1b' }}>
-          {canManage ? 'ครุภัณฑ์นี้ไม่อยู่ในรายการของรอบตรวจนี้' : 'ครุภัณฑ์นี้ไม่อยู่ในรายการของรอบตรวจนี้ กรุณาแจ้งผู้ดูแลพัสดุ'}
+          {canManage || retired ? 'ครุภัณฑ์นี้ไม่อยู่ในรายการของรอบตรวจนี้' : 'ครุภัณฑ์นี้ไม่อยู่ในรายการของรอบตรวจนี้ กรุณาแจ้งผู้ดูแลพัสดุ'}
         </p>
       )}
       {entry === null && canManage && (

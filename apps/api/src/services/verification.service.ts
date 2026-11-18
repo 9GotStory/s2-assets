@@ -1,9 +1,10 @@
 import pg from 'pg';
-import { assetExists } from './asset-lookups.ts';
+import { assetExists, lockAssetForShare } from './asset-lookups.ts';
 import { REMARK_MAX_LENGTH, assignmentSearch, bangkokDate, isCalendarDate, normalizeLine, normalizeText, readAssignmentsAt } from './assignment.service.ts';
 import { isValidUuid } from './capability.service.ts';
 import { findUnassignableEntry } from './reference.service.ts';
 import { commitOnce } from './retryable-write.ts';
+import { AssetRetiredError, retiredAmong, retirementSearch } from './retirement-read.service.ts';
 import { ValidationError } from './validation-error.ts';
 import {
   currentRevisionsOf,
@@ -426,11 +427,13 @@ async function insertScopeEntries(
 
 /**
  * Takes the Scope Snapshot of an opening Round: each registered Asset that passes its filters, with its
- * identity and Current Assignment now (#125 Q3, Q4, P3). Returns how many Assets joined.
+ * identity and Current Assignment now (#125 Q3, Q4, P3). Returns how many Assets joined. An Asset Retired at
+ * this moment is left out, whatever the Round's start date; one retired in the same moment, which this takes no
+ * lock against, stays in as one retired while the Round is open (F007-T4, DR-10, DR-11, #154 Q18).
  */
 async function snapshotScope(client: pg.PoolClient, roundId: string, facts: OpeningFacts, actorId: string): Promise<number> {
   const params: unknown[] = [];
-  const conditions: string[] = [];
+  const conditions: string[] = [retirementSearch.notRetiredFilter];
   for (const { field, column } of FILTER_DIMENSIONS) {
     if (facts[field].length > 0) {
       params.push(facts[field]);
@@ -467,6 +470,23 @@ async function lockScopeEntry(client: pg.PoolClient, roundId: string, assetId: s
   const id: string = scoped.rows[0].id;
   const entry = await client.query('SELECT version FROM verification_scope_entries WHERE id = $1 FOR UPDATE', [id]);
   return { id, version: entry.rows[0].version, current: (await currentRevisionsOf(client, [id])).get(id) ?? null };
+}
+
+/**
+ * Locks an Asset in share mode, after its Round and any scope entry (#125 Concurrency), and refuses it while it
+ * is Retired, naming its Retirement: a Retirement locks the Asset for update, so the two serialize and the later
+ * sees the earlier (F007-T4, DR-08, #154 Q12, Q24). Answers whether the Asset is registered.
+ */
+async function lockAssetNotRetired(client: pg.PoolClient, assetId: string, refused: string): Promise<boolean> {
+  const asset = await lockAssetForShare(client, assetId);
+  if (!asset) {
+    return false;
+  }
+  const [retired] = await retiredAmong(client, [asset]);
+  if (retired) {
+    throw new AssetRetiredError(retired, refused);
+  }
+  return true;
 }
 
 // The scope entry's next version, written: every change of its current result moves it.
@@ -527,7 +547,8 @@ export class VerificationService {
   /**
    * Adds a registered Asset to the open Round as a Late Addition, with a reason, snapshotting its identity and
    * Current Assignment now (#125 AV-18, AV-21, Q11). The Round row is locked in share mode, as for a result, so a
-   * write that changes the Round waits for it. The unique scope entry decides between concurrent additions of one
+   * write that changes the Round waits for it; then the Asset in share mode, refused while Retired (F007-T4, DR-10,
+   * #154 Q12, Q24). The unique scope entry decides between concurrent additions of one
    * Asset: an insert meeting an uncommitted one waits for it and, once that commits, adds nothing and is refused.
    */
   async addLateAddition(actorId: string, roundId: string, input: LateAdditionInput, { retryToken }: { retryToken: string }): Promise<VerificationScopeEntryVersion> {
@@ -544,7 +565,7 @@ export class VerificationService {
       { actorId, operation: 'verification:add-late', retryToken, payload: { version: 1, verification_round_id: roundId, asset_id: assetId, reason }, explicitContinuation: false },
       async (client) => {
         await lockOpenRound(client, roundId);
-        if (!(await assetExists(client, assetId))) {
+        if (!(await lockAssetNotRetired(client, assetId, 'it does not join a Verification Round'))) {
           throw new VerificationTargetNotFoundError('Asset');
         }
         const [entry] = await insertScopeEntries(client, roundId, actorId, { joined_as: 'LATE_ADDITION', reason }, ['a.id = $5'], [assetId]);
@@ -560,7 +581,8 @@ export class VerificationService {
    * Records an Asset's first result in a Round (#125 AV-05, AV-06, AV-23), or a Re-verification over the current
    * revision it saw, which becomes the earlier revision and stays unchanged (F006-T4, AV-12, AV-13, Q20). The
    * Round row is locked in share mode, then the scope entry for update, so concurrent results for one Asset
-   * serialize and the later one finds the earlier. The server derives the Permanent Assignment in effect on the Verification Date and
+   * serialize and the later one finds the earlier; then the Asset in share mode, refused while Retired (F007-T4,
+   * #154 Q12, Q24). The server derives the Permanent Assignment in effect on the Verification Date and
    * the Loan and Repair context in the same transaction; neither refuses a result, and nothing but the
    * revision and the entry's version is written (AV-09, AV-14).
    */
@@ -583,6 +605,8 @@ export class VerificationService {
         }
 
         const { id: entryId, version: entryVersion, current } = await lockScopeEntry(client, roundId, assetId);
+        // A Retired Asset stays in the Scope Snapshot but takes no new result, a Reopened Round's too (DR-11, P5).
+        await lockAssetNotRetired(client, assetId, 'it takes no new Asset Verification');
         if (expectedRevisionId === null && current) {
           throw new AssetAlreadyVerifiedError(current);
         }

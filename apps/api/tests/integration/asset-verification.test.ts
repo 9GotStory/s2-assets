@@ -455,15 +455,16 @@ describe('Record an Asset Verification (Seam A - F006-T2)', () => {
 
       const noContext = { loan_context: null, repair_context: null };
 
-      expect((await detailOf(assetId)).verification).toEqual({ open_round: openRound, entry: { id: entryId, version: 1, result: 'NOT_YET_VERIFIED', current: null }, context: noContext });
+      expect((await detailOf(assetId)).verification).toEqual({ open_round: openRound, entry: { id: entryId, version: 1, result: 'NOT_YET_VERIFIED', current: null }, context: noContext, retired: false });
       await recorded(roundId, assetId, {}, staff);
       expect((await detailOf(assetId)).verification).toEqual({
         open_round: openRound,
         entry: { id: entryId, version: 2, result: 'FOUND', current: (await entryOf(roundId, assetId)).current },
         context: noContext,
+        retired: false,
       });
       expect((await detailOf(other)).verification.entry.result).toBe('NOT_YET_VERIFIED');
-      expect((await detailOf(outside)).verification).toEqual({ open_round: openRound, entry: null, context: noContext });
+      expect((await detailOf(outside)).verification).toEqual({ open_round: openRound, entry: null, context: noContext, retired: false });
 
       await closeOpenRound();
       expect((await detailOf(assetId)).verification).toBeNull();
