@@ -8,6 +8,9 @@
 #   scripts/dev/expect-red.sh apps/api/src/routes/loan.routes.ts "'must not be blank'" "'blank'" \
 #     -- scripts/ci/integration.sh tests/integration/loan-list.test.ts -t "refuse a value"
 #
+# A void that cascades is filtered twice: a Loan void marks each LoanItem voided, and a Repair Record void
+# its Outcome. A break that removes one of the two filters stays green, so remove both (F007-T6, #160).
+#
 # Check that the red names the test you broke the code for. Run a file whose tests share state, such as
 # a Seam C migration file, whole: a -t filter skips the test that sets the state up, and the rest go red
 # for that alone.

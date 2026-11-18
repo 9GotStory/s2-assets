@@ -60,6 +60,13 @@ test the order on a write that changes a fact that already exists. In F005-T7 (#
 tests of a Repair Start and a Loan start stayed green with the check moved ahead of the lock; those of the
 two corrections, which read what was there before them, went red.
 
+Each write that reads the rule is its own row: a record and an amendment each get an order test against
+every write that changes the fact. A rule that warns only of what is new compares a read before the
+change with one after: its order test starts with no conflict, so the queued write opens the one an early
+read would miss. In F007-T6 (#160), the amendment was tested against a Loan Correction alone, and only the
+Standards review found the Repair and Assignment Corrections missing. Its first test began with the
+conflict already there, so it stayed green with the read moved ahead of the lock.
+
 When the rule's read itself locks the row of the fact it checks, as the active-entry check locks a
 Location `FOR SHARE`, that row orders the two writes: the test holds the other write's change to it
 uncommitted until the rule's read waits on it, as F006-T3 (#128) does for a Location deactivation.
