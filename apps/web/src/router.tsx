@@ -16,6 +16,9 @@ import { RepairDetail } from './pages/RepairDetail';
 import { RepairList } from './pages/RepairList';
 import { VerificationRoundDetail } from './pages/VerificationRoundDetail';
 import { VerificationRoundList } from './pages/VerificationRoundList';
+import { StockMaterialList } from './pages/StockMaterialList';
+import { StockMaterialCreate } from './pages/StockMaterialCreate';
+import { StockMaterialDetail } from './pages/StockMaterialDetail';
 
 export const ProtectedDetailBoundary: React.FC = () => {
   const navigate = useNavigate();
@@ -361,6 +364,18 @@ export const routes: RouteObject[] = [
   {
     path: '/admin/references',
     element: <ReferenceAdmin />,
+  },
+  {
+    path: '/stock-materials',
+    element: <StockMaterialList />,
+  },
+  {
+    path: '/stock-materials/new',
+    element: <StockMaterialCreate />,
+  },
+  {
+    path: '/stock-materials/:id',
+    element: <StockMaterialDetail />,
   },
 ];
 

@@ -70,6 +70,22 @@ export const repositoryProxyConfig: Record<string, ProxyOptions> = {
     target: 'http://api:3000',
     changeOrigin: true,
   },
+  // F008-T1 (#176): the Stock Material catalog; the list, the form and a Stock Material's page are the SPA routes
+  // /stock-materials, /stock-materials/new and /stock-materials/:id.
+  '/stock-materials': {
+    target: 'http://api:3000',
+    changeOrigin: true,
+    bypass: (req) => {
+      if (req.headers.accept?.includes('text/html')) {
+        return '/index.html';
+      }
+    },
+  },
+  // F008-T1 (#176): the Unit list of the Stock Material catalog; no SPA route starts with /units.
+  '/units': {
+    target: 'http://api:3000',
+    changeOrigin: true,
+  },
   // T4 (#25): reference lists; the maintenance page is the SPA route /admin/references.
   '/references': {
     target: 'http://api:3000',
