@@ -18,6 +18,7 @@ import {
   type ReassignmentFacts,
   type ReassignmentInput,
 } from './assignment.service.ts';
+import { retiredAmong, type RetiredAsset } from './retirement-read.service.ts';
 import { commitOnce, rollbackQuietly } from './retryable-write.ts';
 import { ValidationError } from './validation-error.ts';
 
@@ -100,6 +101,23 @@ export class InitialAssignmentRequiredError extends ValidationError {
 }
 
 /**
+ * A batch names Retired Assets, which no Reassignment moves (DR-08, #154 Q7, Q23). Nothing is saved for any Asset,
+ * and the answer names each with its Retirement.
+ */
+export class AssetsRetiredError extends Error {
+  statusCode = 409;
+  code = 'ASSETS_RETIRED';
+  assets: RetiredAsset[];
+
+  constructor(assets: RetiredAsset[]) {
+    const names = assets.map(({ asset_id, name, asset_number }) => name ?? asset_number ?? asset_id).join(', ');
+    super(`These Assets are Retired; a Bulk Reassignment cannot move them: ${names}`);
+    this.name = 'AssetsRetiredError';
+    this.assets = assets;
+  }
+}
+
+/**
  * F003-T5 (#55): records the same Reassignment for up to 100 Assets in one transaction. Each changed
  * Asset gets its own event with its own prior values (MR-10), and they share one bulk reference. One
  * warning lists every new Assignment Conflict across the batch, and one confirmation saves it (#50 Q12).
@@ -157,6 +175,12 @@ export class BulkReassignmentService {
         Object.fromEntries(stale.map(({ id, assignment_version }) => [id, assignment_version])),
         Object.fromEntries(stale.map(({ id }) => [id, expectedVersions!.get(id)!]))
       );
+    }
+    // Asked under the Assets' locks, which a Retirement takes too, so one committed first is seen (#154 Q24). A
+    // Retired Asset never takes an Initial Assignment (#154 P4), so it is named Retired before any needs one.
+    const retired = await retiredAmong(client, locked);
+    if (retired.length > 0) {
+      throw new AssetsRetiredError(retired);
     }
     const withInitial = await assetsWithInitialAssignment(client, assetIds);
     const needingInitial = locked.filter(({ id }) => !withInitial.has(id));

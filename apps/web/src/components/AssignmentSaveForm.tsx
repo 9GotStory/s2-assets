@@ -1,6 +1,7 @@
 import React, { useRef, useState } from 'react';
 import { AssignmentConflictWarning } from './AssignmentConflictWarning';
 import type { AssignmentConflict } from './assignmentFacts';
+import { RetiredReason } from './RetiredReason';
 
 // What saving an assignment fact needs from the Asset page.
 export interface AssignmentSaveProps {
@@ -22,7 +23,7 @@ export interface AssignmentSaveFormProps extends AssignmentSaveProps {
   // Why this request cannot be sent, or null when it can. The server decides again.
   requestError: () => string | null;
   // What a refusal this form knows says, or null to show the server's message.
-  refusalMessage?: (body: any) => string | null;
+  refusalMessage?: (body: any) => React.ReactNode | null;
   requestBody: () => Record<string, unknown>;
   children: (isLocked: boolean) => React.ReactNode;
 }
@@ -30,11 +31,20 @@ export interface AssignmentSaveFormProps extends AssignmentSaveProps {
 // A failed save, and what the form offers next: the same request again when its outcome is unknown,
 // or a read of the latest facts when the save was refused as stale.
 interface SaveFailure {
-  message: string;
+  message: React.ReactNode;
   next?: 'retry' | 'reload';
 }
 
 type SaveRequest = Record<string, unknown> & { retry_token: string };
+
+// A Retired Asset takes no new assignment fact, Initial Assignment included (F007-T3, DR-08, #154 P4). Its page no
+// longer offers one; a form opened before its Retirement, or "ย้าย" from a Round's result, is refused.
+const retiredRefusal = (body: any): React.ReactNode | null =>
+  body?.code === 'ASSET_RETIRED' ? (
+    <>
+      บันทึกไม่ได้ เพราะครุภัณฑ์นี้<RetiredReason assetId={body.asset.asset_id} />
+    </>
+  ) : null;
 
 // The conflicts a save would create, and the request they were found for.
 interface ConflictWarning {
@@ -135,7 +145,7 @@ export const AssignmentSaveForm: React.FC<AssignmentSaveFormProps> = ({
       setFailure(
         body?.code === 'STALE_BEFORE_CONFLICT'
           ? { message: 'มีการบันทึกรายการอื่นของครุภัณฑ์นี้หลังจากเปิดฟอร์ม กรุณาโหลดข้อมูลล่าสุดแล้วตรวจสอบอีกครั้ง', next: 'reload' }
-          : { message: refusalMessage?.(body) ?? (body?.message || 'ไม่สามารถบันทึกรายการได้') }
+          : { message: refusalMessage?.(body) ?? retiredRefusal(body) ?? (body?.message || 'ไม่สามารถบันทึกรายการได้') }
       );
       return;
     }

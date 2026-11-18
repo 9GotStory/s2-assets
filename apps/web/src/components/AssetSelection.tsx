@@ -14,7 +14,7 @@ export interface SelectedAsset {
   on_loan: OnLoan | null;
   under_repair: UnderRepair | null;
   start_loan_warning: StartLoanWarning | null;
-  // F007-T2 (#154 Q23): the Loan form shows a Retired Asset as not allowed.
+  // F007-T2, F007-T3 (#154 Q23): the Loan form and the Bulk Reassignment show a Retired Asset as not allowed.
   retired: boolean;
 }
 

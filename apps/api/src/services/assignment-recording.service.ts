@@ -2,6 +2,7 @@ import pg from 'pg';
 import {
   assertInitialAssignmentEntries,
   bangkokDate,
+  lockAssetsInIdentifierOrder,
   normalizeInitialAssignment,
   normalizeReassignment,
   recordInitialAssignment,
@@ -10,6 +11,7 @@ import {
   type ReassignmentInput,
 } from './assignment.service.ts';
 import { writeAssignmentOnce, type AssignmentWriteInput, type RecordedAssignment } from './assignment-write.ts';
+import { AssetRetiredError, retiredAmong } from './retirement-read.service.ts';
 import { ValidationError } from './validation-error.ts';
 import { lockCitedVerificationRevision } from './verification-revision-read.ts';
 
@@ -64,7 +66,7 @@ async function assertCitedVerificationRevision(client: pg.PoolClient, assetId: s
 
 /**
  * F003-T2 (#52): records one assignment fact for one Asset, an Initial Assignment or a Reassignment, which may cite
- * the result it moves the Asset from (F006-T8, #133).
+ * the result it moves the Asset from (F006-T8, #133). A Retired Asset takes neither (F007-T3, #157).
  */
 export class AssignmentRecordingService {
   private readonly db: pg.Pool | any;
@@ -131,6 +133,13 @@ export class AssignmentRecordingService {
         recordsNewFact: true,
       },
       async (client) => {
+        // A Retired Asset takes no new assignment fact, Initial Assignment included (DR-08, #154 Q7, P4). Asked under
+        // the Asset's lock, which a Retirement takes too, so one committed first is seen (#154 Q24); the lock is held
+        // already, and taking it again reads the Asset's name.
+        const [retired] = await retiredAmong(client, await lockAssetsInIdentifierOrder(client, [assetId]));
+        if (retired) {
+          throw new AssetRetiredError(retired, 'its Permanent Assignment stays as it was when it left use');
+        }
         const initialRes = await client.query(
           `SELECT 1 FROM assignment_events WHERE asset_id = $1 AND kind = 'INITIAL' AND NOT is_voided`,
           [assetId]

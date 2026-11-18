@@ -14,6 +14,7 @@ import { LoanService } from '../../../api/src/services/loan.service.ts';
 import { LoanReturnService } from '../../../api/src/services/loan-return.service.ts';
 import { RepairService } from '../../../api/src/services/repair.service.ts';
 import { RetirementService } from '../../../api/src/services/retirement.service.ts';
+import { ReferenceService } from '../../../api/src/services/reference.service.ts';
 import { repositoryProxyConfig } from '../../vite.config.ts';
 
 const { Pool } = pg;
@@ -25,7 +26,8 @@ const migrationFolder = path.resolve(__dirname, '../../../../packages/db/src/mig
 
 // F007-T1 (#155): recording a Retirement from the Asset page, after resolving the Loan that kept the Asset,
 // and seeing the Retired Asset on its page and in the Asset list. F007-T2 (#156): a Retired Asset in the
-// Loan form, on the Loan page and on the Repair Record page.
+// Loan form, on the Loan page and on the Repair Record page. F007-T3 (#157): a Retired Asset in a Bulk
+// Reassignment, and a Reassignment refused once its Asset is Retired.
 test.describe.serial('Retirement journeys: Real SPA -> Composed API -> PostgreSQL (Seam B)', () => {
   let container: StartedPostgreSqlContainer;
   let pool: pg.Pool;
@@ -38,6 +40,7 @@ test.describe.serial('Retirement journeys: Real SPA -> Composed API -> PostgreSQ
 
   let custodianUserId: string;
   let readonlyUserId: string;
+  let adminUserId: string;
 
   test.beforeAll(async () => {
     test.setTimeout(120_000);
@@ -82,6 +85,7 @@ test.describe.serial('Retirement journeys: Real SPA -> Composed API -> PostgreSQ
     };
     custodianUserId = await createUser('custodian_retirement', 'ASSET_CUSTODIAN');
     readonlyUserId = await createUser('readonly_retirement', 'READ_ONLY');
+    adminUserId = await createUser('admin_retirement', 'ADMINISTRATOR');
 
     const testProxy: Record<string, any> = {};
     for (const [route, opts] of Object.entries(repositoryProxyConfig)) {
@@ -286,5 +290,59 @@ test.describe.serial('Retirement journeys: Real SPA -> Composed API -> PostgreSQ
     await refused.getByRole('link', { name: 'ดูการจำหน่าย' }).click();
     await expect(page).toHaveURL(new RegExp(`/assets/${gone.id}$`));
     await expect(page.locator('[data-testid="retired-banner"]')).toContainText('จำหน่ายแล้ว');
+  });
+
+  test('Journey F007-T3.1: a Bulk Reassignment shows a Retired Asset as not allowed with "จำหน่ายแล้ว" and its preview is refused naming it; a Reassignment form opened before a Retirement is refused once it commits', async ({ page, context }) => {
+    const tag = `E2E ${crypto.randomUUID().slice(0, 8)}`;
+    const referenceService = new ReferenceService({ db: pool });
+    const room = await referenceService.create('locations', adminUserId, `${tag} ห้องเดิม`);
+    const target = await referenceService.create('locations', adminUserId, `${tag} ห้องปลายทาง`);
+    const placed = async (name: string) =>
+      (await assetService.registerAsset(custodianUserId, { name: `${tag} ${name}`, location_id: room.id, effective_date: daysAgo(30) } as any)).asset;
+    const gone = await placed('ตู้ที่จำหน่ายแล้ว');
+    const kept = await placed('ตู้ที่ยังใช้อยู่');
+    const retire = (assetId: string) =>
+      new RetirementService({ db: pool }).record(custodianUserId, assetId, { retirement_date: daysAgo(1), retirement_method: 'SALE' }, { retryToken: crypto.randomUUID() });
+    await retire(gone.id);
+    const eventsOf = async (): Promise<number> =>
+      (await pool.query('SELECT count(*)::int AS n FROM assignment_events WHERE asset_id = ANY($1::uuid[])', [[gone.id, kept.id]])).rows[0].n;
+
+    // The Retired Asset's page offers no "ย้าย"; the other one's does.
+    await loginAs(context, custodianUserId);
+    await page.goto(`${targetBaseUrl}/assets/${gone.id}`);
+    await expect(page.locator('[data-testid="retired-banner"]')).toBeVisible();
+    await expect(page.locator('#assignment-action')).toHaveCount(0);
+
+    // The Asset list still lets it be selected; the Bulk Reassignment form shows it as not allowed, not hidden.
+    await page.goto(`${targetBaseUrl}/assets/search`);
+    await page.locator('#search-field').selectOption('name');
+    await page.locator('#search-value').fill(tag);
+    await page.locator('#search-submit-btn').click();
+    await expect(page.locator('#results-count-summary')).toContainText('พบ 2 รายการ');
+    await page.getByTestId(`asset-select-${gone.id}`).check();
+    await page.getByTestId(`asset-select-${kept.id}`).check();
+    await page.locator('#bulk-reassign-open').click();
+    await expect(page.getByTestId(`assignment-retired-${gone.id}`)).toContainText(`${tag} ตู้ที่จำหน่ายแล้ว ย้ายไม่ได้ เพราะจำหน่ายแล้ว`);
+    await expect(page.getByTestId(`assignment-retired-${kept.id}`)).toHaveCount(0);
+
+    // The server refuses the preview by name, with a link to the Retirement, and saves nothing.
+    await page.locator('#assignment-location_id').selectOption(target.id);
+    await page.locator('#bulk-reassign-preview').click();
+    const refused = page.getByTestId('bulk-reassign-error');
+    await expect(refused).toContainText('จำหน่ายแล้ว จึงย้ายไม่ได้');
+    await expect(page.getByTestId(`bulk-retired-${gone.id}`)).toContainText(`${tag} ตู้ที่จำหน่ายแล้ว จำหน่ายแล้ว`);
+    await expect(refused).not.toContainText('ตู้ที่ยังใช้อยู่');
+    expect(await eventsOf()).toBe(2);
+    await page.getByTestId(`bulk-retired-${gone.id}`).getByRole('link', { name: 'ดูการจำหน่าย' }).click();
+    await expect(page).toHaveURL(new RegExp(`/assets/${gone.id}$`));
+
+    // A Reassignment form opened before the other Asset's Retirement is refused once it commits, saving nothing.
+    await page.goto(`${targetBaseUrl}/assets/${kept.id}`);
+    await page.locator('#assignment-action').click();
+    await page.locator('#assignment-location_id').selectOption(target.id);
+    await retire(kept.id);
+    await page.locator('#assignment-submit').click();
+    await expect(page.getByTestId('assignment-form-error')).toContainText('บันทึกไม่ได้ เพราะครุภัณฑ์นี้จำหน่ายแล้ว');
+    expect(await eventsOf()).toBe(2);
   });
 });

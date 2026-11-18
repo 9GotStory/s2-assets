@@ -3,6 +3,7 @@ import { Link } from 'react-router';
 import { AssignmentNoteFields, assignmentNotesPayload, type AssignmentNotes } from './AssignmentNoteFields';
 import { ON_LOAN_LABEL, borrowerText, type OnLoan } from './loanFacts';
 import { UNDER_REPAIR_LABELS, repairerText, type UnderRepair } from './repairFacts';
+import { RetiredReason } from './RetiredReason';
 import {
   REFERENCE_DIMENSIONS,
   entryLabel,
@@ -93,6 +94,8 @@ export interface ReassignmentFieldsProps {
   onLoanAssets?: OnLoanAsset[];
   // The Assets of the form that are Under Repair, and with which Repairer.
   underRepairAssets?: UnderRepairAsset[];
+  // The Assets of the form that are Retired, which no Reassignment moves (F007-T3, #154 Q23).
+  retiredAssets?: RetiredAsset[];
 }
 
 export interface OnLoanAsset {
@@ -106,6 +109,28 @@ export interface UnderRepairAsset {
   label: string;
   underRepair: UnderRepair;
 }
+
+export interface RetiredAsset {
+  id: string;
+  label: string;
+}
+
+/**
+ * DR-08, #154 Q23: which Assets are Retired. Unlike the notices above, these cannot be moved: the server refuses a
+ * batch that includes one, so the user takes them out of the selection.
+ */
+const RetiredNotice: React.FC<{ assets: RetiredAsset[] }> = ({ assets }) => (
+  <div data-testid="assignment-retired-notice" style={{ margin: '0 0 0.75rem 0', padding: '0.5rem 0.75rem', fontSize: '0.8125rem', color: '#991b1b', backgroundColor: '#fee2e2', borderRadius: '6px' }}>
+    <ul style={{ margin: 0, paddingLeft: '1.25rem' }}>
+      {assets.map(({ id, label }) => (
+        <li key={id} data-testid={`assignment-retired-${id}`}>
+          {label} ย้ายไม่ได้ เพราะ<RetiredReason assetId={id} />
+        </li>
+      ))}
+    </ul>
+    <p style={{ margin: '0.25rem 0 0 0' }}>นำรายการเหล่านี้ออกจากรายการที่เลือกก่อนบันทึก</p>
+  </div>
+);
 
 /**
  * MR-14, MR-19, #74 Q26: which Assets are On Loan and with whom, and that a Reassignment leaves their
@@ -148,13 +173,21 @@ const UnderRepairNotice: React.FC<{ assets: UnderRepairAsset[] }> = ({ assets })
 );
 
 /** The fields of a Reassignment: its Effective Date, a new value for each dimension, and its notes. */
-export const ReassignmentFields: React.FC<ReassignmentFieldsProps> = ({ draft, isLocked, priorValues, onLoanAssets = [], underRepairAssets = [] }) => {
+export const ReassignmentFields: React.FC<ReassignmentFieldsProps> = ({
+  draft,
+  isLocked,
+  priorValues,
+  onLoanAssets = [],
+  underRepairAssets = [],
+  retiredAssets = [],
+}) => {
   const { effectiveDate, setEffectiveDate, targets, setTargets, notes, setNotes, lists, listError, offerInactive } = draft;
   return (
     <fieldset disabled={isLocked} style={{ border: 'none', padding: 0, margin: '0 0 1rem 0' }}>
       <p data-testid="assignment-loan-note" style={{ margin: '0 0 0.75rem 0', fontSize: '0.8125rem', color: '#92400e' }}>
         การยืมชั่วคราวไม่ใช่การย้าย: บันทึกที่นี่เฉพาะเมื่อสถานที่ หน่วยงาน หรือผู้รับผิดชอบเปลี่ยนไปจริง
       </p>
+      {retiredAssets.length > 0 && <RetiredNotice assets={retiredAssets} />}
       {onLoanAssets.length > 0 && <OnLoanNotice assets={onLoanAssets} />}
       {underRepairAssets.length > 0 && <UnderRepairNotice assets={underRepairAssets} />}
       {listError && (

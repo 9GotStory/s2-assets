@@ -2,6 +2,7 @@ import React, { useRef, useState } from 'react';
 import { Link } from 'react-router';
 import { AssignmentConflictWarning } from './AssignmentConflictWarning';
 import type { SelectedAsset } from './AssetSelection';
+import { RetiredReason } from './RetiredReason';
 import { ReassignmentFields, useReassignmentDraft } from './ReassignmentFields';
 import {
   BULK_REASSIGNMENT_LABEL,
@@ -34,6 +35,8 @@ interface Failure {
   next?: 'retry' | 'reload';
   // The Assets that need "กำหนดครั้งแรก" first.
   needingInitial?: { asset_id: string; name: string | null; asset_number: string | null }[];
+  // The Assets that are Retired, which no Reassignment moves (F007-T3, #154 Q23).
+  retired?: { asset_id: string; name: string | null; asset_number: string | null; retirement_id: string }[];
 }
 
 type SaveRequest = Record<string, unknown> & { retry_token: string };
@@ -126,6 +129,9 @@ export const BulkReassignmentPanel: React.FC<BulkReassignmentPanelProps> = ({
     const body = await res.json().catch(() => null);
     if (body?.code === 'STALE_BEFORE_CONFLICT') {
       return { message: 'มีการบันทึกรายการอื่นของครุภัณฑ์ที่เลือกไว้หลังจากตรวจสอบ กรุณาโหลดข้อมูลล่าสุดแล้วตรวจสอบอีกครั้ง', next: 'reload' };
+    }
+    if (body?.code === 'ASSETS_RETIRED') {
+      return { message: 'ครุภัณฑ์ต่อไปนี้จำหน่ายแล้ว จึงย้ายไม่ได้ และยังไม่ได้บันทึกรายการใด กรุณานำออกจากรายการที่เลือก', retired: body.assets };
     }
     if (body?.code === 'INITIAL_ASSIGNMENT_REQUIRED') {
       return { message: 'ครุภัณฑ์ต่อไปนี้ยังไม่มีการกำหนดครั้งแรก จึงยังไม่ได้บันทึกรายการใด กรุณา "กำหนดครั้งแรก" จากหน้าครุภัณฑ์ก่อน', needingInitial: body.assets };
@@ -245,6 +251,15 @@ export const BulkReassignmentPanel: React.FC<BulkReassignmentPanelProps> = ({
               </button>
             )}
           </div>
+          {failure.retired && (
+            <ul style={{ margin: '0.5rem 0 0 0', paddingLeft: '1.25rem' }}>
+              {failure.retired.map((asset) => (
+                <li key={asset.asset_id} data-testid={`bulk-retired-${asset.asset_id}`}>
+                  {assetLabelOf(asset, asset.asset_id)} <RetiredReason assetId={asset.asset_id} />
+                </li>
+              ))}
+            </ul>
+          )}
           {failure.needingInitial && (
             <ul style={{ margin: '0.5rem 0 0 0', paddingLeft: '1.25rem' }}>
               {failure.needingInitial.map((asset) => (
@@ -266,6 +281,7 @@ export const BulkReassignmentPanel: React.FC<BulkReassignmentPanelProps> = ({
             underRepairAssets={selected.flatMap(({ under_repair, ...asset }) =>
               under_repair ? [{ id: asset.id, label: assetLabelOf(asset, asset.id), underRepair: under_repair }] : []
             )}
+            retiredAssets={selected.flatMap((asset) => (asset.retired ? [{ id: asset.id, label: assetLabelOf(asset, asset.id) }] : []))}
           />
           <div style={{ display: 'flex', gap: '0.75rem' }}>
             <button type="button" id="bulk-reassign-preview" disabled={isBusy} onClick={handlePreview} style={buttonStyle(true, isBusy)}>
