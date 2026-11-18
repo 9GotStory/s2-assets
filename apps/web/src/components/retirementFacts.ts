@@ -18,6 +18,19 @@ export interface Retirement {
   recorded_at: string;
   is_voided: boolean;
   version: number;
+  // Its Retirement Corrections, oldest first (F007-T5, DR-12).
+  corrections: RetirementCorrection[];
+}
+
+// A Retirement Correction: an amendment with the before and after of each field it changed, or a void.
+export interface RetirementCorrection {
+  id: string;
+  action: 'AMENDED' | 'VOIDED';
+  reason: string;
+  changes: { field: string; before: string | null; after: string | null }[];
+  recorded_by: string;
+  recorded_by_username: string | null;
+  recorded_at: string;
 }
 
 // Why a Retirement was refused, naming what keeps the Asset (#154 Q3, P2).

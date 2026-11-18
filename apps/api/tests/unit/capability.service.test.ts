@@ -49,6 +49,7 @@ describe('CapabilityService Unit Tests (T024 - US2)', () => {
         'loan:correct',
         'repair:correct',
         'verification:correct',
+        'retirement:correct',
       ]);
       // T4 (#25, D3): reference:maintain is granted to ADMINISTRATOR only.
       for (const role of ['SYSTEM_MAINTAINER', 'READ_ONLY', 'ASSET_CUSTODIAN']) {
@@ -75,7 +76,7 @@ describe('CapabilityService Unit Tests (T024 - US2)', () => {
       expect(ROLE_CAPABILITY_MAP.READ_ONLY).not.toContain('evidence:correct');
     });
 
-    it('maps ASSET_CUSTODIAN to asset:view, asset:duplicate-check, asset:register, asset:bulk-register, asset:correct, asset:search, acquisition:create, acquisition:view, evidence:view, evidence:create, evidence:correct, assignment:reassign, assignment:correct, loan:record, loan:correct, repair:record, repair:correct, verification:record, verification:manage, verification:correct, and retirement:record', () => {
+    it('maps ASSET_CUSTODIAN to asset:view, asset:duplicate-check, asset:register, asset:bulk-register, asset:correct, asset:search, acquisition:create, acquisition:view, evidence:view, evidence:create, evidence:correct, assignment:reassign, assignment:correct, loan:record, loan:correct, repair:record, repair:correct, verification:record, verification:manage, verification:correct, retirement:record, and retirement:correct', () => {
       expect(ROLE_CAPABILITY_MAP.ASSET_CUSTODIAN).toEqual([
         'asset:view',
         'asset:duplicate-check',
@@ -98,6 +99,7 @@ describe('CapabilityService Unit Tests (T024 - US2)', () => {
         'verification:manage',
         'verification:correct',
         'retirement:record',
+        'retirement:correct',
       ]);
       // #98 Q2: only an Asset Custodian records a Repair Start.
       for (const role of ['SYSTEM_MAINTAINER', 'ADMINISTRATOR', 'READ_ONLY']) {
@@ -160,6 +162,17 @@ describe('CapabilityService Unit Tests (T024 - US2)', () => {
         expect(ROLE_CAPABILITY_MAP[role]).not.toContain('retirement:record');
       }
       expect(isKnownCapability('retirement:record')).toBe(true);
+    });
+
+    // F007-T5 (#154 Q6): a Retirement Correction is for the Asset Custodian and the Administrator.
+    it('gives retirement:correct to the Asset Custodian and the Administrator alone', () => {
+      for (const role of ['ASSET_CUSTODIAN', 'ADMINISTRATOR']) {
+        expect(ROLE_CAPABILITY_MAP[role]).toContain('retirement:correct');
+      }
+      for (const role of ['SYSTEM_MAINTAINER', 'READ_ONLY', 'VERIFICATION_STAFF']) {
+        expect(ROLE_CAPABILITY_MAP[role]).not.toContain('retirement:correct');
+      }
+      expect(isKnownCapability('retirement:correct')).toBe(true);
     });
 
     it('validates UUIDs correctly with isValidUuid', () => {

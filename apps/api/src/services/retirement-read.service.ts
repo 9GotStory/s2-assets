@@ -18,12 +18,29 @@ export interface Retirement {
   version: number;
 }
 
+// A Retirement Correction (F007-T5, DR-12): an amendment with the before and after of each field it changed, or
+// a void, with its reason, who made it and when.
+export interface RetirementCorrection {
+  id: string;
+  action: 'AMENDED' | 'VOIDED';
+  reason: string;
+  changes: { field: string; before: string | null; after: string | null }[];
+  recorded_by: string;
+  recorded_by_username: string | null;
+  recorded_at: string;
+}
+
+// A Retirement as the Asset page shows it, with its corrections, oldest first (#154 P3).
+export interface AssetRetirement extends Retirement {
+  corrections: RetirementCorrection[];
+}
+
 // What the Asset page reads of an Asset's Retirements: whether it is Retired, by which one, and every one,
 // voided ones included (#154 P3).
 export interface AssetRetirements {
   retired: boolean;
-  retirement: Retirement | null;
-  retirements: Retirement[];
+  retirement: AssetRetirement | null;
+  retirements: AssetRetirement[];
 }
 
 // A Retirement row aliased `t` that makes its Asset Retired: it is not voided (DR-07, #154 Q1). Every read and
@@ -128,7 +145,7 @@ export class RetirementReadService {
     this.db = options.db;
   }
 
-  /** Whether the Asset is Retired, its current Retirement, and every Retirement of it, oldest first. */
+  /** Whether the Asset is Retired, its current Retirement, and every Retirement of it, oldest first, each with its corrections. */
   async ofAsset(assetId: string): Promise<AssetRetirements> {
     const res = await this.db.query(
       `${RETIREMENT_SELECT}
@@ -136,9 +153,29 @@ export class RetirementReadService {
        ORDER BY t.recorded_at, t.id`,
       [assetId]
     );
-    const retirements = res.rows.map(retirementOf);
-    const current = res.rows.find((row: any) => row.is_not_voided);
-    const retirement = current ? retirementOf(current) : null;
+    const corrections = await this.db.query(
+      `SELECT c.id, c.retirement_id, c.action, c.reason, c.changes, c.recorded_by, u.username AS recorded_by_username, c.recorded_at
+       FROM retirement_corrections c
+       JOIN retirements t ON t.id = c.retirement_id
+       LEFT JOIN users u ON u.id = c.recorded_by
+       WHERE t.asset_id = $1
+       ORDER BY c.recorded_at, c.id`,
+      [assetId]
+    );
+    const correctionsOf = (retirementId: string): RetirementCorrection[] =>
+      corrections.rows
+        .filter((row: any) => row.retirement_id === retirementId)
+        .map((row: any) => ({
+          id: row.id,
+          action: row.action,
+          reason: row.reason,
+          changes: row.changes,
+          recorded_by: row.recorded_by,
+          recorded_by_username: row.recorded_by_username,
+          recorded_at: new Date(row.recorded_at).toISOString(),
+        }));
+    const retirements = res.rows.map((row: any): AssetRetirement => ({ ...retirementOf(row), corrections: correctionsOf(row.id) }));
+    const retirement = retirements.find((_: AssetRetirement, i: number) => res.rows[i].is_not_voided) ?? null;
     return { retired: retirement !== null, retirement, retirements };
   }
 }

@@ -761,6 +761,7 @@ export const assetRoutes: FastifyPluginAsync<AssetRoutesOptions> = async (
       let canManageVerification = false;
       let canViewAcquisition = false;
       let canRecordRetirement = false;
+      let canCorrectRetirement = false;
       if (request.user && capabilityService) {
         canCorrect = await capabilityService.hasCapability(request.user.id, 'asset:correct');
         canReassign = await capabilityService.hasCapability(request.user.id, 'assignment:reassign');
@@ -772,6 +773,7 @@ export const assetRoutes: FastifyPluginAsync<AssetRoutesOptions> = async (
         canManageVerification = await capabilityService.hasCapability(request.user.id, 'verification:manage');
         canViewAcquisition = await capabilityService.hasCapability(request.user.id, 'acquisition:view');
         canRecordRetirement = await capabilityService.hasCapability(request.user.id, 'retirement:record');
+        canCorrectRetirement = await capabilityService.hasCapability(request.user.id, 'retirement:correct');
       }
       // F007-T1 (#155): a Retired Asset takes no new business event, so no flag for one is set (DR-08, #154 Q7, Q22).
       // Register correction and Evidence stay (Q7, Q16).
@@ -821,6 +823,8 @@ export const assetRoutes: FastifyPluginAsync<AssetRoutesOptions> = async (
         // viewer may retire it. While it is On Loan or Under Repair the page says why instead (#154 Q22).
         ...retirements,
         can_retire: canRecordRetirement && mayTakeNewEvent,
+        // F007-T5 (#159): whether the viewer may amend or void a Retirement not voided (#154 Q6).
+        can_correct_retirement: canCorrectRetirement,
       });
     }
   );
