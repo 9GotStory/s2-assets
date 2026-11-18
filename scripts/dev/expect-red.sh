@@ -16,11 +16,16 @@
 # is restored however the run ends, Ctrl-C included. Exits 0 when the test command fails (red) and 1
 # when it passes (the test did not notice the break); 2 for a usage error.
 #
+# A break that takes several edits, such as moving a read ahead of a lock and using its result later,
+# gives one <file> <old text> <new text> triple per edit before the --. They apply in order, each to the
+# file as the earlier ones left it, and every file named is restored.
+#
 #   scripts/dev/expect-red.sh --batch <breaks.json>
 #
 # runs several breaks in turn, each as above, and ends with a table of RED or STAYED GREEN and the first
-# failing test. <breaks.json> is an array of {"name", "file", "old", "new", "test": [command, args...]};
-# write a line break inside old or new as \n. Exits 0 when every break is red, 1 when one stayed green,
+# failing test. <breaks.json> is an array of {"name", "file", "old", "new", "test": [command, args...]},
+# or of {"name", "edits": [{"file", "old", "new"}, ...], "test"} for a break of several edits; write a
+# line break inside old or new as \n. Exits 0 when every break is red, 1 when one stayed green,
 # and 2 when one could not be applied.
 set -euo pipefail
 cd "$(dirname "$0")/../.."
@@ -38,8 +43,11 @@ script, batch = sys.argv[1:]
 breaks = json.load(open(batch, encoding='utf-8'))
 rows, worst = [], 0
 for b in breaks:
-    print(f"expect-red.sh: {b['name']}: breaking {b['file']}", file=sys.stderr, flush=True)
-    run = subprocess.run([script, b['file'], b['old'], b['new'], '--', *b['test']], capture_output=True, text=True)
+    edits = b.get('edits') or [{'file': b['file'], 'old': b['old'], 'new': b['new']}]
+    files = ', '.join(dict.fromkeys(e['file'] for e in edits))
+    print(f"expect-red.sh: {b['name']}: breaking {files}", file=sys.stderr, flush=True)
+    triples = [arg for e in edits for arg in (e['file'], e['old'], e['new'])]
+    run = subprocess.run([script, *triples, '--', *b['test']], capture_output=True, text=True)
     out = run.stdout + run.stderr
     # The first failing test, as Vitest (×) or Playwright (✘) names it; pnpm's own failure line is not one.
     failed = [m.group(1).strip() for m in re.finditer(r'^\s*[×✘]\s+(.*)$', out, re.M) if 'pnpm recursive exec' not in m.group(1)]
@@ -57,31 +65,55 @@ sys.exit(worst)
 EOF
 fi
 
-if (($# < 5)) || [[ $4 != -- ]]; then
-  note 'usage: expect-red.sh <file> <old text> <new text> -- <test command...>'
+usage() {
+  note 'usage: expect-red.sh <file> <old text> <new text> [<file> <old text> <new text>...] -- <test command...>'
   exit 2
-fi
-file=$1 old=$2 new=$3
-shift 4
-[[ -f $file ]] || { note "no such file: $file"; exit 2; }
+}
+edits=()
+while (($#)) && [[ $1 != -- ]]; do
+  (($# >= 3)) || usage
+  [[ -f $1 ]] || { note "no such file: $1"; exit 2; }
+  edits+=("$1" "$2" "$3")
+  shift 3
+done
+((${#edits[@]})) && (($# >= 2)) || usage
+shift
 
-backup=$(mktemp)
-trap 'cp -- "$backup" "$file"; rm -f -- "$backup"' EXIT
-cp -- "$file" "$backup"
+# One backup per file named, restored however the run ends.
+backups=$(mktemp -d)
+files=()
+restore() {
+  local i
+  for i in "${!files[@]}"; do
+    cp -- "$backups/$i" "${files[$i]}"
+  done
+  rm -rf -- "$backups"
+}
+trap restore EXIT
+for ((i = 0; i < ${#edits[@]}; i += 3)); do
+  file=${edits[i]}
+  if [[ " ${files[*]-} " != *" $file "* ]]; then
+    cp -- "$file" "$backups/${#files[@]}"
+    files+=("$file")
+  fi
+done
 
-python3 -I - "$file" "$old" "$new" <<'EOF' || exit 2
+python3 -I - "${edits[@]}" <<'EOF' || exit 2
 import sys
-path, old, new = sys.argv[1:]
-text = open(path, encoding='utf-8').read()
-count = text.count(old)
-if count != 1:
-    sys.exit(f'expect-red.sh: the old text occurs {count} times in {path}, not once')
-open(path, 'w', encoding='utf-8').write(text.replace(old, new))
+args = sys.argv[1:]
+for i in range(0, len(args), 3):
+    path, old, new = args[i:i + 3]
+    text = open(path, encoding='utf-8').read()
+    count = text.count(old)
+    if count != 1:
+        sys.exit(f'expect-red.sh: the old text of edit {i // 3 + 1} occurs {count} times in {path}, not once')
+    open(path, 'w', encoding='utf-8').write(text.replace(old, new))
 EOF
 
-note "broke $file; running: $*"
+broken=${files[*]}
+note "broke $broken; running: $*"
 if "$@"; then
-  note "GREEN: the test command passed with $file broken, so it does not cover this change"
+  note "GREEN: the test command passed with $broken broken, so it does not cover this change"
   exit 1
 fi
-note "RED: the test command failed with $file broken; $file is restored"
+note "RED: the test command failed with $broken broken; $broken restored"
