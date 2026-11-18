@@ -4,7 +4,7 @@ import { REMARK_MAX_LENGTH, assignmentSearch, bangkokDate, isCalendarDate, norma
 import { isValidUuid } from './capability.service.ts';
 import { findUnassignableEntry } from './reference.service.ts';
 import { commitOnce } from './retryable-write.ts';
-import { AssetRetiredError, retiredAmong, retirementSearch } from './retirement-read.service.ts';
+import { AssetRetiredError, assetIsRetired, retiredAmong } from './retirement-read.service.ts';
 import { ValidationError } from './validation-error.ts';
 import {
   currentRevisionsOf,
@@ -433,7 +433,7 @@ async function insertScopeEntries(
  */
 async function snapshotScope(client: pg.PoolClient, roundId: string, facts: OpeningFacts, actorId: string): Promise<number> {
   const params: unknown[] = [];
-  const conditions: string[] = [retirementSearch.notRetiredFilter];
+  const conditions: string[] = [`NOT ${assetIsRetired('a.id')}`];
   for (const { field, column } of FILTER_DIMENSIONS) {
     if (facts[field].length > 0) {
       params.push(facts[field]);
@@ -473,8 +473,9 @@ async function lockScopeEntry(client: pg.PoolClient, roundId: string, assetId: s
 }
 
 /**
- * Locks an Asset in share mode, after its Round and any scope entry (#125 Concurrency), and refuses it while it
- * is Retired, naming its Retirement: a Retirement locks the Asset for update, so the two serialize and the later
+ * Locks an Asset in share mode, after its Round, and after its scope entry when the entry exists (#125
+ * Concurrency); a Late Addition inserts the entry after it. Refuses the Asset while it is Retired, naming its
+ * Retirement: a Retirement locks the Asset for update, so the two serialize and the later
  * sees the earlier (F007-T4, DR-08, #154 Q12, Q24). Answers whether the Asset is registered.
  */
 async function lockAssetNotRetired(client: pg.PoolClient, assetId: string, refused: string): Promise<boolean> {

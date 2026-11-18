@@ -107,6 +107,15 @@ describe('Retirement in Verification Rounds (Seam A - F007-T4)', () => {
       return { roundId: await opened({ location_ids: [room.id] }), assetIds, room };
     };
 
+    // A Verification Correction voiding the result `revisionId` (#125 Q18).
+    const voidResult = (roundId: string, assetId: string, revisionId: string) =>
+      api.post(
+        custodian,
+        `/verification-rounds/${roundId}/assets/${assetId}/verification-corrections`,
+        { verification_revision_id: revisionId, reason: 'บันทึกผิดเครื่อง' },
+        { 'x-retry-token': crypto.randomUUID() }
+      );
+
     const revisionsOf = async (roundId: string, assetId: string) => {
       const res = await api.get(readonly, `/verification-rounds/${roundId}/assets/${assetId}/verifications`);
       expect(res.statusCode).toBe(200);
@@ -161,7 +170,7 @@ describe('Retirement in Verification Rounds (Seam A - F007-T4)', () => {
       expect(await revisionsOf(roundId, gone)).toHaveLength(1);
     });
 
-    it('keeps refusing a first result and a Re-verification once the Round is Reopened (P5)', async () => {
+    it('keeps refusing a first result and a Re-verification once the Round is Reopened, and still lets its result be voided (P5)', async () => {
       const {
         roundId,
         assetIds: [pending, verified],
@@ -180,6 +189,9 @@ describe('Retirement in Verification Rounds (Seam A - F007-T4)', () => {
       expect(again.json()).toMatchObject({ code: 'ASSET_RETIRED', asset: { asset_id: verified, retirement_id: retirementIds.verified } });
       expect(await revisionsOf(roundId, pending)).toEqual([]);
       expect(await revisionsOf(roundId, verified)).toHaveLength(1);
+
+      expect((await voidResult(roundId, verified, revisionId)).statusCode).toBe(201);
+      expect(await entryOf(roundId, verified)).toMatchObject({ result: 'NOT_YET_VERIFIED', current: null, retired: true });
     });
 
     it('still lets a Verification Correction void its result, which leaves it Not Yet Verified', async () => {
@@ -190,12 +202,7 @@ describe('Retirement in Verification Rounds (Seam A - F007-T4)', () => {
       const { verification_revision_id: revisionId } = await recorded(roundId, gone);
       await retired(gone);
 
-      const res = await api.post(
-        custodian,
-        `/verification-rounds/${roundId}/assets/${gone}/verification-corrections`,
-        { verification_revision_id: revisionId, reason: 'บันทึกผิดเครื่อง' },
-        { 'x-retry-token': crypto.randomUUID() }
-      );
+      const res = await voidResult(roundId, gone, revisionId);
 
       expect(res.statusCode).toBe(201);
       expect(await entryOf(roundId, gone)).toMatchObject({ result: 'NOT_YET_VERIFIED', current: null, retired: true });

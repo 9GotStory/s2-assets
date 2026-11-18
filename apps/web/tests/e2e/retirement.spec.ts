@@ -400,7 +400,12 @@ test.describe.serial('Retirement journeys: Real SPA -> Composed API -> PostgreSQ
     await expect(page.getByTestId('verification-panel-not-yet-verified')).toContainText('ยังไม่ได้ตรวจ');
     await expect(page.locator('#verification-record-form')).toHaveCount(0);
 
-    // The panel of the Retired Asset with a result offers only the Verification Correction.
+    // The panel of the Asset in use offers each action on its result; that of the Retired one only the
+    // Verification Correction.
+    await page.goto(`${targetBaseUrl}/assets/${kept.id}`);
+    for (const action of ['#verification-void-action', '#verification-reverify-action', '#verification-repair-action', '#verification-reassign-action']) {
+      await expect(page.locator(action)).toBeVisible();
+    }
     await page.goto(`${targetBaseUrl}/assets/${gone.id}`);
     await expect(page.getByTestId('verification-panel-retired')).toContainText('จำหน่ายแล้ว');
     await expect(page.locator('#verification-void-action')).toBeVisible();

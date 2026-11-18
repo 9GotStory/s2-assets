@@ -1,7 +1,7 @@
 import React, { useRef, useState } from 'react';
 import { AssignmentConflictWarning } from './AssignmentConflictWarning';
 import type { AssignmentConflict } from './assignmentFacts';
-import { RetiredReason } from './RetiredReason';
+import { retiredRefusal } from './RetiredReason';
 
 // What saving an assignment fact needs from the Asset page.
 export interface AssignmentSaveProps {
@@ -38,13 +38,7 @@ interface SaveFailure {
 type SaveRequest = Record<string, unknown> & { retry_token: string };
 
 // A Retired Asset takes no new assignment fact, Initial Assignment included (F007-T3, DR-08, #154 P4). Its page no
-// longer offers one; a form opened before its Retirement, or "ย้าย" from a Round's result, is refused.
-const retiredRefusal = (body: any): React.ReactNode | null =>
-  body?.code === 'ASSET_RETIRED' ? (
-    <>
-      บันทึกไม่ได้ เพราะครุภัณฑ์นี้<RetiredReason assetId={body.asset.asset_id} />
-    </>
-  ) : null;
+// longer offers one; a form opened before its Retirement, or "ย้าย" from a Round's result, is refused: `retiredRefusal`.
 
 // The conflicts a save would create, and the request they were found for.
 interface ConflictWarning {
