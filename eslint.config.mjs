@@ -30,11 +30,17 @@ const readsFrom = (tables, owners) =>
   );
 const LOAN_TABLES = 'loans|loan_\\w+';
 const REPAIR_TABLES = 'repair_\\w+';
+// #157 retro: Retired has one SQL source, in retirement-read.service.ts (CODING_STANDARDS, a derived condition).
+const RETIREMENT_TABLES = 'retirements|retirement_\\w+';
 const WRITES_TO_LOAN_TABLES = writesTo(LOAN_TABLES, 'loan.service.ts');
 const WRITES_TO_ASSIGNMENT_CHANGES = writesTo('assignment_changes', 'assignment.service.ts');
 const WRITES_TO_REPAIR_TABLES = writesTo(REPAIR_TABLES, 'repair.service.ts');
 const READS_LOAN_TABLES = readsFrom(LOAN_TABLES, 'services/loan*.ts');
 const READS_REPAIR_TABLES = readsFrom(REPAIR_TABLES, 'services/repair*.ts');
+const WRITES_TO_RETIREMENT_TABLES = writesTo(RETIREMENT_TABLES, 'retirement.service.ts');
+const READS_RETIREMENT_TABLES = readsFrom(RETIREMENT_TABLES, 'services/retirement*.ts');
+// Every block on apps/api/src keeps the Retirement guards except the Retirement modules' own.
+const RETIREMENT_GUARDS = [WRITES_TO_RETIREMENT_TABLES, READS_RETIREMENT_TABLES];
 const apiSyntaxRule = (...guards) => ({ 'no-restricted-syntax': ['error', NO_PROMISED_REPLY, ...guards] });
 
 // An awaited expect, by its matcher, and whether it goes through .not.
@@ -91,28 +97,37 @@ export default tseslint.config(
       WRITES_TO_ASSIGNMENT_CHANGES,
       WRITES_TO_REPAIR_TABLES,
       READS_LOAN_TABLES,
-      READS_REPAIR_TABLES
+      READS_REPAIR_TABLES,
+      ...RETIREMENT_GUARDS
     ),
   },
   {
     files: ['apps/api/src/services/loan*.ts'],
-    rules: apiSyntaxRule(WRITES_TO_LOAN_TABLES, WRITES_TO_ASSIGNMENT_CHANGES, WRITES_TO_REPAIR_TABLES, READS_REPAIR_TABLES),
+    rules: apiSyntaxRule(WRITES_TO_LOAN_TABLES, WRITES_TO_ASSIGNMENT_CHANGES, WRITES_TO_REPAIR_TABLES, READS_REPAIR_TABLES, ...RETIREMENT_GUARDS),
   },
   {
     files: ['apps/api/src/services/loan.service.ts'],
-    rules: apiSyntaxRule(WRITES_TO_ASSIGNMENT_CHANGES, WRITES_TO_REPAIR_TABLES, READS_REPAIR_TABLES),
+    rules: apiSyntaxRule(WRITES_TO_ASSIGNMENT_CHANGES, WRITES_TO_REPAIR_TABLES, READS_REPAIR_TABLES, ...RETIREMENT_GUARDS),
   },
   {
     files: ['apps/api/src/services/assignment.service.ts'],
-    rules: apiSyntaxRule(WRITES_TO_LOAN_TABLES, WRITES_TO_REPAIR_TABLES, READS_LOAN_TABLES, READS_REPAIR_TABLES),
+    rules: apiSyntaxRule(WRITES_TO_LOAN_TABLES, WRITES_TO_REPAIR_TABLES, READS_LOAN_TABLES, READS_REPAIR_TABLES, ...RETIREMENT_GUARDS),
   },
   {
     files: ['apps/api/src/services/repair*.ts'],
-    rules: apiSyntaxRule(WRITES_TO_LOAN_TABLES, WRITES_TO_ASSIGNMENT_CHANGES, WRITES_TO_REPAIR_TABLES, READS_LOAN_TABLES),
+    rules: apiSyntaxRule(WRITES_TO_LOAN_TABLES, WRITES_TO_ASSIGNMENT_CHANGES, WRITES_TO_REPAIR_TABLES, READS_LOAN_TABLES, ...RETIREMENT_GUARDS),
   },
   {
     files: ['apps/api/src/services/repair.service.ts'],
-    rules: apiSyntaxRule(WRITES_TO_LOAN_TABLES, WRITES_TO_ASSIGNMENT_CHANGES, READS_LOAN_TABLES),
+    rules: apiSyntaxRule(WRITES_TO_LOAN_TABLES, WRITES_TO_ASSIGNMENT_CHANGES, READS_LOAN_TABLES, ...RETIREMENT_GUARDS),
+  },
+  {
+    files: ['apps/api/src/services/retirement*.ts'],
+    rules: apiSyntaxRule(WRITES_TO_LOAN_TABLES, WRITES_TO_ASSIGNMENT_CHANGES, WRITES_TO_REPAIR_TABLES, READS_LOAN_TABLES, READS_REPAIR_TABLES, WRITES_TO_RETIREMENT_TABLES),
+  },
+  {
+    files: ['apps/api/src/services/retirement.service.ts'],
+    rules: apiSyntaxRule(WRITES_TO_LOAN_TABLES, WRITES_TO_ASSIGNMENT_CHANGES, WRITES_TO_REPAIR_TABLES, READS_LOAN_TABLES, READS_REPAIR_TABLES),
   },
   {
     // #76: data kept across a key change shows one query's values under another's.

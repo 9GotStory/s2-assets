@@ -6,6 +6,7 @@ import { withCapabilityAnswer } from './support/capability-helpers.ts';
 import { loanHelpers, over } from './support/loan-helpers.ts';
 import { lockHelpers } from './support/lock-helpers.ts';
 import { repairHelpers } from './support/repair-helpers.ts';
+import { retirementHelpers } from './support/retirement-helpers.ts';
 import { verificationHelpers } from './support/verification-helpers.ts';
 
 const TODAY = '2026-11-17';
@@ -28,18 +29,7 @@ describe('Retirement (Seam A - F007-T1)', () => {
   const { sent, recordOf, recordOutcome, ended } = repairHelpers(() => ({ api, custodian, reader: readonly }), { startDate: '2026-11-03' });
   const { opened, record: recordVerification } = verificationHelpers(() => ({ api, custodian, reader: readonly }));
 
-  // A valid Retirement: sold today, unless `overrides` says otherwise.
-  const base = (overrides: Record<string, unknown> = {}) => ({ retirement_date: TODAY, retirement_method: 'SALE', ...overrides });
-
-  const retire = (assetId: string, payload: Record<string, unknown> = base(), token: string = crypto.randomUUID(), actor: Actor = custodian) =>
-    api.post(actor, `/assets/${assetId}/retirements`, payload, { 'x-retry-token': token });
-
-  // A Retired Asset, and its Retirement's id.
-  const retired = async (assetId: string, overrides: Record<string, unknown> = {}): Promise<string> => {
-    const res = await retire(assetId, base(overrides));
-    expect(res.statusCode).toBe(201);
-    return res.json().retirement_id;
-  };
+  const { base, retire, retired } = retirementHelpers(() => ({ api, custodian }), { retirementDate: TODAY });
 
   const detailOf = async (assetId: string, actor: Actor = readonly) => {
     const res = await api.get(actor, `/assets/${assetId}`);
