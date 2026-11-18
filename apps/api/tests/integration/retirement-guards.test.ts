@@ -326,7 +326,7 @@ describe('Retired Asset guards on Loans, Repairs and assignments (Seam A - F007-
       return { kept, gone, to, retirementId: await retired(gone) };
     };
 
-    it('marks each Retired Asset of a preview as not allowed, with its Retirement, and only those', async () => {
+    it('refuses a preview that includes Retired Assets, naming each with its Retirement, and only those', async () => {
       const [from, to] = await entries('locations', 'ห้องของชุดตรวจก่อนย้าย', 2);
       const kept = await placed(from);
       const gone = [await placed(from, 'โต๊ะที่จำหน่ายแล้ว'), await placed(from, 'ตู้เอกสารที่จำหน่ายแล้ว')];

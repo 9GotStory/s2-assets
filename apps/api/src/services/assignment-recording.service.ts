@@ -2,6 +2,7 @@ import pg from 'pg';
 import {
   assertInitialAssignmentEntries,
   bangkokDate,
+  lockAssetsInIdentifierOrder,
   normalizeInitialAssignment,
   normalizeReassignment,
   recordInitialAssignment,
@@ -133,9 +134,9 @@ export class AssignmentRecordingService {
       },
       async (client) => {
         // A Retired Asset takes no new assignment fact, Initial Assignment included (DR-08, #154 Q7, P4). Asked under
-        // the Asset's lock, which a Retirement takes too, so one committed first is seen (#154 Q24).
-        const assetRes = await client.query('SELECT id, name, asset_number FROM assets WHERE id = $1', [assetId]);
-        const [retired] = await retiredAmong(client, assetRes.rows);
+        // the Asset's lock, which a Retirement takes too, so one committed first is seen (#154 Q24); the lock is held
+        // already, and taking it again reads the Asset's name.
+        const [retired] = await retiredAmong(client, await lockAssetsInIdentifierOrder(client, [assetId]));
         if (retired) {
           throw new AssetRetiredError(retired, 'its Permanent Assignment stays as it was when it left use');
         }
