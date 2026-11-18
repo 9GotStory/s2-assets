@@ -1,10 +1,10 @@
-import * as crypto from 'node:crypto';
 import { describe, it, expect, beforeAll, afterAll } from 'vitest';
 import { startApiHarness, type Actor, type ApiHarness } from './support/api-harness.ts';
-import { assignmentHelpers, type Entry } from './support/assignment-helpers.ts';
+import { assignmentHelpers, assignmentWriteHelpers } from './support/assignment-helpers.ts';
 import { loanHelpers } from './support/loan-helpers.ts';
 import { lockHelpers } from './support/lock-helpers.ts';
 import { repairHelpers } from './support/repair-helpers.ts';
+import { retirementHelpers } from './support/retirement-helpers.ts';
 
 const TODAY = '2026-11-17';
 
@@ -46,53 +46,8 @@ describe('Retired Asset guards on Loans, Repairs and assignments (Seam A - F007-
   } = repairHelpers(() => ({ api, custodian, reader: readonly }), { startDate: '2026-11-03' });
 
   const { entries, assignmentOf } = assignmentHelpers(() => ({ api, admin, reader: readonly }));
-
-  const retire = (assetId: string) =>
-    api.post(custodian, `/assets/${assetId}/retirements`, { retirement_date: TODAY, retirement_method: 'SALE' }, { 'x-retry-token': crypto.randomUUID() });
-
-  // A Retired Asset, and its Retirement's id.
-  const retired = async (assetId: string): Promise<string> => {
-    const res = await retire(assetId);
-    expect(res.statusCode).toBe(201);
-    return res.json().retirement_id;
-  };
-
-  // An Asset whose Location starts at `location` on 2026-01-05, by its Initial Assignment.
-  const placed = async (location: Entry, name: string = `ของ ${crypto.randomUUID()}`): Promise<string> => {
-    const res = await api.post(custodian, '/assets', { name, location_id: location.id, effective_date: '2026-01-05' });
-    expect(res.statusCode).toBe(201);
-    return res.json().asset.id;
-  };
-
-  // A Reassignment or an Initial Assignment of the Asset, at the assignment version an observer reads now.
-  const reassign = async (assetId: string, facts: Record<string, unknown>, kind: 'REASSIGNMENT' | 'INITIAL' = 'REASSIGNMENT') =>
-    api.post(
-      custodian,
-      `/assets/${assetId}/assignments`,
-      { kind, expected_assignment_version: (await assignmentOf(assetId)).version, ...facts },
-      { 'x-retry-token': crypto.randomUUID() }
-    );
-
-  // A Bulk Reassignment of `assetIds`, at the assignment versions an observer reads now.
-  const bulk = async (assetIds: string[], facts: Record<string, unknown>) =>
-    api.post(
-      custodian,
-      '/assets/bulk-reassignments',
-      {
-        assets: await Promise.all(assetIds.map(async (asset_id) => ({ asset_id, expected_assignment_version: (await assignmentOf(asset_id)).version }))),
-        ...facts,
-      },
-      { 'x-retry-token': crypto.randomUUID() }
-    );
-
-  // An Assignment Correction of the fact `eventId`, at the assignment version an observer reads now.
-  const correctAssignment = async (assetId: string, eventId: string, correction: Record<string, unknown>) =>
-    api.post(
-      custodian,
-      `/assets/${assetId}/assignments/${eventId}/corrections`,
-      { expected_assignment_version: (await assignmentOf(assetId)).version, reason: 'บันทึกผิด', ...correction },
-      { 'x-retry-token': crypto.randomUUID() }
-    );
+  const { placed, reassign, bulk, correct: correctAssignment } = assignmentWriteHelpers(() => ({ api, custodian, reader: readonly }), { effectiveDate: '2026-01-05' });
+  const { retire, retired } = retirementHelpers(() => ({ api, custodian }), { retirementDate: TODAY });
 
   const loansOf = async (assetId: string) => {
     const res = await api.get(readonly, `/assets/${assetId}/loans`);
