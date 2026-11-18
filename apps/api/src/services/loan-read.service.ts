@@ -3,6 +3,7 @@ import { assetExists, containsPattern } from './asset-lookups.ts';
 import { bangkokDate, readAssignmentsAt, type PermanentAssignment, type ReferenceEntrySummary } from './assignment.service.ts';
 import { loanItemPeriods } from './loan-item-periods.ts';
 import { latestRepairOutcomesOf, repairRecordsCiting, type CitingRepairRecord, type RepairKind } from './repair-read.service.ts';
+import { currentRetirementsOf } from './retirement-read.service.ts';
 
 // The reads of Loans: the Loan page, the Loan list, an Asset's Loans and the Asset search's view of them.
 // Every write to the Loan tables stays in loan.service.ts (#76); this module writes nothing (#80).
@@ -64,7 +65,8 @@ export type VoidedEnding = ({ kind: 'LOAN_RETURN' } & Omit<LoanReturn, 'returned
 
 export interface LoanItem {
   id: string;
-  asset: { id: string; name: string | null; asset_number: string | null };
+  // F007-T2 (#156): whether the Asset is Retired, so that its Loan Return offers no Repair Start (DR-08).
+  asset: { id: string; name: string | null; asset_number: string | null; retired: boolean };
   // The current Due Date: that of the latest Due Date Extension, or the Due Date as first recorded.
   due_date: string;
   // The Due Date as first recorded, which a Loan Correction amends (#74 Q25).
@@ -653,7 +655,9 @@ export class LoanReadService {
     function withRepairRecords<T extends { id: string }>(loanReturn: T | null) {
       return loanReturn && { ...loanReturn, repair_records: citing.get(loanReturn.id) ?? [] };
     }
-    const conflicts = conflictsByItem(await readLoanConflictsOfAssets(this.db, [...new Set<string>(itemsRes.rows.map(({ asset_id }: any) => asset_id))]));
+    const assetIds = [...new Set<string>(itemsRes.rows.map(({ asset_id }: any) => asset_id))];
+    const conflicts = conflictsByItem(await readLoanConflictsOfAssets(this.db, assetIds));
+    const retirements = await currentRetirementsOf(this.db, assetIds);
     const assignments = returnDate
       ? await readAssignmentsAt(this.db, itemsRes.rows.filter(isReturnable).map((item: any) => item.asset_id), returnDate)
       : null;
@@ -675,7 +679,7 @@ export class LoanReadService {
       is_overdue: itemsRes.rows.some((item: any) => item.is_overdue),
       items: itemsRes.rows.map((item: any) => ({
         id: item.id,
-        asset: { id: item.asset_id, name: item.asset_name, asset_number: item.asset_number },
+        asset: { id: item.asset_id, name: item.asset_name, asset_number: item.asset_number, retired: retirements.has(item.asset_id) },
         due_date: item.due_date,
         first_due_date: item.first_due_date,
         condition: item.lending_condition,

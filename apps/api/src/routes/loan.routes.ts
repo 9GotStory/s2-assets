@@ -8,7 +8,7 @@ import { isCalendarDate } from '../services/assignment.service.ts';
 import { CapabilityService, isValidUuid } from '../services/capability.service.ts';
 import { hasStrictControlChars } from '../services/control-characters.ts';
 import { LoanItemsNotReturnableError, LoanReturnService, type RecordLoanReturnInput } from '../services/loan-return.service.ts';
-import { AssetOnAnotherLoanError, AssetUnderRepairError, LoanCorrectionService, type CorrectLoanInput } from '../services/loan-correction.service.ts';
+import { AssetOnAnotherLoanError, AssetRetiredError, AssetUnderRepairError, LoanCorrectionService, type CorrectLoanInput } from '../services/loan-correction.service.ts';
 import { LoanConflictWarningError } from '../services/loan-conflict.ts';
 import { LoanReadService } from '../services/loan-read.service.ts';
 import { AssetsNotLendableError, LoanItemsNotOutstandingError, LoanService, type StartLoanInput } from '../services/loan.service.ts';
@@ -172,7 +172,7 @@ const refusalOf = (err: unknown) => {
   if (err instanceof LoanConflictWarningError) {
     return { ...errorBody(err.statusCode, err.code, err.message), conflicts: err.conflicts, repair_conflicts: err.repair_conflicts };
   }
-  if (err instanceof AssetOnAnotherLoanError || err instanceof AssetUnderRepairError) {
+  if (err instanceof AssetOnAnotherLoanError || err instanceof AssetUnderRepairError || err instanceof AssetRetiredError) {
     return { ...errorBody(err.statusCode, err.code, err.message), asset: err.asset };
   }
   if (err instanceof StaleBeforeConflictError) {

@@ -14,6 +14,8 @@ export interface SelectedAsset {
   on_loan: OnLoan | null;
   under_repair: UnderRepair | null;
   start_loan_warning: StartLoanWarning | null;
+  // F007-T2 (#154 Q23): the Loan form shows a Retired Asset as not allowed.
+  retired: boolean;
 }
 
 export interface AssetSelectionBarProps {

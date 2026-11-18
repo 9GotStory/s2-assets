@@ -288,7 +288,8 @@ describe('Retirement (Seam A - F007-T1)', () => {
       await retired(assetId);
 
       expect((await loanOf(loanId)).items[0]).toMatchObject({ ending_kind: 'NOT_RETURNED', loan_return: null });
-      expect(await loanOf(loanId)).toEqual(loanBefore);
+      // The Loan page reads the Asset Retired (F007-T2), and nothing else of the Loan changed.
+      expect(await loanOf(loanId)).toEqual({ ...loanBefore, items: loanBefore.items.map((item: any) => ({ ...item, asset: { ...item.asset, retired: true } })) });
     });
 
     it('retires an Asset once its Loan Return is recorded', async () => {

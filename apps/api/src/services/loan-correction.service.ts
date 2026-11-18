@@ -22,9 +22,10 @@ import {
 } from './loan.service.ts';
 import { normalizeConfirmedConflicts, withConfirmedConflicts, type ConfirmedConflictInput } from './conflict-confirmation.ts';
 import { loanConflictCheck } from './loan-conflict.ts';
-import type { LoanCondition } from './loan-read.service.ts';
+import { outstandingLoanItemsOf, type LoanCondition } from './loan-read.service.ts';
 import { isSelectablePerson } from './reference.service.ts';
 import { underRepairOfAssets, type RepairKind } from './repair-read.service.ts';
+import { currentRetirementsOf } from './retirement-read.service.ts';
 import { commitOnce } from './retryable-write.ts';
 import { NotFoundError } from './service-errors.ts';
 import { ValidationError } from './validation-error.ts';
@@ -101,6 +102,30 @@ export class AssetUnderRepairError extends Error {
   constructor(asset: AssetUnderRepair) {
     super(`${asset.name ?? asset.asset_number ?? asset.asset_id} is Under Repair: deal with its Repair Record first`);
     this.name = 'AssetUnderRepairError';
+    this.asset = asset;
+  }
+}
+
+// The Asset of an ending whose void would put it On Loan again after its Retirement, and that Retirement.
+export interface RetiredAsset {
+  asset_id: string;
+  name: string | null;
+  asset_number: string | null;
+  retirement_id: string;
+}
+
+/**
+ * Voiding an ending would make a Retired Asset On Loan again. Nothing is saved: the Retirement is voided
+ * first, if it never happened (F007-T2, #154 Q17).
+ */
+export class AssetRetiredError extends Error {
+  statusCode = 409;
+  code = 'ASSET_RETIRED';
+  asset: RetiredAsset;
+
+  constructor(asset: RetiredAsset) {
+    super(`${asset.name ?? asset.asset_number ?? asset.asset_id} is Retired: it cannot be On Loan again`);
+    this.name = 'AssetRetiredError';
     this.asset = asset;
   }
 }
@@ -283,6 +308,17 @@ export class LoanCorrectionService {
     }
   }
 
+  // A Retired Asset is never On Loan again (#154 Q17). Asked after a void of an ending, in its transaction: an item
+  // that still has another ending, such as a Not Returned under a voided Loan Return, stays out of use. The
+  // Assets are locked, the lock a Retirement takes, so a Retirement committed first is seen (#154 Q24).
+  private async assertNotRetiredOnLoan(client: pg.PoolClient, itemId: string, items: { id: string; asset_id: string; name: string | null; asset_number: string | null }[]) {
+    const { asset_id, name, asset_number } = items.find(({ id }) => id === itemId)!;
+    const retirement = (await currentRetirementsOf(client, [asset_id])).get(asset_id);
+    if (retirement && (await outstandingLoanItemsOf(client, [asset_id])).get(asset_id)?.loan_item_id === itemId) {
+      throw new AssetRetiredError({ asset_id, name, asset_number, retirement_id: retirement.id });
+    }
+  }
+
   async correct(actorId: string, loanId: string, input: CorrectLoanInput, { retryToken }: { retryToken: string }): Promise<RecordedLoanCorrection> {
     const facts = normalizeFacts(input);
     const confirmed = normalizeConfirmedConflicts(input.confirmed_conflicts);
@@ -321,6 +357,9 @@ export class LoanCorrectionService {
             await this.assertAssetFree(client, fact.loan_item_id!, items);
           }
           await voidLoanFact(client, loanId, target, fact);
+          if (target.kind === 'LOAN_RETURN' || target.kind === 'NOT_RETURNED') {
+            await this.assertNotRetiredOnLoan(client, fact.loan_item_id!, items);
+          }
         }
 
         const broken = await brokenLoanDateRules(client, loanId, today);

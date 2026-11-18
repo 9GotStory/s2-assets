@@ -3,6 +3,7 @@ import { Link } from 'react-router';
 import { useQuery } from '@tanstack/react-query';
 import { LoanSaveForm } from './LoanSaveForm';
 import { ReasonField } from './OutstandingItemFields';
+import { RetiredReason } from './RetiredReason';
 import { RepairOutcomeFields, repairOutcomeDraftError, type RepairOutcomeDraft } from './RepairOutcomeFields';
 import { fieldInputStyle, fieldLabelStyle } from './ReferenceContextFields';
 import { CORRECTION_LABELS, bangkokToday, thaiDate } from './assignmentFacts';
@@ -59,11 +60,14 @@ const useExpectedVersion = (record: RepairRecord, onRefresh: () => Promise<numbe
   return { expectedVersion, refresh };
 };
 
-// Voiding a Repair Outcome refused because a Loan or another Repair Record now keeps the Asset (#98 Q18).
+// Voiding a Repair Outcome refused because a Loan or another Repair Record now keeps the Asset (#98 Q18), or
+// because it is Retired and would be Under Repair again (F007-T2, #154 Q17).
 const AssetHeld: React.FC<{ asset: RepairStartRefusal }> = ({ asset }) => (
   <>
     ยกเลิกผลการซ่อมไม่ได้ เพราะ {asset.name ?? asset.asset_number ?? asset.asset_id}{' '}
-    {asset.reason === 'UNDER_REPAIR' ? (
+    {asset.reason === 'RETIRED' ? (
+      <RetiredReason assetId={asset.asset_id} refusedCorrection />
+    ) : asset.reason === 'UNDER_REPAIR' ? (
       <>
         {UNDER_REPAIR_LABELS[asset.repair_kind]}ในรายการอื่น ต้องจัดการรายการนั้นก่อน <Link to={`/repairs/${asset.repair_record_id}`}>ดูรายการซ่อม</Link>
       </>
