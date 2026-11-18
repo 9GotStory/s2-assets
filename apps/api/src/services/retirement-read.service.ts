@@ -63,6 +63,42 @@ export async function currentRetirementsOf(db: pg.Pool | pg.PoolClient | any, as
   return new Map(res.rows.map((row: any): [string, Retirement] => [row.asset_id, retirementOf(row)]));
 }
 
+// A Retired Asset that a write names, and the Retirement not voided that refuses the write.
+export interface RetiredAsset {
+  asset_id: string;
+  name: string | null;
+  asset_number: string | null;
+  retirement_id: string;
+}
+
+/** The Retired Assets among `assets`, in the order given. A write asks under the Assets' locks (#154 Q24). */
+export async function retiredAmong(
+  db: pg.Pool | pg.PoolClient | any,
+  assets: { id: string; name: string | null; asset_number: string | null }[]
+): Promise<RetiredAsset[]> {
+  const current = await currentRetirementsOf(db, assets.map(({ id }) => id));
+  return assets.flatMap(({ id, name, asset_number }) => {
+    const retirement = current.get(id);
+    return retirement ? [{ asset_id: id, name, asset_number, retirement_id: retirement.id }] : [];
+  });
+}
+
+/**
+ * A write would give a Retired Asset a new fact or put it back into use, which `refused` says. Nothing is saved:
+ * the Retirement is voided first, if it never happened (DR-08, #154 Q7, Q17).
+ */
+export class AssetRetiredError extends Error {
+  statusCode = 409;
+  code = 'ASSET_RETIRED';
+  asset: RetiredAsset;
+
+  constructor(asset: RetiredAsset, refused: string) {
+    super(`${asset.name ?? asset.asset_number ?? asset.asset_id} is Retired: ${refused}`);
+    this.name = 'AssetRetiredError';
+    this.asset = asset;
+  }
+}
+
 // What a row of the Asset search says of Retirements (F007-T1, #154 Q10): whether the Asset is Retired.
 export interface AssetSearchRetirementFacts {
   retired: boolean;
