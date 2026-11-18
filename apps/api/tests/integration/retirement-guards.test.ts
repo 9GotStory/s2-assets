@@ -69,23 +69,33 @@ describe('Retired Asset guards on Loans and Repairs (Seam A - F007-T2)', () => {
   });
 
   describe('Loan start (DR-08, LR-12)', () => {
-    it('refuses a Loan that names a Retired Asset, naming it and its Retirement beside the other refused Assets, and writes nothing', async () => {
+    it('refuses a Loan that names a Retired Asset, naming it and its Retirement, and writes nothing for any of its Assets', async () => {
       const free = await registered();
       const gone = await registered('เครื่องฉายที่จำหน่ายแล้ว');
+      const retirementId = await retired(gone);
+
+      const res = await start([free, gone]);
+
+      expect(res.statusCode).toBe(409);
+      expect(res.json()).toMatchObject({ code: 'ASSETS_NOT_LENDABLE' });
+      expect(res.json().assets).toEqual([{ asset_id: gone, name: 'เครื่องฉายที่จำหน่ายแล้ว', asset_number: null, reason: 'RETIRED', retirement_id: retirementId }]);
+      expect(await loansOf(free)).toEqual([]);
+      expect(await loansOf(gone)).toEqual([]);
+    });
+
+    it('names a Retired Asset beside the Assets refused for the existing reasons', async () => {
+      const gone = await registered();
       const held = await registered();
       const retirementId = await retired(gone);
       const { loanId: holding } = await lent([held]);
 
-      const res = await start([free, gone, held]);
+      const res = await start([gone, held]);
 
       expect(res.statusCode).toBe(409);
-      expect(res.json()).toMatchObject({ code: 'ASSETS_NOT_LENDABLE' });
       const byAsset = Object.fromEntries(res.json().assets.map((asset: any) => [asset.asset_id, asset]));
       expect(Object.keys(byAsset).sort()).toEqual([gone, held].sort());
-      expect(byAsset[gone]).toEqual({ asset_id: gone, name: 'เครื่องฉายที่จำหน่ายแล้ว', asset_number: null, reason: 'RETIRED', retirement_id: retirementId });
+      expect(byAsset[gone]).toMatchObject({ reason: 'RETIRED', retirement_id: retirementId });
       expect(byAsset[held]).toMatchObject({ reason: 'ON_LOAN', loan_id: holding });
-      expect(await loansOf(free)).toEqual([]);
-      expect(await loansOf(gone)).toEqual([]);
     });
   });
 
@@ -292,6 +302,20 @@ describe('Retired Asset guards on Loans and Repairs (Seam A - F007-T2)', () => {
       expect(refused.statusCode).toBe(409);
       expect(refused.json()).toMatchObject({ code: 'ASSET_RETIRED', asset: { retirement_id: retirement.json().retirement_id } });
       expect((await loanOf(loanId)).items[0].loan_return).not.toBeNull();
+    });
+
+    it('decides a Not Returned void after locking the Asset, so a Retirement queued first refuses it', async () => {
+      const assetId = await registered();
+      const { loanId, itemOf } = await lent([assetId]);
+      await closedNotReturned(loanId, [itemOf[assetId]], '2026-11-10');
+      const voidEnding = await loanVoiding(loanId, { kind: 'NOT_RETURNED', id: (await loanOf(loanId)).items[0].not_returned.id });
+
+      const [retirement, refused] = await inOrder(assetId, () => retire(assetId), () => correctLoan(loanId, voidEnding));
+
+      expect(retirement.statusCode).toBe(201);
+      expect(refused.statusCode).toBe(409);
+      expect(refused.json()).toMatchObject({ code: 'ASSET_RETIRED', asset: { retirement_id: retirement.json().retirement_id } });
+      expect((await loanOf(loanId)).items[0].not_returned).not.toBeNull();
     });
 
     it('decides a Repair Outcome void after locking the Asset, so a Retirement queued first refuses it', async () => {

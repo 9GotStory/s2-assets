@@ -15,7 +15,8 @@ export interface LoanFormAsset {
   asset_number: string | null;
   // Why a new Loan of it warns, from its latest Loan Return or Repair Outcome; it never blocks (#98 Q20).
   start_loan_warning?: StartLoanWarning | null;
-  // F007-T2 (#154 Q23): a Retired Asset stays in the form, shown as not allowed; the server refuses it.
+  // F007-T2 (#154 Q23): a Retired Asset stays in the form, shown as not allowed; the server refuses it. The
+  // Asset page offers no Loan of a Retired Asset, so only the Asset list's selection says it.
   retired?: boolean;
 }
 

@@ -216,6 +216,8 @@ test.describe.serial('Retirement journeys: Real SPA -> Composed API -> PostgreSQ
     const tag = `E2E ${crypto.randomUUID().slice(0, 8)}`;
     const { asset: gone } = await assetService.registerAsset(custodianUserId, { name: `${tag} ลำโพงที่จำหน่ายแล้ว` } as any);
     const { asset: kept } = await assetService.registerAsset(custodianUserId, { name: `${tag} ลำโพงที่ยังใช้อยู่` } as any);
+    // A Retired Asset with a Repair Record and no Loan: voiding its Repair Outcome meets no Repair Conflict.
+    const { asset: broken } = await assetService.registerAsset(custodianUserId, { name: `${tag} ไมโครโฟนที่จำหน่ายแล้ว` } as any);
     const loan = await loanService.start(
       custodianUserId,
       { assets: [gone, kept].map(({ id }) => ({ asset_id: id, condition: 'NORMAL' as const })), borrower: { kind: 'EXTERNAL', contact_name: 'คุณผู้ยืม E2E จำหน่าย 2' }, loan_date: daysAgo(5), due_date: daysAgo(2) },
@@ -229,10 +231,12 @@ test.describe.serial('Retirement journeys: Real SPA -> Composed API -> PostgreSQ
     );
     const repair = await new RepairService({ db: pool }).start(
       custodianUserId,
-      { asset_id: gone.id, repair_kind: 'REPAIR', start_date: daysAgo(2), repairer: { kind: 'INTERNAL' }, symptom_or_work: 'ไม่มีเสียง', outcome: { outcome: 'NOT_USABLE', outcome_date: daysAgo(2) } },
+      { asset_id: broken.id, repair_kind: 'REPAIR', start_date: daysAgo(2), repairer: { kind: 'INTERNAL' }, symptom_or_work: 'ไม่มีเสียง', outcome: { outcome: 'NOT_USABLE', outcome_date: daysAgo(2) } },
       { retryToken: crypto.randomUUID() }
     );
-    await new RetirementService({ db: pool }).record(custodianUserId, gone.id, { retirement_date: daysAgo(1), retirement_method: 'SALE' }, { retryToken: crypto.randomUUID() });
+    for (const { id } of [gone, broken]) {
+      await new RetirementService({ db: pool }).record(custodianUserId, id, { retirement_date: daysAgo(1), retirement_method: 'SALE' }, { retryToken: crypto.randomUUID() });
+    }
     const returnOf = async (assetId: string) =>
       (await pool.query("SELECT e.id FROM loan_item_endings e JOIN loan_items li ON li.id = e.loan_item_id WHERE li.asset_id = $1 AND e.kind = 'LOAN_RETURN'", [assetId])).rows[0].id;
 
@@ -262,7 +266,7 @@ test.describe.serial('Retirement journeys: Real SPA -> Composed API -> PostgreSQ
     await page.locator('#search-field').selectOption('name');
     await page.locator('#search-value').fill(tag);
     await page.locator('#search-submit-btn').click();
-    await expect(page.locator('#results-count-summary')).toContainText('พบ 2 รายการ');
+    await expect(page.locator('#results-count-summary')).toContainText('พบ 3 รายการ');
     await page.getByTestId(`asset-select-${gone.id}`).check();
     await page.getByTestId(`asset-select-${kept.id}`).check();
     await page.locator('#loan-from-list-open').click();

@@ -547,8 +547,9 @@ export class RepairService {
     this.clock = options.clock ?? (() => new Date());
   }
 
-  // Locks the Asset, the lock a Loan start takes, and refuses it while a Loan holds it or it is Under
-  // Repair (RM-07, DR-16, #98 Q3, Q15). A Repair Start and a Loan start of one Asset therefore serialize.
+  // Locks the Asset, the lock a Loan start and a Retirement take, and refuses it while it is Retired, a Loan
+  // holds it or it is Under Repair (DR-08, RM-07, DR-16, #98 Q3, Q15, #154 Q24). A Repair Start, a Loan start
+  // and a Retirement of one Asset therefore serialize.
   private async assertRepairMayStart(client: pg.PoolClient, assetId: string): Promise<void> {
     const [asset] = await lockAssetsInIdentifierOrder(client, [assetId]);
     if (!asset) {

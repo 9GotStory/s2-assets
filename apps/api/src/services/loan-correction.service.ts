@@ -309,12 +309,12 @@ export class LoanCorrectionService {
   }
 
   // A Retired Asset is never On Loan again (#154 Q17). Asked after a void of an ending, in its transaction: an item
-  // that still has another ending, such as a Not Returned under a voided Loan Return, stays out of use. The
+  // that still has another ending, such as a Not Returned under a voided Loan Return, is not On Loan. The
   // Assets are locked, the lock a Retirement takes, so a Retirement committed first is seen (#154 Q24).
   private async assertNotRetiredOnLoan(client: pg.PoolClient, itemId: string, items: { id: string; asset_id: string; name: string | null; asset_number: string | null }[]) {
     const { asset_id, name, asset_number } = items.find(({ id }) => id === itemId)!;
     const retirement = (await currentRetirementsOf(client, [asset_id])).get(asset_id);
-    if (retirement && (await outstandingLoanItemsOf(client, [asset_id])).get(asset_id)?.loan_item_id === itemId) {
+    if (retirement && (await outstandingLoanItemsOf(client, [asset_id])).has(asset_id)) {
       throw new AssetRetiredError({ asset_id, name, asset_number, retirement_id: retirement.id });
     }
   }
