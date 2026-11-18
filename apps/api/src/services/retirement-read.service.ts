@@ -1,4 +1,5 @@
 import pg from 'pg';
+import { retirementConflictFacts, retirementConflictsAt, type RetirementConflict } from './retirement-conflict.ts';
 
 // F007-T1 (#155): how an Asset left use (#154 Q2). The code names avoid every term GLOSSARY.md avoids.
 export const RETIREMENT_METHODS = ['SALE', 'EXCHANGE', 'HANDOVER_TO_OTHER_AGENCY', 'CONVERSION_OR_DESTRUCTION', 'DECLARED_LOSS'] as const;
@@ -41,6 +42,8 @@ export interface AssetRetirements {
   retired: boolean;
   retirement: AssetRetirement | null;
   retirements: AssetRetirement[];
+  // F007-T6 (#160): the Retirement Conflicts of the current Retirement, oldest first; none when not Retired.
+  retirement_conflicts: RetirementConflict[];
 }
 
 // A Retirement row aliased `t` that makes its Asset Retired: it is not voided (DR-07, #154 Q1). Every read and
@@ -131,6 +134,9 @@ export interface AssetSearchRetirementFacts {
 export const retirementSearch = {
   retiredFilter: ASSET_IS_RETIRED,
   notRetiredFilter: `NOT ${ASSET_IS_RETIRED}`,
+  // F007-T6 (#160, P6): "วันจำหน่ายขัดกับประวัติ", the Asset's current Retirement has a Retirement Conflict.
+  conflictFilter: `EXISTS (SELECT 1 FROM retirements t WHERE t.asset_id = a.id AND ${IS_NOT_VOIDED}
+       AND EXISTS (${retirementConflictFacts('t.asset_id', 't.retirement_date')}))`,
   factsOf: async (db: pg.Pool | any, assetIds: string[]): Promise<(assetId: string) => AssetSearchRetirementFacts> => {
     const current = await currentRetirementsOf(db, assetIds);
     return (assetId) => ({ retired: current.has(assetId) });
@@ -145,7 +151,10 @@ export class RetirementReadService {
     this.db = options.db;
   }
 
-  /** Whether the Asset is Retired, its current Retirement, and every Retirement of it, oldest first, each with its corrections. */
+  /**
+   * Whether the Asset is Retired, its current Retirement and its Retirement Conflicts, and every Retirement of it, oldest
+   * first, each with its corrections.
+   */
   async ofAsset(assetId: string): Promise<AssetRetirements> {
     const res = await this.db.query(
       `${RETIREMENT_SELECT}
@@ -177,6 +186,7 @@ export class RetirementReadService {
     const retirements: AssetRetirement[] = res.rows.map((row: any) => ({ ...retirementOf(row), corrections: correctionsOf(row.id) }));
     const current = res.rows.find((row: any) => row.is_not_voided);
     const retirement = retirements.find(({ id }) => id === current?.id) ?? null;
-    return { retired: retirement !== null, retirement, retirements };
+    const retirementConflicts = retirement ? await retirementConflictsAt(this.db, assetId, retirement.retirement_date) : [];
+    return { retired: retirement !== null, retirement, retirements, retirement_conflicts: retirementConflicts };
   }
 }

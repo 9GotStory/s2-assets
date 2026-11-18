@@ -8,7 +8,7 @@ import { ON_LOAN_LABEL, type OnLoan, type StartLoanWarning } from '../components
 import { UnderRepairBadge } from '../components/RepairBadges';
 import { UNDER_REPAIR_FILTER_LABEL, type UnderRepair } from '../components/repairFacts';
 import { RetiredBadge } from '../components/RetirementBadges';
-import { NOT_RETIRED_LABEL, RETIRED_LABEL, RETIREMENT_STATUS_FILTER_LABEL } from '../components/retirementFacts';
+import { NOT_RETIRED_LABEL, RETIRED_LABEL, RETIREMENT_CONFLICT_LABEL, RETIREMENT_STATUS_FILTER_LABEL } from '../components/retirementFacts';
 import {
   REFERENCE_DIMENSIONS,
   entryLabel,
@@ -62,7 +62,8 @@ export type SearchFieldType =
 // (#54): has_assignment_conflict is 'true' to list only Assets with an Assignment Conflict, '' for any.
 // F004-T4 (#78): on_loan likewise, for "กำลังถูกยืม"; F005-T4 (#102): under_repair, for Under Repair.
 // F007-T1 (#155): retired is 'true' for "จำหน่ายแล้ว", 'false' for "ยังไม่จำหน่าย", '' for "ทั้งหมด".
-export type AssetListFilters = Record<ReferenceIdField | 'has_assignment_conflict' | 'on_loan' | 'under_repair' | 'retired', string>;
+// F007-T6 (#160): has_retirement_conflict is 'true' for "วันจำหน่ายขัดกับประวัติ", '' for any.
+export type AssetListFilters = Record<ReferenceIdField | 'has_assignment_conflict' | 'on_loan' | 'under_repair' | 'retired' | 'has_retirement_conflict', string>;
 
 const NO_FILTERS: AssetListFilters = {
   location_id: '',
@@ -72,6 +73,7 @@ const NO_FILTERS: AssetListFilters = {
   on_loan: '',
   under_repair: '',
   retired: '',
+  has_retirement_conflict: '',
 };
 
 // The rows chosen act through one of these, opened above the results.
@@ -884,6 +886,26 @@ export const AssetSearch: React.FC = () => {
                 <option value="false">{NOT_RETIRED_LABEL}</option>
                 <option value="true">{RETIRED_LABEL}</option>
               </select>
+            </label>
+            <label
+              htmlFor="search-filter-has_retirement_conflict"
+              style={{
+                display: 'flex',
+                alignItems: 'center',
+                gap: '0.375rem',
+                marginTop: '0.5rem',
+                fontSize: '0.875rem',
+                fontWeight: 500,
+                color: '#374151',
+              }}
+            >
+              <input
+                id="search-filter-has_retirement_conflict"
+                type="checkbox"
+                checked={selectedFilters.has_retirement_conflict === 'true'}
+                onChange={(e) => setSelectedFilters((current) => ({ ...current, has_retirement_conflict: e.target.checked ? 'true' : '' }))}
+              />
+              {RETIREMENT_CONFLICT_LABEL}
             </label>
             {referenceLists.error && (
               <div role="alert" style={{ marginTop: '0.5rem', fontSize: '0.8125rem', color: '#b91c1c' }}>

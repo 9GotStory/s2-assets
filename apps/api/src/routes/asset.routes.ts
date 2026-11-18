@@ -575,7 +575,7 @@ export const assetRoutes: FastifyPluginAsync<AssetRoutesOptions> = async (
       const query = (request.query || {}) as Record<string, unknown>;
 
       // Check for unknown parameters
-      const allowedParams = new Set<string>(['field', 'value', 'limit', 'offset', 'has_assignment_conflict', 'on_loan', 'under_repair', 'retired', ...REFERENCE_ID_FIELDS]);
+      const allowedParams = new Set<string>(['field', 'value', 'limit', 'offset', 'has_assignment_conflict', 'on_loan', 'under_repair', 'retired', 'has_retirement_conflict', ...REFERENCE_ID_FIELDS]);
       for (const key of Object.keys(query)) {
         if (!allowedParams.has(key)) {
           return sendValidationError({ query: 'Unknown query parameter' });
@@ -657,6 +657,10 @@ export const assetRoutes: FastifyPluginAsync<AssetRoutesOptions> = async (
       if (query.retired !== undefined && query.retired !== 'true' && query.retired !== 'false') {
         return sendValidationError({ retired: "retired must be 'true' or 'false' when given" });
       }
+      // F007-T6 (#160, #154 P6): "วันจำหน่ายขัดกับประวัติ" takes one value, as has_assignment_conflict does.
+      if (query.has_retirement_conflict !== undefined && query.has_retirement_conflict !== 'true') {
+        return sendValidationError({ has_retirement_conflict: "has_retirement_conflict must be 'true' when given" });
+      }
 
       // Limit validation
       if (limit !== undefined) {
@@ -699,6 +703,7 @@ export const assetRoutes: FastifyPluginAsync<AssetRoutesOptions> = async (
           on_loan: query.on_loan === 'true',
           under_repair: query.under_repair === 'true',
           retired: query.retired === undefined ? undefined : query.retired === 'true',
+          has_retirement_conflict: query.has_retirement_conflict === 'true',
           limit: limit as any,
           offset: offset as any,
         });

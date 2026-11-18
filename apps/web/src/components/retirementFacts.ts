@@ -40,6 +40,18 @@ export type RetirementRefusal = { asset_id: string; name: string | null; asset_n
   | { reason: 'UNDER_REPAIR'; repair_record_id: string; repair_kind: RepairKind }
 );
 
+// F007-T6 (#160): the facts a Retirement Conflict compares with a Retirement Date (#154 P1).
+export type RetirementConflictKind = 'INITIAL_ASSIGNMENT' | 'REASSIGNMENT' | 'LOAN_DATE' | 'LOAN_RETURN' | 'NOT_RETURNED' | 'REPAIR_START' | 'REPAIR_OUTCOME' | 'FOUND';
+
+// A fact of the Asset whose business date is later than its Retirement Date (DR-18): its kind, the fact, its date,
+// and its record: the assignment fact itself, the Loan, the Repair Record or the Verification Round.
+export interface RetirementConflict {
+  kind: RetirementConflictKind;
+  fact_id: string;
+  fact_date: string;
+  record_id: string;
+}
+
 export const RETIREMENT_LABEL = 'จำหน่าย';
 export const RETIRED_LABEL = 'จำหน่ายแล้ว';
 export const NOT_RETIRED_LABEL = 'ยังไม่จำหน่าย';
@@ -52,6 +64,7 @@ export const AS_AT_RETIREMENT_LABEL = 'ณ วันจำหน่าย';
 export const RETIREMENT_DATE_LABEL = 'วันที่จำหน่าย';
 export const RETIREMENT_METHOD_LABEL = 'วิธีจำหน่าย';
 export const RETIREMENT_REFERENCE_LABEL = 'เอกสารอ้างอิง';
+export const RETIREMENT_CONFLICT_LABEL = 'วันจำหน่ายขัดกับประวัติ';
 
 export const RETIREMENT_METHOD_LABELS: Record<RetirementMethod, string> = {
   SALE: 'ขาย',

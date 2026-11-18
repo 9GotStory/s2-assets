@@ -229,6 +229,8 @@ export interface SearchAssetInput {
   under_repair?: boolean;
   // F007-T1 (#155, #154 P6): only Retired Assets when true, only those not Retired when false, every Asset when left out.
   retired?: boolean;
+  // F007-T6 (#160, #154 P6): only Assets whose current Retirement has a Retirement Conflict.
+  has_retirement_conflict?: boolean;
   limit?: number | string;
   offset?: number | string;
 }
@@ -1864,6 +1866,9 @@ export class AssetService {
     }
     if (input.retired !== undefined) {
       conditions.push(input.retired ? retirementSearch.retiredFilter : retirementSearch.notRetiredFilter);
+    }
+    if (input.has_retirement_conflict) {
+      conditions.push(retirementSearch.conflictFilter);
     }
     const whereClause = conditions.length > 0 ? `WHERE ${conditions.join(' AND ')}` : '';
 

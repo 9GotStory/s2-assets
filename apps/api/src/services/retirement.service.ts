@@ -3,6 +3,14 @@ import { DOCUMENT_REFERENCE_MAX_LENGTH, REMARK_MAX_LENGTH, bangkokDate, isCalend
 import { isValidUuid } from './capability.service.ts';
 import { outstandingLoanItemsOf } from './loan-read.service.ts';
 import { underRepairOfAssets, type RepairKind } from './repair-read.service.ts';
+import {
+  assertRetirementConflictsConfirmed,
+  newRetirementConflicts,
+  normalizeConfirmedRetirementConflicts,
+  retirementConflictsAt,
+  withConfirmedRetirementConflicts,
+  type ConfirmedRetirementConflictInput,
+} from './retirement-conflict.ts';
 import { currentRetirementsOf, type RetirementMethod } from './retirement-read.service.ts';
 import { commitOnce } from './retryable-write.ts';
 import { NotFoundError, StaleBeforeConflictError } from './service-errors.ts';
@@ -13,6 +21,8 @@ export interface RecordRetirementInput {
   retirement_method: RetirementMethod;
   retirement_reference?: string | null;
   note?: string | null;
+  // F007-T6 (#160): the Retirement Conflicts a warning listed that the user confirms (#154 Q21).
+  confirmed_conflicts?: ConfirmedRetirementConflictInput[];
 }
 
 // What a Retirement write answers: the Retirement it wrote and the version a later write must expect.
@@ -72,13 +82,15 @@ const normalizeFacts = (input: RecordRetirementInput, today: string): Retirement
 });
 
 // What an amendment may name (#154 Q9, P2): every field of a Retirement but its Asset.
-export type RetirementAmendmentInput = Partial<RecordRetirementInput>;
+export type RetirementAmendmentInput = Partial<Omit<RecordRetirementInput, 'confirmed_conflicts'>>;
 
 export interface CorrectRetirementInput {
   expected_version: number;
   action: 'AMEND' | 'VOID';
   reason: string;
   changes?: RetirementAmendmentInput;
+  // F007-T6 (#160): the Retirement Conflicts an amended Retirement Date's warning listed that the user confirms (P2).
+  confirmed_conflicts?: ConfirmedRetirementConflictInput[];
 }
 
 // What a Retirement Correction answers.
@@ -209,11 +221,21 @@ export class RetirementService {
     }
     const id = assetId.trim().toLowerCase();
     const facts = normalizeFacts(input, bangkokDate(this.clock()));
+    const confirmed = normalizeConfirmedRetirementConflicts(input.confirmed_conflicts);
     return commitOnce(
       this.db,
-      { actorId, operation: `retirement:record:${id}`, retryToken, payload: { version: 1, ...facts }, explicitContinuation: false },
+      {
+        actorId,
+        operation: `retirement:record:${id}`,
+        retryToken,
+        payload: withConfirmedRetirementConflicts({ version: 1, ...facts }, confirmed),
+        explicitContinuation: false,
+      },
       async (client) => {
         await this.assertRetirementMayBeRecorded(client, id);
+        // F007-T6 (#160): read under the Asset's lock, which every write of a conflicting fact takes or waits on
+        // (DR-18, #154 Q21).
+        assertRetirementConflictsConfirmed(await retirementConflictsAt(client, id, facts.retirement_date), confirmed);
         const res = await client.query(
           `INSERT INTO retirements (asset_id, retirement_date, retirement_method, retirement_reference, note, recorded_by)
            VALUES ($1, $2, $3, $4, $5, $6)
@@ -232,9 +254,16 @@ export class RetirementService {
    */
   async correct(actorId: string, retirementId: string, input: CorrectRetirementInput, { retryToken }: { retryToken: string }): Promise<RecordedRetirementCorrection> {
     const facts = normalizeCorrection(input, bangkokDate(this.clock()));
+    const confirmed = normalizeConfirmedRetirementConflicts(input.confirmed_conflicts);
     return commitOnce(
       this.db,
-      { actorId, operation: `retirement:correct:${retirementId}`, retryToken, payload: { version: 1, ...facts }, explicitContinuation: false },
+      {
+        actorId,
+        operation: `retirement:correct:${retirementId}`,
+        retryToken,
+        payload: withConfirmedRetirementConflicts({ version: 1, ...facts }, confirmed),
+        explicitContinuation: false,
+      },
       async (client) => {
         const retirement = await this.lockRetirementForCorrection(client, retirementId, facts.expected_version);
         let changes: CorrectedField[] = [];
@@ -246,6 +275,13 @@ export class RetirementService {
           }));
           if (changes.length === 0) {
             throw new ValidationError('This amendment changes nothing');
+          }
+          // F007-T6 (#160, P2): a new Retirement Date is warned of the Retirement Conflicts it creates, read under the
+          // Asset's lock; those the Retirement had already stay without a warning.
+          const newDate = changes.find(({ field }) => field === 'retirement_date')?.after;
+          if (newDate) {
+            const before = await retirementConflictsAt(client, retirement.asset_id, retirement.retirement_date!);
+            assertRetirementConflictsConfirmed(newRetirementConflicts(before, await retirementConflictsAt(client, retirement.asset_id, newDate)), confirmed);
           }
           await client.query(
             `UPDATE retirements SET ${changes.map(({ field }, i) => `${field} = $${i + 2}`).join(', ')} WHERE id = $1`,

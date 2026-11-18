@@ -12,6 +12,17 @@ import pg from 'pg';
 export const LOCATION_MISMATCH_CONDITION = (v: string) => `(${v}.observed_location_id IS NOT NULL AND ${v}.observed_location_id IS DISTINCT FROM ${v}.location_id)`;
 export const DAMAGED_CONDITION = (v: string) => `(${v}.result = 'FOUND' AND ${v}.condition = 'DAMAGED')`;
 
+/**
+ * F007-T6 (#160): the business dates of each non-voided Found result that `scope` keeps, for rows aliased `entry`, as a
+ * Retirement Conflict compares them (#154 P1): its Verification Date, by the revision. A Not Found result has none.
+ * Each row names the Asset, the kind, the fact, its date and the Verification Round.
+ */
+export const foundRevisionBusinessDates = (scope: string): string => `SELECT entry.asset_id, 'FOUND' AS kind, v.id AS fact_id, v.verification_date AS fact_date,
+         entry.verification_round_id AS record_id
+       FROM verification_revisions v
+       JOIN verification_scope_entries entry ON entry.id = v.verification_scope_entry_id
+       WHERE v.result = 'FOUND' AND NOT v.is_voided AND ${scope}`;
+
 export interface CitedVerificationRevision {
   verification_revision_id: string;
   verification_round: { id: string; name: string };

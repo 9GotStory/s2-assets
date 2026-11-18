@@ -75,6 +75,8 @@ export interface AssignmentFactItemProps {
 /** One fact of the assignment timeline, with its corrections; a voided fact stays, struck through (MR-07). */
 export const AssignmentFactItem: React.FC<AssignmentFactItemProps> = ({ event, actions, children }) => (
   <li
+    // F007-T6 (#160): a Retirement Conflict links here.
+    id={`assignment-event-${event.id}`}
     data-testid={`assignment-event-${event.id}`}
     style={{
       border: '1px solid #e5e7eb',

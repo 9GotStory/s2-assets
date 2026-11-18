@@ -13,7 +13,7 @@ import { VerificationPanel } from '../components/VerificationPanel';
 import { type CurrentAssignment } from '../components/ReferenceContextFields';
 import { type AssetNotReturned, type OnLoan, type StartLoanWarning } from '../components/loanFacts';
 import { type UnderRepair } from '../components/repairFacts';
-import { RETIRED_LABEL, RETIREMENT_METHOD_LABELS, type Retirement } from '../components/retirementFacts';
+import { RETIRED_LABEL, RETIREMENT_METHOD_LABELS, type Retirement, type RetirementConflict } from '../components/retirementFacts';
 import { thaiDate } from '../components/assignmentFacts';
 import { type AssetVerificationPanel } from '../components/verificationFacts';
 
@@ -80,6 +80,8 @@ export interface AssetDetailResponse {
   retired?: boolean;
   retirement?: Retirement | null;
   retirements?: Retirement[];
+  // F007-T6: the Retirement Conflicts of the current Retirement.
+  retirement_conflicts?: RetirementConflict[];
   can_retire?: boolean;
   // F007-T5: whether the viewer may amend or void a Retirement not voided.
   can_correct_retirement?: boolean;
@@ -908,6 +910,7 @@ const AssetDetailContent: React.FC = () => {
         <RetirementSection
           assetId={asset.id}
           retirements={assetData.retirements ?? []}
+          retirementConflicts={assetData.retirement_conflicts ?? []}
           canRetire={Boolean(assetData.can_retire && !isPermissionRevoked)}
           canCorrectRetirement={Boolean(assetData.can_correct_retirement && !isPermissionRevoked)}
           onLoan={assetData.on_loan ?? null}
