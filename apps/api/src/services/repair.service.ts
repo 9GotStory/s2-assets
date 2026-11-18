@@ -7,6 +7,7 @@ import { loanReturnsOf } from './loan-return-read.ts';
 import { loansHoldingAssets } from './loan.service.ts';
 import { underRepairOfAssets, type RepairKind, type RepairOutcomeValue, type RepairerKind, type UnderWarranty } from './repair-read.service.ts';
 import { repairConflictCheck } from './repair-conflict.ts';
+import { currentRetirementsOf } from './retirement-read.service.ts';
 import { commitOnce } from './retryable-write.ts';
 import { NotFoundError, StaleBeforeConflictError } from './service-errors.ts';
 import { ValidationError } from './validation-error.ts';
@@ -60,10 +61,12 @@ export interface RepairRecordVersion {
   version: number;
 }
 
-// Why an Asset cannot be sent, naming the Loan or the Repair Record that keeps it (#98 Q3, Q15).
+// Why an Asset cannot be sent, naming the Loan or the Repair Record that keeps it (#98 Q3, Q15), or its
+// Retirement not voided (F007-T2, DR-08).
 export type RepairStartRefusal = { asset_id: string; name: string | null; asset_number: string | null } & (
   | { reason: 'ON_LOAN' | 'NOT_RETURNED'; loan_id: string }
   | { reason: 'UNDER_REPAIR'; repair_record_id: string; repair_kind: RepairKind }
+  | { reason: 'RETIRED'; retirement_id: string }
 );
 
 /** A Repair Start names an Asset that cannot be sent now. Nothing is saved, and the answer says why. */
@@ -80,13 +83,18 @@ export class RepairStartRefusedError extends Error {
 }
 
 /**
- * Why an Asset whose lock the caller holds cannot be Under Repair now: a Loan holds it, or another Repair
- * Record keeps it (#98 Q3, Q15). Null when it can. A Repair Start and voiding a Repair Outcome both ask.
+ * Why an Asset whose lock the caller holds cannot be Under Repair now: it is Retired (DR-08, #154 Q17), a
+ * Loan holds it, or another Repair Record keeps it (#98 Q3, Q15). Null when it can. A Repair Start and
+ * voiding a Repair Outcome both ask. A Retirement takes the same lock, so one committed first is seen (#154 Q24).
  */
 export async function underRepairRefusalOf(
   client: pg.PoolClient,
   asset: { asset_id: string; name: string | null; asset_number: string | null }
 ): Promise<RepairStartRefusal | null> {
+  const retirement = (await currentRetirementsOf(client, [asset.asset_id])).get(asset.asset_id);
+  if (retirement) {
+    return { ...asset, reason: 'RETIRED', retirement_id: retirement.id };
+  }
   const held = (await loansHoldingAssets(client, [asset.asset_id])).get(asset.asset_id);
   if (held) {
     return { ...asset, ...held };
@@ -539,8 +547,9 @@ export class RepairService {
     this.clock = options.clock ?? (() => new Date());
   }
 
-  // Locks the Asset, the lock a Loan start takes, and refuses it while a Loan holds it or it is Under
-  // Repair (RM-07, DR-16, #98 Q3, Q15). A Repair Start and a Loan start of one Asset therefore serialize.
+  // Locks the Asset, the lock a Loan start and a Retirement take, and refuses it while it is Retired, a Loan
+  // holds it or it is Under Repair (DR-08, RM-07, DR-16, #98 Q3, Q15, #154 Q24). A Repair Start, a Loan start
+  // and a Retirement of one Asset therefore serialize.
   private async assertRepairMayStart(client: pg.PoolClient, assetId: string): Promise<void> {
     const [asset] = await lockAssetsInIdentifierOrder(client, [assetId]);
     if (!asset) {

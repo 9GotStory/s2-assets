@@ -77,13 +77,14 @@ const NO_FILTERS: AssetListFilters = {
 // The rows chosen act through one of these, opened above the results.
 type SelectionPanel = 'REASSIGNMENT' | 'LOAN';
 
-const selectedAssetOf = ({ id, name, asset_number, on_loan, under_repair, start_loan_warning }: SearchAssetItem): SelectedAsset => ({
+const selectedAssetOf = ({ id, name, asset_number, on_loan, under_repair, start_loan_warning, retired }: SearchAssetItem): SelectedAsset => ({
   id,
   name,
   asset_number,
   on_loan,
   under_repair,
   start_loan_warning,
+  retired,
 });
 
 // The selection with each of its rows as `items` read it last, so that a form opened later shows the latest.

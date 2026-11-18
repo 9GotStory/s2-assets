@@ -11,6 +11,9 @@ import { UserService } from '../../../api/src/services/user.service.ts';
 import { SessionService } from '../../../api/src/services/session.service.ts';
 import { AssetService } from '../../../api/src/services/asset.service.ts';
 import { LoanService } from '../../../api/src/services/loan.service.ts';
+import { LoanReturnService } from '../../../api/src/services/loan-return.service.ts';
+import { RepairService } from '../../../api/src/services/repair.service.ts';
+import { RetirementService } from '../../../api/src/services/retirement.service.ts';
 import { repositoryProxyConfig } from '../../vite.config.ts';
 
 const { Pool } = pg;
@@ -21,7 +24,8 @@ const webRoot = path.resolve(__dirname, '../..');
 const migrationFolder = path.resolve(__dirname, '../../../../packages/db/src/migrations');
 
 // F007-T1 (#155): recording a Retirement from the Asset page, after resolving the Loan that kept the Asset,
-// and seeing the Retired Asset on its page and in the Asset list.
+// and seeing the Retired Asset on its page and in the Asset list. F007-T2 (#156): a Retired Asset in the
+// Loan form, on the Loan page and on the Repair Record page.
 test.describe.serial('Retirement journeys: Real SPA -> Composed API -> PostgreSQL (Seam B)', () => {
   let container: StartedPostgreSqlContainer;
   let pool: pg.Pool;
@@ -206,5 +210,81 @@ test.describe.serial('Retirement journeys: Real SPA -> Composed API -> PostgreSQ
     await expect(page.locator('[data-testid="retirement-history"]')).toContainText('คำสั่งจำหน่ายเป็นสูญ 7/2569');
     await expect(page.locator('[data-testid="loan-history-not-returned"]')).toContainText('ปิดโดยไม่ได้รับคืน');
     await expect(page.locator('#retirement-action')).toHaveCount(0);
+  });
+
+  test('Journey F007-T2.1: the Loan form shows a Retired Asset as not allowed with "จำหน่ายแล้ว" and the server refuses it; its Loan Return ชำรุด offers no "ส่งซ่อม", and voiding that Loan Return or its Repair Outcome is refused', async ({ page, context }) => {
+    const tag = `E2E ${crypto.randomUUID().slice(0, 8)}`;
+    const { asset: gone } = await assetService.registerAsset(custodianUserId, { name: `${tag} ลำโพงที่จำหน่ายแล้ว` } as any);
+    const { asset: kept } = await assetService.registerAsset(custodianUserId, { name: `${tag} ลำโพงที่ยังใช้อยู่` } as any);
+    // A Retired Asset with a Repair Record and no Loan: voiding its Repair Outcome meets no Repair Conflict.
+    const { asset: broken } = await assetService.registerAsset(custodianUserId, { name: `${tag} ไมโครโฟนที่จำหน่ายแล้ว` } as any);
+    const loan = await loanService.start(
+      custodianUserId,
+      { assets: [gone, kept].map(({ id }) => ({ asset_id: id, condition: 'NORMAL' as const })), borrower: { kind: 'EXTERNAL', contact_name: 'คุณผู้ยืม E2E จำหน่าย 2' }, loan_date: daysAgo(5), due_date: daysAgo(2) },
+      { retryToken: crypto.randomUUID() }
+    );
+    await new LoanReturnService({ db: pool }).record(
+      custodianUserId,
+      loan.loan_id,
+      { expected_version: loan.version, return_date: daysAgo(2), items: loan.items.map(({ id }) => ({ loan_item_id: id, condition: 'DAMAGED' as const })) },
+      { retryToken: crypto.randomUUID() }
+    );
+    const repair = await new RepairService({ db: pool }).start(
+      custodianUserId,
+      { asset_id: broken.id, repair_kind: 'REPAIR', start_date: daysAgo(2), repairer: { kind: 'INTERNAL' }, symptom_or_work: 'ไม่มีเสียง', outcome: { outcome: 'NOT_USABLE', outcome_date: daysAgo(2) } },
+      { retryToken: crypto.randomUUID() }
+    );
+    for (const { id } of [gone, broken]) {
+      await new RetirementService({ db: pool }).record(custodianUserId, id, { retirement_date: daysAgo(1), retirement_method: 'SALE' }, { retryToken: crypto.randomUUID() });
+    }
+    const returnOf = async (assetId: string) =>
+      (await pool.query("SELECT e.id FROM loan_item_endings e JOIN loan_items li ON li.id = e.loan_item_id WHERE li.asset_id = $1 AND e.kind = 'LOAN_RETURN'", [assetId])).rows[0].id;
+
+    // Both came back ชำรุด: "ส่งซ่อม" is offered for the Asset still in use, not for the Retired one.
+    await loginAs(context, custodianUserId);
+    await page.goto(`${targetBaseUrl}/loans/${loan.loan_id}`);
+    await expect(page.locator(`#loan-return-${await returnOf(kept.id)}-repair-action`)).toBeVisible();
+    await expect(page.locator(`#loan-return-${await returnOf(gone.id)}-repair-action`)).toHaveCount(0);
+
+    // Voiding the Retired Asset's Loan Return would put it On Loan again: refused, pointing to its Retirement.
+    await page.locator(`#loan-return-${await returnOf(gone.id)}-void-action`).click();
+    await page.locator('#loan-void-reason').fill('บันทึกการคืนผิด E2E');
+    await page.locator('#loan-void-submit').click();
+    await expect(page.locator('[data-testid="loan-void-refused"]')).toContainText('จำหน่ายแล้ว ถ้าการจำหน่ายบันทึกผิด ต้องยกเลิกรายการจำหน่ายก่อน');
+    await page.locator('#loan-void-cancel').click();
+
+    // Voiding its Repair Outcome would put it Under Repair again: refused the same way.
+    await page.goto(`${targetBaseUrl}/repairs/${repair.repair_record_id}`);
+    await page.locator('#repair-outcome-void-action').click();
+    await page.locator('#repair-void-reason').fill('บันทึกผลผิด E2E');
+    await page.locator('#repair-void-submit').click();
+    await expect(page.locator('[data-testid="repair-void-refused"]')).toContainText('ยกเลิกผลการซ่อมไม่ได้ เพราะ');
+    await expect(page.locator('[data-testid="repair-void-refused"]')).toContainText('จำหน่ายแล้ว ถ้าการจำหน่ายบันทึกผิด ต้องยกเลิกรายการจำหน่ายก่อน');
+
+    // The Asset list still lets the Retired Asset be selected; the Loan form shows it as not allowed, not hidden.
+    await page.goto(`${targetBaseUrl}/assets/search`);
+    await page.locator('#search-field').selectOption('name');
+    await page.locator('#search-value').fill(tag);
+    await page.locator('#search-submit-btn').click();
+    await expect(page.locator('#results-count-summary')).toContainText('พบ 3 รายการ');
+    await page.getByTestId(`asset-select-${gone.id}`).check();
+    await page.getByTestId(`asset-select-${kept.id}`).check();
+    await page.locator('#loan-from-list-open').click();
+    await expect(page.locator(`#loan-condition-${gone.id}`)).toBeVisible();
+    await expect(page.locator(`[data-testid="loan-retired-${gone.id}"]`)).toContainText('ยืมไม่ได้ เพราะจำหน่ายแล้ว');
+    await expect(page.locator(`[data-testid="loan-retired-${kept.id}"]`)).toHaveCount(0);
+
+    // The server refuses it by name, with a link to its Retirement, and saves nothing.
+    await page.getByLabel('ผู้ยืมภายนอก').check();
+    await page.locator('#loan-contact_name').fill('คุณยืมของที่จำหน่าย E2E');
+    await page.locator('#loan-due_date').fill('2099-12-31');
+    await page.locator('#loan-submit').click();
+    const refused = page.locator('[data-testid="loan-refused"]');
+    await expect(refused).toContainText(`${tag} ลำโพงที่จำหน่ายแล้ว: จำหน่ายแล้ว`);
+    await expect(refused).not.toContainText('ลำโพงที่ยังใช้อยู่');
+    expect((await pool.query('SELECT count(*)::int AS n FROM loan_items WHERE asset_id = ANY($1::uuid[])', [[gone.id, kept.id]])).rows[0].n).toBe(2);
+    await refused.getByRole('link', { name: 'ดูการจำหน่าย' }).click();
+    await expect(page).toHaveURL(new RegExp(`/assets/${gone.id}$`));
+    await expect(page.locator('[data-testid="retired-banner"]')).toContainText('จำหน่ายแล้ว');
   });
 });
