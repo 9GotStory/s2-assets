@@ -408,7 +408,7 @@ describe('CapabilityService Unit Tests (T024 - US2)', () => {
 
       const caps = await service.getCapabilities(validUserId);
       expect(caps.sort()).toEqual(
-        ['asset:search', 'asset:view', 'system:maintain', 'acquisition:view', 'evidence:view'].sort()
+        ['asset:search', 'asset:view', 'system:maintain', 'acquisition:view', 'evidence:view', 'material:view'].sort()
       );
     });
 
