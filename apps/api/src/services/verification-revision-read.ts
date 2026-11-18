@@ -1,7 +1,8 @@
 import pg from 'pg';
 
 // A Verification Revision as another module cites it by id: a Repair Record's Repair Source (F006-T7, #132), and the
-// result a Reassignment moves an Asset from (F006-T8, #133). This module reads no Repair or assignment table and
+// result a Reassignment moves an Asset from (F006-T8, #133); and a Found result's date as a Retirement Conflict
+// compares it (F007-T6, #160). This module reads no Repair or assignment table and
 // imports no reads at run time, so those modules read it while verification-read.service.ts reads theirs, without
 // an import cycle.
 

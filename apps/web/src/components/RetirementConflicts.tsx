@@ -6,48 +6,47 @@ import { REPAIR_OUTCOME_LABEL, REPAIR_START_LABEL } from './repairFacts';
 import { RETIREMENT_CONFLICT_LABEL, type RetirementConflict, type RetirementConflictKind } from './retirementFacts';
 import { RESULT_LABELS, VERIFICATION_ROUND_LABEL } from './verificationFacts';
 
-// What each fact a Retirement Conflict names is, as the Asset page and the warning say it.
-const FACT_LABELS: Record<RetirementConflictKind, string> = {
-  INITIAL_ASSIGNMENT: KIND_LABELS.INITIAL,
-  REASSIGNMENT: KIND_LABELS.REASSIGNMENT,
-  LOAN_DATE: 'ยืม',
-  LOAN_RETURN: 'คืน',
-  NOT_RETURNED: NOT_RETURNED_LABEL,
-  REPAIR_START: REPAIR_START_LABEL,
-  REPAIR_OUTCOME: REPAIR_OUTCOME_LABEL,
-  FOUND: `ผลตรวจ ${RESULT_LABELS.FOUND}`,
+// What each fact a Retirement Conflict names is, and where its record is: on the Asset page itself for an assignment
+// fact, otherwise its own page.
+const FACT_VIEWS: Record<RetirementConflictKind, { label: string; record: 'ASSIGNMENT' | 'LOAN' | 'REPAIR' | 'ROUND' }> = {
+  INITIAL_ASSIGNMENT: { label: KIND_LABELS.INITIAL, record: 'ASSIGNMENT' },
+  REASSIGNMENT: { label: KIND_LABELS.REASSIGNMENT, record: 'ASSIGNMENT' },
+  LOAN_DATE: { label: 'ยืม', record: 'LOAN' },
+  LOAN_RETURN: { label: 'คืน', record: 'LOAN' },
+  NOT_RETURNED: { label: NOT_RETURNED_LABEL, record: 'LOAN' },
+  REPAIR_START: { label: REPAIR_START_LABEL, record: 'REPAIR' },
+  REPAIR_OUTCOME: { label: REPAIR_OUTCOME_LABEL, record: 'REPAIR' },
+  FOUND: { label: `ผลตรวจ ${RESULT_LABELS.FOUND}`, record: 'ROUND' },
 };
+
+// The page of each kind of record, and what its link says.
+const RECORD_LINKS = {
+  LOAN: { path: '/loans/', text: 'ดูการยืม' },
+  REPAIR: { path: '/repairs/', text: 'ดูรายการซ่อม' },
+  ROUND: { path: '/verification-rounds/', text: `ดู${VERIFICATION_ROUND_LABEL}` },
+} as const;
 
 const linkStyle: React.CSSProperties = { color: '#2563eb', textDecoration: 'underline' };
 
 /**
  * One fact of a Retirement Conflict: what it is, its date, and a link to its record, where it can be corrected
- * (#154 Q21). An assignment fact is on the Asset page itself.
+ * (#154 Q21).
  */
 export const RetirementConflictFact: React.FC<{ conflict: RetirementConflict; newTab?: boolean }> = ({ conflict, newTab = false }) => {
-  const linkProps = newTab ? { target: '_blank', rel: 'noreferrer' } : {};
   const { kind, fact_date: factDate, record_id: recordId } = conflict;
-  const link =
-    kind === 'INITIAL_ASSIGNMENT' || kind === 'REASSIGNMENT' ? (
-      <a href={`#assignment-event-${recordId}`} style={linkStyle}>
-        ดูประวัติการย้าย
-      </a>
-    ) : kind === 'LOAN_DATE' || kind === 'LOAN_RETURN' || kind === 'NOT_RETURNED' ? (
-      <Link to={`/loans/${recordId}`} style={linkStyle} {...linkProps}>
-        ดูการยืม
-      </Link>
-    ) : kind === 'REPAIR_START' || kind === 'REPAIR_OUTCOME' ? (
-      <Link to={`/repairs/${recordId}`} style={linkStyle} {...linkProps}>
-        ดูรายการซ่อม
-      </Link>
-    ) : (
-      <Link to={`/verification-rounds/${recordId}`} style={linkStyle} {...linkProps}>
-        ดู{VERIFICATION_ROUND_LABEL}
-      </Link>
-    );
+  const { label, record } = FACT_VIEWS[kind];
   return (
     <>
-      {FACT_LABELS[kind]} <time dateTime={factDate}>{thaiDate(factDate)}</time> {link}
+      {label} <time dateTime={factDate}>{thaiDate(factDate)}</time>{' '}
+      {record === 'ASSIGNMENT' ? (
+        <a href={`#assignment-event-${recordId}`} style={linkStyle}>
+          ดูประวัติการย้าย
+        </a>
+      ) : (
+        <Link to={`${RECORD_LINKS[record].path}${recordId}`} style={linkStyle} {...(newTab ? { target: '_blank', rel: 'noreferrer' } : {})}>
+          {RECORD_LINKS[record].text}
+        </Link>
+      )}
     </>
   );
 };

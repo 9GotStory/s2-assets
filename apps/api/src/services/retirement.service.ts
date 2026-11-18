@@ -233,8 +233,9 @@ export class RetirementService {
       },
       async (client) => {
         await this.assertRetirementMayBeRecorded(client, id);
-        // F007-T6 (#160): read under the Asset's lock, which every write of a conflicting fact takes or waits on
-        // (DR-18, #154 Q21).
+        // F007-T6 (#160): read under the Asset's lock, which every write that adds or moves a conflicting fact takes,
+        // in share mode for a Verification result (DR-18, #154 Q21). A Verification Correction takes none, but it only
+        // voids, so a race with it can list a fact just voided and never miss one.
         assertRetirementConflictsConfirmed(await retirementConflictsAt(client, id, facts.retirement_date), confirmed);
         const res = await client.query(
           `INSERT INTO retirements (asset_id, retirement_date, retirement_method, retirement_reference, note, recorded_by)

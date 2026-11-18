@@ -232,6 +232,28 @@ describe('Retirement Conflict (Seam A - F007-T6)', () => {
       await closeOpenRound();
     });
 
+    it('does not count a voided Loan Return or Not Returned ending: only the ending recorded again', async () => {
+      const assetId = await registered();
+      const loan = await lentAndReturned(assetId, '2026-10-10', '2026-10-20');
+      await loanVoided(loan.loanId, { kind: 'LOAN_RETURN', id: loan.loanReturnId });
+      await closedNotReturned(loan.loanId, [loan.loanItemId], '2026-10-25');
+      const notReturnedId = (await loanOf(loan.loanId)).items[0].not_returned.id;
+      await loanVoided(loan.loanId, { kind: 'NOT_RETURNED', id: notReturnedId });
+      await returned(loan.loanId, [loan.loanItemId], '2026-10-12');
+
+      expect((await retire(assetId, base({ retirement_date: '2026-10-15' }))).statusCode).toBe(201);
+    });
+
+    it('does not count a voided Repair Outcome: only the outcome recorded again', async () => {
+      const assetId = await registered();
+      const repairRecordId = await sent(assetId, { start_date: '2026-10-10' });
+      await ended(repairRecordId, { outcome_date: '2026-10-20' });
+      await repairVoided(repairRecordId, { kind: 'REPAIR_OUTCOME', id: (await recordOf(repairRecordId)).outcome.id });
+      await ended(repairRecordId, { outcome_date: '2026-10-12' });
+
+      expect((await retire(assetId, base({ retirement_date: '2026-10-15' }))).statusCode).toBe(201);
+    });
+
     it('does not count a Due Date or a Due Date Extension', async () => {
       const assetId = await registered();
       const { loanId, itemOf } = await lent([assetId], { loan_date: '2026-10-10', due_date: '2026-10-20' });
@@ -499,6 +521,37 @@ describe('Retirement Conflict (Seam A - F007-T6)', () => {
       expect(warned.statusCode).toBe(409);
       expect(warned.json().retirement_conflicts).toEqual([{ kind: 'FOUND', fact_id: found.json().verification_revision_id, fact_date: TODAY, record_id: roundId }]);
       await closeOpenRound();
+    });
+
+    // An amendment of a Retirement recorded on 2026-10-15 to 2026-10-20, queued behind `first`, which moves a fact of the
+    // Asset from before 2026-10-15 to 2026-10-25: the conflict is there before the amendment, so it saves unwarned.
+    const amendedBehind = async (assetId: string, first: () => Promise<any>) => {
+      const recorded = await retire(assetId, base({ retirement_date: '2026-10-15' }));
+      expect(recorded.statusCode).toBe(201);
+      const [moved, amended] = await behind(assetId, first, () => retirementCorrection(recorded.json().retirement_id, dateAmendment('2026-10-20')));
+      expect(moved.statusCode).toBe(201);
+      expect(amended.statusCode).toBe(201);
+    };
+
+    it('an amended Retirement Date reads what was there before it after the Asset lock, so a conflict a queued Repair Correction opened is not new to it', async () => {
+      const assetId = await registered();
+      const repairRecordId = await sent(assetId, { start_date: '2026-10-10' });
+      await ended(repairRecordId, { outcome_date: '2026-10-12' });
+      const outcomeId = (await recordOf(repairRecordId)).outcome.id;
+      const moveOutcome = await repairAmendment(repairRecordId, { kind: 'REPAIR_OUTCOME', id: outcomeId }, { outcome_date: '2026-10-25' });
+
+      await amendedBehind(assetId, () => repairCorrection(repairRecordId, moveOutcome));
+
+      expect((await conflictsOf(assetId)).map(({ fact_id }: any) => fact_id)).toEqual([outcomeId]);
+    });
+
+    it('an amended Retirement Date reads what was there before it after the Asset lock, so a conflict a queued Assignment Correction opened is not new to it', async () => {
+      const assetId = await placedOn('2026-10-12');
+      const [initial] = await timelineOf(assetId);
+
+      await amendedBehind(assetId, () => assignmentCorrection(assetId, initial.id, { action: 'AMEND', effective_date: '2026-10-25' }));
+
+      expect((await conflictsOf(assetId)).map(({ fact_id }: any) => fact_id)).toEqual([initial.id]);
     });
 
     it('an amended Retirement Date reads what was there before it after the Asset lock, so a conflict a queued Loan Correction opened is not new to it', async () => {
