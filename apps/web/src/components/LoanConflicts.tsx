@@ -5,6 +5,8 @@ import { periodText } from './assignmentFacts';
 import { LOAN_CONFLICT_LABEL, type LoanConflict, type WarnedLoanConflict } from './loanFacts';
 import { RepairConflictSide } from './RepairConflicts';
 import { REPAIR_CONFLICT_LABEL, conflictingIdOf, type WarnedRepairConflict } from './repairFacts';
+import { RetirementConflictFact } from './RetirementConflicts';
+import { RETIREMENT_CONFLICT_LABEL, type RetirementConflict } from './retirementFacts';
 
 // The other item's period: from its Loan Date to its ending, or still open.
 const loanPeriodText = ({ loan_date: loanDate, ending_date: endingDate }: LoanConflict): string => periodText(loanDate, endingDate);
@@ -30,6 +32,8 @@ export const LoanConflictMarks: React.FC<{ conflicts: LoanConflict[]; testId: st
 export interface ConflictWarningProps {
   conflicts: WarnedLoanConflict[];
   repairConflicts: WarnedRepairConflict[];
+  // F007-T6 (#160): the later facts of the Asset a Retirement Date would fall before.
+  retirementConflicts?: RetirementConflict[];
   onConfirm: () => void;
   onBack: () => void;
 }
@@ -37,9 +41,10 @@ export interface ConflictWarningProps {
 /**
  * F004-T7 (#81), F005-T7 (#105): the Loan Conflicts and Repair Conflicts a save would create, in one
  * warning. Nothing is saved until the user confirms them, and both sides of each are then kept and
- * marked (#74 Q20, Q25, #98 Q17).
+ * marked (#74 Q20, Q25, #98 Q17). F007-T6 (#160): a Retirement whose date falls before other facts is
+ * warned the same way, and every fact is kept (DR-18, #154 Q21).
  */
-export const ConflictWarning: React.FC<ConflictWarningProps> = ({ conflicts, repairConflicts, onConfirm, onBack }) => (
+export const ConflictWarning: React.FC<ConflictWarningProps> = ({ conflicts, repairConflicts, retirementConflicts = [], onConfirm, onBack }) => (
   <div role="alert" data-testid="conflict-warning" style={conflictBoxStyle}>
     {conflicts.length > 0 && (
       <div style={{ fontWeight: 600 }}>
@@ -51,7 +56,16 @@ export const ConflictWarning: React.FC<ConflictWarningProps> = ({ conflicts, rep
         การบันทึกนี้จะทำให้{REPAIR_CONFLICT_LABEL} {repairConflicts.length} รายการ
       </div>
     )}
-    <div style={{ marginTop: '0.25rem' }}>ระบบจะเก็บทั้งสองรายการไว้และแสดงเครื่องหมาย จนกว่าจะแก้ไขรายการที่บันทึกผิดให้ช่วงไม่ทับกัน</div>
+    {retirementConflicts.length > 0 && (
+      <div style={{ fontWeight: 600 }}>
+        การบันทึกนี้จะทำให้{RETIREMENT_CONFLICT_LABEL} {retirementConflicts.length} รายการ
+      </div>
+    )}
+    {conflicts.length + repairConflicts.length > 0 ? (
+      <div style={{ marginTop: '0.25rem' }}>ระบบจะเก็บทั้งสองรายการไว้และแสดงเครื่องหมาย จนกว่าจะแก้ไขรายการที่บันทึกผิดให้ช่วงไม่ทับกัน</div>
+    ) : (
+      <div style={{ marginTop: '0.25rem' }}>วันที่จำหน่ายอยู่ก่อนรายการต่อไปนี้ ระบบจะเก็บทุกรายการไว้และแสดงข้อความ จนกว่าจะแก้ไขรายการที่บันทึกผิด</div>
+    )}
     <ul style={{ margin: '0.5rem 0', paddingLeft: '1.25rem' }}>
       {conflicts.map(({ asset_id: assetId, name, asset_number: assetNumber, conflicting }) => (
         <li key={`${assetId}-${conflicting.loan_item_id}`}>
@@ -64,6 +78,11 @@ export const ConflictWarning: React.FC<ConflictWarningProps> = ({ conflicts, rep
       {repairConflicts.map(({ asset_id: assetId, name, asset_number: assetNumber, conflicting }) => (
         <li key={`${assetId}-${conflictingIdOf(conflicting)}`}>
           {name ?? assetNumber ?? assetId}: {REPAIR_CONFLICT_LABEL}กับ<RepairConflictSide conflicting={conflicting} newTab />
+        </li>
+      ))}
+      {retirementConflicts.map((conflict) => (
+        <li key={`${conflict.kind}-${conflict.fact_id}`}>
+          <RetirementConflictFact conflict={conflict} newTab />
         </li>
       ))}
     </ul>

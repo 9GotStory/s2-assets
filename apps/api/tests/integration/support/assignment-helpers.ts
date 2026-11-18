@@ -1,3 +1,4 @@
+import * as crypto from 'node:crypto';
 import { expect } from 'vitest';
 import type { Actor, ApiHarness } from './api-harness.ts';
 
@@ -43,4 +44,49 @@ export function assignmentHelpers(context: () => { api: ApiHarness; admin: Actor
   };
 
   return { entry, entries, detailOf, timelineOf, assignmentOf };
+}
+
+/**
+ * Assets placed by an Initial Assignment, and Reassignments, Bulk Reassignments and Assignment Corrections
+ * recorded, each at the assignment version an observer reads at the time. `context` is read on every call,
+ * as in `assignmentHelpers`.
+ */
+export function assignmentWriteHelpers(context: () => { api: ApiHarness; custodian: Actor; reader: Actor }, defaults: { effectiveDate: string }) {
+  const versionOf = async (assetId: string): Promise<number> => {
+    const { api, reader } = context();
+    return (await api.get(reader, `/assets/${assetId}`)).json().assignment_version;
+  };
+
+  const write = (url: string, payload: unknown) => {
+    const { api, custodian } = context();
+    return api.post(custodian, url, payload, { 'x-retry-token': crypto.randomUUID() });
+  };
+
+  // An Asset whose Location starts at `location` on the file's Effective Date, by its Initial Assignment.
+  const placed = async (location: Entry, name: string = `ของ ${crypto.randomUUID()}`): Promise<string> => {
+    const res = await write('/assets', { name, location_id: location.id, effective_date: defaults.effectiveDate });
+    expect(res.statusCode).toBe(201);
+    return res.json().asset.id;
+  };
+
+  // A Reassignment or an Initial Assignment of the Asset.
+  const reassign = async (assetId: string, facts: Record<string, unknown>, kind: 'REASSIGNMENT' | 'INITIAL' = 'REASSIGNMENT') =>
+    write(`/assets/${assetId}/assignments`, { kind, expected_assignment_version: await versionOf(assetId), ...facts });
+
+  // A Bulk Reassignment of `assetIds`.
+  const bulk = async (assetIds: string[], facts: Record<string, unknown>) =>
+    write('/assets/bulk-reassignments', {
+      assets: await Promise.all(assetIds.map(async (asset_id) => ({ asset_id, expected_assignment_version: await versionOf(asset_id) }))),
+      ...facts,
+    });
+
+  // An Assignment Correction of the fact `eventId`, with a reason unless `correction` gives one.
+  const correct = async (assetId: string, eventId: string, correction: Record<string, unknown>) =>
+    write(`/assets/${assetId}/assignments/${eventId}/corrections`, {
+      expected_assignment_version: await versionOf(assetId),
+      reason: 'บันทึกผิด',
+      ...correction,
+    });
+
+  return { placed, reassign, bulk, correct };
 }

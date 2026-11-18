@@ -3,6 +3,7 @@ import { Link } from 'react-router';
 import { AssignmentNoteFields, assignmentNotesPayload, type AssignmentNotes } from './AssignmentNoteFields';
 import { LoanConditionFields } from './LoanConditionFields';
 import { LoanSaveForm } from './LoanSaveForm';
+import { RetiredReason } from './RetiredReason';
 import { entryLabel, fieldInputStyle, fieldLabelStyle, useReferenceLists } from './ReferenceContextFields';
 import { bangkokToday, isBeforeToday, thaiDate } from './assignmentFacts';
 import { NOT_RETURNED_LABEL, ON_LOAN_LABEL, START_LOAN_LABEL, assetLabel, type LoanCondition, type RefusedAsset, type StartLoanWarning } from './loanFacts';
@@ -14,6 +15,9 @@ export interface LoanFormAsset {
   asset_number: string | null;
   // Why a new Loan of it warns, from its latest Loan Return or Repair Outcome; it never blocks (#98 Q20).
   start_loan_warning?: StartLoanWarning | null;
+  // F007-T2 (#154 Q23): a Retired Asset stays in the form, shown as not allowed; the server refuses it. The
+  // Asset page offers no Loan of a Retired Asset, so only the Asset list's selection says it.
+  retired?: boolean;
 }
 
 export interface LoanStartFormProps {
@@ -38,6 +42,7 @@ const RefusedAssets: React.FC<{ assets: RefusedAsset[] }> = ({ assets }) => (
         <li key={asset.asset_id}>
           {asset.name ?? asset.asset_number ?? asset.asset_id}:{' '}
           {asset.reason === 'NOT_FOUND' && 'ไม่พบครุภัณฑ์'}
+          {asset.reason === 'RETIRED' && <RetiredReason assetId={asset.asset_id} />}
           {asset.reason === 'UNDER_REPAIR' && (
             <>
               {UNDER_REPAIR_LABELS[asset.repair_kind]} <Link to={`/repairs/${asset.repair_record_id}`}>ดูรายการซ่อม</Link>
@@ -228,6 +233,11 @@ export const LoanStartForm: React.FC<LoanStartFormProps> = ({ assets, actorId, c
                 note={note}
                 onChange={(change) => setItemDraft(asset.id, change)}
               >
+                {asset.retired && (
+                  <div data-testid={`loan-retired-${asset.id}`} role="note" style={{ ...warningStyle, color: '#b91c1c' }}>
+                    ยืมไม่ได้ เพราะ<RetiredReason assetId={asset.id} />
+                  </div>
+                )}
                 {asset.start_loan_warning?.source === 'LOAN_RETURN' && (
                   <div data-testid={`loan-damaged-warning-${asset.id}`} style={warningStyle}>
                     คืนครั้งล่าสุดสภาพชำรุด กรุณาตรวจสอบก่อนให้ยืม

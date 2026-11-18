@@ -3,6 +3,7 @@ import { Link } from 'react-router';
 import { LoanConditionFields } from './LoanConditionFields';
 import { LoanSaveForm } from './LoanSaveForm';
 import { ReasonField } from './OutstandingItemFields';
+import { RetiredReason } from './RetiredReason';
 import { entryLabel, fieldInputStyle, fieldLabelStyle, useReferenceLists } from './ReferenceContextFields';
 import { CORRECTION_LABELS, bangkokToday } from './assignmentFacts';
 import { NOT_RETURNED_LABEL, ON_LOAN_LABEL, VOIDED_COUNTS_IN_NOTHING, type Loan, type LoanCondition, type LoanCorrectionTarget } from './loanFacts';
@@ -56,6 +57,13 @@ const AssetUnderRepair: React.FC<{ asset: { name: string | null; asset_number: s
   </>
 );
 
+// Voiding an ending refused because its Asset is Retired and would be On Loan again (F007-T2, #154 Q17).
+const AssetRetired: React.FC<{ asset: { name: string | null; asset_number: string | null; asset_id: string; retirement_id: string } }> = ({ asset }) => (
+  <>
+    ยกเลิกไม่ได้ เพราะ {asset.name ?? asset.asset_number ?? asset.asset_id} <RetiredReason assetId={asset.asset_id} refusedCorrection />
+  </>
+);
+
 /** "ยกเลิกรายการ (บันทึกผิด)": a fact that never happened. It stays shown, struck through, and counts in nothing (#74 Q25). */
 export const LoanVoidForm: React.FC<LoanCorrectionFormProps> = ({ loan, target, targetLabel, csrfToken, onRecorded, onRefresh, onCancel, onPermissionRevoked }) => {
   const [reason, setReason] = useState('');
@@ -71,6 +79,9 @@ export const LoanVoidForm: React.FC<LoanCorrectionFormProps> = ({ loan, target, 
       refusedList={(body) => {
         if (body?.code === 'ASSET_ON_ANOTHER_LOAN') {
           return <AssetOnAnotherLoan asset={body.asset} />;
+        }
+        if (body?.code === 'ASSET_RETIRED') {
+          return <AssetRetired asset={body.asset} />;
         }
         return body?.code === 'ASSET_UNDER_REPAIR' ? <AssetUnderRepair asset={body.asset} /> : null;
       }}

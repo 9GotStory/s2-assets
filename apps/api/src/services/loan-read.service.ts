@@ -3,6 +3,7 @@ import { assetExists, containsPattern } from './asset-lookups.ts';
 import { bangkokDate, readAssignmentsAt, type PermanentAssignment, type ReferenceEntrySummary } from './assignment.service.ts';
 import { loanItemPeriods } from './loan-item-periods.ts';
 import { latestRepairOutcomesOf, repairRecordsCiting, type CitingRepairRecord, type RepairKind } from './repair-read.service.ts';
+import { currentRetirementsOf } from './retirement-read.service.ts';
 
 // The reads of Loans: the Loan page, the Loan list, an Asset's Loans and the Asset search's view of them.
 // Every write to the Loan tables stays in loan.service.ts (#76); this module writes nothing (#80).
@@ -64,7 +65,8 @@ export type VoidedEnding = ({ kind: 'LOAN_RETURN' } & Omit<LoanReturn, 'returned
 
 export interface LoanItem {
   id: string;
-  asset: { id: string; name: string | null; asset_number: string | null };
+  // F007-T2 (#156): whether the Asset is Retired, so that its Loan Return offers no Repair Start (DR-08).
+  asset: { id: string; name: string | null; asset_number: string | null; retired: boolean };
   // The current Due Date: that of the latest Due Date Extension, or the Due Date as first recorded.
   due_date: string;
   // The Due Date as first recorded, which a Loan Correction amends (#74 Q25).
@@ -378,6 +380,21 @@ async function onLoanOfAssets(db: pg.Pool | any, assetIds: string[], today: stri
   );
 }
 
+// The Outstanding LoanItem that keeps an Asset On Loan, with its Loan (F007-T1, DR-14).
+export interface OutstandingLoanItem {
+  loan_item_id: string;
+  loan_id: string;
+}
+
+/**
+ * The Outstanding LoanItem of each of `assetIds` that is On Loan (LR-11 allows one). A Not Returned ending does
+ * not keep it (DR-16), and a voided Loan voids its items.
+ */
+export async function outstandingLoanItemsOf(db: pg.Pool | pg.PoolClient | any, assetIds: string[]): Promise<Map<string, OutstandingLoanItem>> {
+  const res = await db.query(`SELECT li.asset_id, li.id, li.loan_id FROM loan_items li WHERE li.asset_id = ANY($1::uuid[]) AND ${ITEM_IS_OUTSTANDING}`, [assetIds]);
+  return new Map(res.rows.map((row: any): [string, OutstandingLoanItem] => [row.asset_id, { loan_item_id: row.id, loan_id: row.loan_id }]));
+}
+
 // The LoanItem that holds an Asset, as an Asset Verification keeps it (F006-T2, #125 Q14): On Loan, or Not
 // Returned and not come back, with its Borrower as the Asset page names them now and its current Due Date.
 export interface LoanContext {
@@ -638,7 +655,9 @@ export class LoanReadService {
     function withRepairRecords<T extends { id: string }>(loanReturn: T | null) {
       return loanReturn && { ...loanReturn, repair_records: citing.get(loanReturn.id) ?? [] };
     }
-    const conflicts = conflictsByItem(await readLoanConflictsOfAssets(this.db, [...new Set<string>(itemsRes.rows.map(({ asset_id }: any) => asset_id))]));
+    const assetIds = [...new Set<string>(itemsRes.rows.map(({ asset_id }: any) => asset_id))];
+    const conflicts = conflictsByItem(await readLoanConflictsOfAssets(this.db, assetIds));
+    const retirements = await currentRetirementsOf(this.db, assetIds);
     const assignments = returnDate
       ? await readAssignmentsAt(this.db, itemsRes.rows.filter(isReturnable).map((item: any) => item.asset_id), returnDate)
       : null;
@@ -660,7 +679,7 @@ export class LoanReadService {
       is_overdue: itemsRes.rows.some((item: any) => item.is_overdue),
       items: itemsRes.rows.map((item: any) => ({
         id: item.id,
-        asset: { id: item.asset_id, name: item.asset_name, asset_number: item.asset_number },
+        asset: { id: item.asset_id, name: item.asset_name, asset_number: item.asset_number, retired: retirements.has(item.asset_id) },
         due_date: item.due_date,
         first_due_date: item.first_due_date,
         condition: item.lending_condition,

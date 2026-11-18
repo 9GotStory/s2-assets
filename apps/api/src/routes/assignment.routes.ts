@@ -17,12 +17,14 @@ import {
   type RecordAssignmentInput,
 } from '../services/assignment-recording.service.ts';
 import {
+  AssetsRetiredError,
   BulkReassignmentService,
   InitialAssignmentRequiredError,
   type BulkReassignmentInput,
   type BulkReassignmentPreviewInput,
 } from '../services/bulk-reassignment.service.ts';
 import { isValidUuid } from '../services/capability.service.ts';
+import { AssetRetiredError } from '../services/retirement-read.service.ts';
 
 export interface AssignmentRoutesOptions {
   assignmentRecordingService: AssignmentRecordingService;
@@ -120,7 +122,10 @@ const refusalOf = (err: unknown) => {
   if (err instanceof CitedVerificationRevisionRefusedError) {
     return { ...errorBody(err.statusCode, err.code, err.message), verification_revision: err.verification_revision };
   }
-  if (err instanceof InitialAssignmentRequiredError) {
+  if (err instanceof AssetRetiredError) {
+    return { ...errorBody(err.statusCode, err.code, err.message), asset: err.asset };
+  }
+  if (err instanceof InitialAssignmentRequiredError || err instanceof AssetsRetiredError) {
     return { ...errorBody(err.statusCode, err.code, err.message), assets: err.assets };
   }
   if (err instanceof RetryTokenConflictError || err instanceof NotFoundError || err instanceof ValidationError) {

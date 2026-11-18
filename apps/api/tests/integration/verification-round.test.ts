@@ -141,6 +141,7 @@ describe('Open a Verification Round (Seam A - F006-T1)', () => {
         current: null,
         version: 1,
         revision_count: 0,
+        retired: false,
       });
     });
 
@@ -298,31 +299,32 @@ describe('Open a Verification Round (Seam A - F006-T1)', () => {
       const { fiscal_year: _year, ...noYear } = opening();
       const before = (await roundsOf()).items.length;
 
-      for (const payload of [
-        noName,
-        opening({ name: '   ' }),
-        opening({ name: 'ตรวจ\nประจำปี' }),
-        opening({ name: 'ตรวจประจำปี\n' }),
-        opening({ name: 'ตรวจ\tประจำปี' }),
-        opening({ name: 'ก'.repeat(201) }),
-        noYear,
-        opening({ fiscal_year: '2569' }),
-        opening({ fiscal_year: 999 }),
-        opening({ fiscal_year: 10000 }),
-        opening({ fiscal_year: 2569.5 }),
-        opening({ notes: 'ก'.repeat(2001) }),
-        opening({ notes: 'กรรมการ\u0007' }),
-        opening({ organization_unit_ids: ['not-a-uuid'] }),
-        opening({ organization_unit_ids: [room.id] }),
-        opening({ location_ids: [unit.id] }),
-        opening({ location_ids: [crypto.randomUUID()] }),
+      const fiscalYearRule = 'fiscal_year must be a four-digit Buddhist-era year';
+      for (const [payload, message] of [
+        [noName, 'Invalid request payload: name: Invalid input: expected string, received undefined'],
+        [opening({ name: '   ' }), 'name is required'],
+        [opening({ name: 'ตรวจ\nประจำปี' }), 'name must not contain control characters'],
+        [opening({ name: 'ตรวจประจำปี\n' }), 'name must not contain control characters'],
+        [opening({ name: 'ตรวจ\tประจำปี' }), 'name must not contain control characters'],
+        [opening({ name: 'ก'.repeat(201) }), 'name must be at most 200 characters'],
+        [noYear, 'Invalid request payload: fiscal_year: Invalid input: expected number, received undefined'],
+        [opening({ fiscal_year: '2569' }), 'Invalid request payload: fiscal_year: Invalid input: expected number, received string'],
+        [opening({ fiscal_year: 999 }), fiscalYearRule],
+        [opening({ fiscal_year: 10000 }), fiscalYearRule],
+        [opening({ fiscal_year: 2569.5 }), fiscalYearRule],
+        [opening({ notes: 'ก'.repeat(2001) }), 'notes must be at most 2000 characters'],
+        [opening({ notes: 'กรรมการ\u0007' }), 'notes must not contain control characters'],
+        [opening({ organization_unit_ids: ['not-a-uuid'] }), 'organization_unit_ids must hold valid UUIDs'],
+        [opening({ organization_unit_ids: [room.id] }), 'organization_unit_ids must name entries of its Reference List'],
+        [opening({ location_ids: [unit.id] }), 'location_ids must name entries of its Reference List'],
+        [opening({ location_ids: [crypto.randomUUID()] }), 'location_ids must name entries of its Reference List'],
         // Past the cap, even naming one real entry again and again.
-        opening({ location_ids: Array.from({ length: 1001 }, () => room.id) }),
-        opening({ attachment: 'รายชื่อกรรมการ.pdf' }),
-      ]) {
+        [opening({ location_ids: Array.from({ length: 1001 }, () => room.id) }), 'location_ids must name at most 1000 entries'],
+        [opening({ attachment: 'รายชื่อกรรมการ.pdf' }), 'Invalid request payload: : Unrecognized key: "attachment"'],
+      ] as const) {
         const res = await open(payload);
         expect(res.statusCode, JSON.stringify(payload).slice(0, 80)).toBe(400);
-        expect(res.json().code).toBe('VALIDATION_FAILED');
+        expect(res.json()).toMatchObject({ code: 'VALIDATION_FAILED', message });
       }
       expect((await roundsOf()).items).toHaveLength(before);
     });
@@ -427,10 +429,19 @@ describe('Open a Verification Round (Seam A - F006-T1)', () => {
       await registered();
       const roundId = await opened();
 
-      for (const query of ['search=%20%20', `search=${'a'.repeat(4097)}`, 'search=a%07b', 'limit=0', 'limit=101', 'offset=-1', 'limit=1&limit=2', 'status=FOUND']) {
+      for (const [query, message] of [
+        ['search=%20%20', 'search: must not be blank'],
+        [`search=${'a'.repeat(4097)}`, 'search: must be at most 4096 bytes'],
+        ['search=a%07b', 'search: must not contain control characters'],
+        ['limit=0', 'limit: must be a canonical positive integer'],
+        ['limit=101', 'limit: must be between 1 and 100'],
+        ['offset=-1', 'offset: must be a canonical non-negative integer'],
+        ['limit=1&limit=2', 'limit: Invalid input: expected string, received array'],
+        ['status=FOUND', 'query: Unrecognized key: "status"'],
+      ]) {
         const res = await api.get(readonly, `/verification-rounds/${roundId}/entries?${query}`);
         expect(res.statusCode, query).toBe(400);
-        expect(res.json().code).toBe('VALIDATION_FAILED');
+        expect(res.json()).toMatchObject({ code: 'VALIDATION_FAILED', message: `Invalid query: ${message}` });
       }
       expect((await api.get(readonly, `/verification-rounds/${roundId}/entries?search=${encodeURIComponent('a\tb\nc')}`)).statusCode).toBe(200);
     });
@@ -467,7 +478,9 @@ describe('Open a Verification Round (Seam A - F006-T1)', () => {
         expect(res.json().code).toBe('NOT_FOUND');
       }
       for (const url of ['/verification-rounds/not-a-uuid', '/verification-rounds/not-a-uuid/entries']) {
-        expect((await api.get(readonly, url)).statusCode).toBe(400);
+        const res = await api.get(readonly, url);
+        expect(res.statusCode).toBe(400);
+        expect(res.json()).toMatchObject({ code: 'INVALID_ID', message: 'Verification Round ID must be a valid UUID string' });
       }
     });
   });

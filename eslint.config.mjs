@@ -30,11 +30,17 @@ const readsFrom = (tables, owners) =>
   );
 const LOAN_TABLES = 'loans|loan_\\w+';
 const REPAIR_TABLES = 'repair_\\w+';
+// #157 retro: Retired has one SQL source, in retirement-read.service.ts (CODING_STANDARDS, a derived condition).
+const RETIREMENT_TABLES = 'retirements|retirement_\\w+';
 const WRITES_TO_LOAN_TABLES = writesTo(LOAN_TABLES, 'loan.service.ts');
 const WRITES_TO_ASSIGNMENT_CHANGES = writesTo('assignment_changes', 'assignment.service.ts');
 const WRITES_TO_REPAIR_TABLES = writesTo(REPAIR_TABLES, 'repair.service.ts');
 const READS_LOAN_TABLES = readsFrom(LOAN_TABLES, 'services/loan*.ts');
 const READS_REPAIR_TABLES = readsFrom(REPAIR_TABLES, 'services/repair*.ts');
+const WRITES_TO_RETIREMENT_TABLES = writesTo(RETIREMENT_TABLES, 'retirement.service.ts');
+const READS_RETIREMENT_TABLES = readsFrom(RETIREMENT_TABLES, 'services/retirement*.ts');
+// Every block on apps/api/src keeps the Retirement guards except the Retirement modules' own.
+const RETIREMENT_GUARDS = [WRITES_TO_RETIREMENT_TABLES, READS_RETIREMENT_TABLES];
 const apiSyntaxRule = (...guards) => ({ 'no-restricted-syntax': ['error', NO_PROMISED_REPLY, ...guards] });
 
 // An awaited expect, by its matcher, and whether it goes through .not.
@@ -42,6 +48,15 @@ const matcher = (name) => `[expression.argument.callee.property.name='${name}']`
 const NEGATED = "[expression.argument.callee.object.property.name='not']";
 const NOT_NEGATED = "[expression.argument.callee.object.property.name!='not']";
 const ABSENCE = `ExpressionStatement:matches(${matcher('toHaveCount')}[expression.argument.arguments.0.value=0]${NOT_NEGATED}, ${matcher('toBeHidden')}${NOT_NEGATED}, ${matcher('toBeVisible')}${NEGATED}, ${matcher('toBeAttached')}${NEGATED})`;
+
+// #155 retro: a loop of refused payloads that asserts only a 400 or VALIDATION_FAILED stays green when
+// another rule refuses one of them. Each payload names the rule that refuses it, in the message or details.
+// A loop over a named array goes unseen.
+const REFUSAL_LOOP_NAMES_NO_RULE = {
+  selector:
+    "ForOfStatement[right.type='ArrayExpression']:has(:matches(Literal[value=400], Literal[value='VALIDATION_FAILED'])):not(:has(Identifier[name=/^(message|details)$/]))",
+  message: 'Assert which rule refused each payload, by its message or details: a code alone stays green when another rule refuses it (CODING_STANDARDS.md, #155).',
+};
 
 export default tseslint.config(
   {
@@ -82,28 +97,37 @@ export default tseslint.config(
       WRITES_TO_ASSIGNMENT_CHANGES,
       WRITES_TO_REPAIR_TABLES,
       READS_LOAN_TABLES,
-      READS_REPAIR_TABLES
+      READS_REPAIR_TABLES,
+      ...RETIREMENT_GUARDS
     ),
   },
   {
     files: ['apps/api/src/services/loan*.ts'],
-    rules: apiSyntaxRule(WRITES_TO_LOAN_TABLES, WRITES_TO_ASSIGNMENT_CHANGES, WRITES_TO_REPAIR_TABLES, READS_REPAIR_TABLES),
+    rules: apiSyntaxRule(WRITES_TO_LOAN_TABLES, WRITES_TO_ASSIGNMENT_CHANGES, WRITES_TO_REPAIR_TABLES, READS_REPAIR_TABLES, ...RETIREMENT_GUARDS),
   },
   {
     files: ['apps/api/src/services/loan.service.ts'],
-    rules: apiSyntaxRule(WRITES_TO_ASSIGNMENT_CHANGES, WRITES_TO_REPAIR_TABLES, READS_REPAIR_TABLES),
+    rules: apiSyntaxRule(WRITES_TO_ASSIGNMENT_CHANGES, WRITES_TO_REPAIR_TABLES, READS_REPAIR_TABLES, ...RETIREMENT_GUARDS),
   },
   {
     files: ['apps/api/src/services/assignment.service.ts'],
-    rules: apiSyntaxRule(WRITES_TO_LOAN_TABLES, WRITES_TO_REPAIR_TABLES, READS_LOAN_TABLES, READS_REPAIR_TABLES),
+    rules: apiSyntaxRule(WRITES_TO_LOAN_TABLES, WRITES_TO_REPAIR_TABLES, READS_LOAN_TABLES, READS_REPAIR_TABLES, ...RETIREMENT_GUARDS),
   },
   {
     files: ['apps/api/src/services/repair*.ts'],
-    rules: apiSyntaxRule(WRITES_TO_LOAN_TABLES, WRITES_TO_ASSIGNMENT_CHANGES, WRITES_TO_REPAIR_TABLES, READS_LOAN_TABLES),
+    rules: apiSyntaxRule(WRITES_TO_LOAN_TABLES, WRITES_TO_ASSIGNMENT_CHANGES, WRITES_TO_REPAIR_TABLES, READS_LOAN_TABLES, ...RETIREMENT_GUARDS),
   },
   {
     files: ['apps/api/src/services/repair.service.ts'],
-    rules: apiSyntaxRule(WRITES_TO_LOAN_TABLES, WRITES_TO_ASSIGNMENT_CHANGES, READS_LOAN_TABLES),
+    rules: apiSyntaxRule(WRITES_TO_LOAN_TABLES, WRITES_TO_ASSIGNMENT_CHANGES, READS_LOAN_TABLES, ...RETIREMENT_GUARDS),
+  },
+  {
+    files: ['apps/api/src/services/retirement*.ts'],
+    rules: apiSyntaxRule(WRITES_TO_LOAN_TABLES, WRITES_TO_ASSIGNMENT_CHANGES, WRITES_TO_REPAIR_TABLES, READS_LOAN_TABLES, READS_REPAIR_TABLES, WRITES_TO_RETIREMENT_TABLES),
+  },
+  {
+    files: ['apps/api/src/services/retirement.service.ts'],
+    rules: apiSyntaxRule(WRITES_TO_LOAN_TABLES, WRITES_TO_ASSIGNMENT_CHANGES, WRITES_TO_REPAIR_TABLES, READS_LOAN_TABLES, READS_REPAIR_TABLES),
   },
   {
     // #76: data kept across a key change shows one query's values under another's.
@@ -157,6 +181,7 @@ export default tseslint.config(
           selector: "CallExpression[callee.name='afterAll'][arguments.length>1]",
           message: 'Leave the afterAll timeout to hookTimeout in apps/api/vitest.config.ts: stopping a container can outlast a shorter one (#102).',
         },
+        REFUSAL_LOOP_NAMES_NO_RULE,
       ],
     },
   },

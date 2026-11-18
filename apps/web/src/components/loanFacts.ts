@@ -136,7 +136,8 @@ export interface LoanCorrection {
 
 export interface LoanItem {
   id: string;
-  asset: { id: string; name: string | null; asset_number: string | null };
+  // F007-T2 (#156): whether the Asset is Retired, which offers no Repair Start from its Loan Return.
+  asset: { id: string; name: string | null; asset_number: string | null; retired: boolean };
   // The current Due Date, derived by the server from the item's Due Date Extensions.
   due_date: string;
   // The Due Date as first recorded, which a Loan Correction amends (F004-T6).
@@ -219,6 +220,8 @@ export type RefusedAsset = { asset_id: string; name: string | null; asset_number
   | { reason: 'NOT_RETURNED'; loan_id: string }
   // F005-T1 (#98 Q3): the Repair Record that keeps it, and its kind.
   | { reason: 'UNDER_REPAIR'; repair_record_id: string; repair_kind: RepairKind }
+  // F007-T2 (#156): its Retirement not voided.
+  | { reason: 'RETIRED'; retirement_id: string }
 );
 
 // A LoanItem that has not ended (GLOSSARY.md: Outstanding).
@@ -288,7 +291,7 @@ export const OVERDUE_LABEL = 'เกินกำหนด';
 export const RETURNED_LATE_LABEL = 'คืนเกินกำหนด';
 
 // An Asset by its name, or by what else identifies it.
-export const assetLabel = ({ id, name, asset_number: assetNumber }: LoanItem['asset']): string =>
+export const assetLabel = ({ id, name, asset_number: assetNumber }: { id: string; name: string | null; asset_number: string | null }): string =>
   name ?? assetNumber ?? id;
 
 export const borrowerText = (borrower: Borrower): string => {

@@ -108,6 +108,7 @@ describe('Reference Context Integration Tests (Seam A - T4)', () => {
 
   describe('Reference list maintenance (D7-A, D3 reference:maintain)', () => {
     it('reads lists only in canonical integer pages', async () => {
+      // eslint-disable-next-line no-restricted-syntax -- a refused-payload loop from before #155
       for (const query of ['limit=1e2', 'limit=0x10', 'limit=0', 'limit=501', 'offset=', 'offset=-1', 'offset=01']) {
         expect((await get(readonly, `/references/locations?${query}`)).statusCode, query).toBe(400);
       }
@@ -264,6 +265,7 @@ describe('Reference Context Integration Tests (Seam A - T4)', () => {
       });
       expect(renameIntoDuplicate.statusCode).toBe(409);
 
+      // eslint-disable-next-line no-restricted-syntax -- a refused-payload loop from before #155
       for (const payload of [{ name: '   ' }, { name: 'x'.repeat(201) }, { name: 'bad\u0007name' }, { name: 'ok', extra: 1 }, {}]) {
         const res = await post(admin, '/references/locations', payload);
         expect(res.statusCode).toBe(400);
@@ -492,6 +494,7 @@ describe('Reference Context Integration Tests (Seam A - T4)', () => {
         expect(other.json().items, field).toEqual([]);
       }
 
+      // eslint-disable-next-line no-restricted-syntax -- a refused-payload loop from before #155
       for (const query of [
         'location_id=not-a-uuid',
         `organization_unit_id=${'0'.repeat(36)}`,

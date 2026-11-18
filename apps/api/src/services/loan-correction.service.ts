@@ -22,9 +22,10 @@ import {
 } from './loan.service.ts';
 import { normalizeConfirmedConflicts, withConfirmedConflicts, type ConfirmedConflictInput } from './conflict-confirmation.ts';
 import { loanConflictCheck } from './loan-conflict.ts';
-import type { LoanCondition } from './loan-read.service.ts';
+import { outstandingLoanItemsOf, type LoanCondition } from './loan-read.service.ts';
 import { isSelectablePerson } from './reference.service.ts';
 import { underRepairOfAssets, type RepairKind } from './repair-read.service.ts';
+import { AssetRetiredError, currentRetirementsOf } from './retirement-read.service.ts';
 import { commitOnce } from './retryable-write.ts';
 import { NotFoundError } from './service-errors.ts';
 import { ValidationError } from './validation-error.ts';
@@ -283,6 +284,17 @@ export class LoanCorrectionService {
     }
   }
 
+  // A Retired Asset is never On Loan again (#154 Q17). Asked after a void of an ending, in its transaction: an item
+  // that still has another ending, such as a Not Returned under a voided Loan Return, is not On Loan. The
+  // Assets are locked, the lock a Retirement takes, so a Retirement committed first is seen (#154 Q24).
+  private async assertNotRetiredOnLoan(client: pg.PoolClient, itemId: string, items: { id: string; asset_id: string; name: string | null; asset_number: string | null }[]) {
+    const { asset_id, name, asset_number } = items.find(({ id }) => id === itemId)!;
+    const retirement = (await currentRetirementsOf(client, [asset_id])).get(asset_id);
+    if (retirement && (await outstandingLoanItemsOf(client, [asset_id])).has(asset_id)) {
+      throw new AssetRetiredError({ asset_id, name, asset_number, retirement_id: retirement.id }, 'it cannot be On Loan again');
+    }
+  }
+
   async correct(actorId: string, loanId: string, input: CorrectLoanInput, { retryToken }: { retryToken: string }): Promise<RecordedLoanCorrection> {
     const facts = normalizeFacts(input);
     const confirmed = normalizeConfirmedConflicts(input.confirmed_conflicts);
@@ -321,6 +333,9 @@ export class LoanCorrectionService {
             await this.assertAssetFree(client, fact.loan_item_id!, items);
           }
           await voidLoanFact(client, loanId, target, fact);
+          if (target.kind === 'LOAN_RETURN' || target.kind === 'NOT_RETURNED') {
+            await this.assertNotRetiredOnLoan(client, fact.loan_item_id!, items);
+          }
         }
 
         const broken = await brokenLoanDateRules(client, loanId, today);

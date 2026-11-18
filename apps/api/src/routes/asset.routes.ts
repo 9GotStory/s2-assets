@@ -21,6 +21,7 @@ import {
 import { isValidUuid, CapabilityService } from '../services/capability.service.ts';
 import type { LoanReadService } from '../services/loan-read.service.ts';
 import type { RepairReadService } from '../services/repair-read.service.ts';
+import type { RetirementReadService } from '../services/retirement-read.service.ts';
 import type { VerificationReadService } from '../services/verification-read.service.ts';
 
 export interface AssetRoutesOptions {
@@ -28,6 +29,7 @@ export interface AssetRoutesOptions {
   loanReadService: LoanReadService;
   repairReadService: RepairReadService;
   verificationReadService: VerificationReadService;
+  retirementReadService: RetirementReadService;
   capabilityService?: CapabilityService;
   db?: any;
   publicAppOrigin?: string;
@@ -573,7 +575,7 @@ export const assetRoutes: FastifyPluginAsync<AssetRoutesOptions> = async (
       const query = (request.query || {}) as Record<string, unknown>;
 
       // Check for unknown parameters
-      const allowedParams = new Set<string>(['field', 'value', 'limit', 'offset', 'has_assignment_conflict', 'on_loan', 'under_repair', ...REFERENCE_ID_FIELDS]);
+      const allowedParams = new Set<string>(['field', 'value', 'limit', 'offset', 'has_assignment_conflict', 'on_loan', 'under_repair', 'retired', 'has_retirement_conflict', ...REFERENCE_ID_FIELDS]);
       for (const key of Object.keys(query)) {
         if (!allowedParams.has(key)) {
           return sendValidationError({ query: 'Unknown query parameter' });
@@ -651,6 +653,14 @@ export const assetRoutes: FastifyPluginAsync<AssetRoutesOptions> = async (
       if (query.under_repair !== undefined && query.under_repair !== 'true') {
         return sendValidationError({ under_repair: "under_repair must be 'true' when given" });
       }
+      // F007-T1 (#155, #154 P6): the Retirement status, "จำหน่ายแล้ว" or "ยังไม่จำหน่าย"; leaving it out is "ทั้งหมด".
+      if (query.retired !== undefined && query.retired !== 'true' && query.retired !== 'false') {
+        return sendValidationError({ retired: "retired must be 'true' or 'false' when given" });
+      }
+      // F007-T6 (#160, #154 P6): "วันจำหน่ายขัดกับประวัติ" takes one value, as has_assignment_conflict does.
+      if (query.has_retirement_conflict !== undefined && query.has_retirement_conflict !== 'true') {
+        return sendValidationError({ has_retirement_conflict: "has_retirement_conflict must be 'true' when given" });
+      }
 
       // Limit validation
       if (limit !== undefined) {
@@ -692,6 +702,8 @@ export const assetRoutes: FastifyPluginAsync<AssetRoutesOptions> = async (
           has_assignment_conflict: query.has_assignment_conflict === 'true',
           on_loan: query.on_loan === 'true',
           under_repair: query.under_repair === 'true',
+          retired: query.retired === undefined ? undefined : query.retired === 'true',
+          has_retirement_conflict: query.has_retirement_conflict === 'true',
           limit: limit as any,
           offset: offset as any,
         });
@@ -753,6 +765,8 @@ export const assetRoutes: FastifyPluginAsync<AssetRoutesOptions> = async (
       let canCorrectVerification = false;
       let canManageVerification = false;
       let canViewAcquisition = false;
+      let canRecordRetirement = false;
+      let canCorrectRetirement = false;
       if (request.user && capabilityService) {
         canCorrect = await capabilityService.hasCapability(request.user.id, 'asset:correct');
         canReassign = await capabilityService.hasCapability(request.user.id, 'assignment:reassign');
@@ -763,7 +777,13 @@ export const assetRoutes: FastifyPluginAsync<AssetRoutesOptions> = async (
         canCorrectVerification = await capabilityService.hasCapability(request.user.id, 'verification:correct');
         canManageVerification = await capabilityService.hasCapability(request.user.id, 'verification:manage');
         canViewAcquisition = await capabilityService.hasCapability(request.user.id, 'acquisition:view');
+        canRecordRetirement = await capabilityService.hasCapability(request.user.id, 'retirement:record');
+        canCorrectRetirement = await capabilityService.hasCapability(request.user.id, 'retirement:correct');
       }
+      // F007-T1 (#155): a Retired Asset takes no new business event, so no flag for one is set (DR-08, #154 Q7, Q22).
+      // Register correction and Evidence stay (Q7, Q16).
+      const retirements = await options.retirementReadService.ofAsset(id.trim().toLowerCase());
+      const mayTakeNewEvent = !retirements.retired;
 
       // Disclose acquisition linkage only if user has 'acquisition:view'
       if (!canViewAcquisition && result.asset) {
@@ -782,27 +802,35 @@ export const assetRoutes: FastifyPluginAsync<AssetRoutesOptions> = async (
       return reply.status(200).send({
         ...result,
         can_correct: canCorrect,
-        can_reassign: canReassign,
+        can_reassign: canReassign && mayTakeNewEvent,
         can_correct_assignment: canCorrectAssignment,
         on_loan: await options.loanReadService.onLoanOf(id.trim().toLowerCase()),
         start_loan_warning: await options.loanReadService.startLoanWarningOf(id.trim().toLowerCase()),
         not_returned: await options.loanReadService.assetNotReturnedOf(id.trim().toLowerCase()),
         has_loan_conflict: await options.loanReadService.hasLoanConflict(id.trim().toLowerCase()),
-        can_record_loan: canRecordLoan,
+        can_record_loan: canRecordLoan && mayTakeNewEvent,
         // F005-T1 (#99): the Repair Record that keeps the Asset Under Repair, and whether the viewer may send it.
         under_repair: await options.repairReadService.underRepairOf(id.trim().toLowerCase()),
         // F005-T2 (#100): from the latest Repair Outcome that has one; nothing is scheduled from it.
         next_recommended_maintenance_date: await options.repairReadService.nextRecommendedMaintenanceDateOf(id.trim().toLowerCase()),
         // F005-T7: whether any of its Repair Records is in a Repair Conflict.
         has_repair_conflict: await options.repairReadService.hasRepairConflict(id.trim().toLowerCase()),
-        can_record_repair: canRecordRepair,
+        can_record_repair: canRecordRepair && mayTakeNewEvent,
         // F006-T2 (#127): the "ตรวจประจำปี" panel for the open Round, and whether the viewer may record a result.
         verification: await options.verificationReadService.panelOf(id.trim().toLowerCase()),
-        can_record_verification: canRecordVerification,
-        // F006-T4 (#129): whether the viewer may void the panel's current result.
+        can_record_verification: canRecordVerification && mayTakeNewEvent,
+        // F006-T4 (#129): whether the viewer may void the panel's current result. F007-T4 (#154 Q12): still for a
+        // Retired Asset.
         can_correct_verification: canCorrectVerification,
         // F006-T5 (#130): whether the viewer may add the Asset to the open Round when it is not in it.
-        can_manage_verification: canManageVerification,
+        can_manage_verification: canManageVerification && mayTakeNewEvent,
+        // F007-T1 (#155): whether the Asset is Retired, by which Retirement, every Retirement of it, and whether the
+        // viewer may retire it. While it is On Loan or Under Repair the page says why instead (#154 Q22).
+        ...retirements,
+        can_retire: canRecordRetirement && mayTakeNewEvent,
+        // F007-T5 (#159): whether the viewer holds 'retirement:correct'; the page offers it on a Retirement not
+        // voided (#154 Q6).
+        can_correct_retirement: canCorrectRetirement,
       });
     }
   );

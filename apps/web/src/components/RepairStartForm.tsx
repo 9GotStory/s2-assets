@@ -4,6 +4,7 @@ import { AssignmentNoteFields, assignmentNotesPayload, type AssignmentNotes } fr
 import { LoanSaveForm } from './LoanSaveForm';
 import { RepairOutcomeFields, emptyRepairOutcomeDraft, repairOutcomeDraftError, repairOutcomePayload, type RepairOutcomeDraft } from './RepairOutcomeFields';
 import { fieldInputStyle, fieldLabelStyle } from './ReferenceContextFields';
+import { RetiredReason } from './RetiredReason';
 import { bangkokToday, thaiDate } from './assignmentFacts';
 import { CONDITION_LABELS, NOT_RETURNED_LABEL, ON_LOAN_LABEL } from './loanFacts';
 import {
@@ -42,11 +43,13 @@ export interface RepairStartFormProps {
 
 const fieldStyle: React.CSSProperties = { marginBottom: '0.75rem' };
 
-// A refused Repair Start names the Loan or the Repair Record that keeps the Asset (#98 Q3).
+// A refused Repair Start names the Loan or the Repair Record that keeps the Asset (#98 Q3), or its Retirement (F007-T2).
 const RefusedRepairStart: React.FC<{ asset: RepairStartRefusal }> = ({ asset }) => (
   <>
     ส่งซ่อมไม่ได้ เพราะ {asset.name ?? asset.asset_number ?? asset.asset_id}{' '}
-    {asset.reason === 'UNDER_REPAIR' ? (
+    {asset.reason === 'RETIRED' ? (
+      <RetiredReason assetId={asset.asset_id} />
+    ) : asset.reason === 'UNDER_REPAIR' ? (
       <>
         {UNDER_REPAIR_LABELS[asset.repair_kind]} <Link to={`/repairs/${asset.repair_record_id}`}>ดูรายการซ่อม</Link>
       </>

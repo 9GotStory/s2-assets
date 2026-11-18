@@ -155,6 +155,8 @@ export interface UnderRepair {
 export type RepairStartRefusal = { asset_id: string; name: string | null; asset_number: string | null } & (
   | { reason: 'ON_LOAN' | 'NOT_RETURNED'; loan_id: string }
   | { reason: 'UNDER_REPAIR'; repair_record_id: string; repair_kind: RepairKind }
+  // F007-T2 (#156): its Retirement not voided.
+  | { reason: 'RETIRED'; retirement_id: string }
 );
 
 // Why the server refused a Repair Source (F005-T5, F006-T7).

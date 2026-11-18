@@ -19,6 +19,7 @@ import { assignmentRoutes } from './routes/assignment.routes.ts';
 import { loanRoutes } from './routes/loan.routes.ts';
 import { repairRoutes } from './routes/repair.routes.ts';
 import { verificationRoutes } from './routes/verification.routes.ts';
+import { retirementRoutes } from './routes/retirement.routes.ts';
 import { acquisitionRoutes } from './routes/acquisition.routes.ts';
 import { evidenceRoutes } from './routes/evidence.routes.ts';
 import { referenceRoutes } from './routes/reference.routes.ts';
@@ -41,6 +42,8 @@ import { RepairCorrectionService } from './services/repair-correction.service.ts
 import { VerificationReadService } from './services/verification-read.service.ts';
 import { VerificationRoundService } from './services/verification-round.service.ts';
 import { VerificationService } from './services/verification.service.ts';
+import { RetirementReadService } from './services/retirement-read.service.ts';
+import { RetirementService } from './services/retirement.service.ts';
 import { AcquisitionService } from './services/acquisition.service.ts';
 import { EvidenceService } from './services/evidence.service.ts';
 
@@ -206,6 +209,7 @@ export async function buildApp(options: AppOptions = {}): Promise<FastifyInstanc
     const loanReturnService = new LoanReturnService({ db: dbClient, clock: options.clock });
     const repairReadService = new RepairReadService({ db: dbClient });
     const verificationReadService = new VerificationReadService({ db: dbClient });
+    const retirementReadService = new RetirementReadService({ db: dbClient });
     const notReturnedService = new NotReturnedService({ db: dbClient, clock: options.clock });
     const dueDateExtensionService = new DueDateExtensionService({ db: dbClient });
     const acquisitionService = new AcquisitionService({ db: dbClient });
@@ -269,6 +273,7 @@ export async function buildApp(options: AppOptions = {}): Promise<FastifyInstanc
       loanReadService,
       repairReadService,
       verificationReadService,
+      retirementReadService,
       capabilityService,
       db: dbClient,
       publicAppOrigin,
@@ -303,6 +308,10 @@ export async function buildApp(options: AppOptions = {}): Promise<FastifyInstanc
       verificationRoundService: new VerificationRoundService({ db: dbClient }),
       verificationReadService,
       capabilityService,
+    });
+
+    await app.register(retirementRoutes, {
+      retirementService: new RetirementService({ db: dbClient, clock: options.clock }),
     });
 
     // Acquisition routes mounted under /acquisitions

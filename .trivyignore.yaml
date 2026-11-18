@@ -1,0 +1,11 @@
+# Trivy findings accepted by a Product Owner decision, each with its record, scope and expiry. Only the
+# lockfile scan reads this file (scripts/ci/security-scan.sh); the production images take no exception.
+# Format: Trivy 0.76 `.trivyignore.yaml`, passed with --ignorefile (docs/guide/configuration/filtering.md).
+vulnerabilities:
+  - id: CVE-2026-112366
+    purls:
+      - pkg:npm/picomatch@4.0.7
+    expired_at: 2026-12-18
+    statement: >-
+      #156 comment 6966597037. No fixed version yet; picomatch 4.0.7 reaches the lockfile only through
+      development tooling (vite, vitest, tinyglobby), and the API and migration images scan clean.

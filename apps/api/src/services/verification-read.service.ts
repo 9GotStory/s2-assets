@@ -4,6 +4,7 @@ import { reassignmentsCitingRevisions, type CitingReassignment, type PermanentAs
 import { loanContextOf, type LoanContext } from './loan-read.service.ts';
 import { repairRecordsCitingRevisions, underRepairOfAssets, type CitingRepairRecord, type RepairKind } from './repair-read.service.ts';
 import { citedByLiveReassignment } from './reassignment-citations.ts';
+import { assetIsRetired, currentRetirementsOf } from './retirement-read.service.ts';
 import { citedByLiveRepairRecord } from './repair-source-citations.ts';
 import { DAMAGED_CONDITION, LOCATION_MISMATCH_CONDITION } from './verification-revision-read.ts';
 
@@ -177,6 +178,8 @@ export interface ScopeEntry {
   version: number;
   // How many revisions the entry has, voided ones too (F006-T4).
   revision_count: number;
+  // F007-T4 (#154 Q12): whether the Asset is Retired now. It stays in the Scope Snapshot and takes no new result.
+  retired: boolean;
 }
 
 export interface ScopeEntryFilters {
@@ -204,6 +207,8 @@ export interface AssetVerificationPanel {
   entry: ({ id: string; version: number } & CurrentResult) | null;
   // The context a result recorded now would keep (Q14).
   context: RecordingContext;
+  // F007-T4 (#154 Q12): whether the Asset is Retired, so that the panel offers no recording and no Late Addition.
+  retired: boolean;
 }
 
 // An Asset's current result in a Round, and the revision that says it.
@@ -246,10 +251,11 @@ const sentForRepair = (v: string) => citedByLiveRepairRecord(`${v}.id`);
 // "ย้ายแล้ว": a Reassignment not voided cites the revision aliased `v` (#125 Q19).
 const reassigned = (v: string) => citedByLiveReassignment(`${v}.id`);
 
-// "ยังไม่มี action ต่อ" of the current revision aliased `v`: ชำรุด without "ส่งซ่อมแล้ว", or "Location ไม่ตรงทะเบียน"
-// without "ย้ายแล้ว" (#125 Q19).
-const awaitingAction = (v: string) =>
-  `((${DISCREPANCY_CONDITIONS.DAMAGED(v)} AND NOT ${sentForRepair(v)}) OR (${DISCREPANCY_CONDITIONS.LOCATION_MISMATCH(v)} AND NOT ${reassigned(v)}))`;
+// "ยังไม่มี action ต่อ" of the current revision aliased `v` of the scope entry aliased `e`: ชำรุด without "ส่งซ่อมแล้ว", or
+// "Location ไม่ตรงทะเบียน" without "ย้ายแล้ว" (#125 Q19), and never for a Retired Asset, which can no longer be repaired
+// or moved (F007-T4, #154 Q19).
+const awaitingAction = (e: string, v: string) =>
+  `(NOT ${assetIsRetired(`${e}.asset_id`)} AND ((${DISCREPANCY_CONDITIONS.DAMAGED(v)} AND NOT ${sentForRepair(v)}) OR (${DISCREPANCY_CONDITIONS.LOCATION_MISMATCH(v)} AND NOT ${reassigned(v)})))`;
 
 // Every Discrepancy the revision aliased `v` notes, as a text array.
 const discrepanciesOf = (v: string) => `array_remove(ARRAY[${DISCREPANCIES.map((d) => `CASE WHEN ${DISCREPANCY_CONDITIONS[d](v)} THEN '${d}' END`).join(', ')}]::text[], NULL)`;
@@ -514,7 +520,7 @@ export class VerificationReadService {
       conditions.push(`e.location_id = $${params.length}`);
     }
     if (filters.awaiting_action) {
-      conditions.push(awaitingAction('cur'));
+      conditions.push(awaitingAction('e', 'cur'));
     }
     params.push(filters.limit, filters.offset);
 
@@ -547,6 +553,7 @@ export class VerificationReadService {
     const totalCount: number = res.rows[0]?.total_count ?? 0;
     const rows = res.rows.filter((row: any) => row.id !== null);
     const current = await currentRevisionsOf(this.db, rows.map((row: any) => row.id));
+    const retirements = await currentRetirementsOf(this.db, rows.map((row: any) => row.asset_id));
     const items: ScopeEntry[] = rows.map((row: any) => ({
         id: row.id,
         asset_id: row.asset_id,
@@ -570,6 +577,7 @@ export class VerificationReadService {
         ...currentResultOf(current.get(row.id)),
         version: row.version,
         revision_count: row.revision_count,
+        retired: retirements.has(row.asset_id),
       }));
     return { items, limit: filters.limit, offset: filters.offset, total_count: totalCount, has_more: filters.offset + items.length < totalCount };
   }
@@ -583,11 +591,12 @@ export class VerificationReadService {
     const res = await this.db.query('SELECT id, version FROM verification_scope_entries WHERE verification_round_id = $1 AND asset_id = $2', [openRound.id, assetId]);
     const row = res.rows[0];
     const context = await recordingContextOf(this.db, assetId);
+    const retired = (await currentRetirementsOf(this.db, [assetId])).has(assetId);
     if (!row) {
-      return { open_round: openRound, entry: null, context };
+      return { open_round: openRound, entry: null, context, retired };
     }
     const current = (await currentRevisionsOf(this.db, [row.id])).get(row.id);
-    return { open_round: openRound, entry: { id: row.id, version: row.version, ...currentResultOf(current) }, context };
+    return { open_round: openRound, entry: { id: row.id, version: row.version, ...currentResultOf(current) }, context, retired };
   }
 
   /**

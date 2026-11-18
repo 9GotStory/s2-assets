@@ -1,0 +1,24 @@
+name: Daily Security Scan
+
+# A new CVE in the lockfile or the production images reaches the Product Owner the day it is published,
+# not at the end of some ticket's full run (#156 retro). GitHub runs a schedule on the default branch only.
+on:
+  schedule:
+    # 07:30 in Bangkok.
+    - cron: '30 0 * * *'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  security-scan:
+    name: Security Scan (Trivy)
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+
+      - name: Scan the lockfile and the production images with Trivy 0.76.0
+        run: scripts/ci/security-scan.sh --remove-images

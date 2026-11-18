@@ -308,6 +308,7 @@ describe('Reassign one Asset (Seam A - F003-T2)', () => {
 
     it('refuses an Initial Assignment that names no dimension value, and answers for an unknown Asset or a malformed id', async () => {
       const assetId = await registered({ name: 'ไม่มีค่าใดเลย' });
+      // eslint-disable-next-line no-restricted-syntax -- a refused-payload loop from before #155
       for (const empty of [{ expected_assignment_version: 0 }, { expected_assignment_version: 0, effective_date: null }]) {
         const res = await record(assetId, { kind: 'INITIAL', ...empty });
         expect(res.statusCode, JSON.stringify(empty)).toBe(400);
@@ -336,6 +337,7 @@ describe('Reassign one Asset (Seam A - F003-T2)', () => {
       const before = await assignmentOf(assetId);
       const base = { kind: 'REASSIGNMENT', expected_assignment_version: 1, effective_date: '2026-11-01', location_id: other.id };
 
+      // eslint-disable-next-line no-restricted-syntax -- a refused-payload loop from before #155
       for (const body of [
         { ...base, prior_location_id: room.id },
         { ...base, kind: 'MOVE' },
@@ -397,6 +399,7 @@ describe('Reassign one Asset (Seam A - F003-T2)', () => {
     it('is required on a Reassignment, as a real calendar date: unknown is refused there', async () => {
       const { assetId, to } = await placedAsset('ตรวจรูปแบบวันที่');
       const before = await assignmentOf(assetId);
+      // eslint-disable-next-line no-restricted-syntax -- a refused-payload loop from before #155
       for (const effective of [
         {},
         { effective_date: null },
@@ -415,6 +418,7 @@ describe('Reassign one Asset (Seam A - F003-T2)', () => {
     it("applies the same bound to an Initial Assignment recorded later, and refuses a malformed date there", async () => {
       const room = await entry('locations', 'ห้องวันที่ครั้งแรก');
       const assetId = await registered({ name: 'ตรวจวันครั้งแรก' });
+      // eslint-disable-next-line no-restricted-syntax -- a refused-payload loop from before #155
       for (const effective of [{ effective_date: '2026-11-06' }, { effective_date: 'วันนี้' }, {}]) {
         const res = await record(assetId, { kind: 'INITIAL', expected_assignment_version: 0, location_id: room.id, ...effective });
         expect(res.statusCode, JSON.stringify(effective)).toBe(400);
@@ -494,6 +498,7 @@ describe('Reassign one Asset (Seam A - F003-T2)', () => {
       expect((await reassign(assetId, { expected_assignment_version: 1, effective_date: '2026-09-01', location_id: b.id })).statusCode).toBe(201);
       const before = await assignmentOf(assetId);
 
+      // eslint-disable-next-line no-restricted-syntax -- a refused-payload loop from before #155
       for (const payload of [
         { effective_date: '2026-10-01', location_id: b.id },
         { effective_date: '2026-07-01', location_id: a.id },
@@ -543,6 +548,7 @@ describe('Reassign one Asset (Seam A - F003-T2)', () => {
       const assetId = await registered({ name: 'ตรวจห้ามล้าง', location_id: room.id, effective_date: '2026-10-01' });
       const before = await assignmentOf(assetId);
 
+      // eslint-disable-next-line no-restricted-syntax -- a refused-payload loop from before #155
       for (const payload of [
         { location_id: null },
         { legacy_location_text: 'ห้องเก่า' },
@@ -563,6 +569,7 @@ describe('Reassign one Asset (Seam A - F003-T2)', () => {
       const assetId = await registered({ name: 'ตรวจรายการ', location_id: room.id, effective_date: '2026-10-01' });
       const before = await assignmentOf(assetId);
 
+      // eslint-disable-next-line no-restricted-syntax -- a refused-payload loop from before #155
       for (const payload of [
         { location_id: unit.id },
         { organization_unit_id: room.id },
@@ -649,6 +656,7 @@ describe('Reassign one Asset (Seam A - F003-T2)', () => {
       const unplaced = await registered({ name: 'ตรวจข้อความครั้งแรก' });
       const before = await assignmentOf(assetId);
 
+      // eslint-disable-next-line no-restricted-syntax -- a refused-payload loop from before #155
       for (const text of [
         { document_reference: 'ก'.repeat(501) },
         { document_reference: 'เลขที่\u0007' },

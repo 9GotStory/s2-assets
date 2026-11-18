@@ -29,9 +29,11 @@ F004-T6 (#80), `not.toContain('090')` over JSON that holds UUIDs failed whenever
 Each refused request breaks the rule under test and nothing else, so the test goes red when that
 rule goes; check it with `scripts/dev/expect-red.sh`, and several rules at once with its `--batch`
 mode, which tabulates which break went red. A loop of refused payloads that asserts only
-the error code hides which rule refused each one. In F006-T1 (#126), the filter-cap case sent 101
-random UUIDs, which the unknown-entry check refused as well, and it stayed green with the cap
-removed. It now names one real entry 1001 times.
+the error code hides which rule refused each one; ESLint flags such a loop over a literal array
+(`eslint.config.mjs`, #155), and one from before #155 carries an exemption until a ticket
+touches its file. In F006-T1 (#126), the filter-cap case sent 101 random UUIDs, which the
+unknown-entry check refused as well, and it stayed green with the cap removed. It now names one
+real entry 1001 times.
 
 ## An order test of a paged list splits a tie across a page break
 
@@ -57,6 +59,13 @@ write that creates a fact reads nothing of it before the lock, so moving its rea
 test the order on a write that changes a fact that already exists. In F005-T7 (#105), the Repair Conflict
 tests of a Repair Start and a Loan start stayed green with the check moved ahead of the lock; those of the
 two corrections, which read what was there before them, went red.
+
+Each write that reads the rule is its own row: a record and an amendment each get an order test against
+every write that changes the fact. A rule that warns only of what is new compares a read before the
+change with one after: its order test starts with no conflict, so the queued write opens the one an early
+read would miss. In F007-T6 (#160), the amendment was tested against a Loan Correction alone, and only the
+Standards review found the Repair and Assignment Corrections missing. Its first test began with the
+conflict already there, so it stayed green with the read moved ahead of the lock.
 
 When the rule's read itself locks the row of the fact it checks, as the active-entry check locks a
 Location `FOR SHARE`, that row orders the two writes: the test holds the other write's change to it
@@ -134,8 +143,8 @@ existing feature stays beside that feature's journeys, as Journey T7.17 does in 
 In application code, SQL on an existing table stays in the module that owns the table, as
 `assignment.service.ts` owns `assignment_changes`; the feature's own file holds its rules and calls
 that module. A read of another module's table goes through that module's read functions too, as
-`loan-read.service.ts` reads Repair Outcomes through `latestRepairOutcomesOf` (#100). For the Loan
-and Repair tables, the guards in `eslint.config.mjs` hold this for SQL text that names the table.
+`loan-read.service.ts` reads Repair Outcomes through `latestRepairOutcomesOf` (#100). For the Loan,
+Repair and Retirement tables, the guards in `eslint.config.mjs` hold this for SQL text that names the table.
 
 When a rule must join another module's table in SQL, as a list filter does, the owning module exports
 the SQL fragment from a leaf file named after its concept, and that fragment counts as one of its read

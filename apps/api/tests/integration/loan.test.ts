@@ -103,7 +103,7 @@ describe('Starting a Loan (Seam A - F004-T1)', () => {
       expect(loan.items).toEqual([
         {
           id: expect.stringMatching(UUID),
-          asset: { id: first, name: 'โน้ตบุ๊ก A', asset_number: null },
+          asset: { id: first, name: 'โน้ตบุ๊ก A', asset_number: null, retired: false },
           due_date: DUE,
           first_due_date: DUE,
           condition: 'NORMAL',
@@ -119,7 +119,7 @@ describe('Starting a Loan (Seam A - F004-T1)', () => {
         },
         {
           id: expect.stringMatching(UUID),
-          asset: { id: second, name: 'โน้ตบุ๊ก B', asset_number: null },
+          asset: { id: second, name: 'โน้ตบุ๊ก B', asset_number: null, retired: false },
           due_date: DUE,
           first_due_date: DUE,
           condition: 'DAMAGED',
@@ -326,6 +326,7 @@ describe('Starting a Loan (Seam A - F004-T1)', () => {
     it('takes 1 to 100 Assets in one action', async () => {
       const assetIds = await Promise.all(Array.from({ length: 101 }, () => registered()));
 
+      // eslint-disable-next-line no-restricted-syntax -- a refused-payload loop from before #155
       for (const tooMany of [[], assetIds]) {
         const res = await start(base(tooMany));
         expect(res.statusCode).toBe(400);
@@ -342,6 +343,7 @@ describe('Starting a Loan (Seam A - F004-T1)', () => {
     it('names each Asset once, and only by a well-formed id', async () => {
       const assetId = await registered();
 
+      // eslint-disable-next-line no-restricted-syntax -- a refused-payload loop from before #155
       for (const assets of [
         [{ asset_id: assetId, condition: 'NORMAL' }, { asset_id: assetId, condition: 'DAMAGED' }],
         [{ asset_id: assetId, condition: 'NORMAL' }, { asset_id: assetId.toUpperCase(), condition: 'NORMAL' }],

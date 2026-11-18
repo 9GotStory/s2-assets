@@ -210,6 +210,7 @@ describe('Acquisition Routes Integration Tests (Seam A)', () => {
     });
 
     it('rejects invented unknown acquisition_type labels', async () => {
+      // eslint-disable-next-line no-restricted-syntax -- a refused-payload loop from before #155
       for (const invalidType of ['unknown', 'Unknown', 'UNKNOWN', 'N/A', '-', '  ']) {
         const res = await app.inject({
           method: 'POST',
@@ -227,6 +228,7 @@ describe('Acquisition Routes Integration Tests (Seam A)', () => {
     });
 
     it('rejects malformed or impossible Gregorian acquisition_date', async () => {
+      // eslint-disable-next-line no-restricted-syntax -- a refused-payload loop from before #155
       for (const badDate of ['2026-02-30', '2026-13-01', 'not-a-date', '2026/01/15', '2026-04-31']) {
         const res = await app.inject({
           method: 'POST',
@@ -289,6 +291,7 @@ describe('Acquisition Routes Integration Tests (Seam A)', () => {
       expect(res3.statusCode).toBe(400);
 
       // Extra precision (not exactly 2 decimal places)
+      // eslint-disable-next-line no-restricted-syntax -- a refused-payload loop from before #155
       for (const badAmount of ['100', '100.5', '100.555', '-50.00', 'abc']) {
         const resBad = await app.inject({
           method: 'POST',

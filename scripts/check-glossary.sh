@@ -12,6 +12,11 @@ cd "$(dirname "$0")/.."
 
 SOURCE=(':(glob)apps/*/src/**' ':(glob)packages/*/src/**')
 
+# Only committed lines are checked: a change still in the working tree passes unseen.
+if [[ $head == HEAD ]] && [[ -n $(git status --porcelain -- "${SOURCE[@]}") ]]; then
+  echo "check-glossary: tree dirty: checks committed changes only; commit first to check the rest" >&2
+fi
+
 # Avoided terms that are also everyday words in code, or preferred terms elsewhere in the
 # glossary. A review judges these. "โอน" is part of the acquisition method "รับโอน".
 GENERIC='^(edit|delete|reassignment|error|invalid event|owner|ownership|user|ผู้ใช้งาน|custodian|created at|responsible person|ผู้รับผิดชอบ|โอน)$'

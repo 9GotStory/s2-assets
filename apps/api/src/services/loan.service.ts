@@ -14,6 +14,7 @@ import { loanConflictCheck } from './loan-conflict.ts';
 import { CURRENT_DUE_DATE, type LoanCondition, type LoanEndingKind } from './loan-read.service.ts';
 import { isSelectablePerson } from './reference.service.ts';
 import { underRepairOfAssets, type RepairKind } from './repair-read.service.ts';
+import { currentRetirementsOf } from './retirement-read.service.ts';
 import { commitOnce } from './retryable-write.ts';
 import { NotFoundError, StaleBeforeConflictError } from './service-errors.ts';
 import { ValidationError } from './validation-error.ts';
@@ -67,6 +68,8 @@ export type RefusedAsset = { asset_id: string; name: string | null; asset_number
   | { reason: 'NOT_RETURNED'; loan_id: string }
   // F005-T1 (#98 Q3): the Repair Record without a Repair Outcome, and its kind.
   | { reason: 'UNDER_REPAIR'; repair_record_id: string; repair_kind: RepairKind }
+  // F007-T2 (#156): the Retirement not voided that keeps it out of every new Loan (DR-08, LR-12).
+  | { reason: 'RETIRED'; retirement_id: string }
 );
 
 /** A Loan names Assets that cannot be lent. Nothing is saved, and the answer names each one and why. */
@@ -644,8 +647,10 @@ export class LoanService {
   }
 
   // Locks the Assets, in identifier order, and refuses the Loan if any of them cannot be lent (LR-11, LR-12).
+  // A Retirement takes the same lock, so a Retirement committed first is seen (#154 Q24).
   private async assertLendable(client: pg.PoolClient, assetIds: string[]): Promise<void> {
     const locked = new Map((await lockAssetsInIdentifierOrder(client, assetIds)).map((asset) => [asset.id, asset]));
+    const retirements = await currentRetirementsOf(client, assetIds);
     const heldBy = await loansHoldingAssets(client, assetIds);
     // An Asset Under Repair stays out of a new Loan, whatever the Loan Date and of either kind (#98 Q3, Q15).
     const underRepair = await underRepairOfAssets(client, assetIds);
@@ -656,6 +661,10 @@ export class LoanService {
         return [{ asset_id: assetId, name: null, asset_number: null, reason: 'NOT_FOUND' }];
       }
       const { name, asset_number } = asset;
+      const retirement = retirements.get(assetId);
+      if (retirement) {
+        return [{ asset_id: assetId, name, asset_number, reason: 'RETIRED', retirement_id: retirement.id }];
+      }
       const held = heldBy.get(assetId);
       if (held) {
         return [{ asset_id: assetId, name, asset_number, ...held }];

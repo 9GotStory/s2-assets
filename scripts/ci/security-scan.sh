@@ -42,7 +42,15 @@ podman build --quiet -f deploy/podman/api.Containerfile -t "$API_IMAGE" . >/dev/
 podman build --quiet -f deploy/podman/migration.Containerfile -t "$MIGRATION_IMAGE" . >/dev/null
 podman save --quiet "$API_IMAGE" -o "$scan_dir/api-image.tar"
 podman save --quiet "$MIGRATION_IMAGE" -o "$scan_dir/migration-image.tar"
-cp pnpm-lock.yaml "$scan_dir/"
+cp pnpm-lock.yaml .trivyignore.yaml "$scan_dir/"
+
+# An exception in .trivyignore.yaml that expires within 14 days is named now, before the scan fails on it.
+warn_by=$(LC_ALL=C date -u -d '+14 days' +%F)  # the Gregorian year, whatever the host's locale
+while read -r id expires; do
+  if [[ ! $expires > $warn_by ]]; then
+    note "exception $id in .trivyignore.yaml expires on $expires, within 14 days: renewing it needs the Product Owner's word" >&2
+  fi
+done < <(awk '/^ *- id:/ { id = $3 } /^ *expired_at:/ { print id, $2 }' .trivyignore.yaml)
 
 found=()
 # --table-mode detailed leaves out the summary table, which has a row for every package.json.
@@ -54,7 +62,8 @@ scan() {
     --quiet --scanners vuln --severity HIGH,CRITICAL --exit-code 1 --table-mode detailed \
     || found+=("$label")
 }
-scan "the lockfile" fs --include-dev-deps /scan/pnpm-lock.yaml
+# The lockfile alone takes the exceptions in .trivyignore.yaml, each with an expiry.
+scan "the lockfile" fs --include-dev-deps --ignorefile /scan/.trivyignore.yaml /scan/pnpm-lock.yaml
 scan "the API image" image --input /scan/api-image.tar
 scan "the migration image" image --input /scan/migration-image.tar
 

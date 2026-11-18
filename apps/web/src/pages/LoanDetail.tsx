@@ -384,8 +384,9 @@ const LoanDetailContent: React.FC = () => {
                   <div>ผู้บันทึกการคืน: {item.loan_return.recorded_by_username ?? item.loan_return.recorded_by}</div>
                   <CitingRepairRecords records={item.loan_return.repair_records} testId={`loan-return-repair-records-${item.loan_return.id}`} />
                   {correctionActions(`loan-return-${item.loan_return.id}`, { kind: 'LOAN_RETURN', id: item.loan_return.id })}
-                  {/* "ส่งซ่อม" from a Loan Return recorded ชำรุด: nothing is saved until the form is (#98 Q5). */}
-                  {canRecordRepair && openForm === null && item.loan_return.condition === 'DAMAGED' && (
+                  {/* "ส่งซ่อม" from a Loan Return recorded ชำรุด: nothing is saved until the form is (#98 Q5). A Retired
+                      Asset is never sent (F007-T2, DR-08). */}
+                  {canRecordRepair && openForm === null && item.loan_return.condition === 'DAMAGED' && !item.asset.retired && (
                     <button type="button" id={`loan-return-${item.loan_return.id}-repair-action`} onClick={() => setOpenForm({ repairFrom: item.loan_return!.id })} style={{ ...secondaryActionStyle, marginTop: '0.375rem' }}>
                       {REPAIR_START_LABEL}
                     </button>
