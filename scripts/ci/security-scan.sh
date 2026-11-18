@@ -44,6 +44,14 @@ podman save --quiet "$API_IMAGE" -o "$scan_dir/api-image.tar"
 podman save --quiet "$MIGRATION_IMAGE" -o "$scan_dir/migration-image.tar"
 cp pnpm-lock.yaml .trivyignore.yaml "$scan_dir/"
 
+# An exception in .trivyignore.yaml that expires within 14 days is named now, before the scan fails on it.
+warn_by=$(LC_ALL=C date -u -d '+14 days' +%F)  # the Gregorian year, whatever the host's locale
+while read -r id expires; do
+  if [[ ! $expires > $warn_by ]]; then
+    note "exception $id in .trivyignore.yaml expires on $expires, within 14 days: renewing it needs the Product Owner's word" >&2
+  fi
+done < <(awk '/^ *- id:/ { id = $3 } /^ *expired_at:/ { print id, $2 }' .trivyignore.yaml)
+
 found=()
 # --table-mode detailed leaves out the summary table, which has a row for every package.json.
 scan() {
