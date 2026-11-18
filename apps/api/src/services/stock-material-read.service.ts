@@ -1,5 +1,6 @@
 import pg from 'pg';
 import { containsPattern } from './asset-lookups.ts';
+import { joinUnitEntry } from './unit-entries.ts';
 
 // One row of the Stock Material list (#175 Q15).
 export interface StockMaterialRow {
@@ -39,10 +40,14 @@ export interface StockMaterialUnit {
   is_active: boolean;
 }
 
+// The kinds of change a history entry records: F008-T1 writes CREATED; T3, T5 and T7 the others, which
+// 0025_material_catalog already takes. T4 and T6 add theirs with their own migrations.
+export type StockMaterialHistoryKind = 'CREATED' | 'CORRECTED' | 'UNITS_CHANGED' | 'INACTIVATED' | 'REACTIVATED';
+
 // One entry of a Stock Material's history, with the values it recorded as they were then (#175 Q18, P6).
 export interface StockMaterialHistoryEntry {
   version: number;
-  kind: string;
+  kind: StockMaterialHistoryKind;
   changes: { field: string; before: unknown; after: unknown }[];
   reason: string | null;
   note: string | null;
@@ -100,7 +105,7 @@ export class StockMaterialReadService {
          SELECT m.id, m.name, m.model, m.specification, m.is_active, u.id AS base_unit_id, u.name AS base_unit_name
          FROM stock_materials m
          JOIN stock_material_units b ON b.stock_material_id = m.id AND b.is_base
-         JOIN units u ON u.id = b.unit_id
+         ${joinUnitEntry('u', 'b.unit_id')}
          ${conditions.length > 0 ? `WHERE ${conditions.join(' AND ')}` : ''}
        ),
        counted AS (SELECT count(*)::int AS total_count FROM filtered),
@@ -137,7 +142,7 @@ export class StockMaterialReadService {
       `SELECT su.unit_id, u.name, u.is_active AS unit_is_active, su.is_base, trim_scale(su.conversion_factor)::text AS conversion_factor,
               su.whole_number_only, su.is_active
        FROM stock_material_units su
-       JOIN units u ON u.id = su.unit_id
+       ${joinUnitEntry('u', 'su.unit_id')}
        WHERE su.stock_material_id = $1
        ORDER BY su.is_base DESC, lower(u.name) ASC, u.id ASC`,
       [id]

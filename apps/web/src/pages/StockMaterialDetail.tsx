@@ -2,9 +2,11 @@ import React, { useEffect, useState } from 'react';
 import { Link, useNavigate, useParams } from 'react-router';
 import { QueryClient, QueryClientProvider, useQuery } from '@tanstack/react-query';
 import {
+  ACTIVE_LABEL,
   BASE_UNIT_LABEL,
   CONVERSION_FACTOR_LABEL,
   HISTORY_KIND_LABELS,
+  INACTIVE_LABEL,
   MODEL_LABEL,
   RECORDED_FIELD_LABELS,
   SPECIFICATION_LABEL,
@@ -116,6 +118,8 @@ const StockMaterialDetailContent: React.FC<{ id: string }> = ({ id }) => {
           <>
             <h1 style={{ fontSize: '1.5rem', fontWeight: 700, color: '#111827', margin: '1rem 0 1rem 0' }}>{detail.name}</h1>
             <dl id="stock-material-fields" style={{ display: 'grid', gridTemplateColumns: 'max-content 1fr', gap: '0.5rem 1.5rem', margin: 0, fontSize: '0.9375rem' }}>
+              <dt style={{ fontWeight: 500, color: '#4b5563' }}>สถานะ</dt>
+              <dd data-testid="stock-material-status" style={{ margin: 0 }}>{detail.is_active ? ACTIVE_LABEL : INACTIVE_LABEL}</dd>
               <dt style={{ fontWeight: 500, color: '#4b5563' }}>{MODEL_LABEL}</dt>
               <dd data-testid="stock-material-model" style={{ margin: 0 }}>{detail.model ?? '-'}</dd>
               <dt style={{ fontWeight: 500, color: '#4b5563' }}>{SPECIFICATION_LABEL}</dt>

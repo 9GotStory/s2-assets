@@ -53,7 +53,7 @@ export interface RecordedUnit {
   is_active: boolean;
 }
 
-export type StockMaterialHistoryKind = 'CREATED' | 'CORRECTED' | 'DETAILS_CHANGED' | 'UNITS_CHANGED' | 'MINIMUM_STOCK_CHANGED' | 'INACTIVATED' | 'REACTIVATED';
+export type StockMaterialHistoryKind = 'CREATED' | 'CORRECTED' | 'UNITS_CHANGED' | 'INACTIVATED' | 'REACTIVATED';
 
 export interface StockMaterialHistoryEntry {
   version: number;
@@ -89,6 +89,8 @@ export const UNIT_LABEL = 'หน่วยนับ';
 export const BASE_UNIT_LABEL = 'หน่วยนับหลัก';
 export const CONVERSION_FACTOR_LABEL = 'อัตราแปลง';
 export const WHOLE_NUMBER_UNIT_LABEL = 'นับเป็นจำนวนเต็มเท่านั้น';
+export const ACTIVE_LABEL = 'ใช้งานอยู่';
+export const INACTIVE_LABEL = 'หยุดใช้';
 // glossary: no entry — the list's action, made of the term วัสดุ (Stock Material)
 export const ADD_STOCK_MATERIAL_LABEL = 'เพิ่มวัสดุ';
 // glossary: no entry — the form's inline action, made of the term หน่วยนับ (Unit)

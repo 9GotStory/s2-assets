@@ -208,10 +208,10 @@ describe('Material Catalog Migration Integration (Seam C - F008-T1)', () => {
       // Only making it Inactive takes a note (#175 Q13).
       await expect(historyEntry(client, { version: 3, kind: 'REACTIVATED', note: 'กลับมาใช้' })).rejects.toThrow(/stock_material_history_note_with_inactive/);
       await historyEntry(client, { version: 3, kind: 'INACTIVATED', note: 'สร้างซ้ำผิด' });
-      for (const [version, kind] of [[4, 'REACTIVATED'], [5, 'DETAILS_CHANGED'], [6, 'UNITS_CHANGED'], [7, 'MINIMUM_STOCK_CHANGED']] as const) {
+      for (const [version, kind] of [[4, 'REACTIVATED'], [5, 'UNITS_CHANGED']] as const) {
         await historyEntry(client, { version, kind });
       }
-      await expect(historyEntry(client, { version: 8, recorded_by: crypto.randomUUID() })).rejects.toThrow(/recorded_by/);
+      await expect(historyEntry(client, { version: 6, recorded_by: crypto.randomUUID() })).rejects.toThrow(/recorded_by/);
       // A Stock Material with history cannot be deleted under it.
       await expect(client.query('DELETE FROM stock_materials WHERE id = $1', [ids.material])).rejects.toThrow(/stock_material/);
     });

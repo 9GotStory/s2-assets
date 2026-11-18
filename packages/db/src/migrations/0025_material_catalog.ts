@@ -4,10 +4,10 @@ import { Kysely, sql } from 'kysely';
 // follows the Reference List pattern of Feature 002, with a history of its own (P5, P6). A Stock Material has its
 // Units, exactly one of them its Base Unit (MC-04), and an append-only history (Q18). The history and the Units
 // already hold what T3, T5 and T7 write (Alternate Units, a Material Correction, Inactive), so those need no
-// migration.
+// migration; T4 and T6 add their columns and history kinds with their own.
 
-// Every kind of change a Stock Material's history records (#175 Q18).
-const HISTORY_KINDS = ['CREATED', 'CORRECTED', 'DETAILS_CHANGED', 'UNITS_CHANGED', 'MINIMUM_STOCK_CHANGED', 'INACTIVATED', 'REACTIVATED'];
+// The kinds of change a Stock Material's history records up to T7, but those of T4 and T6 (#175 Q18).
+const HISTORY_KINDS = ['CREATED', 'CORRECTED', 'UNITS_CHANGED', 'INACTIVATED', 'REACTIVATED'];
 
 export async function up(db: Kysely<any>): Promise<void> {
   await sql`INSERT INTO roles (id, description) VALUES ('SUPPLY_OFFICER', 'Supply Officer')`.execute(db);

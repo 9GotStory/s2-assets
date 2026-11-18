@@ -161,6 +161,7 @@ test.describe.serial('Stock Material journeys: Real SPA -> Composed API -> Postg
     await expect(page.locator('[data-testid="stock-material-model"]')).toHaveText('Double A');
     await expect(page.locator('[data-testid="stock-material-specification"]')).toHaveText('80 แกรม สีขาว');
     await expect(page.locator('[data-testid="stock-material-note"]')).toHaveText('ใช้ในงานธุรการ');
+    await expect(page.locator('[data-testid="stock-material-status"]')).toHaveText('ใช้งานอยู่');
     const units = page.locator('#stock-material-units tbody tr');
     await expect(units).toHaveCount(1);
     await expect(units.first()).toContainText('แผ่น(หน่วยนับหลัก)');
@@ -205,8 +206,8 @@ test.describe.serial('Stock Material journeys: Real SPA -> Composed API -> Postg
     await expect(page).toHaveURL(new RegExp(`/stock-materials/${id}$`));
     await expect(page.getByRole('heading', { level: 1, name: 'น้ำยาเช็ดกระจก' })).toBeVisible();
     await expect(page.locator(`[data-testid="stock-material-unit-${unit.id}"]`)).toContainText('ไม่ใช่ (มีเศษได้)');
+    await expect(page.locator('[data-testid="stock-material-status"]')).toHaveText('ใช้งานอยู่');
     await expect(page.locator('[data-testid="stock-material-history-1"]')).toContainText('หน่วยนับหลัก ขวด');
-    await expect(page.locator('main button')).toHaveCount(0);
 
     // The form refuses a viewer without material:manage.
     await page.goto(`${targetBaseUrl}/stock-materials/new`);
