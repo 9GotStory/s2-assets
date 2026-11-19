@@ -646,6 +646,7 @@ test.describe.serial('Stock Material journeys: Real SPA -> Composed API -> Postg
     await expect(status).toHaveText('หยุดใช้');
 
     await page.locator('#stock-material-reactivate').click();
+    await expect(page.locator('#stock-material-reactivate')).toHaveCount(0);
     await expect(page.locator('[data-testid="stock-material-status-notice"]')).toContainText('รายการเดิม');
     await expect(page.locator('#stock-material-status-note')).toHaveCount(0);
     await page.locator('#stock-material-status-submit').click();
