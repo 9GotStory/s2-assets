@@ -83,8 +83,9 @@ that last one before each commit (enable it once per clone with
 `git config core.hooksPath .githooks`). Before the full run, run
 every integration file that calls a route or names a response field the change touches (`grep -l`
 over `apps/api/tests/integration`): earlier tests pin those shapes and their data. Start the full
-run once, after the code-review fixes are committed: a full run started before the review has to be
-run again.
+run once, after the code-review fixes are committed, together with the Product Owner's answer to any
+review decision whose recommended option changes code: a full run started before them has to be run
+again.
 A pull request into a base other than `main` or `feature/*` gets no CI (`ci.yml`): run each job
 locally and record each job's exact result in the pull request: that record is its check. Into
 `main` or `feature/*`, the merge waits for CI Gate (`scripts/ci/require-ci-gate.sh`):
