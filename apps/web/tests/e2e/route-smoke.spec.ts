@@ -217,7 +217,8 @@ test.describe.serial('Route smoke: Real SPA -> Composed API -> PostgreSQL (Seam 
       await page.goto(`${targetBaseUrl}${row.url(fixtures)}`);
 
       await expect(page.getByRole('heading', { level: 1, name: row.heading(fixtures), exact: true })).toBeVisible();
-      await expect.poll(() => reads.filter(({ status }) => status === undefined).length).toBe(0);
+      // The URLs, not a count, so that a failure names the read still waiting (#176 retro).
+      await expect.poll(() => reads.filter(({ status }) => status === undefined).map(({ url }) => url)).toEqual([]);
       // A read that failed or was refused; 0 is one that never got an answer.
       expect(reads.filter(({ status }) => status === 0 || status! >= 400).map(({ url, status }) => ({ url, status }))).toEqual([]);
       await expect(page.getByRole('alert')).toHaveCount(0);
