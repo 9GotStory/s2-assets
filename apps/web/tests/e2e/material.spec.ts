@@ -20,6 +20,10 @@ const __dirname = path.dirname(__filename);
 const webRoot = path.resolve(__dirname, '../..');
 const migrationFolder = path.resolve(__dirname, '../../../../packages/db/src/migrations');
 
+// The journeys share one database, where a Unit's name is unique: a journey that adds a Unit names it here, so that
+// another journey adding the same name, in any order, cannot refuse it (F008-T6 retro, #182).
+const freshUnitName = (name: string) => `${name} ${crypto.randomUUID().slice(0, 4)}`;
+
 // F008-T1 (#176): Journey J1 starts (a Supply Officer creates a Stock Material with a new Unit and finds it), and
 // Journey J3 (a Read-only User reads the catalog with no action; an Asset Custodian has no "วัสดุ" menu).
 // F008-T3 (#178): Journey J1 goes on with an Alternate Unit ("1 กล่อง = 5 รีม") and the Units editor.
@@ -340,19 +344,21 @@ test.describe.serial('Stock Material journeys: Real SPA -> Composed API -> Postg
   });
 
   test('Journey F008-T6.1: a Supply Officer sets a Minimum Stock through other details, finds the Stock Material with the Minimum Stock filter, and states it again when the Base Unit changes', async ({ page, context }) => {
+    const can = freshUnitName('กระป๋อง');
+    const gallon = freshUnitName('แกลลอน');
     await loginAs(context, officerUserId);
     await page.goto(`${targetBaseUrl}/stock-materials/new`);
     await page.locator('#stock-material-name').fill('น้ำยาล้างจาน');
-    await page.locator('#stock-material-new-unit').fill('กระป๋อง');
+    await page.locator('#stock-material-new-unit').fill(can);
     await page.locator('#stock-material-new-unit-add').click();
-    await expect(page.locator('#stock-material-base-unit option:checked')).toHaveText('กระป๋อง');
-    await page.locator('#stock-material-new-unit').fill('แกลลอน');
+    await expect(page.locator('#stock-material-base-unit option:checked')).toHaveText(can);
+    await page.locator('#stock-material-new-unit').fill(gallon);
     await page.locator('#stock-material-new-unit-add').click();
-    await expect(page.locator('#stock-material-alternate-0-unit option:checked')).toHaveText('แกลลอน');
+    await expect(page.locator('#stock-material-alternate-0-unit option:checked')).toHaveText(gallon);
     await page.locator('#stock-material-alternate-0-factor').fill('10');
 
     // The form's จำนวนขั้นต่ำ counts the Base Unit, whose whole-number rule the server holds it to (P3).
-    await expect(page.locator('#stock-material-minimum-stock + span')).toHaveText('กระป๋อง');
+    await expect(page.locator('#stock-material-minimum-stock + span')).toHaveText(can);
     await page.locator('#stock-material-minimum-stock').fill('1.5');
     await page.locator('#stock-material-submit').click();
     await expect(page.locator('[data-testid="stock-material-form-error"]')).toContainText('minimum_stock must be a whole number');
@@ -380,11 +386,11 @@ test.describe.serial('Stock Material journeys: Real SPA -> Composed API -> Postg
     // "แก้ไขข้อมูลอื่น" sets 20 กระป๋อง without a reason; the same amount written otherwise is no change.
     await page.goto(detailUrl);
     await page.locator('#stock-material-edit-details').click();
-    await expect(page.locator('#stock-material-details-minimum-stock + span')).toHaveText('กระป๋อง');
+    await expect(page.locator('#stock-material-details-minimum-stock + span')).toHaveText(can);
     await page.locator('#stock-material-details-minimum-stock').fill('20');
     await page.locator('#stock-material-details-submit').click();
     await expect(page.locator('#stock-material-details-form')).toHaveCount(0);
-    await expect(page.locator('[data-testid="stock-material-minimum-stock"]')).toHaveText('20 กระป๋อง');
+    await expect(page.locator('[data-testid="stock-material-minimum-stock"]')).toHaveText(`20 ${can}`);
     const set = page.locator('[data-testid="stock-material-history-2"]');
     await expect(set).toContainText('แก้ไขข้อมูลอื่น');
     await expect(set.locator('dt', { hasText: 'จำนวนขั้นต่ำ' }).locator('+ dd')).toHaveText('20');
@@ -399,7 +405,7 @@ test.describe.serial('Stock Material journeys: Real SPA -> Composed API -> Postg
     await page.goto(`${targetBaseUrl}/stock-materials?search=${encodeURIComponent('น้ำยาล้างจาน')}&minimum_stock=set`);
     await expect(page.locator('#stock-material-minimum-stock-filter option:checked')).toHaveText('ตั้งจำนวนขั้นต่ำแล้ว');
     await expect(rows).toHaveCount(1);
-    await expect(rows.first().locator('td').nth(6)).toHaveText('20 กระป๋อง');
+    await expect(rows.first().locator('td').nth(6)).toHaveText(`20 ${can}`);
     await page.locator('#stock-material-minimum-stock-filter').selectOption({ label: 'ยังไม่ตั้งจำนวนขั้นต่ำ' });
     await expect(page).toHaveURL(/minimum_stock=not_set$/);
     await expect(page.locator('#stock-material-list-empty')).toContainText('ไม่พบวัสดุที่ค้นหา');
@@ -409,24 +415,25 @@ test.describe.serial('Stock Material journeys: Real SPA -> Composed API -> Postg
     await page.goto(detailUrl);
     await page.locator('#stock-material-edit-units').click();
     await expect(page.locator('#stock-material-units-minimum-stock')).toHaveCount(0);
-    await page.locator('#stock-material-units-base-unit').selectOption({ label: 'แกลลอน' });
+    await page.locator('#stock-material-units-base-unit').selectOption({ label: gallon });
     await expect(page.locator('#stock-material-units-minimum-stock')).toHaveValue('');
-    await expect(page.locator('#stock-material-units-minimum-stock + span')).toHaveText('แกลลอน');
-    await expect(page.locator('#stock-material-units-form')).toContainText('จำนวนขั้นต่ำเดิม 20 กระป๋อง');
+    await expect(page.locator('#stock-material-units-minimum-stock + span')).toHaveText(gallon);
+    await expect(page.locator('#stock-material-units-form')).toContainText(`จำนวนขั้นต่ำเดิม 20 ${can}`);
     await page.locator('#stock-material-units-base-unit-whole').uncheck();
     await page.locator('#stock-material-units-alternate-0-factor').fill('0.1');
     await page.locator('#stock-material-units-minimum-stock').fill('2');
     await page.locator('#stock-material-units-submit').click();
 
     await expect(page.locator('#stock-material-units-form')).toHaveCount(0);
-    await expect(page.locator('[data-testid="stock-material-minimum-stock"]')).toHaveText('2 แกลลอน');
+    await expect(page.locator('[data-testid="stock-material-minimum-stock"]')).toHaveText(`2 ${gallon}`);
     const restated = page.locator('[data-testid="stock-material-history-3"]');
     await expect(restated).toContainText('แก้ไขหน่วยนับ');
     await expect(restated.locator('dt', { hasText: 'จำนวนขั้นต่ำ' }).locator('+ dd')).toHaveText('20 → 2');
   });
 
   test('Journey F008-T1.2: a Read-only User reads the list and a Stock Material page with no action, and an Asset Custodian has no "วัสดุ" menu', async ({ page, context }) => {
-    const unit = await new UnitService({ db: pool }).add(officerUserId, 'ขวด', { retryToken: crypto.randomUUID() });
+    const bottle = freshUnitName('ขวด');
+    const unit = await new UnitService({ db: pool }).add(officerUserId, bottle, { retryToken: crypto.randomUUID() });
     const { stock_material_id: id } = await new StockMaterialService({ db: pool }).create(
       officerUserId,
       { name: 'น้ำยาเช็ดกระจก', model: 'Glass Clean', specification: '500 มล.', base_unit: { unit_id: unit.id, whole_number_only: false } },
@@ -440,7 +447,7 @@ test.describe.serial('Stock Material journeys: Real SPA -> Composed API -> Postg
     const row = page.locator(`[data-testid="stock-material-row-${id}"]`);
     await expect(row).toContainText('Glass Clean');
     await expect(row).toContainText('500 มล.');
-    await expect(row).toContainText('ขวด');
+    await expect(row).toContainText(bottle);
     // The Supply Officer was offered "เพิ่มวัสดุ" on this list (Journey F008-T1.1).
     await expect(page.locator('#stock-material-add-action')).toHaveCount(0);
 
@@ -449,7 +456,7 @@ test.describe.serial('Stock Material journeys: Real SPA -> Composed API -> Postg
     await expect(page.getByRole('heading', { level: 1, name: 'น้ำยาเช็ดกระจก' })).toBeVisible();
     await expect(page.locator(`[data-testid="stock-material-unit-${unit.id}"]`)).toContainText('ไม่ใช่ (มีเศษได้)');
     await expect(page.locator('[data-testid="stock-material-status"]')).toHaveText('ใช้งานอยู่');
-    await expect(page.locator('[data-testid="stock-material-history-1"]')).toContainText('หน่วยนับหลัก ขวด');
+    await expect(page.locator('[data-testid="stock-material-history-1"]')).toContainText(`หน่วยนับหลัก ${bottle}`);
     // The Supply Officer was offered "แก้ไขหน่วยนับ" and "แก้ไขข้อมูลอื่น" on a Stock Material page (Journeys F008-T3.1, T4.1).
     await expect(page.locator('#stock-material-edit-units')).toHaveCount(0);
     await expect(page.locator('#stock-material-edit-details')).toHaveCount(0);

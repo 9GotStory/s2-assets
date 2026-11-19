@@ -8,6 +8,9 @@
 #   scripts/dev/expect-red.sh apps/api/src/routes/loan.routes.ts "'must not be blank'" "'blank'" \
 #     -- scripts/ci/integration.sh tests/integration/loan-list.test.ts -t "refuse a value"
 #
+# A condition joined by && or || takes a break per operand: drop each one in turn, since a break of the whole
+# condition leaves an operand no test needs (F008-T6, #182).
+#
 # A void that cascades is filtered twice: a Loan void marks each LoanItem voided, and a Repair Record void
 # its Outcome. A break that removes one of the two filters stays green, so remove both (F007-T6, #160).
 #
