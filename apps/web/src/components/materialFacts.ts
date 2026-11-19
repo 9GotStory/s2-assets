@@ -132,6 +132,10 @@ export const ADD_BRAND_LABEL = 'เพิ่มยี่ห้อ';
 export const ADD_MATERIAL_CATEGORY_LABEL = 'เพิ่มหมวดวัสดุ';
 export const EDIT_DETAILS_LABEL = 'แก้ไขข้อมูลอื่น';
 export const MINIMUM_STOCK_LABEL = 'จำนวนขั้นต่ำ';
+// glossary: no entry — the list filter's option, made of the term จำนวนขั้นต่ำ (Minimum Stock)
+export const MINIMUM_STOCK_SET_LABEL = 'ตั้งจำนวนขั้นต่ำแล้ว';
+// glossary: no entry — the list filter's option, made of the term จำนวนขั้นต่ำ (Minimum Stock)
+export const MINIMUM_STOCK_NOT_SET_LABEL = 'ยังไม่ตั้งจำนวนขั้นต่ำ';
 
 // What each kind of history entry is called on the Stock Material page. F008-T1 writes CREATED, T3 UNITS_CHANGED and
 // T4 DETAILS_CHANGED; the tickets that write the other kinds name them.

@@ -52,14 +52,22 @@ export interface StockMaterialUnit {
 }
 
 // The kinds of change a history entry records: F008-T1 writes CREATED, T3 UNITS_CHANGED, T4 DETAILS_CHANGED
-// (0027_brands_material_categories); T5 and T7 the others, which 0025_material_catalog already takes. T6 adds its own.
+// (0027_brands_material_categories); T5 and T7 the others, which 0025_material_catalog already takes. T6 records the
+// Minimum Stock in CREATED, DETAILS_CHANGED and UNITS_CHANGED (#182 decision 3).
 export type StockMaterialHistoryKind = 'CREATED' | 'CORRECTED' | 'UNITS_CHANGED' | 'DETAILS_CHANGED' | 'INACTIVATED' | 'REACTIVATED';
+
+// One value a history entry recorded, as it was before and after; a value created has none before.
+export interface StockMaterialHistoryChange {
+  field: string;
+  before: unknown;
+  after: unknown;
+}
 
 // One entry of a Stock Material's history, with the values it recorded as they were then (#175 Q18, P6).
 export interface StockMaterialHistoryEntry {
   version: number;
   kind: StockMaterialHistoryKind;
-  changes: { field: string; before: unknown; after: unknown }[];
+  changes: StockMaterialHistoryChange[];
   reason: string | null;
   note: string | null;
   recorded_by: string;

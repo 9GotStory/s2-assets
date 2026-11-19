@@ -365,15 +365,15 @@ test.describe.serial('Stock Material journeys: Real SPA -> Composed API -> Postg
     await expect(page.getByRole('heading', { level: 1, name: 'น้ำยาล้างจาน' })).toBeVisible();
     await expect(page.locator('[data-testid="stock-material-minimum-stock"]')).toHaveText('-');
 
-    // The list finds it under "ยังไม่ตั้ง", not under "ตั้งแล้ว".
+    // The list finds it under "ยังไม่ตั้งจำนวนขั้นต่ำ", not under "ตั้งจำนวนขั้นต่ำแล้ว".
     await page.goto(`${targetBaseUrl}/stock-materials?search=${encodeURIComponent('น้ำยาล้างจาน')}`);
     const rows = page.locator('#stock-material-list-table tbody tr');
     await expect(rows).toHaveCount(1);
-    await page.locator('#stock-material-minimum-stock-filter').selectOption({ label: 'ยังไม่ตั้ง' });
+    await page.locator('#stock-material-minimum-stock-filter').selectOption({ label: 'ยังไม่ตั้งจำนวนขั้นต่ำ' });
     await expect(page).toHaveURL(/minimum_stock=not_set$/);
     await expect(rows).toHaveCount(1);
     await expect(rows.first().locator('td').nth(6)).toHaveText('-');
-    await page.locator('#stock-material-minimum-stock-filter').selectOption({ label: 'ตั้งแล้ว' });
+    await page.locator('#stock-material-minimum-stock-filter').selectOption({ label: 'ตั้งจำนวนขั้นต่ำแล้ว' });
     await expect(page).toHaveURL(/minimum_stock=set$/);
     await expect(page.locator('#stock-material-list-empty')).toContainText('ไม่พบวัสดุที่ค้นหา');
 
@@ -395,12 +395,12 @@ test.describe.serial('Stock Material journeys: Real SPA -> Composed API -> Postg
     await expect(page.locator('[data-testid="stock-material-details-form-error"]')).toContainText('ยังไม่มีข้อมูลที่เปลี่ยน');
     await page.locator('#stock-material-details-cancel').click();
 
-    // Now the list finds it under "ตั้งแล้ว", with 20 กระป๋อง in its row.
+    // Now the list finds it under "ตั้งจำนวนขั้นต่ำแล้ว", with 20 กระป๋อง in its row.
     await page.goto(`${targetBaseUrl}/stock-materials?search=${encodeURIComponent('น้ำยาล้างจาน')}&minimum_stock=set`);
-    await expect(page.locator('#stock-material-minimum-stock-filter option:checked')).toHaveText('ตั้งแล้ว');
+    await expect(page.locator('#stock-material-minimum-stock-filter option:checked')).toHaveText('ตั้งจำนวนขั้นต่ำแล้ว');
     await expect(rows).toHaveCount(1);
     await expect(rows.first().locator('td').nth(6)).toHaveText('20 กระป๋อง');
-    await page.locator('#stock-material-minimum-stock-filter').selectOption({ label: 'ยังไม่ตั้ง' });
+    await page.locator('#stock-material-minimum-stock-filter').selectOption({ label: 'ยังไม่ตั้งจำนวนขั้นต่ำ' });
     await expect(page).toHaveURL(/minimum_stock=not_set$/);
     await expect(page.locator('#stock-material-list-empty')).toContainText('ไม่พบวัสดุที่ค้นหา');
 

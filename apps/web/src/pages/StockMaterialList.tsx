@@ -10,6 +10,8 @@ import {
   INACTIVE_LABEL,
   MATERIAL_CATEGORY_LABEL,
   MINIMUM_STOCK_LABEL,
+  MINIMUM_STOCK_NOT_SET_LABEL,
+  MINIMUM_STOCK_SET_LABEL,
   MODEL_LABEL,
   NO_MATERIAL_CATEGORY_LABEL,
   SPECIFICATION_LABEL,
@@ -187,8 +189,8 @@ const StockMaterialListContent: React.FC = () => {
                 style={{ ...fieldInputStyle, width: 'auto', flex: '0 1 10rem' }}
               >
                 <option value="">ทั้งหมด</option>
-                <option value="set">ตั้งแล้ว</option>
-                <option value="not_set">ยังไม่ตั้ง</option>
+                <option value="set">{MINIMUM_STOCK_SET_LABEL}</option>
+                <option value="not_set">{MINIMUM_STOCK_NOT_SET_LABEL}</option>
               </select>
             </div>
 

@@ -5,7 +5,7 @@ import { CATALOG_LISTS, type CatalogListKind, type NamedListEntry } from './cata
 import { catalogListEntryOf, selectableCatalogListEntry } from './catalog-list.service.ts';
 import { commitOnce } from './retryable-write.ts';
 import { NotFoundError, StaleBeforeConflictError } from './service-errors.ts';
-import { stockMaterialUnitsOf, type StockMaterialUnit } from './stock-material-read.service.ts';
+import { stockMaterialUnitsOf, type StockMaterialHistoryChange, type StockMaterialUnit } from './stock-material-read.service.ts';
 import { baseUnitAmountOf, normalizeUnitSet, unitFieldOf, type AlternateUnitInput, type BaseUnitInput, type UnitSetting } from './stock-material-units.ts';
 import { unselectableUnitsAmong } from './unit.service.ts';
 import { ValidationError } from './validation-error.ts';
@@ -120,6 +120,29 @@ const normalizeFacts = (input: CreateStockMaterialInput): StockMaterialFacts => 
 const minimumStockOf = (text: string | null | undefined, baseIsWhole: boolean): string | null =>
   text === undefined || text === null ? null : baseUnitAmountOf(text, 'minimum_stock', baseIsWhole);
 
+/**
+ * The Minimum Stock a Units write leaves, or the refusal (#175 MC-20, P3; #182 decision 2). It counts the Base Unit:
+ * another Base Unit takes it again as `stated`, so that 10 รีม never becomes 10 กล่อง, and needs it stated while there
+ * is one; the same Base Unit keeps it, refusing a `stated` one, and may become whole-number-only only while it is
+ * whole. `stored` is read under the Stock Material's lock, which a details write takes to change it.
+ */
+const minimumStockAfterUnitsWrite = (stored: string | null, stated: string | null | undefined, baseUnitChanges: boolean, baseIsWhole: boolean): string | null => {
+  if (baseUnitChanges) {
+    if (stated === undefined && stored !== null) {
+      throw new ValidationError(`minimum_stock must be stated again in the new Base Unit, as the Minimum Stock ${stored} counts the old one`);
+    }
+    return stated ?? null;
+  }
+  if (stated !== undefined) {
+    throw new ValidationError('minimum_stock changes through other details unless the Base Unit changes');
+  }
+  // Without trailing zeros, as the reads give it, a fraction is written with a point.
+  if (baseIsWhole && stored?.includes('.')) {
+    throw new ValidationError(`base_unit.whole_number_only cannot be set while the Minimum Stock ${stored} has a fraction`);
+  }
+  return stored;
+};
+
 // Whether the Base Unit of the Stock Material is whole-number-only, as a write reads it under the Stock Material's lock,
 // which a Units write takes to change it.
 const baseUnitIsWhole = async (client: pg.PoolClient, stockMaterialId: string): Promise<boolean> => {
@@ -203,7 +226,7 @@ export class StockMaterialService {
         note: facts.note,
         minimum_stock: facts.minimum_stock,
       };
-      const changes: { field: string; before: null; after: unknown }[] = Object.entries(recorded)
+      const changes: StockMaterialHistoryChange[] = Object.entries(recorded)
         .filter(([, value]) => value !== null)
         .map(([field, after]) => ({ field, before: null, after }));
       changes.push({ field: 'units', before: null, after: (await stockMaterialUnitsOf(client, id)).map(recordedUnit) });
@@ -245,12 +268,11 @@ export class StockMaterialService {
       if (!categoryChanged && details.note === stored.note && details.minimum_stock === stored.minimum_stock) {
         throw new ValidationError('This details write changes nothing');
       }
-      if (details.minimum_stock !== null) {
-        minimumStockOf(details.minimum_stock, await baseUnitIsWhole(client, stockMaterialId));
-      }
+      // Checked again, now against the Base Unit as the lock leaves it (P3).
+      minimumStockOf(details.minimum_stock, await baseUnitIsWhole(client, stockMaterialId));
 
       // What changed, the Material Category under its name now on either side (#175 P6).
-      const changes: { field: string; before: unknown; after: unknown }[] = [];
+      const changes: StockMaterialHistoryChange[] = [];
       if (categoryChanged) {
         changes.push({
           field: 'material_category',
@@ -308,20 +330,8 @@ export class StockMaterialService {
       if (dropped) {
         throw new ValidationError(`alternate_units must keep the Unit ${dropped.unit_id}: a Unit of a Stock Material is never removed, only made Inactive`);
       }
-      // The Minimum Stock counts the Base Unit (MC-20): another Base Unit takes it again, so that 10 รีม never becomes
-      // 10 กล่อง; the same Base Unit keeps it, whole while the Base Unit is whole-number-only (P3).
       const baseUnitChanges = !stored.get(units[0].unit_id)?.is_base;
-      if (!baseUnitChanges && minimumStock !== undefined) {
-        throw new ValidationError('minimum_stock changes through other details unless the Base Unit changes');
-      }
-      if (baseUnitChanges && minimumStock === undefined && storedMinimumStock !== null) {
-        throw new ValidationError(`minimum_stock must be stated again in the new Base Unit, as the Minimum Stock ${storedMinimumStock} counts the old one`);
-      }
-      // Without trailing zeros, a fraction is written with a point.
-      if (!baseUnitChanges && units[0].whole_number_only && storedMinimumStock?.includes('.')) {
-        throw new ValidationError(`base_unit.whole_number_only cannot be set while the Minimum Stock ${storedMinimumStock} has a fraction`);
-      }
-      const minimumStockAfter = baseUnitChanges ? (minimumStock ?? null) : storedMinimumStock;
+      const minimumStockAfter = minimumStockAfterUnitsWrite(storedMinimumStock, minimumStock, baseUnitChanges, units[0].whole_number_only);
       if (units.length === before.length && units.every((unit) => sameSetting(stored.get(unit.unit_id)!, unit))) {
         throw new ValidationError('This Units write changes nothing');
       }
@@ -346,7 +356,7 @@ export class StockMaterialService {
         minimumStockAfter,
       ]);
       const after = await stockMaterialUnitsOf(client, stockMaterialId);
-      const changes: { field: string; before: unknown; after: unknown }[] = [{ field: 'units', before: before.map(recordedUnit), after: after.map(recordedUnit) }];
+      const changes: StockMaterialHistoryChange[] = [{ field: 'units', before: before.map(recordedUnit), after: after.map(recordedUnit) }];
       // A Minimum Stock stated again counts another Base Unit, even with the same number.
       if (baseUnitChanges && (storedMinimumStock !== null || minimumStockAfter !== null)) {
         changes.push({ field: 'minimum_stock', before: storedMinimumStock, after: minimumStockAfter });

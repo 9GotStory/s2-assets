@@ -375,6 +375,22 @@ describe('Stock Material Minimum Stock (Seam A - F008-T6)', () => {
       expect(after.history[1].changes[1]).toEqual({ field: 'minimum_stock', before: '10', after: null });
     });
 
+    it('takes a whole Minimum Stock in a new whole-number-only Base Unit, the fraction it had in the old one notwithstanding', async () => {
+      // 2.5 ลิตร is 2500 มิลลิลิตร, counted whole.
+      const millilitre = await unitNamed(`มิลลิลิตร ${crypto.randomUUID().slice(0, 8)}`);
+      const page = await materialIn(litre, false, { minimum_stock: '2.5' });
+
+      const res = await replaceUnits(page.id, {
+        expected_version: 1,
+        base_unit: { unit_id: millilitre, whole_number_only: true },
+        alternate_units: [{ unit_id: litre, conversion_factor: '1000', whole_number_only: false, is_active: true }],
+        minimum_stock: '2500',
+      });
+
+      expect(res.statusCode).toBe(200);
+      expect((await materialOf(page.id)).minimum_stock).toBe('2500');
+    });
+
     it('refuses a Base Unit change that does not state the Minimum Stock again, so 10 รีม never becomes 10 กล่อง', async () => {
       const page = await paperWithMinimum();
 
