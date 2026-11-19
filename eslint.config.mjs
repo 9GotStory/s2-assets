@@ -58,7 +58,16 @@ const READS_CATALOG_LIST_TABLES = readsFrom(CATALOG_LIST_TABLES, 'services/catal
 const CATALOG_LIST_GUARDS = [WRITES_TO_CATALOG_LIST_TABLES, READS_CATALOG_LIST_TABLES];
 // Every block on apps/api/src keeps the Material Catalog guards except the owning modules' own.
 const MATERIAL_GUARDS = [WRITES_TO_UNIT_TABLES, READS_UNIT_TABLES, ...STOCK_MATERIAL_GUARDS, ...CATALOG_LIST_GUARDS];
-const apiSyntaxRule = (...guards) => ({ 'no-restricted-syntax': ['error', NO_PROMISED_REPLY, ...guards] });
+// #181 retro: names are compared by one expression, comparedName in compared-name.ts, which the unique indexes of the
+// Unit, Brand and Material Category lists share (CODING_STANDARDS, a derived condition); a copy drifts unseen.
+const OWN_COMPARED_NAME = sqlText(
+  'regexp_replace\\s*\\(\\s*btrim',
+  'Compare names with comparedName from compared-name.ts, the one source of the expression (#181).',
+  'i'
+);
+const apiSyntaxRule = (...guards) => ({ 'no-restricted-syntax': ['error', NO_PROMISED_REPLY, OWN_COMPARED_NAME, ...guards] });
+// What every module of apps/api/src keeps, but for the modules that own a table.
+const API_GUARDS = [WRITES_TO_LOAN_TABLES, WRITES_TO_ASSIGNMENT_CHANGES, WRITES_TO_REPAIR_TABLES, READS_LOAN_TABLES, READS_REPAIR_TABLES, ...RETIREMENT_GUARDS, ...MATERIAL_GUARDS];
 
 // An awaited expect, by its matcher, and whether it goes through .not.
 const matcher = (name) => `[expression.argument.callee.property.name='${name}']`;
@@ -109,15 +118,12 @@ export default tseslint.config(
     // A FastifyReply is thenable: awaiting a Promise<FastifyReply> waits until the reply is sent and
     // yields undefined, so a helper that hands one back lets its route run on after a 403 (#51).
     files: ['apps/api/src/**/*.ts'],
-    rules: apiSyntaxRule(
-      WRITES_TO_LOAN_TABLES,
-      WRITES_TO_ASSIGNMENT_CHANGES,
-      WRITES_TO_REPAIR_TABLES,
-      READS_LOAN_TABLES,
-      READS_REPAIR_TABLES,
-      ...RETIREMENT_GUARDS,
-      ...MATERIAL_GUARDS
-    ),
+    rules: apiSyntaxRule(...API_GUARDS),
+  },
+  {
+    // The one source of the name comparison.
+    files: ['apps/api/src/services/compared-name.ts'],
+    rules: { 'no-restricted-syntax': ['error', NO_PROMISED_REPLY, ...API_GUARDS] },
   },
   {
     files: ['apps/api/src/services/loan*.ts'],
