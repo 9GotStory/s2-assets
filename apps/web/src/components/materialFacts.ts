@@ -1,28 +1,27 @@
 // What the API answers about the Stock Material catalog (F008-T1, T3, T4), and its labels from GLOSSARY.md (#175 Q17).
 
-// One entry of the shared Unit list.
-export interface UnitEntry {
+// One entry of a list of the catalog: the shared Unit list (F008-T1), the Brand or the Material Category list (F008-T4).
+export interface ListEntry {
   id: string;
   name: string;
   is_active: boolean;
   version: number;
 }
 
+export type UnitEntry = ListEntry;
+
 export interface UnitList {
   items: UnitEntry[];
   can_manage: boolean;
 }
 
-// One entry of the Brand or the Material Category list (F008-T4), shaped as a Unit list entry.
-export type CatalogListEntry = UnitEntry;
-
 export interface CatalogList {
-  items: CatalogListEntry[];
+  items: ListEntry[];
   can_manage: boolean;
 }
 
 // A Stock Material's Brand or Material Category, under its name now; a history entry records it under its name then.
-export interface CatalogListReference {
+export interface NamedListEntry {
   id: string;
   name: string;
 }
@@ -35,8 +34,8 @@ export interface StockMaterialRow {
   specification: string | null;
   is_active: boolean;
   base_unit: { unit_id: string; name: string };
-  brand: CatalogListReference | null;
-  material_category: CatalogListReference | null;
+  brand: NamedListEntry | null;
+  material_category: NamedListEntry | null;
 }
 
 export interface StockMaterialList {
@@ -87,11 +86,11 @@ export interface StockMaterialHistoryEntry {
 export interface StockMaterialDetail {
   id: string;
   name: string;
-  brand: CatalogListReference | null;
+  brand: NamedListEntry | null;
   model: string | null;
   specification: string | null;
   note: string | null;
-  material_category: CatalogListReference | null;
+  material_category: NamedListEntry | null;
   is_active: boolean;
   version: number;
   created_by: string;

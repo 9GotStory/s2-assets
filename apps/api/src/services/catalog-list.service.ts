@@ -1,6 +1,6 @@
 import pg from 'pg';
 import { normalizeLine } from './assignment.service.ts';
-import { CATALOG_LISTS, type CatalogListKind } from './catalog-list-entries.ts';
+import { CATALOG_LISTS, type CatalogListKind, type NamedListEntry } from './catalog-list-entries.ts';
 import { commitOnce } from './retryable-write.ts';
 import { ValidationError } from './validation-error.ts';
 
@@ -41,14 +41,17 @@ const isUniqueViolation = (err: any) => err?.code === '23505';
  * findUnassignableEntry does for the Reference Lists (#175, Concurrency), and answers it with its name now, or null
  * when it is not on the list or Inactive (Q21).
  */
-export async function selectableCatalogListEntry(client: pg.PoolClient, kind: CatalogListKind, id: string): Promise<{ id: string; name: string } | null> {
+export async function selectableCatalogListEntry(client: pg.PoolClient, kind: CatalogListKind, id: string): Promise<NamedListEntry | null> {
   const res = await client.query(`SELECT id, name FROM ${CATALOG_LISTS[kind].table} WHERE id = $1 AND is_active FOR SHARE`, [id]);
   return res.rows[0] ?? null;
 }
 
-/** The entry `id` of the list `kind` under its name now, Inactive or not, for a history entry to record (#175 P6). */
-export async function catalogListEntryOf(client: pg.PoolClient, kind: CatalogListKind, id: string): Promise<{ id: string; name: string }> {
-  const res = await client.query(`SELECT id, name FROM ${CATALOG_LISTS[kind].table} WHERE id = $1`, [id]);
+/**
+ * The entry `id` of the list `kind` under its name now, Inactive or not, for a history entry to record (#175 P6),
+ * locked FOR SHARE so that a concurrent rename waits for the caller's write or is seen by it.
+ */
+export async function catalogListEntryOf(client: pg.PoolClient, kind: CatalogListKind, id: string): Promise<NamedListEntry> {
+  const res = await client.query(`SELECT id, name FROM ${CATALOG_LISTS[kind].table} WHERE id = $1 FOR SHARE`, [id]);
   return res.rows[0];
 }
 

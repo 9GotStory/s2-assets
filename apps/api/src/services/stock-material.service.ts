@@ -1,7 +1,7 @@
 import pg from 'pg';
 import { REMARK_MAX_LENGTH, normalizeLine, normalizeText } from './assignment.service.ts';
 import { isValidUuid } from './capability.service.ts';
-import { CATALOG_LISTS, type CatalogListKind } from './catalog-list-entries.ts';
+import { CATALOG_LISTS, type CatalogListKind, type NamedListEntry } from './catalog-list-entries.ts';
 import { catalogListEntryOf, selectableCatalogListEntry } from './catalog-list.service.ts';
 import { commitOnce } from './retryable-write.ts';
 import { NotFoundError, StaleBeforeConflictError } from './service-errors.ts';
@@ -61,12 +61,6 @@ interface StockMaterialFacts {
   units: UnitSetting[];
 }
 
-// An entry of the Brand or the Material Category list as a history entry records it: under its name then (#175 P6).
-export interface RecordedEntry {
-  id: string;
-  name: string;
-}
-
 // The entry of a list that a request names in `field`, or null when it names none.
 const entryIdOf = (value: string | null | undefined, field: string): string | null => {
   if (value === undefined || value === null) {
@@ -80,7 +74,7 @@ const entryIdOf = (value: string | null | undefined, field: string): string | nu
 
 // Locks the entry `id` of the list `kind` FOR SHARE, so making it Inactive waits for this write or is seen by it, and
 // answers it under its name now; refuses one that is not an active entry of the list (#175 Q21), naming its field.
-const chosenEntry = async (client: pg.PoolClient, kind: CatalogListKind, id: string | null): Promise<RecordedEntry | null> => {
+const chosenEntry = async (client: pg.PoolClient, kind: CatalogListKind, id: string | null): Promise<NamedListEntry | null> => {
   if (id === null) {
     return null;
   }

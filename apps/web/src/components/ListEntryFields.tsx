@@ -1,6 +1,6 @@
 import React, { useState } from 'react';
 import { fieldInputStyle, fieldLabelStyle } from './ReferenceContextFields';
-import type { UnitEntry } from './materialFacts';
+import type { ListEntry } from './materialFacts';
 
 // What adding an entry ended in: nothing yet, a message to show, or the request still out.
 type AddState = { status: 'idle' } | { status: 'sending' } | { status: 'message'; text: string; isError: boolean };
@@ -17,7 +17,7 @@ export interface ListEntryAddFieldProps {
   csrfToken: string | null;
   disabled: boolean;
   // Chooses the entry added, or the active entry already holding the name.
-  onAdded: (entry: UnitEntry) => Promise<void>;
+  onAdded: (entry: ListEntry) => Promise<void>;
 }
 
 /**
@@ -56,7 +56,7 @@ export const ListEntryAddField: React.FC<ListEntryAddFieldProps> = ({ id, path, 
       return;
     }
     if (res.status === 409 && body?.code === 'DUPLICATE_NAME' && body.entry) {
-      const entry: UnitEntry = body.entry;
+      const entry: ListEntry = body.entry;
       if (entry.is_active) {
         await onAdded(entry);
         setName('');
@@ -106,7 +106,7 @@ export interface ListEntrySelectProps {
   id: string;
   label: string;
   // The list, Inactive entries included.
-  entries: UnitEntry[];
+  entries: ListEntry[];
   // The chosen entry's id, or empty for none.
   value: string;
   onChange: (value: string) => void;

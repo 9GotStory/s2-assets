@@ -1,6 +1,6 @@
 import pg from 'pg';
 import { containsPattern } from './asset-lookups.ts';
-import { joinCatalogListEntry } from './catalog-list-entries.ts';
+import { joinCatalogListEntry, type NamedListEntry } from './catalog-list-entries.ts';
 import { joinUnitEntry } from './unit-entries.ts';
 
 // One row of the Stock Material list (#175 Q15).
@@ -12,8 +12,8 @@ export interface StockMaterialRow {
   is_active: boolean;
   base_unit: { unit_id: string; name: string };
   // F008-T4 (#179): each under the name its list entry has now, or none.
-  brand: CatalogListReference | null;
-  material_category: CatalogListReference | null;
+  brand: NamedListEntry | null;
+  material_category: NamedListEntry | null;
 }
 
 export interface StockMaterialListFilters {
@@ -63,21 +63,15 @@ export interface StockMaterialHistoryEntry {
   recorded_at: string;
 }
 
-// A Stock Material's Brand or Material Category, under the name its list entry has now (#175 Q19).
-export interface CatalogListReference {
-  id: string;
-  name: string;
-}
-
 export interface StockMaterialDetail {
   id: string;
   name: string;
-  // F008-T4 (#179): none when it has none (#175 Q2).
-  brand: CatalogListReference | null;
+  // F008-T4 (#179): under the name its list entry has now (#175 Q19), or none (Q2).
+  brand: NamedListEntry | null;
   model: string | null;
   specification: string | null;
   note: string | null;
-  material_category: CatalogListReference | null;
+  material_category: NamedListEntry | null;
   is_active: boolean;
   version: number;
   created_by: string;
@@ -107,7 +101,7 @@ export async function stockMaterialUnitsOf(client: pg.Pool | pg.PoolClient, stoc
 }
 
 // The entry a row joined as `<prefix>_id` and `<prefix>_name`, or null when it names none.
-const referenceOf = (row: any, prefix: string): CatalogListReference | null =>
+const namedEntryOf = (row: any, prefix: string): NamedListEntry | null =>
   row[`${prefix}_id`] === null ? null : { id: row[`${prefix}_id`], name: row[`${prefix}_name`] };
 
 const toRow = (row: any): StockMaterialRow => ({
@@ -117,8 +111,8 @@ const toRow = (row: any): StockMaterialRow => ({
   specification: row.specification,
   is_active: row.is_active,
   base_unit: { unit_id: row.base_unit_id, name: row.base_unit_name },
-  brand: referenceOf(row, 'brand'),
-  material_category: referenceOf(row, 'material_category'),
+  brand: namedEntryOf(row, 'brand'),
+  material_category: namedEntryOf(row, 'material_category'),
 });
 
 /** F008-T1 (#176): the Stock Material catalog's reads: the list and a Stock Material's page. */
@@ -202,8 +196,8 @@ export class StockMaterialReadService {
     );
     return {
       ...material,
-      brand: referenceOf(row, 'brand'),
-      material_category: referenceOf(row, 'material_category'),
+      brand: namedEntryOf(row, 'brand'),
+      material_category: namedEntryOf(row, 'material_category'),
       created_by_username: material.created_by_username ?? null,
       recorded_at: new Date(material.recorded_at).toISOString(),
       units,

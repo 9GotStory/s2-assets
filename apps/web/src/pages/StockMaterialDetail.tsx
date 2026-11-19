@@ -21,7 +21,7 @@ import {
   WHOLE_NUMBER_UNIT_LABEL,
   conversionLine,
   unitLine,
-  type CatalogListReference,
+  type NamedListEntry,
   type RecordedUnit,
   type StockMaterialDetail as MaterialDetail,
   type StockMaterialHistoryEntry,
@@ -51,7 +51,7 @@ const recordedValue = (field: string, value: unknown): React.ReactNode => {
     return units.map((unit) => <div key={unit.unit_id}>{unitLine(unit, baseName)}</div>);
   }
   if (field === 'brand' || field === 'material_category') {
-    return (value as CatalogListReference).name;
+    return (value as NamedListEntry).name;
   }
   return String(value);
 };

@@ -435,6 +435,21 @@ describe('Stock Material Brand and Material Category (Seam A - F008-T4)', () => 
       expect((await materialOf(page.id)).version).toBe(1);
     });
 
+    it('waits for the Material Category it replaces being renamed and then records its new name as the one before (P6)', async () => {
+      const replaced = await materialCategoryNamed('หมวดเก่าสะกดผิด');
+      const page = await materialOf(await created(paper({ material_category_id: replaced })));
+
+      const [res] = await whileWriting(
+        // What renaming a Material Category writes (F008-T8), held uncommitted.
+        { sql: `UPDATE material_categories SET name = 'หมวดเก่าสะกดถูก', version = version + 1 WHERE id = $1`, params: [replaced] },
+        () => [changeDetails(page.id, { expected_version: 1, material_category_id: null, note: null })],
+        () => untilWaiting('material_categories', 1, 'FOR SHARE')
+      );
+
+      expect(res.statusCode).toBe(200);
+      expect((await materialOf(page.id)).history[1].changes).toEqual([{ field: 'material_category', before: { id: replaced, name: 'หมวดเก่าสะกดถูก' }, after: null }]);
+    });
+
     it('needs an expected version', async () => {
       const { page, payload } = await detailsOf();
       const { expected_version: _version, ...noVersion } = payload;
