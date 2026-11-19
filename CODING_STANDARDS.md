@@ -9,7 +9,10 @@ and CI.
 A Seam A test covers each capability check that a change adds or touches:
 - it denies that one capability, through `withCapabilityAnswer` in
   `apps/api/tests/integration/support/capability-helpers.ts`;
-- it asserts the refusal and, for a route that can commit a write, that nothing was written.
+- it asserts the refusal and, for a route that can commit a write, that nothing was written;
+- its actor holds every capability a wrong gate could check instead, such as the Administrator for a
+  read that `asset:view` would also let through. An actor who lacks the substitute is refused by the
+  wrong gate too, and the test stays green (#176: `GET /units` gated by `asset:view`).
 
 Roles grant capabilities together, so the role map can hide a gate that fails open. In F003-T1
 (#51), a registration refused for `assignment:reassign` answered 403 and still committed the Asset.
