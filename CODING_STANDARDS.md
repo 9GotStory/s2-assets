@@ -30,13 +30,22 @@ F004-T6 (#80), `not.toContain('090')` over JSON that holds UUIDs failed whenever
 ## A refusal test sends a request only its rule refuses
 
 Each refused request breaks the rule under test and nothing else, so the test goes red when that
-rule goes; check it with `scripts/dev/expect-red.sh`, and several rules at once with its `--batch`
+rule goes. A cap case sends one entry over the cap, every entry valid and distinct; check it with `scripts/dev/expect-red.sh`, and several rules at once with its `--batch`
 mode, which tabulates which break went red. A loop of refused payloads that asserts only
 the error code hides which rule refused each one; ESLint flags such a loop over a literal array
 (`eslint.config.mjs`, #155), and one from before #155 carries an exemption until a ticket
 touches its file. In F006-T1 (#126), the filter-cap case sent 101 random UUIDs, which the
 unknown-entry check refused as well, and it stayed green with the cap removed. It now names one
-real entry 1001 times.
+real entry 1001 times. In F008-T3 (#178), the Alternate Unit cap case sent 101 copies of one Unit,
+which the duplicate rule refused too; it now sends 101 distinct Units.
+
+## A relaxed constraint has a test of each path that must not reach it
+
+When a migration relaxes a constraint, such as dropping `NOT NULL` or widening a `CHECK`, so that a
+decided case can store a new state, a Seam A test refuses each other write that could now reach that
+state. The database no longer refuses it, so only the service does. In F008-T3 (#178), migration 0026
+let a Conversion Factor be unknown so that a Base Unit change could leave one; the Units write also let
+a factor be blanked with the Base Unit unchanged, and only the Spec review found it.
 
 ## An order test of a paged list splits a tie across a page break
 
