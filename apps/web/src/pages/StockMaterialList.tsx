@@ -2,10 +2,15 @@ import React, { useEffect, useState } from 'react';
 import { Link, useNavigate, useSearchParams } from 'react-router';
 import { QueryClient, QueryClientProvider, useQuery } from '@tanstack/react-query';
 import { fieldInputStyle } from '../components/ReferenceContextFields';
+import { useMaterialCategoryList } from '../components/materialQueries';
 import {
   ADD_STOCK_MATERIAL_LABEL,
   BASE_UNIT_LABEL,
+  BRAND_LABEL,
+  INACTIVE_LABEL,
+  MATERIAL_CATEGORY_LABEL,
   MODEL_LABEL,
+  NO_MATERIAL_CATEGORY_LABEL,
   SPECIFICATION_LABEL,
   STOCK_MATERIAL_LABEL,
   type StockMaterialList as MaterialList,
@@ -23,18 +28,23 @@ const pageButtonStyle: React.CSSProperties = { padding: '0.375rem 0.875rem', bac
 
 const StockMaterialListContent: React.FC = () => {
   const navigate = useNavigate();
-  // The search and the page live in the URL, so a reload or a link keeps them.
+  // The search, the Material Category filter and the page live in the URL, so a reload or a link keeps them.
   const [params, setParams] = useSearchParams();
   const search = params.get('search') ?? '';
+  // A Material Category's id, "none" for the Stock Materials with none, or empty for every one (F008-T4).
+  const materialCategoryId = params.get('material_category_id') ?? '';
   const offset = Math.max(0, Number(params.get('offset')) || 0);
   const [searchInput, setSearchInput] = useState(search);
 
   const materials = useQuery<MaterialList, Error & { status?: number }>({
-    queryKey: ['stock-materials', search, offset],
+    queryKey: ['stock-materials', search, materialCategoryId, offset],
     queryFn: async ({ signal }) => {
       const query = new URLSearchParams({ limit: String(PAGE_SIZE), offset: String(offset) });
       if (search.trim() !== '') {
         query.set('search', search.trim());
+      }
+      if (materialCategoryId !== '') {
+        query.set('material_category_id', materialCategoryId);
       }
       const res = await fetch(`/stock-materials?${query}`, { credentials: 'include', signal });
       if (!res.ok) {
@@ -53,15 +63,22 @@ const StockMaterialListContent: React.FC = () => {
     }
   }, [isSignedOut, navigate]);
 
+  // The filter's options; an Inactive Material Category still groups the Stock Materials that have it (#175 Q21).
+  const materialCategories = useMaterialCategoryList();
+
   // A failed read hides what an earlier one showed: a lost grant fails closed.
   const list = materials.isError ? undefined : materials.data;
   const isForbidden = materials.error?.status === 403;
 
-  const goTo = (next: { search?: string; offset?: number }) => {
+  const goTo = (next: { search?: string; materialCategoryId?: string; offset?: number }) => {
     const query = new URLSearchParams();
     const nextSearch = (next.search ?? search).trim();
     if (nextSearch !== '') {
       query.set('search', nextSearch);
+    }
+    const nextCategory = next.materialCategoryId ?? materialCategoryId;
+    if (nextCategory !== '') {
+      query.set('material_category_id', nextCategory);
     }
     if (next.offset) {
       query.set('offset', String(next.offset));
@@ -122,7 +139,7 @@ const StockMaterialListContent: React.FC = () => {
                 type="search"
                 value={searchInput}
                 maxLength={500}
-                placeholder={`ค้นหาจากชื่อ ${MODEL_LABEL} หรือ${SPECIFICATION_LABEL}`}
+                placeholder={`ค้นหาจากชื่อ ${BRAND_LABEL} ${MODEL_LABEL} หรือ${SPECIFICATION_LABEL}`}
                 onChange={(e) => setSearchInput(e.target.value)}
                 style={{ ...fieldInputStyle, flex: '1 1 16rem', width: 'auto' }}
               />
@@ -131,13 +148,33 @@ const StockMaterialListContent: React.FC = () => {
               </button>
             </form>
 
+            <div style={{ display: 'flex', alignItems: 'center', gap: '0.5rem', marginBottom: '1rem', flexWrap: 'wrap' }}>
+              <label htmlFor="stock-material-material-category-filter" style={{ fontSize: '0.875rem', color: '#374151' }}>
+                {MATERIAL_CATEGORY_LABEL}
+              </label>
+              <select
+                id="stock-material-material-category-filter"
+                value={materialCategoryId}
+                onChange={(e) => goTo({ materialCategoryId: e.target.value, offset: 0 })}
+                style={{ ...fieldInputStyle, width: 'auto', flex: '0 1 16rem' }}
+              >
+                <option value="">ทั้งหมด</option>
+                <option value="none">{NO_MATERIAL_CATEGORY_LABEL}</option>
+                {(materialCategories.data?.items ?? []).map((category) => (
+                  <option key={category.id} value={category.id}>
+                    {category.is_active ? category.name : `${category.name} (${INACTIVE_LABEL})`}
+                  </option>
+                ))}
+              </select>
+            </div>
+
             <section aria-label={STOCK_MATERIAL_LABEL} id="stock-material-list-region">
               {list.items.length === 0 ? (
                 <div
                   id="stock-material-list-empty"
                   style={{ padding: '3rem 1rem', textAlign: 'center', backgroundColor: '#f9fafb', borderRadius: '6px', border: '1px dashed #d1d5db', color: '#6b7280', fontSize: '0.9375rem' }}
                 >
-                  {search.trim() === '' ? 'ยังไม่มีวัสดุ' : 'ไม่พบวัสดุที่ค้นหา'}
+                  {search.trim() === '' && materialCategoryId === '' ? 'ยังไม่มีวัสดุ' : 'ไม่พบวัสดุที่ค้นหา'}
                 </div>
               ) : (
                 <div style={{ overflowX: 'auto' }}>
@@ -145,8 +182,10 @@ const StockMaterialListContent: React.FC = () => {
                     <thead>
                       <tr style={{ backgroundColor: '#f9fafb', borderBottom: '2px solid #e5e7eb' }}>
                         <th style={headStyle}>ชื่อวัสดุ</th>
+                        <th style={headStyle}>{BRAND_LABEL}</th>
                         <th style={headStyle}>{MODEL_LABEL}</th>
                         <th style={headStyle}>{SPECIFICATION_LABEL}</th>
+                        <th style={headStyle}>{MATERIAL_CATEGORY_LABEL}</th>
                         <th style={headStyle}>{BASE_UNIT_LABEL}</th>
                       </tr>
                     </thead>
@@ -158,8 +197,10 @@ const StockMaterialListContent: React.FC = () => {
                               {material.name}
                             </Link>
                           </td>
+                          <td style={cellStyle}>{material.brand?.name ?? '-'}</td>
                           <td style={cellStyle}>{material.model ?? '-'}</td>
                           <td style={{ ...cellStyle, whiteSpace: 'pre-line' }}>{material.specification ?? '-'}</td>
+                          <td style={cellStyle}>{material.material_category?.name ?? '-'}</td>
                           <td style={cellStyle}>{material.base_unit.name}</td>
                         </tr>
                       ))}
@@ -188,7 +229,10 @@ const StockMaterialListContent: React.FC = () => {
   );
 };
 
-/** The Stock Material list ("วัสดุ", F008-T1): every Stock Material by name, searchable, and "เพิ่มวัสดุ" for holders. */
+/**
+ * The Stock Material list ("วัสดุ", F008-T1, T4): every Stock Material by name, searchable by name, Brand, Model and
+ * Specification, filtered by Material Category, and "เพิ่มวัสดุ" for holders.
+ */
 export const StockMaterialList: React.FC = () => {
   const [queryClient] = useState(() => new QueryClient({ defaultOptions: { queries: { retry: false, refetchOnWindowFocus: true } } }));
 

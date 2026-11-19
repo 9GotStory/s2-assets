@@ -86,6 +86,16 @@ export const repositoryProxyConfig: Record<string, ProxyOptions> = {
     target: 'http://api:3000',
     changeOrigin: true,
   },
+  // F008-T4 (#179): the Brand and Material Category lists of the Stock Material catalog; no SPA route starts with
+  // /brands or /material-categories.
+  '/brands': {
+    target: 'http://api:3000',
+    changeOrigin: true,
+  },
+  '/material-categories': {
+    target: 'http://api:3000',
+    changeOrigin: true,
+  },
   // T4 (#25): reference lists; the maintenance page is the SPA route /admin/references.
   '/references': {
     target: 'http://api:3000',

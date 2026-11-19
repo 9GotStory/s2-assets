@@ -1,14 +1,18 @@
 import React, { useEffect, useState } from 'react';
 import { Link, useNavigate, useParams } from 'react-router';
 import { QueryClient, QueryClientProvider, useQuery } from '@tanstack/react-query';
+import { StockMaterialDetailsEditor } from '../components/StockMaterialDetailsEditor';
 import { StockMaterialUnitsEditor } from '../components/StockMaterialUnitsEditor';
 import {
   ACTIVE_LABEL,
   BASE_UNIT_LABEL,
+  BRAND_LABEL,
   CONVERSION_FACTOR_LABEL,
+  EDIT_DETAILS_LABEL,
   EDIT_UNITS_LABEL,
   HISTORY_KIND_LABELS,
   INACTIVE_LABEL,
+  MATERIAL_CATEGORY_LABEL,
   MODEL_LABEL,
   RECORDED_FIELD_LABELS,
   SPECIFICATION_LABEL,
@@ -17,6 +21,7 @@ import {
   WHOLE_NUMBER_UNIT_LABEL,
   conversionLine,
   unitLine,
+  type NamedListEntry,
   type RecordedUnit,
   type StockMaterialDetail as MaterialDetail,
   type StockMaterialHistoryEntry,
@@ -34,7 +39,8 @@ const sectionHeadingStyle: React.CSSProperties = { fontSize: '1.125rem', fontWei
 const cellStyle: React.CSSProperties = { padding: '0.5rem 0.75rem', color: '#111827', verticalAlign: 'top' };
 const headStyle: React.CSSProperties = { padding: '0.5rem 0.75rem', fontWeight: 600, color: '#374151', whiteSpace: 'nowrap' };
 
-// A recorded value as the history shows it: the Units as lines, text as it was, none as "-".
+// A recorded value as the history shows it: the Units as lines, a Brand or a Material Category by its name then, text
+// as it was, none as "-".
 const recordedValue = (field: string, value: unknown): React.ReactNode => {
   if (value === null || value === undefined) {
     return '-';
@@ -43,6 +49,9 @@ const recordedValue = (field: string, value: unknown): React.ReactNode => {
     const units = value as RecordedUnit[];
     const baseName = units.find((unit) => unit.is_base)?.name ?? '';
     return units.map((unit) => <div key={unit.unit_id}>{unitLine(unit, baseName)}</div>);
+  }
+  if (field === 'brand' || field === 'material_category') {
+    return (value as NamedListEntry).name;
   }
   return String(value);
 };
@@ -74,6 +83,7 @@ const HistoryEntry: React.FC<{ entry: StockMaterialHistoryEntry }> = ({ entry })
 const StockMaterialDetailContent: React.FC<{ id: string }> = ({ id }) => {
   const navigate = useNavigate();
   const [isEditingUnits, setIsEditingUnits] = useState(false);
+  const [isEditingDetails, setIsEditingDetails] = useState(false);
 
   const material = useQuery<MaterialDetail, Error & { status?: number }>({
     queryKey: ['stock-material', id],
@@ -125,10 +135,14 @@ const StockMaterialDetailContent: React.FC<{ id: string }> = ({ id }) => {
             <dl id="stock-material-fields" style={{ display: 'grid', gridTemplateColumns: 'max-content 1fr', gap: '0.5rem 1.5rem', margin: 0, fontSize: '0.9375rem' }}>
               <dt style={{ fontWeight: 500, color: '#4b5563' }}>สถานะ</dt>
               <dd data-testid="stock-material-status" style={{ margin: 0 }}>{detail.is_active ? ACTIVE_LABEL : INACTIVE_LABEL}</dd>
+              <dt style={{ fontWeight: 500, color: '#4b5563' }}>{BRAND_LABEL}</dt>
+              <dd data-testid="stock-material-brand" style={{ margin: 0 }}>{detail.brand?.name ?? '-'}</dd>
               <dt style={{ fontWeight: 500, color: '#4b5563' }}>{MODEL_LABEL}</dt>
               <dd data-testid="stock-material-model" style={{ margin: 0 }}>{detail.model ?? '-'}</dd>
               <dt style={{ fontWeight: 500, color: '#4b5563' }}>{SPECIFICATION_LABEL}</dt>
               <dd data-testid="stock-material-specification" style={{ margin: 0, whiteSpace: 'pre-line' }}>{detail.specification ?? '-'}</dd>
+              <dt style={{ fontWeight: 500, color: '#4b5563' }}>{MATERIAL_CATEGORY_LABEL}</dt>
+              <dd data-testid="stock-material-material-category" style={{ margin: 0 }}>{detail.material_category?.name ?? '-'}</dd>
               <dt style={{ fontWeight: 500, color: '#4b5563' }}>หมายเหตุ</dt>
               <dd data-testid="stock-material-note" style={{ margin: 0, whiteSpace: 'pre-line' }}>{detail.note ?? '-'}</dd>
               <dt style={{ fontWeight: 500, color: '#4b5563' }}>สร้างเมื่อ</dt>
@@ -136,6 +150,38 @@ const StockMaterialDetailContent: React.FC<{ id: string }> = ({ id }) => {
                 <time dateTime={detail.recorded_at}>{THAI_DATE_TIME.format(new Date(detail.recorded_at))}</time> โดย {detail.created_by_username ?? detail.created_by}
               </dd>
             </dl>
+            {detail.can_manage && !isEditingDetails && (
+              <button
+                type="button"
+                id="stock-material-edit-details"
+                onClick={() => setIsEditingDetails(true)}
+                style={{ marginTop: '1rem', padding: '0.375rem 0.875rem', backgroundColor: '#ffffff', color: '#1d4ed8', border: '1px solid #93c5fd', borderRadius: '6px', fontSize: '0.875rem', fontWeight: 500 }}
+              >
+                {EDIT_DETAILS_LABEL}
+              </button>
+            )}
+            {detail.can_manage && isEditingDetails && (
+              <div style={{ marginTop: '1rem' }}>
+                {/* A new read starts the editor again from what it shows, so a save never carries details read before it. */}
+                <StockMaterialDetailsEditor
+                  key={detail.version}
+                  material={detail}
+                  onRefresh={refresh}
+                  onSaved={async () => {
+                    await material.refetch();
+                    setIsEditingDetails(false);
+                  }}
+                  onCancel={() => setIsEditingDetails(false)}
+                  onPermissionRevoked={(status) => {
+                    if (status === 401) {
+                      navigate('/login', { replace: true });
+                      return;
+                    }
+                    void material.refetch();
+                  }}
+                />
+              </div>
+            )}
 
             <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', gap: '1rem' }}>
               <h2 style={sectionHeadingStyle}>{UNIT_LABEL}</h2>
@@ -212,7 +258,10 @@ const StockMaterialDetailContent: React.FC<{ id: string }> = ({ id }) => {
   );
 };
 
-/** A Stock Material's page (F008-T1, T3): every field, its Units with their editor, and its history (#175 Q15, Q18). */
+/**
+ * A Stock Material's page (F008-T1, T3, T4): every field with the editor of its other details, its Units with their
+ * editor, and its history (#175 Q15, Q18).
+ */
 export const StockMaterialDetail: React.FC = () => {
   const { id = '' } = useParams<{ id: string }>();
   const [queryClient] = useState(() => new QueryClient({ defaultOptions: { queries: { retry: false, refetchOnWindowFocus: true } } }));

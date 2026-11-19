@@ -335,8 +335,8 @@ The further details that set a Stock Material apart, such as size, colour or gra
 variant is part of its Specification, not a separate thing.
 
 **Material Category** (หมวดวัสดุ):
-A group from a flat shared list that sorts Stock Materials, at most one for each and possibly none.
-It never decides what a Stock Material is.
+A group from a flat shared list that sorts Stock Materials, at most one for each and possibly none
+(ไม่มีหมวด). It never decides what a Stock Material is.
 
 **Unit** (หน่วยนับ):
 A name for how a quantity is counted, such as แผ่น, รีม or ลิตร, from a shared list.
@@ -387,6 +387,11 @@ _Avoid_: reorder point, safety stock
 A traceable fix, with a reason, to the name, Brand, Model or Specification of a Stock Material that
 was wrong as recorded, which stays the same thing. It never rewrites history: a different thing is a
 new Stock Material.
+
+**Other Details** (ข้อมูลอื่น):
+A Stock Material's Material Category, Minimum Stock and note, which a Supply Officer changes
+(แก้ไขข้อมูลอื่น) without a reason, each change recorded in its history. A change that changes
+nothing is refused.
 
 ## Roles
 

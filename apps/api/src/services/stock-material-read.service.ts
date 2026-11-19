@@ -1,5 +1,6 @@
 import pg from 'pg';
 import { containsPattern } from './asset-lookups.ts';
+import { joinCatalogListEntry, type NamedListEntry } from './catalog-list-entries.ts';
 import { joinUnitEntry } from './unit-entries.ts';
 
 // One row of the Stock Material list (#175 Q15).
@@ -10,11 +11,16 @@ export interface StockMaterialRow {
   specification: string | null;
   is_active: boolean;
   base_unit: { unit_id: string; name: string };
+  // F008-T4 (#179): each under the name its list entry has now, or none.
+  brand: NamedListEntry | null;
+  material_category: NamedListEntry | null;
 }
 
 export interface StockMaterialListFilters {
-  // Text found in the name, the Model or the Specification (#175 Q15, MC-10).
+  // Text found in the name, the Brand's name, the Model or the Specification (#175 Q15, MC-10).
   search?: string;
+  // F008-T4 (#179): the Material Category's id, or 'none' for the Stock Materials with none (#175 Q3).
+  material_category_id?: string;
   limit: number;
   offset: number;
 }
@@ -41,9 +47,9 @@ export interface StockMaterialUnit {
   is_active: boolean;
 }
 
-// The kinds of change a history entry records: F008-T1 writes CREATED, T3 UNITS_CHANGED; T5 and T7 the others, which
-// 0025_material_catalog already takes. T4 and T6 add theirs with their own migrations.
-export type StockMaterialHistoryKind = 'CREATED' | 'CORRECTED' | 'UNITS_CHANGED' | 'INACTIVATED' | 'REACTIVATED';
+// The kinds of change a history entry records: F008-T1 writes CREATED, T3 UNITS_CHANGED, T4 DETAILS_CHANGED
+// (0027_brands_material_categories); T5 and T7 the others, which 0025_material_catalog already takes. T6 adds its own.
+export type StockMaterialHistoryKind = 'CREATED' | 'CORRECTED' | 'UNITS_CHANGED' | 'DETAILS_CHANGED' | 'INACTIVATED' | 'REACTIVATED';
 
 // One entry of a Stock Material's history, with the values it recorded as they were then (#175 Q18, P6).
 export interface StockMaterialHistoryEntry {
@@ -60,9 +66,12 @@ export interface StockMaterialHistoryEntry {
 export interface StockMaterialDetail {
   id: string;
   name: string;
+  // F008-T4 (#179): under the name its list entry has now (#175 Q19), or none (Q2).
+  brand: NamedListEntry | null;
   model: string | null;
   specification: string | null;
   note: string | null;
+  material_category: NamedListEntry | null;
   is_active: boolean;
   version: number;
   created_by: string;
@@ -91,6 +100,10 @@ export async function stockMaterialUnitsOf(client: pg.Pool | pg.PoolClient, stoc
   return res.rows;
 }
 
+// The entry a row joined as `<prefix>_id` and `<prefix>_name`, or null when it names none.
+const namedEntryOf = (row: any, prefix: string): NamedListEntry | null =>
+  row[`${prefix}_id`] === null ? null : { id: row[`${prefix}_id`], name: row[`${prefix}_name`] };
+
 const toRow = (row: any): StockMaterialRow => ({
   id: row.id,
   name: row.name,
@@ -98,6 +111,8 @@ const toRow = (row: any): StockMaterialRow => ({
   specification: row.specification,
   is_active: row.is_active,
   base_unit: { unit_id: row.base_unit_id, name: row.base_unit_name },
+  brand: namedEntryOf(row, 'brand'),
+  material_category: namedEntryOf(row, 'material_category'),
 });
 
 /** F008-T1 (#176): the Stock Material catalog's reads: the list and a Stock Material's page. */
@@ -113,17 +128,27 @@ export class StockMaterialReadService {
     const conditions: string[] = [];
     if (filters.search !== undefined) {
       params.push(containsPattern(filters.search));
-      conditions.push(`(m.name ILIKE $1 ESCAPE '\\' OR m.model ILIKE $1 ESCAPE '\\' OR m.specification ILIKE $1 ESCAPE '\\')`);
+      const pattern = `$${params.length}`;
+      conditions.push(`(m.name ILIKE ${pattern} ESCAPE '\\' OR br.name ILIKE ${pattern} ESCAPE '\\' OR m.model ILIKE ${pattern} ESCAPE '\\' OR m.specification ILIKE ${pattern} ESCAPE '\\')`);
+    }
+    if (filters.material_category_id === 'none') {
+      conditions.push('m.material_category_id IS NULL');
+    } else if (filters.material_category_id !== undefined) {
+      params.push(filters.material_category_id);
+      conditions.push(`m.material_category_id = $${params.length}`);
     }
     params.push(filters.limit, filters.offset);
 
     // The count joins the page, so a page past the end still says how many Stock Materials pass.
     const res = await this.db.query(
       `WITH filtered AS (
-         SELECT m.id, m.name, m.model, m.specification, m.is_active, u.id AS base_unit_id, u.name AS base_unit_name
+         SELECT m.id, m.name, m.model, m.specification, m.is_active, u.id AS base_unit_id, u.name AS base_unit_name,
+                br.id AS brand_id, br.name AS brand_name, mc.id AS material_category_id, mc.name AS material_category_name
          FROM stock_materials m
          JOIN stock_material_units b ON b.stock_material_id = m.id AND b.is_base
          ${joinUnitEntry('u', 'b.unit_id')}
+         ${joinCatalogListEntry('brand', 'br', 'm.brand_id')}
+         ${joinCatalogListEntry('material-category', 'mc', 'm.material_category_id')}
          ${conditions.length > 0 ? `WHERE ${conditions.join(' AND ')}` : ''}
        ),
        counted AS (SELECT count(*)::int AS total_count FROM filtered),
@@ -146,16 +171,20 @@ export class StockMaterialReadService {
   /** A Stock Material with its Units and its history, or null when there is none. */
   async read(id: string): Promise<StockMaterialDetail | null> {
     const res = await this.db.query(
-      `SELECT m.id, m.name, m.model, m.specification, m.note, m.is_active, m.version, m.created_by, u.username AS created_by_username, m.recorded_at
+      `SELECT m.id, m.name, m.model, m.specification, m.note, m.is_active, m.version, m.created_by, u.username AS created_by_username, m.recorded_at,
+              b.id AS brand_id, b.name AS brand_name, c.id AS material_category_id, c.name AS material_category_name
        FROM stock_materials m
        LEFT JOIN users u ON u.id = m.created_by
+       ${joinCatalogListEntry('brand', 'b', 'm.brand_id')}
+       ${joinCatalogListEntry('material-category', 'c', 'm.material_category_id')}
        WHERE m.id = $1`,
       [id]
     );
-    const material = res.rows[0];
-    if (!material) {
+    const row = res.rows[0];
+    if (!row) {
       return null;
     }
+    const { brand_id: _brandId, brand_name: _brandName, material_category_id: _categoryId, material_category_name: _categoryName, ...material } = row;
     const units = await stockMaterialUnitsOf(this.db, id);
     const history = await this.db.query(
       `SELECT h.version, h.kind, h.changes, h.reason, h.note, h.recorded_by, u.username AS recorded_by_username, h.recorded_at
@@ -167,6 +196,8 @@ export class StockMaterialReadService {
     );
     return {
       ...material,
+      brand: namedEntryOf(row, 'brand'),
+      material_category: namedEntryOf(row, 'material_category'),
       created_by_username: material.created_by_username ?? null,
       recorded_at: new Date(material.recorded_at).toISOString(),
       units,

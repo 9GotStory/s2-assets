@@ -1,16 +1,29 @@
-// What the API answers about the Stock Material catalog (F008-T1, T3), and its labels from GLOSSARY.md (#175 Q17).
+// What the API answers about the Stock Material catalog (F008-T1, T3, T4), and its labels from GLOSSARY.md (#175 Q17).
 
-// One entry of the shared Unit list.
-export interface UnitEntry {
+// One entry of a list of the catalog: the shared Unit list (F008-T1), the Brand or the Material Category list (F008-T4).
+export interface ListEntry {
   id: string;
   name: string;
   is_active: boolean;
   version: number;
 }
 
+export type UnitEntry = ListEntry;
+
 export interface UnitList {
   items: UnitEntry[];
   can_manage: boolean;
+}
+
+export interface CatalogList {
+  items: ListEntry[];
+  can_manage: boolean;
+}
+
+// A Stock Material's Brand or Material Category, under its name now; a history entry records it under its name then.
+export interface NamedListEntry {
+  id: string;
+  name: string;
 }
 
 // One row of the Stock Material list.
@@ -21,6 +34,8 @@ export interface StockMaterialRow {
   specification: string | null;
   is_active: boolean;
   base_unit: { unit_id: string; name: string };
+  brand: NamedListEntry | null;
+  material_category: NamedListEntry | null;
 }
 
 export interface StockMaterialList {
@@ -55,7 +70,7 @@ export interface RecordedUnit {
   is_active: boolean;
 }
 
-export type StockMaterialHistoryKind = 'CREATED' | 'CORRECTED' | 'UNITS_CHANGED' | 'INACTIVATED' | 'REACTIVATED';
+export type StockMaterialHistoryKind = 'CREATED' | 'CORRECTED' | 'UNITS_CHANGED' | 'DETAILS_CHANGED' | 'INACTIVATED' | 'REACTIVATED';
 
 export interface StockMaterialHistoryEntry {
   version: number;
@@ -71,9 +86,11 @@ export interface StockMaterialHistoryEntry {
 export interface StockMaterialDetail {
   id: string;
   name: string;
+  brand: NamedListEntry | null;
   model: string | null;
   specification: string | null;
   note: string | null;
+  material_category: NamedListEntry | null;
   is_active: boolean;
   version: number;
   created_by: string;
@@ -85,8 +102,11 @@ export interface StockMaterialDetail {
 }
 
 export const STOCK_MATERIAL_LABEL = 'วัสดุ';
+export const BRAND_LABEL = 'ยี่ห้อ';
 export const MODEL_LABEL = 'รุ่น';
 export const SPECIFICATION_LABEL = 'คุณลักษณะ';
+export const MATERIAL_CATEGORY_LABEL = 'หมวดวัสดุ';
+export const NO_MATERIAL_CATEGORY_LABEL = 'ไม่มีหมวด';
 export const UNIT_LABEL = 'หน่วยนับ';
 export const BASE_UNIT_LABEL = 'หน่วยนับหลัก';
 export const ALTERNATE_UNIT_LABEL = 'หน่วยนับอื่น';
@@ -102,19 +122,27 @@ export const ADD_UNIT_LABEL = 'เพิ่มหน่วยนับ';
 export const ADD_ALTERNATE_UNIT_LABEL = 'เพิ่มหน่วยนับอื่น';
 // glossary: no entry — the Stock Material page's action, made of the term หน่วยนับ (Unit)
 export const EDIT_UNITS_LABEL = 'แก้ไขหน่วยนับ';
+// glossary: no entry — the form's inline action, made of the term ยี่ห้อ (Brand)
+export const ADD_BRAND_LABEL = 'เพิ่มยี่ห้อ';
+// glossary: no entry — the form's inline action, made of the term หมวดวัสดุ (Material Category)
+export const ADD_MATERIAL_CATEGORY_LABEL = 'เพิ่มหมวดวัสดุ';
+export const EDIT_DETAILS_LABEL = 'แก้ไขข้อมูลอื่น';
 
-// What each kind of history entry is called on the Stock Material page. F008-T1 writes CREATED and T3 UNITS_CHANGED;
-// the tickets that write the other kinds name them.
+// What each kind of history entry is called on the Stock Material page. F008-T1 writes CREATED, T3 UNITS_CHANGED and
+// T4 DETAILS_CHANGED; the tickets that write the other kinds name them.
 export const HISTORY_KIND_LABELS: Partial<Record<StockMaterialHistoryKind, string>> = {
   CREATED: 'สร้างรายการ',
   UNITS_CHANGED: EDIT_UNITS_LABEL,
+  DETAILS_CHANGED: EDIT_DETAILS_LABEL,
 };
 
 // What each recorded field is called in a history entry.
 export const RECORDED_FIELD_LABELS: Record<string, string> = {
   name: 'ชื่อวัสดุ',
+  brand: BRAND_LABEL,
   model: MODEL_LABEL,
   specification: SPECIFICATION_LABEL,
+  material_category: MATERIAL_CATEGORY_LABEL,
   note: 'หมายเหตุ',
   units: UNIT_LABEL,
 };
