@@ -88,6 +88,12 @@ export function materialHelpers(context: () => { api: ApiHarness; officer: Actor
   const correct = (id: string, payload: Record<string, unknown>, token: string = crypto.randomUUID(), actor: Actor = context().officer) =>
     context().api.post(actor, `/stock-materials/${id}/corrections`, payload, { 'x-retry-token': token });
 
+  // Makes the Stock Material `id` Inactive (หยุดใช้), or reactivates it (เปิดใช้อีกครั้ง) (F008-T7).
+  const inactivate = (id: string, payload: Record<string, unknown>, token: string = crypto.randomUUID(), actor: Actor = context().officer) =>
+    context().api.post(actor, `/stock-materials/${id}/inactivate`, payload, { 'x-retry-token': token });
+  const reactivate = (id: string, payload: Record<string, unknown>, token: string = crypto.randomUUID(), actor: Actor = context().officer) =>
+    context().api.post(actor, `/stock-materials/${id}/reactivate`, payload, { 'x-retry-token': token });
+
   // How many Stock Materials exist, to show that a refused write saved nothing.
   const materialCount = async (): Promise<number> => {
     const res = await context().api.get(context().reader, '/stock-materials?limit=1');
@@ -95,5 +101,5 @@ export function materialHelpers(context: () => { api: ApiHarness; officer: Actor
     return res.json().total_count;
   };
 
-  return { addUnit, unitNamed, unitsOf, createMaterial, created, materialOf, replaceUnits, unitsAsRead, addBrand, addMaterialCategory, brandNamed, materialCategoryNamed, changeDetails, duplicateCandidatesOf, correct, materialCount };
+  return { addUnit, unitNamed, unitsOf, createMaterial, created, materialOf, replaceUnits, unitsAsRead, addBrand, addMaterialCategory, brandNamed, materialCategoryNamed, changeDetails, duplicateCandidatesOf, correct, inactivate, reactivate, materialCount };
 }

@@ -65,6 +65,17 @@ export interface CorrectStockMaterialInput {
   explicit_continuation?: boolean;
 }
 
+// F008-T7 (#180, #175 Q13): making a Stock Material Inactive, with an optional note, at the version the request read.
+export interface InactivateStockMaterialInput {
+  expected_version: number;
+  note?: string | null;
+}
+
+// F008-T7 (#180): reactivating an Inactive Stock Material, at the version the request read.
+export interface ReactivateStockMaterialInput {
+  expected_version: number;
+}
+
 // What a Stock Material write answers: the Stock Material it wrote and the version a later write must expect.
 export interface StockMaterialVersion {
   stock_material_id: string;
@@ -478,6 +489,52 @@ export class StockMaterialService {
         [stockMaterialId, updated.rows[0].version, JSON.stringify(changes), actorId]
       );
       return { stock_material_id: stockMaterialId, version: updated.rows[0].version };
+    });
+  }
+
+  /**
+   * F008-T7 (#180): makes the Stock Material Inactive (หยุดใช้), even while it holds stock, with an optional note; it
+   * changes nothing else and deletes nothing (#175 MC-14, Q13).
+   */
+  async inactivate(actorId: string, stockMaterialId: string, input: InactivateStockMaterialInput, { retryToken }: { retryToken: string }): Promise<StockMaterialVersion> {
+    const note = normalizeText(input.note, 'note', REMARK_MAX_LENGTH, '');
+    return this.changeStatus(actorId, stockMaterialId, { isActive: false, expectedVersion: input.expected_version, note, retryToken });
+  }
+
+  /** F008-T7 (#180): reactivates an Inactive Stock Material (เปิดใช้อีกครั้ง) as the same record (#175 MC-14, Q13). */
+  async reactivate(actorId: string, stockMaterialId: string, input: ReactivateStockMaterialInput, { retryToken }: { retryToken: string }): Promise<StockMaterialVersion> {
+    return this.changeStatus(actorId, stockMaterialId, { isActive: true, expectedVersion: input.expected_version, note: null, retryToken });
+  }
+
+  // Makes the Stock Material active or Inactive at the version the request read, with a history entry of the change
+  // and the Inactive note. One already so is refused, as the other writes refuse a change of nothing.
+  private async changeStatus(
+    actorId: string,
+    stockMaterialId: string,
+    { isActive, expectedVersion, note, retryToken }: { isActive: boolean; expectedVersion: number; note: string | null; retryToken: string }
+  ): Promise<StockMaterialVersion> {
+    const operation = isActive ? 'stock-material:reactivate' : 'stock-material:inactivate';
+    const payload = { stock_material_id: stockMaterialId, expected_version: expectedVersion, note };
+    return commitOnce(this.db, { actorId, operation, retryToken, payload, explicitContinuation: false }, async (client) => {
+      const res = await client.query('SELECT version, is_active FROM stock_materials WHERE id = $1 FOR UPDATE', [stockMaterialId]);
+      if (res.rows.length === 0) {
+        throw new NotFoundError('Stock Material not found');
+      }
+      const stored = res.rows[0];
+      if (stored.version !== expectedVersion) {
+        throw new StaleBeforeConflictError('The Stock Material changed since it was read', { version: stored.version }, { version: expectedVersion });
+      }
+      if (stored.is_active === isActive) {
+        throw new ValidationError(isActive ? 'The Stock Material is already active' : 'The Stock Material is already Inactive');
+      }
+
+      const updated = await client.query('UPDATE stock_materials SET is_active = $2, version = version + 1 WHERE id = $1 RETURNING version', [stockMaterialId, isActive]);
+      const { version } = updated.rows[0];
+      await client.query(
+        `INSERT INTO stock_material_history (stock_material_id, version, kind, changes, note, recorded_by) VALUES ($1, $2, $3, $4::jsonb, $5, $6)`,
+        [stockMaterialId, version, isActive ? 'REACTIVATED' : 'INACTIVATED', JSON.stringify([{ field: 'is_active', before: !isActive, after: isActive }]), note, actorId]
+      );
+      return { stock_material_id: stockMaterialId, version };
     });
   }
 }

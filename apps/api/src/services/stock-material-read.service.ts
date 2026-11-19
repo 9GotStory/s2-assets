@@ -26,6 +26,8 @@ export interface StockMaterialListFilters {
   material_category_id?: string;
   // F008-T6 (#182): whether the Stock Material has a Minimum Stock (#175 MC-20).
   minimum_stock?: 'set' | 'not_set';
+  // F008-T7 (#180): the Stock Materials in use (ใช้งานอยู่), the Inactive ones (หยุดใช้), or all (#175 MC-14, Q13).
+  status: 'active' | 'inactive' | 'all';
   limit: number;
   offset: number;
 }
@@ -211,6 +213,9 @@ export class StockMaterialReadService {
     }
     if (filters.minimum_stock !== undefined) {
       conditions.push(`m.minimum_stock IS ${filters.minimum_stock === 'set' ? 'NOT NULL' : 'NULL'}`);
+    }
+    if (filters.status !== 'all') {
+      conditions.push(filters.status === 'active' ? 'm.is_active' : 'NOT m.is_active');
     }
     return pageOf(this.db, conditions, params, filters.limit, filters.offset);
   }
