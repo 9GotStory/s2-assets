@@ -6,6 +6,8 @@ import { useCsrfToken } from './materialQueries';
 
 export interface StockMaterialStatusFormProps {
   material: StockMaterialDetail;
+  // What the page offered: "หยุดใช้" or "เปิดใช้อีกครั้ง".
+  action: 'inactivate' | 'reactivate';
   // Reads the Stock Material again and returns whether it could.
   onRefresh: () => Promise<boolean>;
   onSaved: () => Promise<void>;
@@ -18,7 +20,7 @@ export interface StockMaterialStatusFormProps {
  * reactivates an Inactive one as the same record, at the version the page read (#175 MC-14, Q13, Q23). Nothing else
  * changes and nothing is deleted.
  */
-export const StockMaterialStatusForm: React.FC<StockMaterialStatusFormProps> = ({ material, onRefresh, onSaved, onCancel, onPermissionRevoked }) => {
+export const StockMaterialStatusForm: React.FC<StockMaterialStatusFormProps> = ({ material, action, onRefresh, onSaved, onCancel, onPermissionRevoked }) => {
   const [note, setNote] = useState('');
 
   const session = useCsrfToken(true);
@@ -32,12 +34,12 @@ export const StockMaterialStatusForm: React.FC<StockMaterialStatusFormProps> = (
     );
   }
 
-  const inactivating = material.is_active;
+  const inactivating = action === 'inactivate';
   return (
     <LoanSaveForm
       idPrefix="stock-material-status"
       heading={inactivating ? INACTIVE_LABEL : REACTIVATE_LABEL}
-      saveUrl={`/stock-materials/${encodeURIComponent(material.id)}/${inactivating ? 'inactivate' : 'reactivate'}`}
+      saveUrl={`/stock-materials/${encodeURIComponent(material.id)}/${action}`}
       csrfToken={csrfToken}
       requestError={() => null}
       // A reactivation takes no note (0025_material_catalog).

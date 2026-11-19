@@ -299,7 +299,8 @@ describe('Stock Material (Seam A - F008-T1)', () => {
         expect((await materialOf(id, viewer)).can_manage).toBe(false);
       }
       const denied = await withCapabilityAnswer(api.app, 'material:manage', async () => false, () => api.get(officer, `/stock-materials/${id}`));
-      expect(denied.json().can_manage).toBe(false);
+      // F008-T7 (#180): "หยุดใช้" and "เปิดใช้อีกครั้ง" follow it too.
+      expect(denied.json()).toMatchObject({ can_manage: false, can_inactivate: false, can_reactivate: false });
     });
   });
 

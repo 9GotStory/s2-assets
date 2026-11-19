@@ -97,10 +97,15 @@ describe('Inactive and reactivate a Stock Material (Seam A - F008-T7)', () => {
 
     it('needs a note of at most 2000 characters with no control character but tab and line breaks, kept as written inside (P7)', async () => {
       const page = await fresh();
-      for (const note of [text(2001), 'ห้อง\u0007พัสดุ', 'ห้อง\u007fพัสดุ']) {
+      const refused: [string, string][] = [
+        [text(2001), 'note must be at most 2000 characters'],
+        ['ห้อง\u0007พัสดุ', 'note must not contain control characters'],
+        ['ห้อง\u007fพัสดุ', 'note must not contain control characters'],
+      ];
+      for (const [note, message] of refused) {
         const res = await inactivate(page.id, { expected_version: 1, note });
         expect(res.statusCode).toBe(400);
-        expect(res.json()).toMatchObject({ code: 'VALIDATION_FAILED', message: expect.stringContaining('note') });
+        expect(res.json()).toMatchObject({ code: 'VALIDATION_FAILED', message: expect.stringContaining(message) });
       }
       expect(await materialOf(page.id)).toEqual(page);
 
@@ -242,6 +247,26 @@ describe('Inactive and reactivate a Stock Material (Seam A - F008-T7)', () => {
 
       expect(res.statusCode).toBe(409);
       expect(res.json()).toMatchObject({ code: 'STALE_BEFORE_CONFLICT', current_values: { version: 3 } });
+      expect((await materialOf(page.id)).history).toHaveLength(2);
+    });
+
+    it('makes Inactive only after another write making it Inactive, then refuses it as already Inactive', async () => {
+      const page = await fresh();
+
+      const [res] = await whileWriting(statusHeld(page.id, false), () => [inactivate(page.id, { expected_version: 2 })], () => untilWaiting('stock_materials'));
+
+      expect(res.statusCode).toBe(400);
+      expect(res.json()).toMatchObject({ code: 'VALIDATION_FAILED', message: expect.stringContaining('already Inactive') });
+      expect((await materialOf(page.id)).history).toHaveLength(1);
+    });
+
+    it('reactivates only after another write reactivating it, then refuses it as already active', async () => {
+      const page = await inactive();
+
+      const [res] = await whileWriting(statusHeld(page.id, true), () => [reactivate(page.id, { expected_version: 3 })], () => untilWaiting('stock_materials'));
+
+      expect(res.statusCode).toBe(400);
+      expect(res.json()).toMatchObject({ code: 'VALIDATION_FAILED', message: expect.stringContaining('already active') });
       expect((await materialOf(page.id)).history).toHaveLength(2);
     });
 

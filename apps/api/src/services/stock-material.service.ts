@@ -5,7 +5,7 @@ import { CATALOG_LISTS, type CatalogListKind, type NamedListEntry } from './cata
 import { catalogListEntryOf, selectableCatalogListEntry } from './catalog-list.service.ts';
 import { commitOnce } from './retryable-write.ts';
 import { NotFoundError, StaleBeforeConflictError } from './service-errors.ts';
-import { duplicateCandidatesOf, stockMaterialUnitsOf, type DuplicateCandidates, type StockMaterialHistoryChange, type StockMaterialUnit } from './stock-material-read.service.ts';
+import { duplicateCandidatesOf, stockMaterialUnitsOf, type DuplicateCandidates, type StockMaterialHistoryChange, type StockMaterialHistoryKind, type StockMaterialUnit } from './stock-material-read.service.ts';
 import { baseUnitAmountOf, normalizeUnitSet, unitFieldOf, type AlternateUnitInput, type BaseUnitInput, type UnitSetting } from './stock-material-units.ts';
 import { unselectableUnitsAmong } from './unit.service.ts';
 import { ValidationError } from './validation-error.ts';
@@ -75,6 +75,20 @@ export interface InactivateStockMaterialInput {
 export interface ReactivateStockMaterialInput {
   expected_version: number;
 }
+
+// F008-T7 (#180): what making a Stock Material Inactive and reactivating it each write, under its own retry operation.
+interface StatusChange {
+  isActive: boolean;
+  operation: string;
+  kind: StockMaterialHistoryKind;
+  // The refusal of a Stock Material already so.
+  alreadySo: string;
+}
+
+const STATUS_CHANGES = Object.freeze({
+  inactivate: { isActive: false, operation: 'stock-material:inactivate', kind: 'INACTIVATED', alreadySo: 'The Stock Material is already Inactive' },
+  reactivate: { isActive: true, operation: 'stock-material:reactivate', kind: 'REACTIVATED', alreadySo: 'The Stock Material is already active' },
+} as const);
 
 // What a Stock Material write answers: the Stock Material it wrote and the version a later write must expect.
 export interface StockMaterialVersion {
@@ -498,22 +512,23 @@ export class StockMaterialService {
    */
   async inactivate(actorId: string, stockMaterialId: string, input: InactivateStockMaterialInput, { retryToken }: { retryToken: string }): Promise<StockMaterialVersion> {
     const note = normalizeText(input.note, 'note', REMARK_MAX_LENGTH, '');
-    return this.changeStatus(actorId, stockMaterialId, { isActive: false, expectedVersion: input.expected_version, note, retryToken });
+    return this.changeStatus(actorId, stockMaterialId, STATUS_CHANGES.inactivate, { expectedVersion: input.expected_version, note, retryToken });
   }
 
   /** F008-T7 (#180): reactivates an Inactive Stock Material (เปิดใช้อีกครั้ง) as the same record (#175 MC-14, Q13). */
   async reactivate(actorId: string, stockMaterialId: string, input: ReactivateStockMaterialInput, { retryToken }: { retryToken: string }): Promise<StockMaterialVersion> {
-    return this.changeStatus(actorId, stockMaterialId, { isActive: true, expectedVersion: input.expected_version, note: null, retryToken });
+    return this.changeStatus(actorId, stockMaterialId, STATUS_CHANGES.reactivate, { expectedVersion: input.expected_version, note: null, retryToken });
   }
 
   // Makes the Stock Material active or Inactive at the version the request read, with a history entry of the change
-  // and the Inactive note. One already so is refused, as the other writes refuse a change of nothing.
+  // and the Inactive note. One already so is refused, as the other writes refuse a change of nothing (#180 decision 1,
+  // comment 7012878899).
   private async changeStatus(
     actorId: string,
     stockMaterialId: string,
-    { isActive, expectedVersion, note, retryToken }: { isActive: boolean; expectedVersion: number; note: string | null; retryToken: string }
+    { isActive, operation, kind, alreadySo }: StatusChange,
+    { expectedVersion, note, retryToken }: { expectedVersion: number; note: string | null; retryToken: string }
   ): Promise<StockMaterialVersion> {
-    const operation = isActive ? 'stock-material:reactivate' : 'stock-material:inactivate';
     const payload = { stock_material_id: stockMaterialId, expected_version: expectedVersion, note };
     return commitOnce(this.db, { actorId, operation, retryToken, payload, explicitContinuation: false }, async (client) => {
       const res = await client.query('SELECT version, is_active FROM stock_materials WHERE id = $1 FOR UPDATE', [stockMaterialId]);
@@ -525,14 +540,14 @@ export class StockMaterialService {
         throw new StaleBeforeConflictError('The Stock Material changed since it was read', { version: stored.version }, { version: expectedVersion });
       }
       if (stored.is_active === isActive) {
-        throw new ValidationError(isActive ? 'The Stock Material is already active' : 'The Stock Material is already Inactive');
+        throw new ValidationError(alreadySo);
       }
 
       const updated = await client.query('UPDATE stock_materials SET is_active = $2, version = version + 1 WHERE id = $1 RETURNING version', [stockMaterialId, isActive]);
       const { version } = updated.rows[0];
       await client.query(
         `INSERT INTO stock_material_history (stock_material_id, version, kind, changes, note, recorded_by) VALUES ($1, $2, $3, $4::jsonb, $5, $6)`,
-        [stockMaterialId, version, isActive ? 'REACTIVATED' : 'INACTIVATED', JSON.stringify([{ field: 'is_active', before: !isActive, after: isActive }]), note, actorId]
+        [stockMaterialId, version, kind, JSON.stringify([{ field: 'is_active', before: !isActive, after: isActive }]), note, actorId]
       );
       return { stock_material_id: stockMaterialId, version };
     });

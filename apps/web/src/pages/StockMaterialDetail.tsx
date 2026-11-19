@@ -213,6 +213,7 @@ const StockMaterialDetailContent: React.FC<{ id: string }> = ({ id }) => {
                 <StockMaterialStatusForm
                   key={detail.version}
                   material={detail}
+                  action={statusAction}
                   onRefresh={refresh}
                   onSaved={async () => {
                     await material.refetch();
