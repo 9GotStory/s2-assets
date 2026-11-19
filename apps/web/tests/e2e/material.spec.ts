@@ -25,6 +25,8 @@ const migrationFolder = path.resolve(__dirname, '../../../../packages/db/src/mig
 // F008-T3 (#178): Journey J1 goes on with an Alternate Unit ("1 กล่อง = 5 รีม") and the Units editor.
 // F008-T4 (#179): Journey J1 goes on with a Brand and a Material Category added from the form, the editor of other
 // details, the Brand search and the Material Category filter.
+// F008-T6 (#182): Journey J2 starts (a Supply Officer sets a Minimum Stock and finds it with the Minimum Stock filter,
+// and states it again when the Base Unit changes); F008-T5 and T7 extend it.
 test.describe.serial('Stock Material journeys: Real SPA -> Composed API -> PostgreSQL (Seam B)', () => {
   let container: StartedPostgreSqlContainer;
   let pool: pg.Pool;
@@ -236,6 +238,8 @@ test.describe.serial('Stock Material journeys: Real SPA -> Composed API -> Postg
     await expect(page.locator('#stock-material-units-alternate-0-factor')).toHaveValue('');
     await expect(page.locator('#stock-material-units-alternate-1-unit')).toHaveText('กล่อง');
     await expect(page.locator('#stock-material-units-alternate-1-factor')).toHaveValue('');
+    // With no จำนวนขั้นต่ำ, there is none to state again (F008-T6, #182 decision 2).
+    await expect(page.locator('#stock-material-units-minimum-stock')).toHaveCount(0);
     await page.locator('#stock-material-units-submit').click();
     await expect(page.locator('[data-testid="stock-material-units-form-error"]')).toContainText('กรุณากรอกอัตราแปลงของ รีม');
     // รีม is made Inactive with its factor unknown; กล่อง gets its factor to แผ่น.
@@ -333,6 +337,92 @@ test.describe.serial('Stock Material journeys: Real SPA -> Composed API -> Postg
     await page.locator('#stock-material-material-category-filter').selectOption({ label: 'เครื่องเขียน' });
     await expect(page).toHaveURL(/material_category_id=[0-9a-f-]{36}$/);
     await expect(page.locator('#stock-material-list-empty')).toContainText('ไม่พบวัสดุที่ค้นหา');
+  });
+
+  test('Journey F008-T6.1: a Supply Officer sets a Minimum Stock through other details, finds the Stock Material with the Minimum Stock filter, and states it again when the Base Unit changes', async ({ page, context }) => {
+    await loginAs(context, officerUserId);
+    await page.goto(`${targetBaseUrl}/stock-materials/new`);
+    await page.locator('#stock-material-name').fill('น้ำยาล้างจาน');
+    await page.locator('#stock-material-new-unit').fill('กระป๋อง');
+    await page.locator('#stock-material-new-unit-add').click();
+    await expect(page.locator('#stock-material-base-unit option:checked')).toHaveText('กระป๋อง');
+    await page.locator('#stock-material-new-unit').fill('แกลลอน');
+    await page.locator('#stock-material-new-unit-add').click();
+    await expect(page.locator('#stock-material-alternate-0-unit option:checked')).toHaveText('แกลลอน');
+    await page.locator('#stock-material-alternate-0-factor').fill('10');
+
+    // The form's จำนวนขั้นต่ำ counts the Base Unit, whose whole-number rule the server holds it to (P3).
+    await expect(page.locator('#stock-material-minimum-stock + span')).toHaveText('กระป๋อง');
+    await page.locator('#stock-material-minimum-stock').fill('1.5');
+    await page.locator('#stock-material-submit').click();
+    await expect(page.locator('[data-testid="stock-material-form-error"]')).toContainText('minimum_stock must be a whole number');
+    await page.locator('#stock-material-minimum-stock').fill('');
+    await page.locator('#stock-material-submit').click();
+
+    // Left blank, it stays blank: nothing is guessed (MC-20).
+    await expect(page).toHaveURL(/\/stock-materials\/[0-9a-f-]{36}$/);
+    const detailUrl = page.url();
+    await expect(page.getByRole('heading', { level: 1, name: 'น้ำยาล้างจาน' })).toBeVisible();
+    await expect(page.locator('[data-testid="stock-material-minimum-stock"]')).toHaveText('-');
+
+    // The list finds it under "ยังไม่ตั้ง", not under "ตั้งแล้ว".
+    await page.goto(`${targetBaseUrl}/stock-materials?search=${encodeURIComponent('น้ำยาล้างจาน')}`);
+    const rows = page.locator('#stock-material-list-table tbody tr');
+    await expect(rows).toHaveCount(1);
+    await page.locator('#stock-material-minimum-stock-filter').selectOption({ label: 'ยังไม่ตั้ง' });
+    await expect(page).toHaveURL(/minimum_stock=not_set$/);
+    await expect(rows).toHaveCount(1);
+    await expect(rows.first().locator('td').nth(6)).toHaveText('-');
+    await page.locator('#stock-material-minimum-stock-filter').selectOption({ label: 'ตั้งแล้ว' });
+    await expect(page).toHaveURL(/minimum_stock=set$/);
+    await expect(page.locator('#stock-material-list-empty')).toContainText('ไม่พบวัสดุที่ค้นหา');
+
+    // "แก้ไขข้อมูลอื่น" sets 20 กระป๋อง without a reason; the same amount written otherwise is no change.
+    await page.goto(detailUrl);
+    await page.locator('#stock-material-edit-details').click();
+    await expect(page.locator('#stock-material-details-minimum-stock + span')).toHaveText('กระป๋อง');
+    await page.locator('#stock-material-details-minimum-stock').fill('20');
+    await page.locator('#stock-material-details-submit').click();
+    await expect(page.locator('#stock-material-details-form')).toHaveCount(0);
+    await expect(page.locator('[data-testid="stock-material-minimum-stock"]')).toHaveText('20 กระป๋อง');
+    const set = page.locator('[data-testid="stock-material-history-2"]');
+    await expect(set).toContainText('แก้ไขข้อมูลอื่น');
+    await expect(set.locator('dt', { hasText: 'จำนวนขั้นต่ำ' }).locator('+ dd')).toHaveText('20');
+    await page.locator('#stock-material-edit-details').click();
+    await expect(page.locator('#stock-material-details-minimum-stock')).toHaveValue('20');
+    await page.locator('#stock-material-details-minimum-stock').fill(' 20.00 ');
+    await page.locator('#stock-material-details-submit').click();
+    await expect(page.locator('[data-testid="stock-material-details-form-error"]')).toContainText('ยังไม่มีข้อมูลที่เปลี่ยน');
+    await page.locator('#stock-material-details-cancel').click();
+
+    // Now the list finds it under "ตั้งแล้ว", with 20 กระป๋อง in its row.
+    await page.goto(`${targetBaseUrl}/stock-materials?search=${encodeURIComponent('น้ำยาล้างจาน')}&minimum_stock=set`);
+    await expect(page.locator('#stock-material-minimum-stock-filter option:checked')).toHaveText('ตั้งแล้ว');
+    await expect(rows).toHaveCount(1);
+    await expect(rows.first().locator('td').nth(6)).toHaveText('20 กระป๋อง');
+    await page.locator('#stock-material-minimum-stock-filter').selectOption({ label: 'ยังไม่ตั้ง' });
+    await expect(page).toHaveURL(/minimum_stock=not_set$/);
+    await expect(page.locator('#stock-material-list-empty')).toContainText('ไม่พบวัสดุที่ค้นหา');
+
+    // The Units editor asks for จำนวนขั้นต่ำ again only once แกลลอน becomes the Base Unit, so that 20 กระป๋อง never
+    // becomes 20 แกลลอน.
+    await page.goto(detailUrl);
+    await page.locator('#stock-material-edit-units').click();
+    await expect(page.locator('#stock-material-units-minimum-stock')).toHaveCount(0);
+    await page.locator('#stock-material-units-base-unit').selectOption({ label: 'แกลลอน' });
+    await expect(page.locator('#stock-material-units-minimum-stock')).toHaveValue('');
+    await expect(page.locator('#stock-material-units-minimum-stock + span')).toHaveText('แกลลอน');
+    await expect(page.locator('#stock-material-units-form')).toContainText('จำนวนขั้นต่ำเดิม 20 กระป๋อง');
+    await page.locator('#stock-material-units-base-unit-whole').uncheck();
+    await page.locator('#stock-material-units-alternate-0-factor').fill('0.1');
+    await page.locator('#stock-material-units-minimum-stock').fill('2');
+    await page.locator('#stock-material-units-submit').click();
+
+    await expect(page.locator('#stock-material-units-form')).toHaveCount(0);
+    await expect(page.locator('[data-testid="stock-material-minimum-stock"]')).toHaveText('2 แกลลอน');
+    const restated = page.locator('[data-testid="stock-material-history-3"]');
+    await expect(restated).toContainText('แก้ไขหน่วยนับ');
+    await expect(restated.locator('dt', { hasText: 'จำนวนขั้นต่ำ' }).locator('+ dd')).toHaveText('20 → 2');
   });
 
   test('Journey F008-T1.2: a Read-only User reads the list and a Stock Material page with no action, and an Asset Custodian has no "วัสดุ" menu', async ({ page, context }) => {

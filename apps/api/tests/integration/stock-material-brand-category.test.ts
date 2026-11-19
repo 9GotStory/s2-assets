@@ -243,10 +243,11 @@ describe('Stock Material Brand and Material Category (Seam A - F008-T4)', () => 
     };
 
     // The details write that keeps a page's details as they are, at its version, for a test to change.
-    const detailsAsRead = (page: { version: number; material_category: { id: string } | null; note: string | null }) => ({
+    const detailsAsRead = (page: { version: number; material_category: { id: string } | null; note: string | null; minimum_stock: string | null }) => ({
       expected_version: page.version,
       material_category_id: page.material_category?.id ?? null,
       note: page.note,
+      minimum_stock: page.minimum_stock,
     });
 
     // A refused details write: its message naming `field`, and the Stock Material left as it was.
@@ -262,7 +263,7 @@ describe('Stock Material Brand and Material Category (Seam A - F008-T4)', () => 
       const page = await withDetails();
       const other = await materialCategoryNamed('ทำความสะอาด');
 
-      const res = await changeDetails(page.id, { expected_version: 1, material_category_id: other, note: 'ย้ายหมวด' });
+      const res = await changeDetails(page.id, { expected_version: 1, material_category_id: other, note: 'ย้ายหมวด', minimum_stock: null });
 
       expect(res.statusCode).toBe(200);
       expect(res.json()).toEqual({ stock_material_id: page.id, version: 2 });
@@ -298,7 +299,7 @@ describe('Stock Material Brand and Material Category (Seam A - F008-T4)', () => 
     it('clears the Material Category and the note, and sets them again', async () => {
       const page = await withDetails();
 
-      expect((await changeDetails(page.id, { expected_version: 1, material_category_id: null, note: '  ' })).statusCode).toBe(200);
+      expect((await changeDetails(page.id, { expected_version: 1, material_category_id: null, note: '  ', minimum_stock: null })).statusCode).toBe(200);
       const cleared = await materialOf(page.id);
       expect(cleared).toMatchObject({ material_category: null, note: null });
       expect(cleared.history[1].changes).toEqual([
@@ -306,7 +307,7 @@ describe('Stock Material Brand and Material Category (Seam A - F008-T4)', () => 
         { field: 'note', before: 'หมายเหตุเดิม', after: null },
       ]);
 
-      expect((await changeDetails(page.id, { expected_version: 2, material_category_id: page.material_category.id, note: 'กลับมา' })).statusCode).toBe(200);
+      expect((await changeDetails(page.id, { expected_version: 2, material_category_id: page.material_category.id, note: 'กลับมา', minimum_stock: null })).statusCode).toBe(200);
       const setAgain = await materialOf(page.id);
       expect(setAgain).toMatchObject({ material_category: page.material_category, note: 'กลับมา' });
       expect(setAgain.history[2].changes).toEqual([
@@ -390,7 +391,7 @@ describe('Stock Material Brand and Material Category (Seam A - F008-T4)', () => 
   describe('versions and the request of other details', () => {
     const detailsOf = async () => {
       const page = await materialOf(await created(paper({ note: 'เดิม' })));
-      return { page, payload: { expected_version: page.version, material_category_id: null, note: 'ใหม่' } };
+      return { page, payload: { expected_version: page.version, material_category_id: null, note: 'ใหม่', minimum_stock: null } };
     };
 
     it('refuses a stale expected version with the current and expected versions, writing nothing (Q23)', async () => {
@@ -442,7 +443,7 @@ describe('Stock Material Brand and Material Category (Seam A - F008-T4)', () => 
       const [res] = await whileWriting(
         // What renaming a Material Category writes (F008-T8), held uncommitted.
         { sql: `UPDATE material_categories SET name = 'หมวดเก่าสะกดถูก', version = version + 1 WHERE id = $1`, params: [replaced] },
-        () => [changeDetails(page.id, { expected_version: 1, material_category_id: null, note: null })],
+        () => [changeDetails(page.id, { expected_version: 1, material_category_id: null, note: null, minimum_stock: null })],
         () => untilWaiting('material_categories', 1, 'FOR SHARE')
       );
 
@@ -492,7 +493,7 @@ describe('Stock Material Brand and Material Category (Seam A - F008-T4)', () => 
       const page = await materialOf(await created(paper()));
 
       for (const other of [admin, readonly, custodian, staff, maintainer]) {
-        const res = await changeDetails(page.id, { expected_version: 1, material_category_id: null, note: 'ไม่ได้' }, crypto.randomUUID(), other);
+        const res = await changeDetails(page.id, { expected_version: 1, material_category_id: null, note: 'ไม่ได้', minimum_stock: null }, crypto.randomUUID(), other);
         expect(res.statusCode).toBe(403);
         expect(res.json().error.code).toBe('FORBIDDEN');
       }
@@ -501,7 +502,7 @@ describe('Stock Material Brand and Material Category (Seam A - F008-T4)', () => 
 
     it('needs material:manage itself to change other details, and fails closed when the lookup fails, writing nothing', async () => {
       const page = await materialOf(await created(paper()));
-      const payload = { expected_version: 1, material_category_id: null, note: 'ไม่ได้' };
+      const payload = { expected_version: 1, material_category_id: null, note: 'ไม่ได้', minimum_stock: null };
 
       expect((await withCapabilityAnswer(api.app, 'material:manage', async () => false, () => changeDetails(page.id, payload))).statusCode).toBe(403);
       const failed = await withCapabilityAnswer(api.app, 'material:manage', async () => { throw new Error('lookup failed'); }, () => changeDetails(page.id, payload));
@@ -516,7 +517,7 @@ describe('Stock Material Brand and Material Category (Seam A - F008-T4)', () => 
           method: 'PUT',
           url: `/stock-materials/${page.id}/details`,
           headers: { 'content-type': 'application/json', 'x-retry-token': crypto.randomUUID(), ...headers },
-          payload: { expected_version: 1, material_category_id: null, note: 'ไม่ได้' },
+          payload: { expected_version: 1, material_category_id: null, note: 'ไม่ได้', minimum_stock: null },
         });
 
       expect([401, 403]).toContain((await inject({})).statusCode);
@@ -528,7 +529,7 @@ describe('Stock Material Brand and Material Category (Seam A - F008-T4)', () => 
   describe('retry token of other details', () => {
     const fresh = async () => {
       const page = await materialOf(await created(paper()));
-      return { page, payload: { expected_version: 1, material_category_id: null, note: 'ครั้งเดียว' } };
+      return { page, payload: { expected_version: 1, material_category_id: null, note: 'ครั้งเดียว', minimum_stock: null } };
     };
 
     it('needs a token', async () => {

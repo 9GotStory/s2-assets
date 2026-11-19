@@ -223,7 +223,7 @@ describe('Stock Material (Seam A - F008-T1)', () => {
 
       // F008-T4 (#179) adds the Brand and the Material Category, none here.
       expect(items).toEqual([
-        { id, name: 'หมึกพิมพ์ รายการ', model: 'HP 682', specification: 'สีดำ', base_unit: { unit_id: box, name: 'กล่องรายการ' }, brand: null, material_category: null, is_active: true },
+        { id, name: 'หมึกพิมพ์ รายการ', model: 'HP 682', specification: 'สีดำ', base_unit: { unit_id: box, name: 'กล่องรายการ' }, brand: null, material_category: null, minimum_stock: null, is_active: true },
       ]);
     });
 

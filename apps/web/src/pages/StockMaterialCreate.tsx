@@ -3,8 +3,9 @@ import { Link, useNavigate } from 'react-router';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import { ListEntryAddField, ListEntrySelect } from '../components/ListEntryFields';
 import { LoanSaveForm } from '../components/LoanSaveForm';
+import { MinimumStockField } from '../components/MinimumStockField';
 import { fieldInputStyle, fieldLabelStyle } from '../components/ReferenceContextFields';
-import { UnitSetFields, alternateRequestOf, emptyUnitSet, newAlternateRow, unitSetError, withBaseUnit, type UnitSetValue } from '../components/UnitSetFields';
+import { UnitSetFields, alternateRequestOf, emptyUnitSet, newAlternateRow, unitNameOf, unitSetError, withBaseUnit, type UnitSetValue } from '../components/UnitSetFields';
 import { useBrandList, useCsrfToken, useMaterialCategoryList, useUnitList } from '../components/materialQueries';
 import {
   ADD_BRAND_LABEL,
@@ -30,6 +31,7 @@ const StockMaterialCreateContent: React.FC = () => {
   const [brandId, setBrandId] = useState('');
   const [materialCategoryId, setMaterialCategoryId] = useState('');
   const [unitSet, setUnitSet] = useState<UnitSetValue>(emptyUnitSet);
+  const [minimumStock, setMinimumStock] = useState('');
 
   const units = useUnitList();
   const brands = useBrandList();
@@ -68,6 +70,7 @@ const StockMaterialCreateContent: React.FC = () => {
       const { is_active: _active, ...alternate } = alternateRequestOf(row);
       return alternate;
     }),
+    minimum_stock: minimumStock.trim() || null,
   });
 
   return (
@@ -207,6 +210,7 @@ const StockMaterialCreateContent: React.FC = () => {
                     />
                   }
                 />
+                <MinimumStockField id="stock-material-minimum-stock" value={minimumStock} onChange={setMinimumStock} baseName={unitNameOf(unitList, unitSet.base_unit_id)} />
               </fieldset>
             )}
           </LoanSaveForm>
@@ -217,8 +221,8 @@ const StockMaterialCreateContent: React.FC = () => {
 };
 
 /**
- * "เพิ่มวัสดุ" (F008-T1, T3, T4): creates a Stock Material with its Base Unit and Alternate Units, its Brand and its
- * Material Category, adding a missing Unit, Brand or Material Category straight from the form.
+ * "เพิ่มวัสดุ" (F008-T1, T3, T4, T6): creates a Stock Material with its Base Unit and Alternate Units, its Brand, its
+ * Material Category and its Minimum Stock, adding a missing Unit, Brand or Material Category straight from the form.
  */
 export const StockMaterialCreate: React.FC = () => {
   const [queryClient] = useState(() => new QueryClient({ defaultOptions: { queries: { retry: false, refetchOnWindowFocus: false } } }));

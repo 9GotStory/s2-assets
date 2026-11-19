@@ -33,25 +33,29 @@ export interface UnitSetting {
 // The field a Unit of a set came from: the set lists the Base Unit first, then the Alternate Units as requested.
 export const unitFieldOf = (index: number): string => (index === 0 ? 'base_unit' : `alternate_units[${index - 1}]`);
 
-const FACTOR_REFUSALS: Record<DecimalRefusal, string> = {
+const AMOUNT_REFUSALS: Record<DecimalRefusal, string> = {
   NOT_A_DECIMAL: 'must be a decimal number such as "5" or "2.5"',
   TOO_MANY_DECIMAL_PLACES: 'must have at most four decimal places',
   OUT_OF_RANGE: 'is too large',
 };
 
-// A Conversion Factor as written, checked with T2's exact arithmetic (#177): never rounded.
-const conversionFactorOf = (text: string, field: string, baseIsWhole: boolean): string => {
-  const factor = parseDecimal(text);
-  if (!factor.ok) {
-    throw new ValidationError(`${field} ${FACTOR_REFUSALS[factor.reason]}`);
+/**
+ * An amount of the Base Unit as written, without trailing zeros: a Conversion Factor, or the Minimum Stock (F008-T6,
+ * #182). Checked with T2's exact arithmetic (#177), never rounded: above 0, at most four decimal places, and whole
+ * while the Base Unit is whole-number-only (P3).
+ */
+export const baseUnitAmountOf = (text: string, field: string, baseIsWhole: boolean): string => {
+  const amount = parseDecimal(text);
+  if (!amount.ok) {
+    throw new ValidationError(`${field} ${AMOUNT_REFUSALS[amount.reason]}`);
   }
-  if (factor.scaled <= 0n) {
+  if (amount.scaled <= 0n) {
     throw new ValidationError(`${field} must be greater than 0`);
   }
-  if (baseIsWhole && !isWhole(factor.scaled)) {
+  if (baseIsWhole && !isWhole(amount.scaled)) {
     throw new ValidationError(`${field} must be a whole number while the Base Unit is whole-number-only`);
   }
-  return formatDecimal(factor.scaled);
+  return formatDecimal(amount.scaled);
 };
 
 /**
@@ -92,7 +96,7 @@ export const normalizeUnitSet = (base: BaseUnitInput, alternates: readonly Alter
     units.push({
       unit_id: unitId,
       is_base: false,
-      conversion_factor: text === null ? null : conversionFactorOf(text, `${field}.conversion_factor`, baseUnit.whole_number_only),
+      conversion_factor: text === null ? null : baseUnitAmountOf(text, `${field}.conversion_factor`, baseUnit.whole_number_only),
       whole_number_only: alternate.whole_number_only ?? true,
       is_active: isActive,
     });

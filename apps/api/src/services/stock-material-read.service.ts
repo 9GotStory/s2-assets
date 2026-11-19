@@ -14,6 +14,8 @@ export interface StockMaterialRow {
   // F008-T4 (#179): each under the name its list entry has now, or none.
   brand: NamedListEntry | null;
   material_category: NamedListEntry | null;
+  // F008-T6 (#182): in the Base Unit, a decimal string without trailing zeros (#175 P1), or none (MC-20).
+  minimum_stock: string | null;
 }
 
 export interface StockMaterialListFilters {
@@ -21,6 +23,8 @@ export interface StockMaterialListFilters {
   search?: string;
   // F008-T4 (#179): the Material Category's id, or 'none' for the Stock Materials with none (#175 Q3).
   material_category_id?: string;
+  // F008-T6 (#182): whether the Stock Material has a Minimum Stock (#175 MC-20).
+  minimum_stock?: 'set' | 'not_set';
   limit: number;
   offset: number;
 }
@@ -72,6 +76,8 @@ export interface StockMaterialDetail {
   specification: string | null;
   note: string | null;
   material_category: NamedListEntry | null;
+  // F008-T6 (#182): in the Base Unit, a decimal string without trailing zeros (#175 P1), or none (MC-20).
+  minimum_stock: string | null;
   is_active: boolean;
   version: number;
   created_by: string;
@@ -113,6 +119,7 @@ const toRow = (row: any): StockMaterialRow => ({
   base_unit: { unit_id: row.base_unit_id, name: row.base_unit_name },
   brand: namedEntryOf(row, 'brand'),
   material_category: namedEntryOf(row, 'material_category'),
+  minimum_stock: row.minimum_stock,
 });
 
 /** F008-T1 (#176): the Stock Material catalog's reads: the list and a Stock Material's page. */
@@ -137,12 +144,15 @@ export class StockMaterialReadService {
       params.push(filters.material_category_id);
       conditions.push(`m.material_category_id = $${params.length}`);
     }
+    if (filters.minimum_stock !== undefined) {
+      conditions.push(`m.minimum_stock IS ${filters.minimum_stock === 'set' ? 'NOT NULL' : 'NULL'}`);
+    }
     params.push(filters.limit, filters.offset);
 
     // The count joins the page, so a page past the end still says how many Stock Materials pass.
     const res = await this.db.query(
       `WITH filtered AS (
-         SELECT m.id, m.name, m.model, m.specification, m.is_active, u.id AS base_unit_id, u.name AS base_unit_name,
+         SELECT m.id, m.name, m.model, m.specification, trim_scale(m.minimum_stock)::text AS minimum_stock, m.is_active, u.id AS base_unit_id, u.name AS base_unit_name,
                 br.id AS brand_id, br.name AS brand_name, mc.id AS material_category_id, mc.name AS material_category_name
          FROM stock_materials m
          JOIN stock_material_units b ON b.stock_material_id = m.id AND b.is_base
@@ -171,7 +181,7 @@ export class StockMaterialReadService {
   /** A Stock Material with its Units and its history, or null when there is none. */
   async read(id: string): Promise<StockMaterialDetail | null> {
     const res = await this.db.query(
-      `SELECT m.id, m.name, m.model, m.specification, m.note, m.is_active, m.version, m.created_by, u.username AS created_by_username, m.recorded_at,
+      `SELECT m.id, m.name, m.model, m.specification, m.note, trim_scale(m.minimum_stock)::text AS minimum_stock, m.is_active, m.version, m.created_by, u.username AS created_by_username, m.recorded_at,
               b.id AS brand_id, b.name AS brand_name, c.id AS material_category_id, c.name AS material_category_name
        FROM stock_materials m
        LEFT JOIN users u ON u.id = m.created_by
