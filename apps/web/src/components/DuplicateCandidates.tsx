@@ -22,15 +22,14 @@ export interface DuplicateCandidateWarningProps {
 }
 
 /**
- * F008-T5 (#181): the Duplicate Candidates (รายการที่อาจซ้ำ) a create or a Material Correction was refused with, each
- * with what tells it apart, Inactive ones included (#175 MC-17, Q12). Nothing is saved until the Supply Officer
+ * F008-T5 (#181): the Duplicate Candidates (รายการที่อาจซ้ำ) a create or a Material Correction was refused with, at most
+ * 50 under how many there are (P4), each with what tells it apart, Inactive ones included (#175 MC-17, Q12). Nothing is saved until the Supply Officer
  * confirms "เป็นคนละรายการ"; the system never merges (MC-22).
  */
 export const DuplicateCandidateWarning: React.FC<DuplicateCandidateWarningProps> = ({ found, onConfirm, onBack }) => (
   <div role="alert" data-testid="duplicate-candidate-warning" style={conflictBoxStyle}>
     <div style={{ fontWeight: 600 }}>
       พบ{DUPLICATE_CANDIDATE_LABEL} {found.total_count} รายการ
-      {found.total_count > found.candidates.length && ` (แสดง ${found.candidates.length} รายการแรก)`}
     </div>
     <div style={{ marginTop: '0.25rem' }}>ถ้าเป็นของสิ่งเดียวกัน ให้ใช้รายการเดิมแทน รายการที่{INACTIVE_LABEL}ก็ยังใช้ได้เมื่อเปิดใช้อีกครั้ง</div>
     <div style={{ overflowX: 'auto' }}>

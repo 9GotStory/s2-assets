@@ -169,7 +169,7 @@ export const LoanSaveForm: React.FC<LoanSaveFormProps> = ({
         return;
       }
       if (body?.code === 'DUPLICATE_CANDIDATES_FOUND') {
-        setDuplicateWarning({ request, found: { candidates: body.candidates ?? [], total_count: body.total_count ?? 0 } });
+        setDuplicateWarning({ request, found: { candidates: body.candidates, total_count: body.total_count } });
         return;
       }
       if (body?.code === 'STALE_BEFORE_CONFLICT' && onRefresh) {

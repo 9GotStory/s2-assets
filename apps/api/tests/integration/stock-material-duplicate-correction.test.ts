@@ -391,6 +391,17 @@ describe('Duplicate Candidates and Material Correction (Seam A - F008-T5)', () =
       expect(after.history[1].changes).toEqual([{ field: 'brand', before: { id: brand, name: page.brand.name }, after: null }]);
     });
 
+    it('records a Brand given to a Stock Material that had none as none before', async () => {
+      const page = await pageNamed(freshName('แท่นตัดเทป'));
+      const brand = await brandNamed();
+
+      const res = await correct(page.id, correctionOf(page, { brand_id: brand }));
+
+      expect(res.statusCode).toBe(200);
+      const after = await materialOf(page.id);
+      expect(after.history[1].changes).toEqual([{ field: 'brand', before: null, after: { id: brand, name: after.brand.name } }]);
+    });
+
     it('refuses a correction that changes nothing, the same text with other spaces around it included (Q11)', async () => {
       const page = await pageNamed(freshName('ซองพลาสติก'), { model: 'A4', specification: 'ใส' });
 
