@@ -97,6 +97,12 @@ as well as one it newly chooses, and before the rename exists: plan the order ag
 ticket builds. In F008-T4 (#179), the Material Category that a details write replaced was read unlocked,
 because the rename comes in T8; only the Standards review found it.
 
+An advisory lock orders writes on a set no row lock can hold, such as the Stock Materials a Duplicate
+Candidate check matches. Every write that can bring a row into the set changes the fact: a create, and an
+update of the compared column such as a Material Correction's rename. Each gets an order test that holds
+its statement with `whileWriting`, waits with `untilWaitingOnAdvisoryLock` and starts with no match. In
+F008-T5 (#181), only a held create was queued; the Standards review found the rename missing.
+
 ## A journey step waits for the URL it changes
 
 A journey step that changes the URL, such as a filter link or a select that navigates, waits for that
