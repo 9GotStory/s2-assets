@@ -28,6 +28,7 @@ export interface ApiHarness {
   actor: (username: string, role: Role) => Promise<Actor>;
   post: (actor: Actor, url: string, payload: unknown, headers?: Record<string, string>) => Promise<LightMyRequestResponse>;
   patch: (actor: Actor, url: string, payload: unknown, headers?: Record<string, string>) => Promise<LightMyRequestResponse>;
+  put: (actor: Actor, url: string, payload: unknown, headers?: Record<string, string>) => Promise<LightMyRequestResponse>;
   get: (actor: Actor, url: string) => Promise<LightMyRequestResponse>;
   close: () => Promise<void>;
 }
@@ -90,6 +91,13 @@ export async function startApiHarness(options: { clock?: () => Date; logger?: Ap
     patch: (actor, url, payload, headers = {}) =>
       app.inject({
         method: 'PATCH',
+        url,
+        headers: { cookie: actor.cookie, 'x-csrf-token': actor.csrf, 'content-type': 'application/json', ...headers },
+        payload: payload as any,
+      }),
+    put: (actor, url, payload, headers = {}) =>
+      app.inject({
+        method: 'PUT',
         url,
         headers: { cookie: actor.cookie, 'x-csrf-token': actor.csrf, 'content-type': 'application/json', ...headers },
         payload: payload as any,

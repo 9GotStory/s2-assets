@@ -1,4 +1,4 @@
-// What the API answers about the Stock Material catalog (F008-T1), and its labels from GLOSSARY.md (#175 Q17).
+// What the API answers about the Stock Material catalog (F008-T1, T3), and its labels from GLOSSARY.md (#175 Q17).
 
 // One entry of the shared Unit list.
 export interface UnitEntry {
@@ -38,7 +38,8 @@ export interface StockMaterialUnit {
   name: string;
   unit_is_active: boolean;
   is_base: boolean;
-  conversion_factor: string;
+  // Null on an Inactive Alternate Unit given no new factor when the Base Unit changed (F008-T3, #178).
+  conversion_factor: string | null;
   whole_number_only: boolean;
   is_active: boolean;
 }
@@ -48,7 +49,8 @@ export interface RecordedUnit {
   unit_id: string;
   name: string;
   is_base: boolean;
-  conversion_factor: string;
+  // Null on an Inactive Alternate Unit given no new factor when the Base Unit changed (F008-T3, #178).
+  conversion_factor: string | null;
   whole_number_only: boolean;
   is_active: boolean;
 }
@@ -87,6 +89,7 @@ export const MODEL_LABEL = 'รุ่น';
 export const SPECIFICATION_LABEL = 'คุณลักษณะ';
 export const UNIT_LABEL = 'หน่วยนับ';
 export const BASE_UNIT_LABEL = 'หน่วยนับหลัก';
+export const ALTERNATE_UNIT_LABEL = 'หน่วยนับอื่น';
 export const CONVERSION_FACTOR_LABEL = 'อัตราแปลง';
 export const WHOLE_NUMBER_UNIT_LABEL = 'นับเป็นจำนวนเต็มเท่านั้น';
 export const ACTIVE_LABEL = 'ใช้งานอยู่';
@@ -95,11 +98,16 @@ export const INACTIVE_LABEL = 'หยุดใช้';
 export const ADD_STOCK_MATERIAL_LABEL = 'เพิ่มวัสดุ';
 // glossary: no entry — the form's inline action, made of the term หน่วยนับ (Unit)
 export const ADD_UNIT_LABEL = 'เพิ่มหน่วยนับ';
+// glossary: no entry — the form's action, made of the term หน่วยนับอื่น (Alternate Unit)
+export const ADD_ALTERNATE_UNIT_LABEL = 'เพิ่มหน่วยนับอื่น';
+// glossary: no entry — the Stock Material page's action, made of the term หน่วยนับ (Unit)
+export const EDIT_UNITS_LABEL = 'แก้ไขหน่วยนับ';
 
-// What each kind of history entry is called on the Stock Material page. F008-T1 writes only CREATED; the tickets that
-// write the other kinds name them.
+// What each kind of history entry is called on the Stock Material page. F008-T1 writes CREATED and T3 UNITS_CHANGED;
+// the tickets that write the other kinds name them.
 export const HISTORY_KIND_LABELS: Partial<Record<StockMaterialHistoryKind, string>> = {
   CREATED: 'สร้างรายการ',
+  UNITS_CHANGED: EDIT_UNITS_LABEL,
 };
 
 // What each recorded field is called in a history entry.
@@ -111,6 +119,10 @@ export const RECORDED_FIELD_LABELS: Record<string, string> = {
   units: UNIT_LABEL,
 };
 
-// A Unit as one line: the Base Unit, or an Alternate Unit with its Conversion Factor as "1 กล่อง = 5 รีม" (#175 Q5).
-export const unitLine = (unit: Pick<RecordedUnit, 'name' | 'is_base' | 'conversion_factor' | 'whole_number_only'>, baseName: string): string =>
-  `${unit.is_base ? `${BASE_UNIT_LABEL} ${unit.name}` : `1 ${unit.name} = ${unit.conversion_factor} ${baseName}`}${unit.whole_number_only ? ` (${WHOLE_NUMBER_UNIT_LABEL})` : ''}`;
+// A known Conversion Factor as "1 กล่อง = 5 รีม" (#175 Q5).
+export const conversionLine = (unitName: string, conversionFactor: string, baseName: string): string => `1 ${unitName} = ${conversionFactor} ${baseName}`;
+
+// A Unit as one line: the Base Unit, or an Alternate Unit with its Conversion Factor, "-" when unknown (#178), then
+// its rules.
+export const unitLine = (unit: Pick<RecordedUnit, 'name' | 'is_base' | 'conversion_factor' | 'whole_number_only' | 'is_active'>, baseName: string): string =>
+  `${unit.is_base ? `${BASE_UNIT_LABEL} ${unit.name}` : unit.conversion_factor === null ? `${unit.name}: ${CONVERSION_FACTOR_LABEL} -` : conversionLine(unit.name, unit.conversion_factor, baseName)}${unit.whole_number_only ? ` (${WHOLE_NUMBER_UNIT_LABEL})` : ''}${unit.is_active ? '' : ` (${INACTIVE_LABEL})`}`;

@@ -9,8 +9,9 @@ export interface LoanSaveFormProps {
   idPrefix: string;
   heading: string;
   saveUrl: string;
-  // POST unless the write edits its target in place (F006-T6: PATCH of a Verification Round).
-  method?: 'POST' | 'PATCH';
+  // POST unless the write edits its target in place (F006-T6: PATCH of a Verification Round) or replaces a whole
+  // set (F008-T3: PUT of a Stock Material's Units).
+  method?: 'POST' | 'PATCH' | 'PUT';
   csrfToken: string | null;
   // Why this request cannot be sent, or null when it can. The server decides again.
   requestError: () => string | null;

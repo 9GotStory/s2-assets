@@ -48,12 +48,6 @@ export async function unselectableUnitsAmong(client: pg.PoolClient, unitIds: str
   return unselectable;
 }
 
-// Each named Unit's name now, for a history entry that keeps names as they were (#175 P6).
-export async function unitNamesOf(client: pg.PoolClient, unitIds: string[]): Promise<Map<string, string>> {
-  const res = await client.query('SELECT id, name FROM units WHERE id = ANY($1::uuid[])', [unitIds]);
-  return new Map(res.rows.map((row: { id: string; name: string }) => [row.id, row.name]));
-}
-
 /**
  * F008-T1 (#176): the shared Unit list, following the Reference List pattern of Feature 002 (#175 P5): a Supply
  * Officer adds entries; nothing is deleted. Renaming and Inactive come with F008-T8.

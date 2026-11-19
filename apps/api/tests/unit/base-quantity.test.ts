@@ -157,4 +157,10 @@ describe('normalizeQuantity (F008-T2, #177)', () => {
       original_unit_is_active: false,
     });
   });
+
+  it('refuses a Unit whose Conversion Factor is unknown, which only an Inactive Alternate Unit can be (F008-T3, #178)', () => {
+    // The Base Unit changed to แผ่น and the Inactive ห่อ was given no new factor.
+    const unknownFactor = [sheetUnits[0], { ...sheetUnits[2], conversion_factor: null }];
+    expect(normalizeQuantity(unknownFactor, OLD_PACK, '2')).toEqual({ ok: false, reason: 'UNKNOWN_CONVERSION_FACTOR' });
+  });
 });

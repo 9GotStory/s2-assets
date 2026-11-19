@@ -27,6 +27,8 @@ export interface NormalizedQuantity {
 
 export type QuantityRefusal =
   | 'UNKNOWN_UNIT'
+  // An Inactive Alternate Unit whose factor is unknown (F008-T3, #178).
+  | 'UNKNOWN_CONVERSION_FACTOR'
   | DecimalRefusal
   | 'NOT_GREATER_THAN_ZERO'
   | 'FRACTION_IN_WHOLE_NUMBER_UNIT'
@@ -36,11 +38,11 @@ export type QuantityRefusal =
 
 export type NormalizeResult = NormalizedQuantity | { ok: false; reason: QuantityRefusal };
 
-// A Conversion Factor as the database holds it; one that does not parse is a defect, not a refusal.
-const storedFactor = (unit: QuantityUnit): bigint => {
-  const factor = parseDecimal(unit.conversion_factor);
+// A known Conversion Factor as the database holds it; one that does not parse is a defect, not a refusal.
+const storedFactor = (unitId: string, stored: string): bigint => {
+  const factor = parseDecimal(stored);
   if (!factor.ok) {
-    throw new Error(`Unit ${unit.unit_id} has the Conversion Factor ${unit.conversion_factor}`);
+    throw new Error(`Unit ${unitId} has the Conversion Factor ${stored}`);
   }
   return factor.scaled;
 };
@@ -55,6 +57,9 @@ export const normalizeQuantity = (units: readonly QuantityUnit[], unitId: string
   if (!unit) {
     return { ok: false, reason: 'UNKNOWN_UNIT' };
   }
+  if (unit.conversion_factor === null) {
+    return { ok: false, reason: 'UNKNOWN_CONVERSION_FACTOR' };
+  }
   const parsed = parseDecimal(quantity);
   if (!parsed.ok) {
     return parsed;
@@ -65,7 +70,7 @@ export const normalizeQuantity = (units: readonly QuantityUnit[], unitId: string
   if (unit.whole_number_only && !isWhole(parsed.scaled)) {
     return { ok: false, reason: 'FRACTION_IN_WHOLE_NUMBER_UNIT' };
   }
-  const factor = storedFactor(unit);
+  const factor = storedFactor(unit.unit_id, unit.conversion_factor);
   // Two counts of ten-thousandths multiply into hundred-millionths; the Base Quantity keeps four places.
   const product = parsed.scaled * factor;
   if (product % SCALE !== 0n) {
