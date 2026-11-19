@@ -106,7 +106,6 @@ export const BRAND_LABEL = 'ยี่ห้อ';
 export const MODEL_LABEL = 'รุ่น';
 export const SPECIFICATION_LABEL = 'คุณลักษณะ';
 export const MATERIAL_CATEGORY_LABEL = 'หมวดวัสดุ';
-// glossary: no entry — the Material Category filter's option for a Stock Material with no หมวดวัสดุ (Material Category)
 export const NO_MATERIAL_CATEGORY_LABEL = 'ไม่มีหมวด';
 export const UNIT_LABEL = 'หน่วยนับ';
 export const BASE_UNIT_LABEL = 'หน่วยนับหลัก';
@@ -127,7 +126,6 @@ export const EDIT_UNITS_LABEL = 'แก้ไขหน่วยนับ';
 export const ADD_BRAND_LABEL = 'เพิ่มยี่ห้อ';
 // glossary: no entry — the form's inline action, made of the term หมวดวัสดุ (Material Category)
 export const ADD_MATERIAL_CATEGORY_LABEL = 'เพิ่มหมวดวัสดุ';
-// glossary: no entry — the Stock Material page's action for the หมวดวัสดุ (Material Category) and note, which need no reason
 export const EDIT_DETAILS_LABEL = 'แก้ไขข้อมูลอื่น';
 
 // What each kind of history entry is called on the Stock Material page. F008-T1 writes CREATED, T3 UNITS_CHANGED and
