@@ -1,4 +1,4 @@
-// What the API answers about the Stock Material catalog (F008-T1, T3, T4, T6), and its labels from GLOSSARY.md (#175 Q17).
+// What the API answers about the Stock Material catalog (F008-T1, T3, T4, T5, T6), and its labels from GLOSSARY.md (#175 Q17).
 
 // One entry of a list of the catalog: the shared Unit list (F008-T1), the Brand or the Material Category list (F008-T4).
 export interface ListEntry {
@@ -38,6 +38,13 @@ export interface StockMaterialRow {
   material_category: NamedListEntry | null;
   // F008-T6 (#182): in the Base Unit, a decimal string without trailing zeros, or none.
   minimum_stock: string | null;
+}
+
+// F008-T5 (#181): the Duplicate Candidates a create or a Material Correction was refused with, in Feature 002's
+// DUPLICATE_CANDIDATES_FOUND contract: at most 50, with how many there are.
+export interface DuplicateCandidatesFound {
+  candidates: StockMaterialRow[];
+  total_count: number;
 }
 
 export interface StockMaterialList {
@@ -132,15 +139,19 @@ export const ADD_BRAND_LABEL = 'เพิ่มยี่ห้อ';
 export const ADD_MATERIAL_CATEGORY_LABEL = 'เพิ่มหมวดวัสดุ';
 export const EDIT_DETAILS_LABEL = 'แก้ไขข้อมูลอื่น';
 export const MINIMUM_STOCK_LABEL = 'จำนวนขั้นต่ำ';
+export const DUPLICATE_CANDIDATE_LABEL = 'รายการที่อาจซ้ำ';
+export const DIFFERENT_STOCK_MATERIAL_LABEL = 'เป็นคนละรายการ';
+export const MATERIAL_CORRECTION_LABEL = 'แก้ไขรายการที่บันทึกผิด';
 // glossary: no entry — the list filter's option, made of the term จำนวนขั้นต่ำ (Minimum Stock)
 export const MINIMUM_STOCK_SET_LABEL = 'ตั้งจำนวนขั้นต่ำแล้ว';
 // glossary: no entry — the list filter's option, made of the term จำนวนขั้นต่ำ (Minimum Stock)
 export const MINIMUM_STOCK_NOT_SET_LABEL = 'ยังไม่ตั้งจำนวนขั้นต่ำ';
 
-// What each kind of history entry is called on the Stock Material page. F008-T1 writes CREATED, T3 UNITS_CHANGED and
-// T4 DETAILS_CHANGED; the tickets that write the other kinds name them.
+// What each kind of history entry is called on the Stock Material page. F008-T1 writes CREATED, T3 UNITS_CHANGED,
+// T4 DETAILS_CHANGED and T5 CORRECTED; the tickets that write the other kinds name them.
 export const HISTORY_KIND_LABELS: Partial<Record<StockMaterialHistoryKind, string>> = {
   CREATED: 'สร้างรายการ',
+  CORRECTED: MATERIAL_CORRECTION_LABEL,
   UNITS_CHANGED: EDIT_UNITS_LABEL,
   DETAILS_CHANGED: EDIT_DETAILS_LABEL,
 };

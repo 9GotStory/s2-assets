@@ -1,4 +1,5 @@
 import * as crypto from 'node:crypto';
+  // It confirms any Duplicate Candidate (F008-T5): the Stock Materials here share names.
 import { describe, it, expect, beforeAll, afterAll } from 'vitest';
 import { startApiHarness, type Actor, type ApiHarness } from './support/api-harness.ts';
 import { withCapabilityAnswer } from './support/capability-helpers.ts';
@@ -30,7 +31,7 @@ describe('Stock Material Brand and Material Category (Seam A - F008-T4)', () => 
   const { whileWriting, untilWaiting } = lockHelpers(() => ({ api }));
 
   // A valid creation: กระดาษ A4 counted in แผ่น, unless `overrides` says otherwise.
-  const paper = (overrides: Record<string, unknown> = {}) => ({ name: 'กระดาษ A4', base_unit: { unit_id: sheet }, ...overrides });
+  const paper = (overrides: Record<string, unknown> = {}) => ({ name: 'กระดาษ A4', base_unit: { unit_id: sheet }, explicit_continuation: true, ...overrides });
 
   // A refused creation: its message naming `field`, and nothing saved.
   const expectCreateRefused = async (payload: Record<string, unknown>, field: string) => {

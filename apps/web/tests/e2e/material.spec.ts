@@ -11,6 +11,7 @@ import { UserService } from '../../../api/src/services/user.service.ts';
 import { SessionService } from '../../../api/src/services/session.service.ts';
 import { UnitService } from '../../../api/src/services/unit.service.ts';
 import { StockMaterialService } from '../../../api/src/services/stock-material.service.ts';
+import { CatalogListService } from '../../../api/src/services/catalog-list.service.ts';
 import { repositoryProxyConfig } from '../../vite.config.ts';
 
 const { Pool } = pg;
@@ -31,6 +32,8 @@ const freshUnitName = (name: string) => `${name} ${crypto.randomUUID().slice(0, 
 // details, the Brand search and the Material Category filter.
 // F008-T6 (#182): Journey J2 starts (a Supply Officer sets a Minimum Stock and finds it with the Minimum Stock filter,
 // and states it again when the Base Unit changes); F008-T5 and T7 extend it.
+// F008-T5 (#181): Journey J1 is warned of a Duplicate Candidate and confirms "เป็นคนละรายการ"; Journey J2 goes on with a
+// Material Correction with a reason, warned of a Duplicate Candidate too.
 test.describe.serial('Stock Material journeys: Real SPA -> Composed API -> PostgreSQL (Seam B)', () => {
   let container: StartedPostgreSqlContainer;
   let pool: pg.Pool;
@@ -193,9 +196,17 @@ test.describe.serial('Stock Material journeys: Real SPA -> Composed API -> Postg
   });
 
   test('Journey F008-T3.1: a Supply Officer creates a Stock Material with an Alternate Unit, sees "1 กล่อง = 5 รีม", and changes its Base Unit in the Units editor', async ({ page, context }) => {
-    // แผ่น, which Journey F008-T1.1 adds when it runs first.
+    // แผ่น and กระดาษถ่ายเอกสาร A4, which Journey F008-T1.1 adds when it runs first.
     if ((await pool.query(`SELECT 1 FROM units WHERE name = 'แผ่น'`)).rows.length === 0) {
       await new UnitService({ db: pool }).add(officerUserId, 'แผ่น', { retryToken: crypto.randomUUID() });
+    }
+    if ((await pool.query(`SELECT 1 FROM stock_materials WHERE name = 'กระดาษถ่ายเอกสาร A4'`)).rows.length === 0) {
+      const sheet = (await pool.query(`SELECT id FROM units WHERE name = 'แผ่น'`)).rows[0].id;
+      await new StockMaterialService({ db: pool }).create(
+        officerUserId,
+        { name: 'กระดาษถ่ายเอกสาร A4', model: 'Double A', specification: '80 แกรม สีขาว', base_unit: { unit_id: sheet } },
+        { retryToken: crypto.randomUUID() }
+      );
     }
     await loginAs(context, officerUserId);
     await page.goto(`${targetBaseUrl}/stock-materials/new`);
@@ -224,6 +235,24 @@ test.describe.serial('Stock Material journeys: Real SPA -> Composed API -> Postg
     await page.locator('#stock-material-base-unit').selectOption({ label: 'รีม' });
     await page.locator('#stock-material-alternate-0-factor').fill('5');
     await page.locator('#stock-material-submit').click();
+
+    // Its name holds that of กระดาษถ่ายเอกสาร A4: the save waits, the form locked, for "เป็นคนละรายการ" (MC-17, P4).
+    const warning = page.locator('[data-testid="duplicate-candidate-warning"]');
+    await expect(warning).toContainText('พบรายการที่อาจซ้ำ 1 รายการ');
+    const candidate = warning.locator('tbody tr');
+    await expect(candidate).toHaveCount(1);
+    await expect(candidate.locator('td')).toHaveText(['กระดาษถ่ายเอกสาร A4', '-', 'Double A', '80 แกรม สีขาว', 'แผ่น', 'ใช้งานอยู่']);
+    // Its page opens beside the form, which keeps what was typed.
+    await expect(candidate.getByRole('link', { name: 'กระดาษถ่ายเอกสาร A4' })).toHaveAttribute('href', /^\/stock-materials\/[0-9a-f-]{36}$/);
+    await expect(candidate.getByRole('link', { name: 'กระดาษถ่ายเอกสาร A4' })).toHaveAttribute('target', '_blank');
+    await expect(page.locator('#stock-material-name')).toBeDisabled();
+    await expect(page).toHaveURL(/\/stock-materials\/new$/);
+    // "กลับไปแก้ไข" unlocks the form; the same save warns again.
+    await page.locator('#duplicate-candidate-back').click();
+    await expect(warning).toHaveCount(0);
+    await expect(page.locator('#stock-material-name')).toBeEnabled();
+    await page.locator('#stock-material-submit').click();
+    await page.locator('#duplicate-candidate-confirm').click();
 
     await expect(page).toHaveURL(/\/stock-materials\/[0-9a-f-]{36}$/);
     await expect(page.getByRole('heading', { level: 1, name: 'กระดาษถ่ายเอกสาร A4 แบบกล่อง' })).toBeVisible();
@@ -431,6 +460,88 @@ test.describe.serial('Stock Material journeys: Real SPA -> Composed API -> Postg
     await expect(restated.locator('dt', { hasText: 'จำนวนขั้นต่ำ' }).locator('+ dd')).toHaveText('20 → 2');
   });
 
+  test('Journey F008-T5.1: a Supply Officer makes a Material Correction with a reason, warned that a different item is a new Stock Material and of a Duplicate Candidate, and finds it in the history', async ({ page, context }) => {
+    const tag = crypto.randomUUID().slice(0, 4);
+    const cartridge = freshUnitName('ตลับ');
+    const unit = await new UnitService({ db: pool }).add(officerUserId, cartridge, { retryToken: crypto.randomUUID() });
+    const brand = await new CatalogListService({ db: pool }).add(officerUserId, 'brand', `HP ${tag}`, { retryToken: crypto.randomUUID() });
+    const service = new StockMaterialService({ db: pool });
+    const { stock_material_id: id } = await service.create(
+      officerUserId,
+      { name: `ผงหมึกเลเซอรื ${tag}`, model: 'CE258A', specification: 'สีดำ', base_unit: { unit_id: unit.id } },
+      { retryToken: crypto.randomUUID() }
+    );
+    const { stock_material_id: twinId } = await service.create(
+      officerUserId,
+      { name: `ผงหมึกเลเซอร์ ${tag} สีดำ`, model: 'CF283A', base_unit: { unit_id: unit.id } },
+      { retryToken: crypto.randomUUID() }
+    );
+
+    await loginAs(context, officerUserId);
+    await page.goto(`${targetBaseUrl}/stock-materials/${id}`);
+    await page.locator('#stock-material-correct').click();
+    await expect(page.locator('#stock-material-correct')).toHaveCount(0);
+    // A really different model or specification is a new Stock Material (MC-11, MC-18).
+    await expect(page.locator('[data-testid="stock-material-correction-notice"]')).toContainText('ถ้าเป็นรุ่นหรือคุณลักษณะที่ต่างกันจริง ให้เพิ่มเป็นวัสดุรายการใหม่');
+    const name = page.locator('#stock-material-correction-name');
+    const brandSelect = page.locator('#stock-material-correction-brand');
+    const model = page.locator('#stock-material-correction-model');
+    const specification = page.locator('#stock-material-correction-specification');
+    const submit = page.locator('#stock-material-correction-submit');
+    const formError = page.locator('[data-testid="stock-material-correction-form-error"]');
+    await expect(name).toHaveValue(`ผงหมึกเลเซอรื ${tag}`);
+
+    // Nothing changed is not sent, the same text with other spaces around it included; nor is a blank name.
+    await name.fill(` ผงหมึกเลเซอรื ${tag} `);
+    await model.fill(' CE258A ');
+    await specification.fill('สีดำ ');
+    await submit.click();
+    await expect(formError).toContainText('ยังไม่มีข้อมูลที่เปลี่ยน');
+    await name.fill(' ');
+    await submit.click();
+    await expect(formError).toContainText('กรุณากรอกชื่อวัสดุ');
+    // Each of the name, ยี่ห้อ, รุ่น and คุณลักษณะ alone is a change, which then needs a reason.
+    await name.fill(`ผงหมึกเลเซอรื ${tag}`);
+    await brandSelect.selectOption({ label: brand.name });
+    await submit.click();
+    await expect(formError).toContainText('กรุณากรอกเหตุผลที่แก้ไข');
+    await brandSelect.selectOption('');
+    await specification.fill('สีดำ ชนิดผง');
+    await submit.click();
+    await expect(formError).toContainText('กรุณากรอกเหตุผลที่แก้ไข');
+    await specification.fill('สีดำ');
+    await model.fill('CE285A');
+    await submit.click();
+    await expect(formError).toContainText('กรุณากรอกเหตุผลที่แก้ไข');
+    await model.fill('CE258A');
+    await name.fill(`ผงหมึกเลเซอร์ ${tag}`);
+    await submit.click();
+    await expect(formError).toContainText('กรุณากรอกเหตุผลที่แก้ไข');
+    await model.fill('CE285A');
+    await page.locator('#stock-material-correction-reason').fill('พิมพ์ชื่อและรุ่นผิดจากใบส่งของ');
+    await submit.click();
+
+    // The corrected name is held in another Stock Material's name; the Stock Material itself is left out (MC-17).
+    const warning = page.locator('[data-testid="duplicate-candidate-warning"]');
+    await expect(warning.locator('tbody tr')).toHaveCount(1);
+    await expect(warning.locator(`[data-testid="duplicate-candidate-${twinId}"]`)).toContainText('CF283A');
+    await expect(page.locator('#stock-material-correction-reason')).toBeDisabled();
+    await page.locator('#duplicate-candidate-confirm').click();
+    await expect(page.locator('#stock-material-correct')).toBeVisible();
+
+    // The page shows the corrected values, and the history the reason with each value before and after.
+    await expect(page.locator('#stock-material-correction-form')).toHaveCount(0);
+    await expect(page.getByRole('heading', { level: 1, name: `ผงหมึกเลเซอร์ ${tag}` })).toBeVisible();
+    await expect(page.locator('[data-testid="stock-material-model"]')).toHaveText('CE285A');
+    const corrected = page.locator('[data-testid="stock-material-history-2"]');
+    await expect(corrected).toContainText('แก้ไขรายการที่บันทึกผิด');
+    await expect(corrected).toContainText('officer_material');
+    await expect(page.locator('[data-testid="stock-material-history-2-reason"]')).toHaveText('เหตุผล: พิมพ์ชื่อและรุ่นผิดจากใบส่งของ');
+    await expect(page.locator('[data-testid="stock-material-history-1-reason"]')).toHaveCount(0);
+    await expect(corrected.locator('dt', { hasText: 'ชื่อวัสดุ' }).locator('+ dd')).toHaveText(`ผงหมึกเลเซอรื ${tag} → ผงหมึกเลเซอร์ ${tag}`);
+    await expect(corrected.locator('dt', { hasText: 'รุ่น' }).locator('+ dd')).toHaveText('CE258A → CE285A');
+  });
+
   test('Journey F008-T1.2: a Read-only User reads the list and a Stock Material page with no action, and an Asset Custodian has no "วัสดุ" menu', async ({ page, context }) => {
     const bottle = freshUnitName('ขวด');
     const unit = await new UnitService({ db: pool }).add(officerUserId, bottle, { retryToken: crypto.randomUUID() });
@@ -457,9 +568,11 @@ test.describe.serial('Stock Material journeys: Real SPA -> Composed API -> Postg
     await expect(page.locator(`[data-testid="stock-material-unit-${unit.id}"]`)).toContainText('ไม่ใช่ (มีเศษได้)');
     await expect(page.locator('[data-testid="stock-material-status"]')).toHaveText('ใช้งานอยู่');
     await expect(page.locator('[data-testid="stock-material-history-1"]')).toContainText(`หน่วยนับหลัก ${bottle}`);
-    // The Supply Officer was offered "แก้ไขหน่วยนับ" and "แก้ไขข้อมูลอื่น" on a Stock Material page (Journeys F008-T3.1, T4.1).
+    // The Supply Officer was offered "แก้ไขหน่วยนับ", "แก้ไขข้อมูลอื่น" and "แก้ไขรายการที่บันทึกผิด" on a Stock Material page
+    // (Journeys F008-T3.1, T4.1, T5.1).
     await expect(page.locator('#stock-material-edit-units')).toHaveCount(0);
     await expect(page.locator('#stock-material-edit-details')).toHaveCount(0);
+    await expect(page.locator('#stock-material-correct')).toHaveCount(0);
 
     // The form refuses a viewer without material:manage.
     await page.goto(`${targetBaseUrl}/stock-materials/new`);
