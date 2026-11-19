@@ -138,6 +138,13 @@ test.describe.serial('Stock Material journeys: Real SPA -> Composed API -> Postg
     await page.locator('#nav-stock-material-list').click();
     await expect(page).toHaveURL(/\/stock-materials$/);
     await expect(page.locator('#stock-material-list-empty')).toContainText('ยังไม่มีวัสดุ');
+    // The status filter alone finds nothing either (F008-T7); back on ใช้งานอยู่, the default, the URL has no filter.
+    await page.locator('#stock-material-status-filter').selectOption({ label: 'หยุดใช้' });
+    await expect(page).toHaveURL(/\/stock-materials\?status=inactive$/);
+    await expect(page.locator('#stock-material-list-empty')).toContainText('ไม่พบวัสดุที่ค้นหา');
+    await page.locator('#stock-material-status-filter').selectOption({ label: 'ใช้งานอยู่' });
+    await expect(page).toHaveURL(/\/stock-materials$/);
+    await expect(page.locator('#stock-material-list-empty')).toContainText('ยังไม่มีวัสดุ');
 
     await page.locator('#stock-material-add-action').click();
     await expect(page).toHaveURL(/\/stock-materials\/new$/);
@@ -544,7 +551,7 @@ test.describe.serial('Stock Material journeys: Real SPA -> Composed API -> Postg
     await expect(corrected.locator('dt', { hasText: 'รุ่น' }).locator('+ dd')).toHaveText('CE258A → CE285A');
   });
 
-  test('Journey F008-T7.1: a Supply Officer makes a Stock Material Inactive with a note, finds it with the status filter and its "หยุดใช้" badge, and reactivates it as the same record', async ({ page, context }) => {
+  test('Journey F008-T7.1: a Supply Officer makes a Stock Material Inactive with a note, finds it with the status filter and its "หยุดใช้" badge, and reactivates it as the same record, each refused as stale when another Supply Officer changed the status first', async ({ page, context }) => {
     const tag = crypto.randomUUID().slice(0, 8);
     const box = freshUnitName('กล่อง');
     const unit = await new UnitService({ db: pool }).add(officerUserId, box, { retryToken: crypto.randomUUID() });
@@ -625,6 +632,19 @@ test.describe.serial('Stock Material journeys: Real SPA -> Composed API -> Postg
     // Reactivated from its page, it is the same record with its whole history.
     await row.getByRole('link', { name }).click();
     await expect(page).toHaveURL(new RegExp(`/stock-materials/${id}$`));
+    // Reactivated by another Supply Officer while the form is open, the page read again offers "หยุดใช้" instead.
+    await page.locator('#stock-material-reactivate').click();
+    await service.reactivate(officerUserId, id, { expected_version: 4 }, { retryToken: crypto.randomUUID() });
+    await page.locator('#stock-material-status-submit').click();
+    await expect(page.locator('[data-testid="stock-material-status-form-error"]')).toContainText('มีผู้แก้ไขรายการนี้ไปแล้ว กรุณาโหลดใหม่');
+    await page.locator('#stock-material-status-reload').click();
+    await expect(status).toHaveText('ใช้งานอยู่');
+    await expect(page.locator('#stock-material-status-form')).toHaveCount(0);
+    await expect(page.locator('#stock-material-inactivate')).toBeVisible();
+    await service.inactivate(officerUserId, id, { expected_version: 5 }, { retryToken: crypto.randomUUID() });
+    await page.reload();
+    await expect(status).toHaveText('หยุดใช้');
+
     await page.locator('#stock-material-reactivate').click();
     await expect(page.locator('[data-testid="stock-material-status-notice"]')).toContainText('รายการเดิม');
     await expect(page.locator('#stock-material-status-note')).toHaveCount(0);
@@ -632,11 +652,11 @@ test.describe.serial('Stock Material journeys: Real SPA -> Composed API -> Postg
     await expect(status).toHaveText('ใช้งานอยู่');
     await expect(page.locator('#stock-material-inactivate')).toBeVisible();
     await expect(page.locator('#stock-material-reactivate')).toHaveCount(0);
-    const reactivated = page.locator('[data-testid="stock-material-history-5"]');
+    const reactivated = page.locator('[data-testid="stock-material-history-7"]');
     await expect(reactivated.locator('div').first()).toHaveText('เปิดใช้อีกครั้ง');
     await expect(reactivated).toContainText('officer_material');
     await expect(reactivated.locator('dt', { hasText: 'สถานะ' }).locator('+ dd')).toHaveText('หยุดใช้ → ใช้งานอยู่');
-    await expect(page.locator('[data-testid="stock-material-history-5-note"]')).toHaveCount(0);
+    await expect(page.locator('[data-testid="stock-material-history-7-note"]')).toHaveCount(0);
     await expect(page.locator('[data-testid="stock-material-history-1"]')).toBeVisible();
 
     // In use again, the default list shows it, with no badge.
