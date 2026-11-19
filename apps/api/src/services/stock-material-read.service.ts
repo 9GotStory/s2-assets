@@ -1,6 +1,7 @@
 import pg from 'pg';
 import { containsPattern } from './asset-lookups.ts';
 import { joinCatalogListEntry, type NamedListEntry } from './catalog-list-entries.ts';
+import { comparedName } from './catalog-list.service.ts';
 import { joinUnitEntry } from './unit-entries.ts';
 
 // One row of the Stock Material list (#175 Q15).
@@ -35,6 +36,18 @@ export interface StockMaterialList {
   offset: number;
   total_count: number;
   has_more: boolean;
+}
+
+// F008-T5 (#181, #175 P4): the most Duplicate Candidates a lookup or a warning lists.
+export const DUPLICATE_CANDIDATES_LIMIT = 50;
+
+// The Duplicate Candidates of a name, in Feature 002's shape: at most DUPLICATE_CANDIDATES_LIMIT, with how many there are.
+export interface DuplicateCandidates {
+  candidates: StockMaterialRow[];
+  total_count: number;
+  has_more: boolean;
+  limit: number;
+  offset: number;
 }
 
 // One Unit of a Stock Material, under the name its list entry has now (#175 Q19).
@@ -130,6 +143,50 @@ const toRow = (row: any): StockMaterialRow => ({
   minimum_stock: row.minimum_stock,
 });
 
+// The Stock Materials that every one of `conditions` passes, over `params`, a page of them by name with their count.
+async function pageOf(runner: pg.Pool | pg.PoolClient, conditions: string[], params: unknown[], limit: number, offset: number): Promise<StockMaterialList> {
+  const values = [...params, limit, offset];
+  // The count joins the page, so a page past the end still says how many Stock Materials pass.
+  const res = await runner.query(
+    `WITH filtered AS (
+       SELECT m.id, m.name, m.model, m.specification, trim_scale(m.minimum_stock)::text AS minimum_stock, m.is_active, u.id AS base_unit_id, u.name AS base_unit_name,
+              br.id AS brand_id, br.name AS brand_name, mc.id AS material_category_id, mc.name AS material_category_name
+       FROM stock_materials m
+       JOIN stock_material_units b ON b.stock_material_id = m.id AND b.is_base
+       ${joinUnitEntry('u', 'b.unit_id')}
+       ${joinCatalogListEntry('brand', 'br', 'm.brand_id')}
+       ${joinCatalogListEntry('material-category', 'mc', 'm.material_category_id')}
+       ${conditions.length > 0 ? `WHERE ${conditions.join(' AND ')}` : ''}
+     ),
+     counted AS (SELECT count(*)::int AS total_count FROM filtered),
+     paged AS (
+       SELECT * FROM filtered
+       ORDER BY lower(name) ASC, id ASC
+       LIMIT $${values.length - 1} OFFSET $${values.length}
+     )
+     SELECT p.*, c.total_count
+     FROM counted c
+     LEFT JOIN paged p ON true
+     ORDER BY lower(p.name) ASC, p.id ASC`,
+    values
+  );
+  const totalCount: number = res.rows[0]?.total_count ?? 0;
+  const items = res.rows.filter((row: any) => row.id !== null).map(toRow);
+  return { items, limit, offset, total_count: totalCount, has_more: offset + items.length < totalCount };
+}
+
+/**
+ * F008-T5 (#181): the Duplicate Candidates of `name`: every Stock Material, Inactive ones included, whose name equals
+ * it, contains it or is contained in it, ignoring case and repeated spaces (#175 MC-17, Q12), but `excludedId`. The
+ * lookup and the writes that warn of them all read them here, a write through `client` inside its transaction.
+ */
+export async function duplicateCandidatesOf(runner: pg.Pool | pg.PoolClient, name: string, excludedId: string | null = null): Promise<DuplicateCandidates> {
+  const condition = `(strpos(${comparedName('m.name')}, ${comparedName('$1')}) > 0 OR strpos(${comparedName('$1')}, ${comparedName('m.name')}) > 0)`;
+  const conditions = excludedId === null ? [condition] : [condition, 'm.id <> $2'];
+  const page = await pageOf(runner, conditions, excludedId === null ? [name] : [name, excludedId], DUPLICATE_CANDIDATES_LIMIT, 0);
+  return { candidates: page.items, total_count: page.total_count, has_more: page.has_more, limit: page.limit, offset: page.offset };
+}
+
 /** F008-T1 (#176): the Stock Material catalog's reads: the list and a Stock Material's page. */
 export class StockMaterialReadService {
   private readonly db: pg.Pool | any;
@@ -155,35 +212,12 @@ export class StockMaterialReadService {
     if (filters.minimum_stock !== undefined) {
       conditions.push(`m.minimum_stock IS ${filters.minimum_stock === 'set' ? 'NOT NULL' : 'NULL'}`);
     }
-    params.push(filters.limit, filters.offset);
+    return pageOf(this.db, conditions, params, filters.limit, filters.offset);
+  }
 
-    // The count joins the page, so a page past the end still says how many Stock Materials pass.
-    const res = await this.db.query(
-      `WITH filtered AS (
-         SELECT m.id, m.name, m.model, m.specification, trim_scale(m.minimum_stock)::text AS minimum_stock, m.is_active, u.id AS base_unit_id, u.name AS base_unit_name,
-                br.id AS brand_id, br.name AS brand_name, mc.id AS material_category_id, mc.name AS material_category_name
-         FROM stock_materials m
-         JOIN stock_material_units b ON b.stock_material_id = m.id AND b.is_base
-         ${joinUnitEntry('u', 'b.unit_id')}
-         ${joinCatalogListEntry('brand', 'br', 'm.brand_id')}
-         ${joinCatalogListEntry('material-category', 'mc', 'm.material_category_id')}
-         ${conditions.length > 0 ? `WHERE ${conditions.join(' AND ')}` : ''}
-       ),
-       counted AS (SELECT count(*)::int AS total_count FROM filtered),
-       paged AS (
-         SELECT * FROM filtered
-         ORDER BY lower(name) ASC, id ASC
-         LIMIT $${params.length - 1} OFFSET $${params.length}
-       )
-       SELECT p.*, c.total_count
-       FROM counted c
-       LEFT JOIN paged p ON true
-       ORDER BY lower(p.name) ASC, p.id ASC`,
-      params
-    );
-    const totalCount: number = res.rows[0]?.total_count ?? 0;
-    const items = res.rows.filter((row: any) => row.id !== null).map(toRow);
-    return { items, limit: filters.limit, offset: filters.offset, total_count: totalCount, has_more: filters.offset + items.length < totalCount };
+  /** F008-T5 (#181): the Duplicate Candidates of `name`, but the Stock Material `excludedId`. */
+  async duplicateCandidates(name: string, excludedId: string | null): Promise<DuplicateCandidates> {
+    return duplicateCandidatesOf(this.db, name, excludedId);
   }
 
   /** A Stock Material with its Units and its history, or null when there is none. */

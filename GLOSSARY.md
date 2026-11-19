@@ -375,8 +375,8 @@ _Avoid_: archived
 
 **Duplicate Candidate** (รายการที่อาจซ้ำ):
 An existing Stock Material, Inactive ones included, whose name looks like that of one being created
-or corrected, shown as a warning. A person decides whether it is a different thing; the system
-never merges.
+or corrected, shown as a warning. A person decides whether it is a different thing, confirming
+"เป็นคนละรายการ" to save; the system never merges.
 
 **Minimum Stock** (จำนวนขั้นต่ำ):
 An optional threshold in the Base Unit below which a Stock Material's stock counts as low. Setting it

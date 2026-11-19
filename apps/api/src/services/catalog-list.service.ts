@@ -8,8 +8,8 @@ import { ValidationError } from './validation-error.ts';
 export const CATALOG_LIST_NAME_MAX_LENGTH = 200;
 
 // A name as a list compares names: ignoring case and repeated spaces (#175 Q20). The unique indexes of
-// 0027_brands_material_categories are on this same expression.
-const comparedName = (expression: string) => `lower(regexp_replace(btrim(${expression}), ' +', ' ', 'g'))`;
+// 0027_brands_material_categories are on this same expression, and Duplicate Candidates compare names by it (F008-T5).
+export const comparedName = (expression: string) => `lower(regexp_replace(btrim(${expression}), ' +', ' ', 'g'))`;
 
 // One entry of the Brand or the Material Category list.
 export interface CatalogListEntry {

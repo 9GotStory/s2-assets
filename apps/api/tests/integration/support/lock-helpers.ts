@@ -30,6 +30,19 @@ export function lockHelpers(context: () => { api: ApiHarness }) {
     await expect.poll(() => waitersOnLock(table, mode), { timeout: 10_000, interval: 50 }).toBeGreaterThanOrEqual(count);
   };
 
+  // Waits until `count` writes wait on the transaction-level advisory lock named `key`, which the services take by
+  // its literal name, as F008-T5 does for 'stock-material:identity'.
+  const untilWaitingOnAdvisoryLock = async (key: string, count = 1): Promise<void> => {
+    const waiters = async (): Promise<number> => {
+      const res = await context().api.pool.query(
+        `SELECT count(*)::int AS n FROM pg_stat_activity WHERE wait_event_type = 'Lock' AND wait_event = 'advisory' AND query LIKE $1`,
+        [`%pg_advisory_xact_lock(hashtext('${key}'))%`]
+      );
+      return res.rows[0].n;
+    };
+    await expect.poll(waiters, { timeout: 10_000, interval: 50 }).toBeGreaterThanOrEqual(count);
+  };
+
   /**
    * Holds the row `id` of `table` locked, starts `writes`, and runs `queued` under the lock: by default it
    * waits until a write stops at a lock of `table`. The lock goes before the writes are awaited, so a test
@@ -85,5 +98,5 @@ export function lockHelpers(context: () => { api: ApiHarness }) {
     return Promise.all(pending);
   };
 
-  return { whileHolding, whileWriting, untilWaiting };
+  return { whileHolding, whileWriting, untilWaiting, untilWaitingOnAdvisoryLock };
 }

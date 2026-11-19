@@ -1,4 +1,5 @@
 import * as crypto from 'node:crypto';
+  // It confirms any Duplicate Candidate (F008-T5): the Stock Materials here share names.
 import { describe, it, expect, beforeAll, afterAll } from 'vitest';
 import { startApiHarness, type Actor, type ApiHarness } from './support/api-harness.ts';
 import { withCapabilityAnswer } from './support/capability-helpers.ts';
@@ -27,7 +28,7 @@ describe('Stock Material (Seam A - F008-T1)', () => {
   const { whileWriting, untilWaiting } = lockHelpers(() => ({ api }));
 
   // A valid request: a name and the Base Unit แผ่น, unless `overrides` says otherwise.
-  const base = (overrides: Record<string, unknown> = {}) => ({ name: 'กระดาษ A4', base_unit: { unit_id: sheet }, ...overrides });
+  const base = (overrides: Record<string, unknown> = {}) => ({ name: 'กระดาษ A4', base_unit: { unit_id: sheet }, explicit_continuation: true, ...overrides });
 
   // The list rows a reader gets for `query`.
   const listed = async (query: string, actor: Actor = readonly) => {

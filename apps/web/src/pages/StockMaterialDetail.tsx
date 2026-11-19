@@ -1,6 +1,7 @@
 import React, { useEffect, useState } from 'react';
 import { Link, useNavigate, useParams } from 'react-router';
 import { QueryClient, QueryClientProvider, useQuery } from '@tanstack/react-query';
+import { StockMaterialCorrectionForm } from '../components/StockMaterialCorrectionForm';
 import { StockMaterialDetailsEditor } from '../components/StockMaterialDetailsEditor';
 import { StockMaterialUnitsEditor } from '../components/StockMaterialUnitsEditor';
 import {
@@ -13,6 +14,7 @@ import {
   HISTORY_KIND_LABELS,
   INACTIVE_LABEL,
   MATERIAL_CATEGORY_LABEL,
+  MATERIAL_CORRECTION_LABEL,
   MINIMUM_STOCK_LABEL,
   MODEL_LABEL,
   RECORDED_FIELD_LABELS,
@@ -39,6 +41,16 @@ const LOAD_ERRORS: Record<number, string> = {
 
 const sectionHeadingStyle: React.CSSProperties = { fontSize: '1.125rem', fontWeight: 600, color: '#374151', margin: '1.5rem 0 0.75rem 0' };
 const cellStyle: React.CSSProperties = { padding: '0.5rem 0.75rem', color: '#111827', verticalAlign: 'top' };
+const actionStyle: React.CSSProperties = {
+  marginTop: '1rem',
+  padding: '0.375rem 0.875rem',
+  backgroundColor: '#ffffff',
+  color: '#1d4ed8',
+  border: '1px solid #93c5fd',
+  borderRadius: '6px',
+  fontSize: '0.875rem',
+  fontWeight: 500,
+};
 const headStyle: React.CSSProperties = { padding: '0.5rem 0.75rem', fontWeight: 600, color: '#374151', whiteSpace: 'nowrap' };
 
 // A recorded value as the history shows it: the Units as lines, a Brand or a Material Category by its name then, text
@@ -64,6 +76,11 @@ const HistoryEntry: React.FC<{ entry: StockMaterialHistoryEntry }> = ({ entry })
     <div style={{ fontSize: '0.8125rem', color: '#6b7280', marginBottom: '0.25rem' }}>
       บันทึกเมื่อ <time dateTime={entry.recorded_at}>{THAI_DATE_TIME.format(new Date(entry.recorded_at))}</time> โดย {entry.recorded_by_username ?? entry.recorded_by}
     </div>
+    {entry.reason !== null && (
+      <div data-testid={`stock-material-history-${entry.version}-reason`} style={{ fontSize: '0.875rem', color: '#111827', marginBottom: '0.25rem', whiteSpace: 'pre-line' }}>
+        เหตุผล: {entry.reason}
+      </div>
+    )}
     <dl style={{ display: 'grid', gridTemplateColumns: 'max-content 1fr', gap: '0.25rem 1rem', margin: 0, fontSize: '0.875rem' }}>
       {entry.changes.map((change) => (
         <React.Fragment key={change.field}>
@@ -86,6 +103,7 @@ const StockMaterialDetailContent: React.FC<{ id: string }> = ({ id }) => {
   const navigate = useNavigate();
   const [isEditingUnits, setIsEditingUnits] = useState(false);
   const [isEditingDetails, setIsEditingDetails] = useState(false);
+  const [isCorrecting, setIsCorrecting] = useState(false);
 
   const material = useQuery<MaterialDetail, Error & { status?: number }>({
     queryKey: ['stock-material', id],
@@ -154,15 +172,39 @@ const StockMaterialDetailContent: React.FC<{ id: string }> = ({ id }) => {
                 <time dateTime={detail.recorded_at}>{THAI_DATE_TIME.format(new Date(detail.recorded_at))}</time> โดย {detail.created_by_username ?? detail.created_by}
               </dd>
             </dl>
-            {detail.can_manage && !isEditingDetails && (
-              <button
-                type="button"
-                id="stock-material-edit-details"
-                onClick={() => setIsEditingDetails(true)}
-                style={{ marginTop: '1rem', padding: '0.375rem 0.875rem', backgroundColor: '#ffffff', color: '#1d4ed8', border: '1px solid #93c5fd', borderRadius: '6px', fontSize: '0.875rem', fontWeight: 500 }}
-              >
-                {EDIT_DETAILS_LABEL}
-              </button>
+            <div style={{ display: 'flex', flexWrap: 'wrap', gap: '0.5rem' }}>
+              {detail.can_manage && !isCorrecting && (
+                <button type="button" id="stock-material-correct" onClick={() => setIsCorrecting(true)} style={actionStyle}>
+                  {MATERIAL_CORRECTION_LABEL}
+                </button>
+              )}
+              {detail.can_manage && !isEditingDetails && (
+                <button type="button" id="stock-material-edit-details" onClick={() => setIsEditingDetails(true)} style={actionStyle}>
+                  {EDIT_DETAILS_LABEL}
+                </button>
+              )}
+            </div>
+            {detail.can_manage && isCorrecting && (
+              <div style={{ marginTop: '1rem' }}>
+                {/* A new read starts the form again from what it shows, so a save never carries values read before it. */}
+                <StockMaterialCorrectionForm
+                  key={detail.version}
+                  material={detail}
+                  onRefresh={refresh}
+                  onSaved={async () => {
+                    await material.refetch();
+                    setIsCorrecting(false);
+                  }}
+                  onCancel={() => setIsCorrecting(false)}
+                  onPermissionRevoked={(status) => {
+                    if (status === 401) {
+                      navigate('/login', { replace: true });
+                      return;
+                    }
+                    void material.refetch();
+                  }}
+                />
+              </div>
             )}
             {detail.can_manage && isEditingDetails && (
               <div style={{ marginTop: '1rem' }}>
@@ -263,8 +305,8 @@ const StockMaterialDetailContent: React.FC<{ id: string }> = ({ id }) => {
 };
 
 /**
- * A Stock Material's page (F008-T1, T3, T4, T6): every field with the editor of its other details, its Units with their
- * editor, and its history (#175 Q15, Q18).
+ * A Stock Material's page (F008-T1, T3, T4, T5, T6): every field with its Material Correction and the editor of its
+ * other details, its Units with their editor, and its history (#175 Q15, Q18).
  */
 export const StockMaterialDetail: React.FC = () => {
   const { id = '' } = useParams<{ id: string }>();

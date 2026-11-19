@@ -4,11 +4,19 @@ import { requireCapability } from '../middleware/authorization.ts';
 import { invalidQueryBody, pageQueryFields } from './list-query.ts';
 import { errorBody, parseWrite } from './write-request.ts';
 import { isValidUuid, type CapabilityService } from '../services/capability.service.ts';
-import { hasDisallowedControlChars } from '../services/control-characters.ts';
+import { hasDisallowedControlChars, hasStrictControlChars } from '../services/control-characters.ts';
 import { NotFoundError, RetryTokenConflictError, StaleBeforeConflictError } from '../services/service-errors.ts';
 import type { StockMaterialReadService } from '../services/stock-material-read.service.ts';
 import { ALTERNATE_UNITS_MAX } from '../services/stock-material-units.ts';
-import type { ChangeDetailsInput, CreateStockMaterialInput, ReplaceUnitsInput, StockMaterialService } from '../services/stock-material.service.ts';
+import {
+  STOCK_MATERIAL_NAME_MAX_LENGTH,
+  DuplicateCandidatesFoundError,
+  type ChangeDetailsInput,
+  type CorrectStockMaterialInput,
+  type CreateStockMaterialInput,
+  type ReplaceUnitsInput,
+  type StockMaterialService,
+} from '../services/stock-material.service.ts';
 import { ValidationError } from '../services/validation-error.ts';
 
 export interface StockMaterialRoutesOptions {
@@ -34,7 +42,27 @@ const CreateStockMaterialSchema = z
       .optional(),
     // F008-T6 (#182 decision 1): a decimal string in the Base Unit, which the service checks.
     minimum_stock: z.string().nullable().optional(),
+    // F008-T5 (#181): "เป็นคนละรายการ", confirming the Duplicate Candidates a warning listed (#175 P4).
+    explicit_continuation: z.boolean().optional(),
     retry_token: z.string().optional(),
+  })
+  .strict();
+
+// F008-T5 (#181, #175 P4): a name to look up Duplicate Candidates of, as a Stock Material's name is written (P7), and a
+// Stock Material to leave out, such as the one a Material Correction corrects.
+const DuplicateCandidatesQuerySchema = z
+  .object({
+    name: z
+      .string()
+      .refine((name) => !hasStrictControlChars(name), 'must not contain control characters')
+      .transform((name) => name.trim())
+      .refine((name) => name.length > 0, 'must not be blank')
+      .refine((name) => name.length <= STOCK_MATERIAL_NAME_MAX_LENGTH, `must be at most ${STOCK_MATERIAL_NAME_MAX_LENGTH} characters`),
+    exclude_stock_material_id: z
+      .string()
+      .refine(isValidUuid, 'must be a valid UUID')
+      .transform((id) => id.trim().toLowerCase())
+      .optional(),
   })
   .strict();
 
@@ -66,6 +94,22 @@ const ChangeDetailsSchema = z
   })
   .strict();
 
+// F008-T5 (#181, #175 Q11): a Material Correction: the identity as it should have been recorded, each value stated,
+// null for none, with the reason, which the service checks and names when refused.
+const CorrectStockMaterialSchema = z
+  .object({
+    expected_version: z.number().int().positive(),
+    name: z.string(),
+    brand_id: z.string().nullable(),
+    model: z.string().nullable(),
+    specification: z.string().nullable(),
+    reason: z.string(),
+    // "เป็นคนละรายการ", confirming the Duplicate Candidates a warning listed (#175 P4).
+    explicit_continuation: z.boolean().optional(),
+    retry_token: z.string().optional(),
+  })
+  .strict();
+
 const StockMaterialListQuerySchema = z
   .object({
     // It searches the Specification, which is free text, so it keeps tab and line breaks inside it as that field
@@ -92,6 +136,10 @@ const StockMaterialListQuerySchema = z
 
 // The answer to a refused write, or null for an error that is not a refusal.
 const refusalOf = (err: unknown) => {
+  // F008-T5 (#181): Feature 002's DUPLICATE_CANDIDATES_FOUND, with the candidates to confirm.
+  if (err instanceof DuplicateCandidatesFoundError) {
+    return { ...errorBody(err.statusCode, err.code, err.message), ...err.found };
+  }
   if (err instanceof StaleBeforeConflictError) {
     return { ...errorBody(err.statusCode, err.code, err.message), current_values: err.current_values, expected_values: err.expected_values };
   }
@@ -122,6 +170,21 @@ export const stockMaterialRoutes: FastifyPluginAsync<StockMaterialRoutesOptions>
     const list = await stockMaterialReadService.list({ search, material_category_id, minimum_stock, limit, offset });
     const canManage = await capabilityService.hasCapability(request.user!.id, 'material:manage');
     return reply.status(200).send({ ...list, can_manage: canManage });
+  });
+
+  /**
+   * GET /stock-materials/duplicate-candidates
+   * The Duplicate Candidates (รายการที่อาจซ้ำ) of a name, leaving out a Stock Material when one is given (F008-T5).
+   * Protected: requires 'material:view' capability
+   */
+  fastify.get('/stock-materials/duplicate-candidates', { preHandler: [requireCapability('material:view')] }, async (request, reply) => {
+    reply.header('Cache-Control', 'no-store');
+    const parsed = DuplicateCandidatesQuerySchema.safeParse(request.query ?? {});
+    if (!parsed.success) {
+      return reply.status(400).send(invalidQueryBody(parsed.error));
+    }
+    const { name, exclude_stock_material_id: excludedId = null } = parsed.data;
+    return reply.status(200).send(await stockMaterialReadService.duplicateCandidates(name, excludedId));
   });
 
   /**
@@ -156,6 +219,34 @@ export const stockMaterialRoutes: FastifyPluginAsync<StockMaterialRoutesOptions>
     try {
       const { retry_token: _retryToken, ...input } = write.data;
       return reply.status(201).send(await stockMaterialService.create(request.user!.id, input as CreateStockMaterialInput, { retryToken: write.retryToken }));
+    } catch (err) {
+      const refusal = refusalOf(err);
+      if (!refusal) {
+        throw err;
+      }
+      return reply.status(refusal.statusCode).send(refusal);
+    }
+  });
+
+  /**
+   * POST /stock-materials/:id/corrections
+   * A Material Correction ("แก้ไขรายการที่บันทึกผิด", F008-T5) of the name, Brand, Model or Specification, with a reason, at
+   * the version the request read.
+   * Protected: requires 'material:manage' capability (Supply Officer)
+   */
+  fastify.post('/stock-materials/:id/corrections', { preHandler: [requireCapability('material:manage')] }, async (request, reply) => {
+    const { id } = request.params as { id: string };
+    if (!isValidUuid(id)) {
+      return reply.status(400).send(errorBody(400, 'INVALID_ID', 'Stock Material ID must be a valid UUID string'));
+    }
+    const write = parseWrite(CorrectStockMaterialSchema, request);
+    if ('refusal' in write) {
+      return reply.status(400).send(write.refusal);
+    }
+    try {
+      const { retry_token: _retryToken, ...input } = write.data;
+      const recorded = await stockMaterialService.correct(request.user!.id, id.trim().toLowerCase(), input as CorrectStockMaterialInput, { retryToken: write.retryToken });
+      return reply.status(200).send(recorded);
     } catch (err) {
       const refusal = refusalOf(err);
       if (!refusal) {

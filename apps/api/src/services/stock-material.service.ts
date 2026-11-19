@@ -5,7 +5,7 @@ import { CATALOG_LISTS, type CatalogListKind, type NamedListEntry } from './cata
 import { catalogListEntryOf, selectableCatalogListEntry } from './catalog-list.service.ts';
 import { commitOnce } from './retryable-write.ts';
 import { NotFoundError, StaleBeforeConflictError } from './service-errors.ts';
-import { stockMaterialUnitsOf, type StockMaterialHistoryChange, type StockMaterialUnit } from './stock-material-read.service.ts';
+import { duplicateCandidatesOf, stockMaterialUnitsOf, type DuplicateCandidates, type StockMaterialHistoryChange, type StockMaterialUnit } from './stock-material-read.service.ts';
 import { baseUnitAmountOf, normalizeUnitSet, unitFieldOf, type AlternateUnitInput, type BaseUnitInput, type UnitSetting } from './stock-material-units.ts';
 import { unselectableUnitsAmong } from './unit.service.ts';
 import { ValidationError } from './validation-error.ts';
@@ -29,6 +29,8 @@ export interface CreateStockMaterialInput {
   alternate_units?: Omit<AlternateUnitInput, 'is_active'>[];
   // F008-T6 (#182 decision 1): in the Base Unit, a decimal string, or none (#175 MC-20).
   minimum_stock?: string | null;
+  // F008-T5 (#181): "เป็นคนละรายการ", confirming the Duplicate Candidates its warning listed (#175 P4).
+  explicit_continuation?: boolean;
 }
 
 // F008-T3 (#178, #175 P2): the whole Unit set a Units write leaves, at the version the request read.
@@ -50,10 +52,36 @@ export interface ChangeDetailsInput {
   minimum_stock: string | null;
 }
 
+// F008-T5 (#181, #175 Q11): a Material Correction: the Stock Material's name, Brand, Model and Specification as they
+// should have been recorded, each stated, null for none, with the reason, at the version the request read.
+export interface CorrectStockMaterialInput {
+  expected_version: number;
+  name: string;
+  brand_id: string | null;
+  model: string | null;
+  specification: string | null;
+  reason: string;
+  // "เป็นคนละรายการ", confirming the Duplicate Candidates its warning listed (#175 P4).
+  explicit_continuation?: boolean;
+}
+
 // What a Stock Material write answers: the Stock Material it wrote and the version a later write must expect.
 export interface StockMaterialVersion {
   stock_material_id: string;
   version: number;
+}
+
+/** F008-T5 (#181): Duplicate Candidates a write did not confirm (#175 P4), answered in Feature 002's contract. */
+export class DuplicateCandidatesFoundError extends Error {
+  statusCode = 409;
+  code = 'DUPLICATE_CANDIDATES_FOUND';
+  found: DuplicateCandidates;
+
+  constructor(found: DuplicateCandidates) {
+    super('Stock Materials with a similar name exist: confirm with explicit_continuation that this is a different one');
+    this.name = 'DuplicateCandidatesFoundError';
+    this.found = found;
+  }
 }
 
 // A request's facts once validated, before any lock. The retry fingerprint covers these.
@@ -78,6 +106,23 @@ const entryIdOf = (value: string | null | undefined, field: string): string | nu
     throw new ValidationError(`${field} must be a valid UUID`);
   }
   return value.trim().toLowerCase();
+};
+
+/**
+ * F008-T5 (#181): takes the lock that orders every write of a Stock Material's name, so that of two writes of similar
+ * names the second sees the first (#181 decision 1, comment 7008407333), then refuses the Duplicate Candidates of
+ * `name`, but the Stock Material `excludedId`, unless the request confirmed them (#175 MC-17, P4). A request that
+ * cannot be saved for its own fault is refused before, so a confirmation is asked only for one that can be.
+ */
+const checkDuplicateCandidates = async (client: pg.PoolClient, name: string, excludedId: string | null, confirmed: boolean): Promise<void> => {
+  await client.query(`SELECT pg_advisory_xact_lock(hashtext('stock-material:identity'))`);
+  if (confirmed) {
+    return;
+  }
+  const found = await duplicateCandidatesOf(client, name, excludedId);
+  if (found.total_count > 0) {
+    throw new DuplicateCandidatesFoundError(found);
+  }
 };
 
 // Locks the entry `id` of the list `kind` FOR SHARE, so making it Inactive waits for this write or is seen by it, and
@@ -201,11 +246,13 @@ export class StockMaterialService {
 
   async create(actorId: string, input: CreateStockMaterialInput, { retryToken }: { retryToken: string }): Promise<StockMaterialVersion> {
     const facts = normalizeFacts(input);
-    return commitOnce(this.db, { actorId, operation: 'stock-material:create', retryToken, payload: { version: 1, ...facts }, explicitContinuation: false }, async (client) => {
+    const confirmed = input.explicit_continuation === true;
+    return commitOnce(this.db, { actorId, operation: 'stock-material:create', retryToken, payload: { version: 1, ...facts }, explicitContinuation: confirmed }, async (client) => {
       // Every Unit of a new Stock Material is a new choice.
       await assertSelectable(client, facts.units, () => true);
       const brand = await chosenEntry(client, 'brand', facts.brand_id);
       const materialCategory = await chosenEntry(client, 'material-category', facts.material_category_id);
+      await checkDuplicateCandidates(client, facts.name, null, confirmed);
 
       const res = await client.query(
         `INSERT INTO stock_materials (name, model, specification, note, brand_id, material_category_id, minimum_stock, created_by)
@@ -235,6 +282,73 @@ export class StockMaterialService {
         [id, version, JSON.stringify(changes), actorId]
       );
       return { stock_material_id: id, version };
+    });
+  }
+
+  /**
+   * F008-T5 (#181): a Material Correction (แก้ไขรายการที่บันทึกผิด): fixes the name, Brand, Model or Specification of a
+   * Stock Material recorded wrong, which stays the same thing, with a reason and a history entry of each value before
+   * and after (#175 MC-03, MC-11, MC-18, Q11). It is checked for Duplicate Candidates, leaving out the Stock Material
+   * itself, whether or not it changes the name (#181 decision 2). A Brand kept as it was may be Inactive by now; a new
+   * one must be active (Q21).
+   */
+  async correct(actorId: string, stockMaterialId: string, input: CorrectStockMaterialInput, { retryToken }: { retryToken: string }): Promise<StockMaterialVersion> {
+    const expectedVersion = input.expected_version;
+    const name = normalizeLine(input.name, 'name', STOCK_MATERIAL_NAME_MAX_LENGTH);
+    if (name === null) {
+      throw new ValidationError('name must not be blank');
+    }
+    const identity = {
+      name,
+      brand_id: entryIdOf(input.brand_id, 'brand_id'),
+      model: normalizeLine(input.model, 'model', MODEL_MAX_LENGTH),
+      specification: normalizeText(input.specification, 'specification', SPECIFICATION_MAX_LENGTH, ''),
+    };
+    const reason = normalizeText(input.reason, 'reason', REMARK_MAX_LENGTH, '');
+    if (reason === null) {
+      throw new ValidationError('reason must not be blank');
+    }
+    const confirmed = input.explicit_continuation === true;
+    const payload = { stock_material_id: stockMaterialId, expected_version: expectedVersion, ...identity, reason };
+    return commitOnce(this.db, { actorId, operation: 'stock-material:correct', retryToken, payload, explicitContinuation: confirmed }, async (client) => {
+      const res = await client.query('SELECT version, name, brand_id, model, specification FROM stock_materials WHERE id = $1 FOR UPDATE', [stockMaterialId]);
+      if (res.rows.length === 0) {
+        throw new NotFoundError('Stock Material not found');
+      }
+      const stored = res.rows[0];
+      if (stored.version !== expectedVersion) {
+        throw new StaleBeforeConflictError('The Stock Material changed since it was read', { version: stored.version }, { version: expectedVersion });
+      }
+      const changed = (Object.keys(identity) as (keyof typeof identity)[]).filter((field) => identity[field] !== stored[field]);
+      if (changed.length === 0) {
+        throw new ValidationError('This Material Correction changes nothing');
+      }
+
+      // What changed, in the order the page shows it, the Brand under its name now on either side (#175 P6).
+      const changes: StockMaterialHistoryChange[] = [];
+      for (const field of changed) {
+        if (field === 'brand_id') {
+          changes.push({
+            field: 'brand',
+            before: stored.brand_id === null ? null : await catalogListEntryOf(client, 'brand', stored.brand_id),
+            after: await chosenEntry(client, 'brand', identity.brand_id),
+          });
+        } else {
+          changes.push({ field, before: stored[field], after: identity[field] });
+        }
+      }
+      await checkDuplicateCandidates(client, identity.name, stockMaterialId, confirmed);
+
+      const updated = await client.query(
+        'UPDATE stock_materials SET name = $2, brand_id = $3, model = $4, specification = $5, version = version + 1 WHERE id = $1 RETURNING version',
+        [stockMaterialId, identity.name, identity.brand_id, identity.model, identity.specification]
+      );
+      const { version } = updated.rows[0];
+      await client.query(
+        `INSERT INTO stock_material_history (stock_material_id, version, kind, changes, reason, recorded_by) VALUES ($1, $2, 'CORRECTED', $3::jsonb, $4, $5)`,
+        [stockMaterialId, version, JSON.stringify(changes), reason, actorId]
+      );
+      return { stock_material_id: stockMaterialId, version };
     });
   }
 
