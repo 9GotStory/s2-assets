@@ -1,18 +1,12 @@
 import { formatDecimal, isWhole, parseDecimal, SCALE, withinRange, type DecimalRefusal } from './exact-decimal.ts';
+import type { StockMaterialUnit } from './stock-material-read.service.ts';
 
 // The normalize function of #175 (Q8): a quantity in any Unit of a Stock Material becomes its Base Quantity
 // with the Conversion Snapshot it used (MC-06, MC-07, MC-08, MC-09), or is refused. Features 010 to 014 call
 // it for every stock-affecting transaction; nothing calls it over HTTP in Feature 008.
 
-// One Unit of a Stock Material, as `stock_material_units` holds it.
-export interface QuantityUnit {
-  unit_id: string;
-  is_base: boolean;
-  // A decimal string; 1 for the Base Unit.
-  conversion_factor: string;
-  whole_number_only: boolean;
-  is_active: boolean;
-}
+// One Unit of a Stock Material, as its read gives it.
+export type QuantityUnit = Pick<StockMaterialUnit, 'unit_id' | 'is_base' | 'conversion_factor' | 'whole_number_only' | 'is_active'>;
 
 // The Conversion Factor a quantity used, kept with it so that a later change never alters its Base Quantity.
 export interface ConversionSnapshot {
@@ -56,6 +50,7 @@ export const normalizeQuantity = (units: readonly QuantityUnit[], unitId: string
   if (baseUnits.length !== 1) {
     throw new Error(`a Stock Material has one Base Unit, not ${baseUnits.length}`);
   }
+  const [baseUnit] = baseUnits;
   const unit = units.find((candidate) => candidate.unit_id === unitId);
   if (!unit) {
     return { ok: false, reason: 'UNKNOWN_UNIT' };
@@ -80,14 +75,14 @@ export const normalizeQuantity = (units: readonly QuantityUnit[], unitId: string
   if (!withinRange(baseQuantity)) {
     return { ok: false, reason: 'BASE_QUANTITY_OUT_OF_RANGE' };
   }
-  if (baseUnits[0].whole_number_only && !isWhole(baseQuantity)) {
+  if (baseUnit.whole_number_only && !isWhole(baseQuantity)) {
     return { ok: false, reason: 'BASE_QUANTITY_NOT_WHOLE' };
   }
   return {
     ok: true,
     original_quantity: formatDecimal(parsed.scaled),
     original_unit_id: unit.unit_id,
-    conversion_snapshot: { unit_id: unit.unit_id, base_unit_id: baseUnits[0].unit_id, conversion_factor: formatDecimal(factor) },
+    conversion_snapshot: { unit_id: unit.unit_id, base_unit_id: baseUnit.unit_id, conversion_factor: formatDecimal(factor) },
     base_quantity: formatDecimal(baseQuantity),
     original_unit_is_active: unit.is_active,
   };

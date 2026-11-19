@@ -137,6 +137,15 @@ describe('normalizeQuantity (F008-T2, #177)', () => {
     expect(normalizeQuantity(paperUnits, BOX, '19999999999999')).toMatchObject({ ok: true, base_quantity: '99999999999995' });
   });
 
+  it('treats a Unit set without exactly one Base Unit, or an unreadable stored factor, as a defect, not a refusal', () => {
+    const alternatesOnly = paperUnits.filter((unit) => !unit.is_base);
+    expect(() => normalizeQuantity(alternatesOnly, BOX, '1')).toThrow(/one Base Unit, not 0/);
+    const twoBaseUnits = [...paperUnits, { ...paperUnits[0], unit_id: SHEET }];
+    expect(() => normalizeQuantity(twoBaseUnits, BOX, '1')).toThrow(/one Base Unit, not 2/);
+    const unreadableFactor = [paperUnits[0], { ...paperUnits[1], conversion_factor: '5.00000' }];
+    expect(() => normalizeQuantity(unreadableFactor, BOX, '1')).toThrow(/Conversion Factor 5\.00000/);
+  });
+
   it('reports an Inactive Unit without deciding about it', () => {
     // 2 ห่อ × 10 แผ่น = 20 แผ่น.
     expect(normalizeQuantity(sheetUnits, OLD_PACK, '2')).toEqual({
