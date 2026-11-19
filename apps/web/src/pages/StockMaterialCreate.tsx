@@ -1,10 +1,11 @@
 import React, { useEffect, useState } from 'react';
 import { Link, useNavigate } from 'react-router';
-import { QueryClient, QueryClientProvider, useQuery } from '@tanstack/react-query';
+import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import { LoanSaveForm } from '../components/LoanSaveForm';
 import { fieldInputStyle, fieldLabelStyle } from '../components/ReferenceContextFields';
-import { UnitSetFields, emptyUnitSet, unitSetError, withBaseUnit, type UnitSetValue } from '../components/UnitSetFields';
-import { ADD_STOCK_MATERIAL_LABEL, ADD_UNIT_LABEL, MODEL_LABEL, SPECIFICATION_LABEL, STOCK_MATERIAL_LABEL, type UnitEntry, type UnitList } from '../components/materialFacts';
+import { UnitSetFields, alternateRequestOf, emptyUnitSet, newAlternateRow, unitSetError, withBaseUnit, type UnitSetValue } from '../components/UnitSetFields';
+import { useCsrfToken, useUnitList } from '../components/materialQueries';
+import { ADD_STOCK_MATERIAL_LABEL, ADD_UNIT_LABEL, MODEL_LABEL, SPECIFICATION_LABEL, STOCK_MATERIAL_LABEL, type UnitEntry } from '../components/materialFacts';
 
 const fieldStyle: React.CSSProperties = { marginBottom: '0.75rem' };
 
@@ -101,27 +102,9 @@ const StockMaterialCreateContent: React.FC = () => {
   const [note, setNote] = useState('');
   const [unitSet, setUnitSet] = useState<UnitSetValue>(emptyUnitSet);
 
-  const units = useQuery<UnitList, Error & { status?: number }>({
-    queryKey: ['units'],
-    queryFn: async ({ signal }) => {
-      const res = await fetch('/units', { credentials: 'include', signal });
-      if (!res.ok) {
-        const err = new Error(`HTTP ${res.status}`) as Error & { status?: number };
-        err.status = res.status;
-        throw err;
-      }
-      return res.json();
-    },
-  });
+  const units = useUnitList();
   const canManage = units.data?.can_manage === true && !units.isError;
-  const session = useQuery<string | null>({
-    queryKey: ['stock-material-session'],
-    queryFn: async ({ signal }) => {
-      const res = await fetch('/auth/session-check', { credentials: 'include', signal });
-      return res.ok ? ((await res.json()).csrfToken ?? null) : null;
-    },
-    enabled: canManage,
-  });
+  const session = useCsrfToken(canManage);
   // The form waits for the token: a request sent without it is refused as if the grant were gone.
   const csrfToken = session.data ?? null;
 
@@ -133,13 +116,12 @@ const StockMaterialCreateContent: React.FC = () => {
   }, [isSignedOut, navigate]);
 
   const unitList = units.data?.items ?? [];
-  const nameOf = (unitId: string) => unitList.find((unit) => unit.id === unitId)?.name ?? '';
 
   const requestError = (): string | null => {
     if (name.trim() === '') {
       return 'กรุณากรอกชื่อวัสดุ';
     }
-    return unitSetError(unitSet, nameOf);
+    return unitSetError(unitSet, unitList);
   };
 
   // Every Alternate Unit of a new Stock Material is active.
@@ -149,7 +131,10 @@ const StockMaterialCreateContent: React.FC = () => {
     specification: specification.trim() || null,
     note: note.trim() || null,
     base_unit: { unit_id: unitSet.base_unit_id, whole_number_only: unitSet.base_whole_number_only },
-    alternate_units: unitSet.alternates.map(({ unit_id, conversion_factor, whole_number_only }) => ({ unit_id, conversion_factor: conversion_factor.trim(), whole_number_only })),
+    alternate_units: unitSet.alternates.map((row) => {
+      const { is_active: _active, ...alternate } = alternateRequestOf(row);
+      return alternate;
+    }),
   });
 
   return (
@@ -237,7 +222,7 @@ const StockMaterialCreateContent: React.FC = () => {
                             ? withBaseUnit(current, unit.id, null)
                             : current.base_unit_id === unit.id || current.alternates.some((row) => row.unit_id === unit.id)
                               ? current
-                              : { ...current, alternates: [...current.alternates, { key: unit.id, unit_id: unit.id, conversion_factor: '', whole_number_only: true, is_active: true }] }
+                              : { ...current, alternates: [...current.alternates, newAlternateRow(unit.id)] }
                         );
                       }}
                     />

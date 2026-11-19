@@ -30,6 +30,12 @@ export interface UnitSetValue {
   alternates: AlternateUnitRow[];
 }
 
+// A new active Alternate Unit row, whole-number-only (#175 Q6), its factor still to be entered.
+export const newAlternateRow = (unitId = ''): AlternateUnitRow => ({ key: unitId || crypto.randomUUID(), unit_id: unitId, conversion_factor: '', whole_number_only: true, is_active: true });
+
+// A Unit's name on the list, or empty while none is chosen.
+export const unitNameOf = (units: UnitEntry[], unitId: string): string => units.find((unit) => unit.id === unitId)?.name ?? '';
+
 export const emptyUnitSet = (): UnitSetValue => ({ base_unit_id: '', base_whole_number_only: true, alternates: [] });
 
 // The set a Stock Material has, as the Units editor starts from it.
@@ -54,10 +60,7 @@ export const withBaseUnit = (value: UnitSetValue, unitId: string, kept: Readonly
     return value;
   }
   const promoted = value.alternates.find((row) => row.unit_id === unitId);
-  const oldBase: AlternateUnitRow[] =
-    kept && value.base_unit_id !== ''
-      ? [{ key: value.base_unit_id, unit_id: value.base_unit_id, conversion_factor: '', whole_number_only: value.base_whole_number_only, is_active: true }]
-      : [];
+  const oldBase = kept && value.base_unit_id !== '' ? [{ ...newAlternateRow(value.base_unit_id), whole_number_only: value.base_whole_number_only }] : [];
   return {
     base_unit_id: unitId,
     base_whole_number_only: promoted?.whole_number_only ?? value.base_whole_number_only,
@@ -66,7 +69,7 @@ export const withBaseUnit = (value: UnitSetValue, unitId: string, kept: Readonly
 };
 
 // Why the set cannot be sent, or null; the server decides again.
-export const unitSetError = (value: UnitSetValue, nameOf: (unitId: string) => string): string | null => {
+export const unitSetError = (value: UnitSetValue, units: UnitEntry[]): string | null => {
   if (value.base_unit_id === '') {
     return `กรุณาเลือก${BASE_UNIT_LABEL}`;
   }
@@ -75,7 +78,7 @@ export const unitSetError = (value: UnitSetValue, nameOf: (unitId: string) => st
       return `กรุณาเลือก${ALTERNATE_UNIT_LABEL}ทุกแถว หรือนำแถวที่ไม่ใช้ออก`;
     }
     if (row.is_active && row.conversion_factor.trim() === '') {
-      return `กรุณากรอก${CONVERSION_FACTOR_LABEL}ของ ${nameOf(row.unit_id)}`;
+      return `กรุณากรอก${CONVERSION_FACTOR_LABEL}ของ ${unitNameOf(units, row.unit_id)}`;
     }
   }
   return null;
@@ -110,7 +113,7 @@ export interface UnitSetFieldsProps {
  * หน่วยนับอื่น with its อัตราแปลง as "1 กล่อง = 5 รีม", each with นับเป็นจำนวนเต็มเท่านั้น (#175 Q5, Q6, P2).
  */
 export const UnitSetFields: React.FC<UnitSetFieldsProps> = ({ idPrefix, value, onChange, units, kept, unitAdder }) => {
-  const nameOf = (unitId: string) => units.find((unit) => unit.id === unitId)?.name ?? '';
+  const nameOf = (unitId: string) => unitNameOf(units, unitId);
   const baseName = nameOf(value.base_unit_id);
   // A new choice is an active Unit of the list (#175 Q21); a Unit the set has already stays offered as itself.
   const activeUnits = units.filter((unit) => unit.is_active);
@@ -207,7 +210,7 @@ export const UnitSetFields: React.FC<UnitSetFieldsProps> = ({ idPrefix, value, o
         <button
           type="button"
           id={`${idPrefix}-add-alternate`}
-          onClick={() => onChange({ ...value, alternates: [...value.alternates, { key: crypto.randomUUID(), unit_id: '', conversion_factor: '', whole_number_only: true, is_active: true }] })}
+          onClick={() => onChange({ ...value, alternates: [...value.alternates, newAlternateRow()] })}
           style={{ ...smallButtonStyle, marginTop: '0.5rem' }}
         >
           {ADD_ALTERNATE_UNIT_LABEL}

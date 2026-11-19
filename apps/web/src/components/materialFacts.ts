@@ -38,7 +38,7 @@ export interface StockMaterialUnit {
   name: string;
   unit_is_active: boolean;
   is_base: boolean;
-  // Null on an Inactive Alternate Unit given no factor when the Base Unit changed (F008-T3, #178).
+  // Null when unknown, which only an Inactive Alternate Unit can be (F008-T3, #178).
   conversion_factor: string | null;
   whole_number_only: boolean;
   is_active: boolean;
@@ -49,7 +49,7 @@ export interface RecordedUnit {
   unit_id: string;
   name: string;
   is_base: boolean;
-  // Null on an Inactive Alternate Unit given no factor when the Base Unit changed (F008-T3, #178).
+  // Null when unknown, which only an Inactive Alternate Unit can be (F008-T3, #178).
   conversion_factor: string | null;
   whole_number_only: boolean;
   is_active: boolean;
@@ -119,10 +119,10 @@ export const RECORDED_FIELD_LABELS: Record<string, string> = {
   units: UNIT_LABEL,
 };
 
-// An Alternate Unit's Conversion Factor as "1 กล่อง = 5 รีม" (#175 Q5), or "-" when it is unknown (#178).
-export const conversionLine = (unit: Pick<RecordedUnit, 'name' | 'conversion_factor'>, baseName: string): string =>
-  unit.conversion_factor === null ? `${unit.name}: ${CONVERSION_FACTOR_LABEL} -` : `1 ${unit.name} = ${unit.conversion_factor} ${baseName}`;
+// A known Conversion Factor as "1 กล่อง = 5 รีม" (#175 Q5).
+export const conversionLine = (unitName: string, conversionFactor: string, baseName: string): string => `1 ${unitName} = ${conversionFactor} ${baseName}`;
 
-// A Unit as one line: the Base Unit, or an Alternate Unit with its Conversion Factor, then its rules.
+// A Unit as one line: the Base Unit, or an Alternate Unit with its Conversion Factor, "-" when unknown (#178), then
+// its rules.
 export const unitLine = (unit: Pick<RecordedUnit, 'name' | 'is_base' | 'conversion_factor' | 'whole_number_only' | 'is_active'>, baseName: string): string =>
-  `${unit.is_base ? `${BASE_UNIT_LABEL} ${unit.name}` : conversionLine(unit, baseName)}${unit.whole_number_only ? ` (${WHOLE_NUMBER_UNIT_LABEL})` : ''}${unit.is_active ? '' : ` (${INACTIVE_LABEL})`}`;
+  `${unit.is_base ? `${BASE_UNIT_LABEL} ${unit.name}` : unit.conversion_factor === null ? `${unit.name}: ${CONVERSION_FACTOR_LABEL} -` : conversionLine(unit.name, unit.conversion_factor, baseName)}${unit.whole_number_only ? ` (${WHOLE_NUMBER_UNIT_LABEL})` : ''}${unit.is_active ? '' : ` (${INACTIVE_LABEL})`}`;

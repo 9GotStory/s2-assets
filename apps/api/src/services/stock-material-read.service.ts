@@ -34,8 +34,8 @@ export interface StockMaterialUnit {
   // Whether the list entry is Inactive; a Stock Material keeps an Inactive Unit it already uses (Q21).
   unit_is_active: boolean;
   is_base: boolean;
-  // A decimal string, without trailing zeros (#175 P1); null on an Inactive Alternate Unit given no factor when the
-  // Base Unit changed (F008-T3, #178).
+  // A decimal string, without trailing zeros (#175 P1); null when unknown, which only an Inactive Alternate Unit can
+  // be, as when the Base Unit changed and it got no new factor (F008-T3, #178).
   conversion_factor: string | null;
   whole_number_only: boolean;
   is_active: boolean;

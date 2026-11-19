@@ -27,7 +27,7 @@ export interface NormalizedQuantity {
 
 export type QuantityRefusal =
   | 'UNKNOWN_UNIT'
-  // An Inactive Alternate Unit given no factor when the Base Unit changed (F008-T3, #178).
+  // An Inactive Alternate Unit whose factor is unknown (F008-T3, #178).
   | 'UNKNOWN_CONVERSION_FACTOR'
   | DecimalRefusal
   | 'NOT_GREATER_THAN_ZERO'

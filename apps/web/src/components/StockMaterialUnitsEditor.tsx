@@ -1,8 +1,8 @@
 import React, { useState } from 'react';
-import { useQuery } from '@tanstack/react-query';
 import { LoanSaveForm } from './LoanSaveForm';
 import { UnitSetFields, alternateRequestOf, unitSetError, unitSetOf, type UnitSetValue } from './UnitSetFields';
-import { EDIT_UNITS_LABEL, type StockMaterialDetail, type UnitList } from './materialFacts';
+import { EDIT_UNITS_LABEL, type StockMaterialDetail } from './materialFacts';
+import { useCsrfToken, useUnitList } from './materialQueries';
 
 export interface StockMaterialUnitsEditorProps {
   material: StockMaterialDetail;
@@ -22,23 +22,8 @@ export const StockMaterialUnitsEditor: React.FC<StockMaterialUnitsEditorProps> =
   const [unitSet, setUnitSet] = useState<UnitSetValue>(() => unitSetOf(material.units));
   const [kept] = useState<ReadonlySet<string>>(() => new Set(material.units.map(({ unit_id }) => unit_id)));
 
-  const units = useQuery<UnitList>({
-    queryKey: ['units'],
-    queryFn: async ({ signal }) => {
-      const res = await fetch('/units', { credentials: 'include', signal });
-      if (!res.ok) {
-        throw new Error(`HTTP ${res.status}`);
-      }
-      return res.json();
-    },
-  });
-  const session = useQuery<string | null>({
-    queryKey: ['stock-material-session'],
-    queryFn: async ({ signal }) => {
-      const res = await fetch('/auth/session-check', { credentials: 'include', signal });
-      return res.ok ? ((await res.json()).csrfToken ?? null) : null;
-    },
-  });
+  const units = useUnitList();
+  const session = useCsrfToken(true);
 
   if (units.isError) {
     return (
@@ -55,7 +40,6 @@ export const StockMaterialUnitsEditor: React.FC<StockMaterialUnitsEditorProps> =
     );
   }
   const unitList = units.data.items;
-  const nameOf = (unitId: string) => unitList.find((unit) => unit.id === unitId)?.name ?? '';
 
   return (
     <LoanSaveForm
@@ -64,7 +48,7 @@ export const StockMaterialUnitsEditor: React.FC<StockMaterialUnitsEditorProps> =
       saveUrl={`/stock-materials/${encodeURIComponent(material.id)}/units`}
       method="PUT"
       csrfToken={session.data ?? null}
-      requestError={() => unitSetError(unitSet, nameOf)}
+      requestError={() => unitSetError(unitSet, unitList)}
       requestBody={() => ({
         expected_version: material.version,
         base_unit: { unit_id: unitSet.base_unit_id, whole_number_only: unitSet.base_whole_number_only },

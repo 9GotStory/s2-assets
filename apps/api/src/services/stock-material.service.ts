@@ -159,8 +159,8 @@ export class StockMaterialService {
 
       const before = await stockMaterialUnitsOf(client, stockMaterialId);
       const stored = new Map(before.map((unit) => [unit.unit_id, unit]));
-      const kept = new Set(units.map(({ unit_id }) => unit_id));
-      const dropped = before.find(({ unit_id }) => !kept.has(unit_id));
+      const requested = new Set(units.map(({ unit_id }) => unit_id));
+      const dropped = before.find(({ unit_id }) => !requested.has(unit_id));
       if (dropped) {
         throw new ValidationError(`alternate_units must keep the Unit ${dropped.unit_id}: a Unit of a Stock Material is never removed, only made Inactive`);
       }

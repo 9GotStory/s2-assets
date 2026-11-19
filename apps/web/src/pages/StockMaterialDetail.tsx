@@ -191,7 +191,7 @@ const StockMaterialDetailContent: React.FC<{ id: string }> = ({ id }) => {
                           </span>
                         )}
                       </td>
-                      <td style={cellStyle}>{unit.is_base || unit.conversion_factor === null ? '-' : conversionLine(unit, baseUnit?.name ?? '')}</td>
+                      <td style={cellStyle}>{unit.is_base || unit.conversion_factor === null ? '-' : conversionLine(unit.name, unit.conversion_factor, baseUnit?.name ?? '')}</td>
                       <td style={cellStyle}>{unit.whole_number_only ? 'ใช่' : 'ไม่ใช่ (มีเศษได้)'}</td>
                     </tr>
                   ))}

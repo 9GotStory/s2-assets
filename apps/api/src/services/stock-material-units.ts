@@ -5,7 +5,7 @@ import { ValidationError } from './validation-error.ts';
 // F008-T3 (#178): the rules of a Stock Material's Unit set, checked before any lock (#175 MC-05, MC-23, Q5, Q6, P2,
 // P3). The Base Unit converts at 1; each Alternate Unit converts straight to it.
 
-// The longest Unit set a request may carry.
+// The most Alternate Units a request may carry.
 export const ALTERNATE_UNITS_MAX = 100;
 
 export interface BaseUnitInput {

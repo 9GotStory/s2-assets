@@ -52,6 +52,15 @@ describe('Stock Material Units (Seam A - F008-T3)', () => {
     expect(await materialOf(id)).toEqual(before);
   };
 
+  // `count` Units new to the list, as Alternate Units of 5 รีม each: a request that only the cap of 100 refuses.
+  const manyAlternates = async (count: number) => {
+    const res = await api.pool.query(
+      `INSERT INTO units (name, created_by, updated_by) SELECT 'ห่อที่ ' || g || ' ' || $2, $1, $1 FROM generate_series(1, $3::int) g RETURNING id`,
+      [officer.id, crypto.randomUUID().slice(0, 8), count]
+    );
+    return res.rows.map(({ id }: { id: string }) => ({ unit_id: id, conversion_factor: '5', whole_number_only: true, is_active: true }));
+  };
+
   // The Units a history entry recorded after its change.
   const unitsRecordedBy = (entry: { changes: { field: string; after: unknown }[] }) => entry.changes.find(({ field }) => field === 'units')!.after;
 
@@ -142,8 +151,9 @@ describe('Stock Material Units (Seam A - F008-T3)', () => {
     });
 
     it('takes at most 100 Alternate Units', async () => {
-      const entry = { unit_id: box, conversion_factor: '5' };
-      await expectCreateRefused(paper({ alternate_units: Array(101).fill(entry) }), 'alternate_units: Too big');
+      const alternates = (await manyAlternates(101)).map(({ unit_id, conversion_factor }) => ({ unit_id, conversion_factor }));
+      await expectCreateRefused(paper({ alternate_units: alternates }), 'alternate_units: Too big');
+      expect((await createMaterial(paper({ alternate_units: alternates.slice(0, 100) }))).statusCode).toBe(201);
     });
 
     it('waits for a Unit being made Inactive and then refuses it as an Alternate Unit', async () => {
@@ -284,10 +294,10 @@ describe('Stock Material Units (Seam A - F008-T3)', () => {
 
       await expectUnitsRefused(page.id, plus({ unit_id: crate, conversion_factor: '0' }), 'alternate_units[1].conversion_factor');
       await expectUnitsRefused(page.id, plus({ unit_id: box, conversion_factor: '10' }), 'alternate_units[1].unit_id');
-      await expectUnitsRefused(page.id, plus({ unit_id: ream, conversion_factor: '1' }), 'alternate_units[1].unit_id');
+      await expectUnitsRefused(page.id, plus({ unit_id: ream, conversion_factor: '1' }), 'alternate_units[1].unit_id is the Base Unit');
       await expectUnitsRefused(page.id, plus({ unit_id: crypto.randomUUID(), conversion_factor: '5' }), 'alternate_units[1].unit_id');
       await expectUnitsRefused(page.id, plus({ unit_id: crate, conversion_factor: '2.5' }), 'alternate_units[1].conversion_factor');
-      await expectUnitsRefused(page.id, { ...payload, alternate_units: Array(101).fill(payload.alternate_units[0]) }, 'alternate_units: Too big');
+      await expectUnitsRefused(page.id, { ...payload, alternate_units: [payload.alternate_units[0], ...(await manyAlternates(100))] }, 'alternate_units: Too big');
     });
 
     it('refuses making the Base Unit whole-number-only while a Conversion Factor has a fraction, an Inactive one included (P3)', async () => {
