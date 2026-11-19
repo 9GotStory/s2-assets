@@ -90,6 +90,13 @@ and neither waits for the other (PostgreSQL 18, §13.3.2, Table 13.3). A write t
 while it is not voided takes a lock the void also takes before it checks, and its order test queues
 the void first. F006-T4 (#129) found this for the Verification Revision that T7 and T8 cite.
 
+A name that a history entry records as it was then (#175 P6) is a read of its list entry: lock that
+entry `FOR SHARE` before reading the name, so a rename waits for the write or is seen by it, and give
+it an order test that holds the rename's `UPDATE`. This holds for an entry the write keeps or replaces
+as well as one it newly chooses, and before the rename exists: plan the order against the write a later
+ticket builds. In F008-T4 (#179), the Material Category that a details write replaced was read unlocked,
+because the rename comes in T8; only the Standards review found it.
+
 ## A journey step waits for the URL it changes
 
 A journey step that changes the URL, such as a filter link or a select that navigates, waits for that
@@ -128,7 +135,9 @@ A new concept that a user sees, such as a status, an action or a domain term, ge
 `GLOSSARY.md` entry in the same change. In F004-T5 (#79), the Loan status "ปิดแล้ว" reached its
 pull request with no entry, and neither review round flagged it. A form field's label, such as
 "ค่าใช้จ่าย" or "เอกสารอ้างอิง", needs no entry of its own unless it names a domain term (#99, PO
-decision on the F005-T1 retro).
+decision on the F005-T1 retro). The script holds an exemption to its reason: "a form field", or a
+term the label is made of, as "<term> (<Term>)". Review still judges whether that term covers the
+label's meaning.
 
 ## A text field's kind decides its control characters
 
