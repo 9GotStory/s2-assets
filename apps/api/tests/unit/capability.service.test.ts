@@ -50,6 +50,7 @@ describe('CapabilityService Unit Tests (T024 - US2)', () => {
         'repair:correct',
         'verification:correct',
         'retirement:correct',
+        'material:view',
       ]);
       // T4 (#25, D3): reference:maintain is granted to ADMINISTRATOR only.
       for (const role of ['SYSTEM_MAINTAINER', 'READ_ONLY', 'ASSET_CUSTODIAN']) {
@@ -68,6 +69,7 @@ describe('CapabilityService Unit Tests (T024 - US2)', () => {
         'asset:search',
         'acquisition:view',
         'evidence:view',
+        'material:view',
       ]);
       expect(ROLE_CAPABILITY_MAP.READ_ONLY).not.toContain('asset:correct');
       expect(ROLE_CAPABILITY_MAP.READ_ONLY).not.toContain('asset:register');
@@ -173,6 +175,23 @@ describe('CapabilityService Unit Tests (T024 - US2)', () => {
         expect(ROLE_CAPABILITY_MAP[role]).not.toContain('retirement:correct');
       }
       expect(isKnownCapability('retirement:correct')).toBe(true);
+    });
+
+    // F008-T1 (#175 Q1): the Supply Officer keeps the Stock Material catalog; the Administrator and the Read-only User view it.
+    it('gives material:view to the Supply Officer, the Administrator and the Read-only User, and material:manage to the Supply Officer alone', () => {
+      expect(KNOWN_ROLES).toContain('SUPPLY_OFFICER');
+      expect(Object.isFrozen(ROLE_CAPABILITY_MAP.SUPPLY_OFFICER)).toBe(true);
+      expect(ROLE_CAPABILITY_MAP.SUPPLY_OFFICER).toEqual(['material:view', 'material:manage']);
+      for (const role of ['ADMINISTRATOR', 'READ_ONLY']) {
+        expect(ROLE_CAPABILITY_MAP[role]).toContain('material:view');
+        expect(ROLE_CAPABILITY_MAP[role]).not.toContain('material:manage');
+      }
+      for (const role of ['ASSET_CUSTODIAN', 'VERIFICATION_STAFF', 'SYSTEM_MAINTAINER']) {
+        expect(ROLE_CAPABILITY_MAP[role]).not.toContain('material:view');
+        expect(ROLE_CAPABILITY_MAP[role]).not.toContain('material:manage');
+      }
+      expect(isKnownCapability('material:view')).toBe(true);
+      expect(isKnownCapability('material:manage')).toBe(true);
     });
 
     it('validates UUIDs correctly with isValidUuid', () => {
@@ -389,7 +408,7 @@ describe('CapabilityService Unit Tests (T024 - US2)', () => {
 
       const caps = await service.getCapabilities(validUserId);
       expect(caps.sort()).toEqual(
-        ['asset:search', 'asset:view', 'system:maintain', 'acquisition:view', 'evidence:view'].sort()
+        ['asset:search', 'asset:view', 'system:maintain', 'acquisition:view', 'evidence:view', 'material:view'].sort()
       );
     });
 

@@ -153,7 +153,8 @@ describe('CapabilityService Real PostgreSQL Integration Tests (T024 - US2)', () 
       expect(roles).toEqual(['READ_ONLY']);
 
       const caps = await service.getCapabilities(user.id);
-      expect(caps.sort()).toEqual(['acquisition:view', 'asset:search', 'asset:view', 'evidence:view'].sort());
+      // F008-T1 (#175 Q1): a Read-only User also views the Stock Material catalog.
+      expect(caps.sort()).toEqual(['acquisition:view', 'asset:search', 'asset:view', 'evidence:view', 'material:view'].sort());
     });
 
     it('grants asset:search for user with READ_ONLY, ADMINISTRATOR, and ASSET_CUSTODIAN roles', async () => {

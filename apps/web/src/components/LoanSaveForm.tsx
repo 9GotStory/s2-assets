@@ -19,7 +19,8 @@ export interface LoanSaveFormProps {
   refusedList: (body: any) => React.ReactNode;
   forbiddenMessage: string;
   refusedMessage: string;
-  onSaved: () => Promise<void>;
+  // Called with the saved write's answer, such as the id a create returns (F008-T1).
+  onSaved: (body: any) => Promise<void>;
   // Reads the latest facts and returns whether it could. A form on a Loan that exists passes this,
   // and a save refused as stale then offers it.
   onRefresh?: () => Promise<boolean>;
@@ -132,7 +133,7 @@ export const LoanSaveForm: React.FC<LoanSaveFormProps> = ({
 
     if (res.ok) {
       uncertainRef.current = null;
-      await onSaved();
+      await onSaved(await res.json().catch(() => null));
       return;
     }
 
