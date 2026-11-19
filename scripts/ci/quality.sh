@@ -79,7 +79,7 @@ in_tooling pnpm run typecheck
 # capability.service.test.ts pinned the Read-only capabilities (#176 retro), and the dev proxy's test
 # catches a route under a new first path segment before any journey (#159 retro).
 note "API unit tests"
-in_tooling pnpm --filter api exec vitest run tests/unit
+api_unit_tests
 if $quick; then
   exit 0
 fi

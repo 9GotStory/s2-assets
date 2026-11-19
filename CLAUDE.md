@@ -77,9 +77,10 @@ the base. Before pushing, run them all locally with `scripts/ci/all.sh --base <b
 each job's script in `scripts/ci/`, `security-scan.sh` included, and those two checks, so that a
 finding reaches the Product Owner with the ticket's other decisions.
 To run one test file or a typecheck, use the same scripts:
-`scripts/ci/integration.sh tests/integration/<file>`, `scripts/ci/e2e.sh tests/e2e/<spec>`,
-`scripts/ci/quality.sh --quick`; `.githooks/pre-commit` runs that last one before each commit
-(enable it once per clone with `git config core.hooksPath .githooks`). Before the full run, run
+`scripts/ci/unit.sh tests/unit/<file>`, `scripts/ci/integration.sh tests/integration/<file>`,
+`scripts/ci/e2e.sh tests/e2e/<spec>`, `scripts/ci/quality.sh --quick`; `.githooks/pre-commit` runs
+that last one before each commit (enable it once per clone with
+`git config core.hooksPath .githooks`). Before the full run, run
 every integration file that calls a route or names a response field the change touches (`grep -l`
 over `apps/api/tests/integration`): earlier tests pin those shapes and their data. Start the full
 run once, after the code-review fixes are committed: a full run started before the review has to be
