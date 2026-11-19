@@ -23,6 +23,8 @@ const migrationFolder = path.resolve(__dirname, '../../../../packages/db/src/mig
 // F008-T1 (#176): Journey J1 starts (a Supply Officer creates a Stock Material with a new Unit and finds it), and
 // Journey J3 (a Read-only User reads the catalog with no action; an Asset Custodian has no "วัสดุ" menu).
 // F008-T3 (#178): Journey J1 goes on with an Alternate Unit ("1 กล่อง = 5 รีม") and the Units editor.
+// F008-T4 (#179): Journey J1 goes on with a Brand and a Material Category added from the form, the editor of other
+// details, the Brand search and the Material Category filter.
 test.describe.serial('Stock Material journeys: Real SPA -> Composed API -> PostgreSQL (Seam B)', () => {
   let container: StartedPostgreSqlContainer;
   let pool: pg.Pool;
@@ -255,6 +257,84 @@ test.describe.serial('Stock Material journeys: Real SPA -> Composed API -> Postg
     await expect(changed).toContainText('รีม: อัตราแปลง - (นับเป็นจำนวนเต็มเท่านั้น) (หยุดใช้)');
   });
 
+  test('Journey F008-T4.1: a Supply Officer adds a Brand and a Material Category from the form, changes the Material Category and note without a reason, and finds the Stock Material by Brand and with "ไม่มีหมวด"', async ({ page, context }) => {
+    await loginAs(context, officerUserId);
+    await page.goto(`${targetBaseUrl}/stock-materials/new`);
+    await page.locator('#stock-material-name').fill('ปากกาลูกลื่น');
+
+    // The Brand list starts empty: Pentel is added from the form and chosen, and its name again is chosen, not added.
+    await expect(page.locator('#stock-material-brand option')).toHaveCount(1);
+    await page.locator('#stock-material-new-brand').fill('Pentel');
+    await page.locator('#stock-material-new-brand-add').click();
+    await expect(page.locator('[data-testid="stock-material-new-brand-message"]')).toContainText('เพิ่มยี่ห้อ "Pentel" แล้ว');
+    await expect(page.locator('#stock-material-brand option:checked')).toHaveText('Pentel');
+    await page.locator('#stock-material-brand').selectOption('');
+    await page.locator('#stock-material-new-brand').fill(' pentel ');
+    await page.locator('#stock-material-new-brand-add').click();
+    await expect(page.locator('[data-testid="stock-material-new-brand-message"]')).toContainText('มียี่ห้อ "Pentel" อยู่แล้ว เลือกให้แล้ว');
+    await expect(page.locator('#stock-material-brand option')).toHaveCount(2);
+    await expect(page.locator('#stock-material-brand option:checked')).toHaveText('Pentel');
+
+    // So does the Material Category list, which starts empty too (#175 Q3).
+    await expect(page.locator('#stock-material-material-category option')).toHaveCount(1);
+    await page.locator('#stock-material-new-material-category').fill('เครื่องเขียน');
+    await page.locator('#stock-material-new-material-category-add').click();
+    await expect(page.locator('[data-testid="stock-material-new-material-category-message"]')).toContainText('เพิ่มหมวดวัสดุ "เครื่องเขียน" แล้ว');
+    await expect(page.locator('#stock-material-material-category option:checked')).toHaveText('เครื่องเขียน');
+
+    await page.locator('#stock-material-new-unit').fill('ด้าม');
+    await page.locator('#stock-material-new-unit-add').click();
+    await expect(page.locator('#stock-material-base-unit option:checked')).toHaveText('ด้าม');
+    await page.locator('#stock-material-submit').click();
+
+    // Its page shows the Brand and the Material Category, and its history records them.
+    await expect(page).toHaveURL(/\/stock-materials\/[0-9a-f-]{36}$/);
+    await expect(page.getByRole('heading', { level: 1, name: 'ปากกาลูกลื่น' })).toBeVisible();
+    await expect(page.locator('[data-testid="stock-material-brand"]')).toHaveText('Pentel');
+    await expect(page.locator('[data-testid="stock-material-material-category"]')).toHaveText('เครื่องเขียน');
+    const created = page.locator('[data-testid="stock-material-history-1"]');
+    await expect(created.locator('dt', { hasText: 'ยี่ห้อ' }).locator('+ dd')).toHaveText('Pentel');
+    await expect(created.locator('dt', { hasText: 'หมวดวัสดุ' }).locator('+ dd')).toHaveText('เครื่องเขียน');
+
+    // "แก้ไขข้อมูลอื่น": nothing changed is not sent; the Material Category is cleared and a note added, without a reason.
+    await page.locator('#stock-material-edit-details').click();
+    await expect(page.locator('#stock-material-details-material-category option:checked')).toHaveText('เครื่องเขียน');
+    await page.locator('#stock-material-details-note').fill('  ');
+    await page.locator('#stock-material-details-submit').click();
+    await expect(page.locator('[data-testid="stock-material-details-form-error"]')).toContainText('ยังไม่มีข้อมูลที่เปลี่ยน');
+    await page.locator('#stock-material-details-material-category').selectOption('');
+    await page.locator('#stock-material-details-note').fill('ใช้ในห้องประชุม');
+    await page.locator('#stock-material-details-submit').click();
+
+    await expect(page.locator('#stock-material-details-form')).toHaveCount(0);
+    await expect(page.locator('[data-testid="stock-material-material-category"]')).toHaveText('-');
+    await expect(page.locator('[data-testid="stock-material-note"]')).toHaveText('ใช้ในห้องประชุม');
+    const changed = page.locator('[data-testid="stock-material-history-2"]');
+    await expect(changed).toContainText('แก้ไขข้อมูลอื่น');
+    await expect(changed).toContainText('officer_material');
+    await expect(changed.locator('s')).toHaveText('เครื่องเขียน');
+    await expect(changed.locator('dt', { hasText: 'หมายเหตุ' }).locator('+ dd')).toHaveText('ใช้ในห้องประชุม');
+
+    // The list finds it by its Brand, shows the Brand and no Material Category, and keeps it under "ไม่มีหมวด" only.
+    await page.locator('#back-stock-material-list-link').click();
+    await expect(page).toHaveURL(/\/stock-materials$/);
+    await page.locator('#stock-material-search').fill('pentel');
+    await page.locator('#stock-material-search-submit').click();
+    await expect(page).toHaveURL(/\/stock-materials\?search=pentel$/);
+    const rows = page.locator('#stock-material-list-table tbody tr');
+    await expect(rows).toHaveCount(1);
+    await expect(rows.first().locator('td').nth(0)).toHaveText('ปากกาลูกลื่น');
+    await expect(rows.first().locator('td').nth(1)).toHaveText('Pentel');
+    await expect(rows.first().locator('td').nth(4)).toHaveText('-');
+    await page.locator('#stock-material-material-category-filter').selectOption({ label: 'ไม่มีหมวด' });
+    await expect(page).toHaveURL(/\/stock-materials\?search=pentel&material_category_id=none$/);
+    await expect(rows).toHaveCount(1);
+    await expect(rows.first()).toContainText('ปากกาลูกลื่น');
+    await page.locator('#stock-material-material-category-filter').selectOption({ label: 'เครื่องเขียน' });
+    await expect(page).toHaveURL(/material_category_id=[0-9a-f-]{36}$/);
+    await expect(page.locator('#stock-material-list-empty')).toContainText('ไม่พบวัสดุที่ค้นหา');
+  });
+
   test('Journey F008-T1.2: a Read-only User reads the list and a Stock Material page with no action, and an Asset Custodian has no "วัสดุ" menu', async ({ page, context }) => {
     const unit = await new UnitService({ db: pool }).add(officerUserId, 'ขวด', { retryToken: crypto.randomUUID() });
     const { stock_material_id: id } = await new StockMaterialService({ db: pool }).create(
@@ -280,8 +360,9 @@ test.describe.serial('Stock Material journeys: Real SPA -> Composed API -> Postg
     await expect(page.locator(`[data-testid="stock-material-unit-${unit.id}"]`)).toContainText('ไม่ใช่ (มีเศษได้)');
     await expect(page.locator('[data-testid="stock-material-status"]')).toHaveText('ใช้งานอยู่');
     await expect(page.locator('[data-testid="stock-material-history-1"]')).toContainText('หน่วยนับหลัก ขวด');
-    // The Supply Officer was offered "แก้ไขหน่วยนับ" on a Stock Material page (Journey F008-T3.1).
+    // The Supply Officer was offered "แก้ไขหน่วยนับ" and "แก้ไขข้อมูลอื่น" on a Stock Material page (Journeys F008-T3.1, T4.1).
     await expect(page.locator('#stock-material-edit-units')).toHaveCount(0);
+    await expect(page.locator('#stock-material-edit-details')).toHaveCount(0);
 
     // The form refuses a viewer without material:manage.
     await page.goto(`${targetBaseUrl}/stock-materials/new`);

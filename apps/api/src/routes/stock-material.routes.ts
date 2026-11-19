@@ -8,7 +8,7 @@ import { hasDisallowedControlChars } from '../services/control-characters.ts';
 import { NotFoundError, RetryTokenConflictError, StaleBeforeConflictError } from '../services/service-errors.ts';
 import type { StockMaterialReadService } from '../services/stock-material-read.service.ts';
 import { ALTERNATE_UNITS_MAX } from '../services/stock-material-units.ts';
-import type { CreateStockMaterialInput, ReplaceUnitsInput, StockMaterialService } from '../services/stock-material.service.ts';
+import type { ChangeDetailsInput, CreateStockMaterialInput, ReplaceUnitsInput, StockMaterialService } from '../services/stock-material.service.ts';
 import { ValidationError } from '../services/validation-error.ts';
 
 export interface StockMaterialRoutesOptions {
@@ -25,6 +25,8 @@ const CreateStockMaterialSchema = z
     model: z.string().nullable().optional(),
     specification: z.string().nullable().optional(),
     note: z.string().nullable().optional(),
+    brand_id: z.string().nullable().optional(),
+    material_category_id: z.string().nullable().optional(),
     base_unit: z.object({ unit_id: z.string(), whole_number_only: z.boolean().optional() }).strict(),
     alternate_units: z
       .array(z.object({ unit_id: z.string(), conversion_factor: z.string().nullable().optional(), whole_number_only: z.boolean().optional() }).strict())
@@ -47,6 +49,17 @@ const ReplaceUnitsSchema = z
   })
   .strict();
 
+// F008-T4 (#179, #175 Q11): the other details a write changes without a reason, each stated, null for none. The
+// name, the Brand, the Model and the Specification change only through a Material Correction (F008-T5).
+const ChangeDetailsSchema = z
+  .object({
+    expected_version: z.number().int().positive(),
+    material_category_id: z.string().nullable(),
+    note: z.string().nullable(),
+    retry_token: z.string().optional(),
+  })
+  .strict();
+
 const StockMaterialListQuerySchema = z
   .object({
     // It searches the Specification, which is free text, so it keeps tab and line breaks inside it as that field
@@ -57,6 +70,13 @@ const StockMaterialListQuerySchema = z
       .refine((text) => Buffer.byteLength(text, 'utf8') <= 4096, 'must be at most 4096 bytes')
       .transform((text) => text.trim())
       .refine((text) => text.length > 0, 'must not be blank')
+      .optional(),
+    // F008-T4 (#179): a Material Category, or "none" for the Stock Materials with none (#175 Q3).
+    material_category_id: z
+      .string()
+      .refine((value) => value === 'none' || isValidUuid(value), 'must be a valid UUID or "none"')
+      // PostgreSQL reads a UUID in either case but refuses spaces around it.
+      .transform((value) => value.trim())
       .optional(),
     ...pageQueryFields,
   })
@@ -79,8 +99,9 @@ export const stockMaterialRoutes: FastifyPluginAsync<StockMaterialRoutesOptions>
 
   /**
    * GET /stock-materials
-   * The Stock Materials by name, a page at a time, found by text in the name, the Model or the Specification, with
-   * `can_manage` telling the page whether to offer "เพิ่มวัสดุ" (#175 P9).
+   * The Stock Materials by name, a page at a time, found by text in the name, the Brand's name, the Model or the
+   * Specification and by Material Category (F008-T4), with `can_manage` telling the page whether to offer "เพิ่มวัสดุ"
+   * (#175 P9).
    * Protected: requires 'material:view' capability (Supply Officer, Administrator, Read-only User)
    */
   fastify.get('/stock-materials', { preHandler: [requireCapability('material:view')] }, async (request, reply) => {
@@ -89,8 +110,8 @@ export const stockMaterialRoutes: FastifyPluginAsync<StockMaterialRoutesOptions>
     if (!parsed.success) {
       return reply.status(400).send(invalidQueryBody(parsed.error));
     }
-    const { limit = 25, offset = 0, search } = parsed.data;
-    const list = await stockMaterialReadService.list({ search, limit, offset });
+    const { limit = 25, offset = 0, search, material_category_id } = parsed.data;
+    const list = await stockMaterialReadService.list({ search, material_category_id, limit, offset });
     const canManage = await capabilityService.hasCapability(request.user!.id, 'material:manage');
     return reply.status(200).send({ ...list, can_manage: canManage });
   });
@@ -127,6 +148,33 @@ export const stockMaterialRoutes: FastifyPluginAsync<StockMaterialRoutesOptions>
     try {
       const { retry_token: _retryToken, ...input } = write.data;
       return reply.status(201).send(await stockMaterialService.create(request.user!.id, input as CreateStockMaterialInput, { retryToken: write.retryToken }));
+    } catch (err) {
+      const refusal = refusalOf(err);
+      if (!refusal) {
+        throw err;
+      }
+      return reply.status(refusal.statusCode).send(refusal);
+    }
+  });
+
+  /**
+   * PUT /stock-materials/:id/details
+   * Changes the Stock Material's Material Category and note at the version the request read ("แก้ไขข้อมูลอื่น", F008-T4).
+   * Protected: requires 'material:manage' capability (Supply Officer)
+   */
+  fastify.put('/stock-materials/:id/details', { preHandler: [requireCapability('material:manage')] }, async (request, reply) => {
+    const { id } = request.params as { id: string };
+    if (!isValidUuid(id)) {
+      return reply.status(400).send(errorBody(400, 'INVALID_ID', 'Stock Material ID must be a valid UUID string'));
+    }
+    const write = parseWrite(ChangeDetailsSchema, request);
+    if ('refusal' in write) {
+      return reply.status(400).send(write.refusal);
+    }
+    try {
+      const { retry_token: _retryToken, ...input } = write.data;
+      const recorded = await stockMaterialService.changeDetails(request.user!.id, id.trim().toLowerCase(), input as ChangeDetailsInput, { retryToken: write.retryToken });
+      return reply.status(200).send(recorded);
     } catch (err) {
       const refusal = refusalOf(err);
       if (!refusal) {

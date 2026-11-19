@@ -1,5 +1,8 @@
 import pg from 'pg';
 import { REMARK_MAX_LENGTH, normalizeLine, normalizeText } from './assignment.service.ts';
+import { isValidUuid } from './capability.service.ts';
+import { CATALOG_LISTS, type CatalogListKind } from './catalog-list-entries.ts';
+import { catalogListEntryOf, selectableCatalogListEntry } from './catalog-list.service.ts';
 import { commitOnce } from './retryable-write.ts';
 import { NotFoundError, StaleBeforeConflictError } from './service-errors.ts';
 import { stockMaterialUnitsOf, type StockMaterialUnit } from './stock-material-read.service.ts';
@@ -17,6 +20,9 @@ export interface CreateStockMaterialInput {
   model?: string | null;
   specification?: string | null;
   note?: string | null;
+  // F008-T4 (#179): its Brand and its Material Category, each an active entry of its list, or none (#175 Q2).
+  brand_id?: string | null;
+  material_category_id?: string | null;
   // The Unit the Stock Material is counted in (MC-04), whole-number-only unless told otherwise (Q6).
   base_unit: BaseUnitInput;
   // F008-T3 (#178): the other Units it is counted in, each active with its Conversion Factor (MC-05, Q5).
@@ -28,6 +34,13 @@ export interface ReplaceUnitsInput {
   expected_version: number;
   base_unit: BaseUnitInput;
   alternate_units: AlternateUnitInput[];
+}
+
+// F008-T4 (#179, #175 Q11): the other details a write changes without a reason, each stated, null for none.
+export interface ChangeDetailsInput {
+  expected_version: number;
+  material_category_id: string | null;
+  note: string | null;
 }
 
 // What a Stock Material write answers: the Stock Material it wrote and the version a later write must expect.
@@ -42,12 +55,42 @@ interface StockMaterialFacts {
   model: string | null;
   specification: string | null;
   note: string | null;
+  brand_id: string | null;
+  material_category_id: string | null;
   // The Base Unit first, then the Alternate Units as requested.
   units: UnitSetting[];
 }
 
-// The fields a history entry lists, in its order, each only when it has a value.
-const RECORDED_FIELDS = ['name', 'model', 'specification', 'note'] as const;
+// An entry of the Brand or the Material Category list as a history entry records it: under its name then (#175 P6).
+export interface RecordedEntry {
+  id: string;
+  name: string;
+}
+
+// The entry of a list that a request names in `field`, or null when it names none.
+const entryIdOf = (value: string | null | undefined, field: string): string | null => {
+  if (value === undefined || value === null) {
+    return null;
+  }
+  if (!isValidUuid(value)) {
+    throw new ValidationError(`${field} must be a valid UUID`);
+  }
+  return value.trim().toLowerCase();
+};
+
+// Locks the entry `id` of the list `kind` FOR SHARE, so making it Inactive waits for this write or is seen by it, and
+// answers it under its name now; refuses one that is not an active entry of the list (#175 Q21), naming its field.
+const chosenEntry = async (client: pg.PoolClient, kind: CatalogListKind, id: string | null): Promise<RecordedEntry | null> => {
+  if (id === null) {
+    return null;
+  }
+  const entry = await selectableCatalogListEntry(client, kind, id);
+  if (entry === null) {
+    const { column, concept } = CATALOG_LISTS[kind];
+    throw new ValidationError(`${column} must name an active ${concept} of the list`);
+  }
+  return entry;
+};
 
 // #175 P7: the name and the Model are one line each; the Specification and the note are free text, keeping tab and
 // line breaks inside them (CODING_STANDARDS, "A text field's kind decides its control characters").
@@ -61,6 +104,8 @@ const normalizeFacts = (input: CreateStockMaterialInput): StockMaterialFacts => 
     model: normalizeLine(input.model, 'model', MODEL_MAX_LENGTH),
     specification: normalizeText(input.specification, 'specification', SPECIFICATION_MAX_LENGTH, ''),
     note: normalizeText(input.note, 'note', REMARK_MAX_LENGTH, ''),
+    brand_id: entryIdOf(input.brand_id, 'brand_id'),
+    material_category_id: entryIdOf(input.material_category_id, 'material_category_id'),
     units: normalizeUnitSet(input.base_unit, (input.alternate_units ?? []).map((alternate) => ({ ...alternate, is_active: true }))),
   };
 };
@@ -119,22 +164,80 @@ export class StockMaterialService {
     return commitOnce(this.db, { actorId, operation: 'stock-material:create', retryToken, payload: { version: 1, ...facts }, explicitContinuation: false }, async (client) => {
       // Every Unit of a new Stock Material is a new choice.
       await assertSelectable(client, facts.units, () => true);
+      const brand = await chosenEntry(client, 'brand', facts.brand_id);
+      const materialCategory = await chosenEntry(client, 'material-category', facts.material_category_id);
 
       const res = await client.query(
-        `INSERT INTO stock_materials (name, model, specification, note, created_by) VALUES ($1, $2, $3, $4, $5) RETURNING id, version`,
-        [facts.name, facts.model, facts.specification, facts.note, actorId]
+        `INSERT INTO stock_materials (name, model, specification, note, brand_id, material_category_id, created_by) VALUES ($1, $2, $3, $4, $5, $6, $7) RETURNING id, version`,
+        [facts.name, facts.model, facts.specification, facts.note, facts.brand_id, facts.material_category_id, actorId]
       );
       const { id, version } = res.rows[0];
       await writeUnits(client, id, facts.units, new Set());
 
-      // The values created, the Units under the names they have now (#175 P6).
-      const changes: { field: string; before: null; after: unknown }[] = RECORDED_FIELDS.filter((field) => facts[field] !== null).map((field) => ({ field, before: null, after: facts[field] }));
+      // The values created, each only when it has one, the Brand, the Material Category and the Units under the names
+      // they have now (#175 P6).
+      const recorded = { name: facts.name, brand, model: facts.model, specification: facts.specification, material_category: materialCategory, note: facts.note };
+      const changes: { field: string; before: null; after: unknown }[] = Object.entries(recorded)
+        .filter(([, value]) => value !== null)
+        .map(([field, after]) => ({ field, before: null, after }));
       changes.push({ field: 'units', before: null, after: (await stockMaterialUnitsOf(client, id)).map(recordedUnit) });
       await client.query(
         `INSERT INTO stock_material_history (stock_material_id, version, kind, changes, recorded_by) VALUES ($1, $2, 'CREATED', $3::jsonb, $4)`,
         [id, version, JSON.stringify(changes), actorId]
       );
       return { stock_material_id: id, version };
+    });
+  }
+
+  /**
+   * F008-T4 (#179): changes the Stock Material's Material Category and note, without a reason but with a history entry
+   * of what changed (#175 Q11, MC-26). A Material Category kept as it was may be Inactive by now; a new one must be
+   * active (Q21).
+   */
+  async changeDetails(actorId: string, stockMaterialId: string, input: ChangeDetailsInput, { retryToken }: { retryToken: string }): Promise<StockMaterialVersion> {
+    const expectedVersion = input.expected_version;
+    const details = {
+      material_category_id: entryIdOf(input.material_category_id, 'material_category_id'),
+      note: normalizeText(input.note, 'note', REMARK_MAX_LENGTH, ''),
+    };
+    const payload = { stock_material_id: stockMaterialId, expected_version: expectedVersion, ...details };
+    return commitOnce(this.db, { actorId, operation: 'stock-material:details', retryToken, payload, explicitContinuation: false }, async (client) => {
+      const res = await client.query('SELECT version, material_category_id, note FROM stock_materials WHERE id = $1 FOR UPDATE', [stockMaterialId]);
+      if (res.rows.length === 0) {
+        throw new NotFoundError('Stock Material not found');
+      }
+      const stored = res.rows[0];
+      if (stored.version !== expectedVersion) {
+        throw new StaleBeforeConflictError('The Stock Material changed since it was read', { version: stored.version }, { version: expectedVersion });
+      }
+      const categoryChanged = details.material_category_id !== stored.material_category_id;
+      if (!categoryChanged && details.note === stored.note) {
+        throw new ValidationError('This details write changes nothing');
+      }
+
+      // What changed, the Material Category under its name now on either side (#175 P6).
+      const changes: { field: string; before: unknown; after: unknown }[] = [];
+      if (categoryChanged) {
+        changes.push({
+          field: 'material_category',
+          before: stored.material_category_id === null ? null : await catalogListEntryOf(client, 'material-category', stored.material_category_id),
+          after: await chosenEntry(client, 'material-category', details.material_category_id),
+        });
+      }
+      if (details.note !== stored.note) {
+        changes.push({ field: 'note', before: stored.note, after: details.note });
+      }
+
+      const updated = await client.query(
+        'UPDATE stock_materials SET material_category_id = $2, note = $3, version = version + 1 WHERE id = $1 RETURNING version',
+        [stockMaterialId, details.material_category_id, details.note]
+      );
+      const { version } = updated.rows[0];
+      await client.query(
+        `INSERT INTO stock_material_history (stock_material_id, version, kind, changes, recorded_by) VALUES ($1, $2, 'DETAILS_CHANGED', $3::jsonb, $4)`,
+        [stockMaterialId, version, JSON.stringify(changes), actorId]
+      );
+      return { stock_material_id: stockMaterialId, version };
     });
   }
 

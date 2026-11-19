@@ -58,6 +58,28 @@ export function materialHelpers(context: () => { api: ApiHarness; officer: Actor
     };
   };
 
+  // Adds an entry to the Brand or the Material Category list (F008-T4).
+  const addBrand = (name: string, token: string = crypto.randomUUID(), actor: Actor = context().officer) =>
+    context().api.post(actor, '/brands', { name }, { 'x-retry-token': token });
+  const addMaterialCategory = (name: string, token: string = crypto.randomUUID(), actor: Actor = context().officer) =>
+    context().api.post(actor, '/material-categories', { name }, { 'x-retry-token': token });
+
+  // A Brand or a Material Category added to its list, named `name` or uniquely, and its id.
+  const brandNamed = async (name: string = `ยี่ห้อ ${crypto.randomUUID().slice(0, 8)}`): Promise<string> => {
+    const res = await addBrand(name);
+    expect(res.statusCode).toBe(201);
+    return res.json().id;
+  };
+  const materialCategoryNamed = async (name: string = `หมวด ${crypto.randomUUID().slice(0, 8)}`): Promise<string> => {
+    const res = await addMaterialCategory(name);
+    expect(res.statusCode).toBe(201);
+    return res.json().id;
+  };
+
+  // Changes the other details of the Stock Material `id`: its Material Category and note (F008-T4).
+  const changeDetails = (id: string, payload: Record<string, unknown>, token: string = crypto.randomUUID(), actor: Actor = context().officer) =>
+    context().api.put(actor, `/stock-materials/${id}/details`, payload, { 'x-retry-token': token });
+
   // How many Stock Materials exist, to show that a refused write saved nothing.
   const materialCount = async (): Promise<number> => {
     const res = await context().api.get(context().reader, '/stock-materials?limit=1');
@@ -65,5 +87,5 @@ export function materialHelpers(context: () => { api: ApiHarness; officer: Actor
     return res.json().total_count;
   };
 
-  return { addUnit, unitNamed, unitsOf, createMaterial, created, materialOf, replaceUnits, unitsAsRead, materialCount };
+  return { addUnit, unitNamed, unitsOf, createMaterial, created, materialOf, replaceUnits, unitsAsRead, addBrand, addMaterialCategory, brandNamed, materialCategoryNamed, changeDetails, materialCount };
 }
