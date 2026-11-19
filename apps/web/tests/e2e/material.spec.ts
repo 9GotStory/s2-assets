@@ -34,6 +34,8 @@ const freshUnitName = (name: string) => `${name} ${crypto.randomUUID().slice(0, 
 // and states it again when the Base Unit changes); F008-T5 and T7 extend it.
 // F008-T5 (#181): Journey J1 is warned of a Duplicate Candidate and confirms "เป็นคนละรายการ"; Journey J2 goes on with a
 // Material Correction with a reason, warned of a Duplicate Candidate too.
+// F008-T7 (#180): Journey J2 goes on: the Supply Officer makes a Stock Material Inactive with a note, finds it with the
+// status filter and its "หยุดใช้" badge, and reactivates it; Journey J3 is offered neither.
 test.describe.serial('Stock Material journeys: Real SPA -> Composed API -> PostgreSQL (Seam B)', () => {
   let container: StartedPostgreSqlContainer;
   let pool: pg.Pool;
@@ -134,6 +136,13 @@ test.describe.serial('Stock Material journeys: Real SPA -> Composed API -> Postg
     await loginAs(context, officerUserId);
     await openDashboard(page);
     await page.locator('#nav-stock-material-list').click();
+    await expect(page).toHaveURL(/\/stock-materials$/);
+    await expect(page.locator('#stock-material-list-empty')).toContainText('ยังไม่มีวัสดุ');
+    // The status filter alone finds nothing either (F008-T7); back on ใช้งานอยู่, the default, the URL has no filter.
+    await page.locator('#stock-material-status-filter').selectOption({ label: 'หยุดใช้' });
+    await expect(page).toHaveURL(/\/stock-materials\?status=inactive$/);
+    await expect(page.locator('#stock-material-list-empty')).toContainText('ไม่พบวัสดุที่ค้นหา');
+    await page.locator('#stock-material-status-filter').selectOption({ label: 'ใช้งานอยู่' });
     await expect(page).toHaveURL(/\/stock-materials$/);
     await expect(page.locator('#stock-material-list-empty')).toContainText('ยังไม่มีวัสดุ');
 
@@ -542,6 +551,121 @@ test.describe.serial('Stock Material journeys: Real SPA -> Composed API -> Postg
     await expect(corrected.locator('dt', { hasText: 'รุ่น' }).locator('+ dd')).toHaveText('CE258A → CE285A');
   });
 
+  test('Journey F008-T7.1: a Supply Officer makes a Stock Material Inactive with a note, finds it with the status filter and its "หยุดใช้" badge, and reactivates it as the same record, each refused as stale when another Supply Officer changed the status first', async ({ page, context }) => {
+    const tag = crypto.randomUUID().slice(0, 8);
+    const box = freshUnitName('กล่อง');
+    const unit = await new UnitService({ db: pool }).add(officerUserId, box, { retryToken: crypto.randomUUID() });
+    const name = `ลวดเย็บกระดาษ ${tag}`;
+    const service = new StockMaterialService({ db: pool });
+    const { stock_material_id: id } = await service.create(
+      officerUserId,
+      { name, model: 'เบอร์ 10', base_unit: { unit_id: unit.id } },
+      { retryToken: crypto.randomUUID() }
+    );
+    const status = page.locator('[data-testid="stock-material-status"]');
+    const row = page.locator(`[data-testid="stock-material-row-${id}"]`);
+    const badge = page.locator(`[data-testid="stock-material-inactive-badge-${id}"]`);
+    const statusFilter = page.locator('#stock-material-status-filter');
+
+    await loginAs(context, officerUserId);
+    await page.goto(`${targetBaseUrl}/stock-materials/${id}`);
+    await expect(status).toHaveText('ใช้งานอยู่');
+    // The server offers "หยุดใช้" on a Stock Material in use, and not "เปิดใช้อีกครั้ง" (P9).
+    await expect(page.locator('#stock-material-reactivate')).toHaveCount(0);
+    await page.locator('#stock-material-inactivate').click();
+    await expect(page.locator('#stock-material-inactivate')).toHaveCount(0);
+    await expect(page.locator('[data-testid="stock-material-status-notice"]')).toContainText('เปิดใช้อีกครั้งได้ภายหลัง');
+    // Cancelled, nothing changes.
+    await page.locator('#stock-material-status-cancel').click();
+    await expect(page.locator('#stock-material-status-form')).toHaveCount(0);
+    await expect(status).toHaveText('ใช้งานอยู่');
+
+    // Another Supply Officer makes it Inactive while the form is open: the save is refused as stale, and the page read
+    // again offers "เปิดใช้อีกครั้ง" instead of the form (Q23, P9).
+    await page.locator('#stock-material-inactivate').click();
+    await service.inactivate(officerUserId, id, { expected_version: 1 }, { retryToken: crypto.randomUUID() });
+    await page.locator('#stock-material-status-submit').click();
+    await expect(page.locator('[data-testid="stock-material-status-form-error"]')).toContainText('มีผู้แก้ไขรายการนี้ไปแล้ว กรุณาโหลดใหม่');
+    await page.locator('#stock-material-status-reload').click();
+    await expect(status).toHaveText('หยุดใช้');
+    await expect(page.locator('#stock-material-status-form')).toHaveCount(0);
+    await expect(page.locator('#stock-material-reactivate')).toBeVisible();
+    await service.reactivate(officerUserId, id, { expected_version: 2 }, { retryToken: crypto.randomUUID() });
+    await page.reload();
+    await expect(status).toHaveText('ใช้งานอยู่');
+
+    await page.locator('#stock-material-inactivate').click();
+    await page.locator('#stock-material-status-note').fill(' เลิกใช้ เปลี่ยนเป็นรุ่นเบอร์ 35 ');
+    await page.locator('#stock-material-status-submit').click();
+
+    // The same page shows it Inactive, with "เปิดใช้อีกครั้ง" now, and the history who did it, when and the note.
+    await expect(status).toHaveText('หยุดใช้');
+    await expect(page.locator('#stock-material-status-form')).toHaveCount(0);
+    await expect(page.locator('#stock-material-inactivate')).toHaveCount(0);
+    await expect(page.locator('#stock-material-reactivate')).toBeVisible();
+    const inactivated = page.locator('[data-testid="stock-material-history-4"]');
+    await expect(inactivated.locator('div').first()).toHaveText('หยุดใช้');
+    await expect(inactivated).toContainText('officer_material');
+    await expect(inactivated.locator('time')).toBeVisible();
+    await expect(page.locator('[data-testid="stock-material-history-4-note"]')).toHaveText('หมายเหตุ: เลิกใช้ เปลี่ยนเป็นรุ่นเบอร์ 35');
+    await expect(inactivated.locator('dt', { hasText: 'สถานะ' }).locator('+ dd')).toHaveText('ใช้งานอยู่ → หยุดใช้');
+    // Nothing else changed: the Model and the Unit are as they were.
+    await expect(page.locator('[data-testid="stock-material-model"]')).toHaveText('เบอร์ 10');
+    await expect(page.locator(`[data-testid="stock-material-unit-${unit.id}"]`)).toBeVisible();
+
+    // The list shows the Stock Materials in use by default, so it is not there until the status filter finds it.
+    await page.locator('#back-stock-material-list-link').click();
+    await page.locator('#stock-material-search').fill(tag);
+    await page.locator('#stock-material-search-submit').click();
+    await expect(page).toHaveURL(/search=/);
+    await expect(statusFilter).toHaveValue('');
+    await expect(page.locator('#stock-material-list-empty')).toHaveText('ไม่พบวัสดุที่ค้นหา');
+    await expect(row).toHaveCount(0);
+    await statusFilter.selectOption({ label: 'หยุดใช้' });
+    await expect(page).toHaveURL(/status=inactive/);
+    await expect(row).toBeVisible();
+    await expect(badge).toHaveText('หยุดใช้');
+    await statusFilter.selectOption({ label: 'ทั้งหมด' });
+    await expect(page).toHaveURL(/status=all/);
+    await expect(badge).toHaveText('หยุดใช้');
+
+    // Reactivated from its page, it is the same record with its whole history.
+    await row.getByRole('link', { name }).click();
+    await expect(page).toHaveURL(new RegExp(`/stock-materials/${id}$`));
+    // Reactivated by another Supply Officer while the form is open, the page read again offers "หยุดใช้" instead.
+    await page.locator('#stock-material-reactivate').click();
+    await service.reactivate(officerUserId, id, { expected_version: 4 }, { retryToken: crypto.randomUUID() });
+    await page.locator('#stock-material-status-submit').click();
+    await expect(page.locator('[data-testid="stock-material-status-form-error"]')).toContainText('มีผู้แก้ไขรายการนี้ไปแล้ว กรุณาโหลดใหม่');
+    await page.locator('#stock-material-status-reload').click();
+    await expect(status).toHaveText('ใช้งานอยู่');
+    await expect(page.locator('#stock-material-status-form')).toHaveCount(0);
+    await expect(page.locator('#stock-material-inactivate')).toBeVisible();
+    await service.inactivate(officerUserId, id, { expected_version: 5 }, { retryToken: crypto.randomUUID() });
+    await page.reload();
+    await expect(status).toHaveText('หยุดใช้');
+
+    await page.locator('#stock-material-reactivate').click();
+    await expect(page.locator('#stock-material-reactivate')).toHaveCount(0);
+    await expect(page.locator('[data-testid="stock-material-status-notice"]')).toContainText('รายการเดิม');
+    await expect(page.locator('#stock-material-status-note')).toHaveCount(0);
+    await page.locator('#stock-material-status-submit').click();
+    await expect(status).toHaveText('ใช้งานอยู่');
+    await expect(page.locator('#stock-material-inactivate')).toBeVisible();
+    await expect(page.locator('#stock-material-reactivate')).toHaveCount(0);
+    const reactivated = page.locator('[data-testid="stock-material-history-7"]');
+    await expect(reactivated.locator('div').first()).toHaveText('เปิดใช้อีกครั้ง');
+    await expect(reactivated).toContainText('officer_material');
+    await expect(reactivated.locator('dt', { hasText: 'สถานะ' }).locator('+ dd')).toHaveText('หยุดใช้ → ใช้งานอยู่');
+    await expect(page.locator('[data-testid="stock-material-history-7-note"]')).toHaveCount(0);
+    await expect(page.locator('[data-testid="stock-material-history-1"]')).toBeVisible();
+
+    // In use again, the default list shows it, with no badge.
+    await page.goto(`${targetBaseUrl}/stock-materials?search=${encodeURIComponent(tag)}`);
+    await expect(row).toBeVisible();
+    await expect(badge).toHaveCount(0);
+  });
+
   test('Journey F008-T1.2: a Read-only User reads the list and a Stock Material page with no action, and an Asset Custodian has no "วัสดุ" menu', async ({ page, context }) => {
     const bottle = freshUnitName('ขวด');
     const unit = await new UnitService({ db: pool }).add(officerUserId, bottle, { retryToken: crypto.randomUUID() });
@@ -568,11 +692,24 @@ test.describe.serial('Stock Material journeys: Real SPA -> Composed API -> Postg
     await expect(page.locator(`[data-testid="stock-material-unit-${unit.id}"]`)).toContainText('ไม่ใช่ (มีเศษได้)');
     await expect(page.locator('[data-testid="stock-material-status"]')).toHaveText('ใช้งานอยู่');
     await expect(page.locator('[data-testid="stock-material-history-1"]')).toContainText(`หน่วยนับหลัก ${bottle}`);
-    // The Supply Officer was offered "แก้ไขหน่วยนับ", "แก้ไขข้อมูลอื่น" and "แก้ไขรายการที่บันทึกผิด" on a Stock Material page
-    // (Journeys F008-T3.1, T4.1, T5.1).
+    // The Supply Officer was offered "แก้ไขหน่วยนับ", "แก้ไขข้อมูลอื่น", "แก้ไขรายการที่บันทึกผิด", "หยุดใช้" and
+    // "เปิดใช้อีกครั้ง" on a Stock Material page (Journeys F008-T3.1, T4.1, T5.1, T7.1).
     await expect(page.locator('#stock-material-edit-units')).toHaveCount(0);
     await expect(page.locator('#stock-material-edit-details')).toHaveCount(0);
     await expect(page.locator('#stock-material-correct')).toHaveCount(0);
+    await expect(page.locator('#stock-material-inactivate')).toHaveCount(0);
+    // Nor "เปิดใช้อีกครั้ง" on an Inactive one, whose page the Read-only User still reads.
+    const service = new StockMaterialService({ db: pool });
+    const { stock_material_id: inactiveId } = await service.create(
+      officerUserId,
+      { name: `น้ำยาเช็ดกระจก สูตรเก่า ${crypto.randomUUID().slice(0, 4)}`, base_unit: { unit_id: unit.id }, explicit_continuation: true },
+      { retryToken: crypto.randomUUID() }
+    );
+    await service.inactivate(officerUserId, inactiveId, { expected_version: 1 }, { retryToken: crypto.randomUUID() });
+    await page.goto(`${targetBaseUrl}/stock-materials/${inactiveId}`);
+    await expect(page.locator('[data-testid="stock-material-status"]')).toHaveText('หยุดใช้');
+    await expect(page.locator('#stock-material-reactivate')).toHaveCount(0);
+    await expect(page.locator('#stock-material-inactivate')).toHaveCount(0);
 
     // The form refuses a viewer without material:manage.
     await page.goto(`${targetBaseUrl}/stock-materials/new`);

@@ -14,6 +14,8 @@ import {
   type ChangeDetailsInput,
   type CorrectStockMaterialInput,
   type CreateStockMaterialInput,
+  type InactivateStockMaterialInput,
+  type ReactivateStockMaterialInput,
   type ReplaceUnitsInput,
   type StockMaterialService,
 } from '../services/stock-material.service.ts';
@@ -110,6 +112,23 @@ const CorrectStockMaterialSchema = z
   })
   .strict();
 
+// F008-T7 (#180, #175 Q13): making a Stock Material Inactive, with an optional note the service checks (P7).
+const InactivateStockMaterialSchema = z
+  .object({
+    expected_version: z.number().int().positive(),
+    note: z.string().nullable().optional(),
+    retry_token: z.string().optional(),
+  })
+  .strict();
+
+// F008-T7 (#180): reactivating an Inactive Stock Material takes no note (0025_material_catalog).
+const ReactivateStockMaterialSchema = z
+  .object({
+    expected_version: z.number().int().positive(),
+    retry_token: z.string().optional(),
+  })
+  .strict();
+
 const StockMaterialListQuerySchema = z
   .object({
     // It searches the Specification, which is free text, so it keeps tab and line breaks inside it as that field
@@ -130,6 +149,8 @@ const StockMaterialListQuerySchema = z
       .optional(),
     // F008-T6 (#182): the Stock Materials with a Minimum Stock set, or still without one (#175 MC-20).
     minimum_stock: z.enum(['set', 'not_set']).optional(),
+    // F008-T7 (#180): ใช้งานอยู่ by default, หยุดใช้, or ทั้งหมด (#175 MC-14, Q13).
+    status: z.enum(['active', 'inactive', 'all']).optional(),
     ...pageQueryFields,
   })
   .strict();
@@ -156,8 +177,8 @@ export const stockMaterialRoutes: FastifyPluginAsync<StockMaterialRoutesOptions>
   /**
    * GET /stock-materials
    * The Stock Materials by name, a page at a time, found by text in the name, the Brand's name, the Model or the
-   * Specification, by Material Category (F008-T4) and by whether a Minimum Stock is set (F008-T6), with `can_manage` telling the page whether to offer "เพิ่มวัสดุ"
-   * (#175 P9).
+   * Specification, by Material Category (F008-T4), by whether a Minimum Stock is set (F008-T6) and by status, those in use
+   * by default (F008-T7), with `can_manage` telling the page whether to offer "เพิ่มวัสดุ" (#175 P9).
    * Protected: requires 'material:view' capability (Supply Officer, Administrator, Read-only User)
    */
   fastify.get('/stock-materials', { preHandler: [requireCapability('material:view')] }, async (request, reply) => {
@@ -166,8 +187,8 @@ export const stockMaterialRoutes: FastifyPluginAsync<StockMaterialRoutesOptions>
     if (!parsed.success) {
       return reply.status(400).send(invalidQueryBody(parsed.error));
     }
-    const { limit = 25, offset = 0, search, material_category_id, minimum_stock } = parsed.data;
-    const list = await stockMaterialReadService.list({ search, material_category_id, minimum_stock, limit, offset });
+    const { limit = 25, offset = 0, search, material_category_id, minimum_stock, status = 'active' } = parsed.data;
+    const list = await stockMaterialReadService.list({ search, material_category_id, minimum_stock, status, limit, offset });
     const canManage = await capabilityService.hasCapability(request.user!.id, 'material:manage');
     return reply.status(200).send({ ...list, can_manage: canManage });
   });
@@ -189,7 +210,8 @@ export const stockMaterialRoutes: FastifyPluginAsync<StockMaterialRoutesOptions>
 
   /**
    * GET /stock-materials/:id
-   * One Stock Material with its Units and its history (#175 Q15, Q18), and `can_manage` for its actions.
+   * One Stock Material with its Units and its history (#175 Q15, Q18), and `can_manage`, `can_inactivate` and
+   * `can_reactivate` for its actions.
    * Protected: requires 'material:view' capability
    */
   fastify.get('/stock-materials/:id', { preHandler: [requireCapability('material:view')] }, async (request, reply) => {
@@ -203,7 +225,8 @@ export const stockMaterialRoutes: FastifyPluginAsync<StockMaterialRoutesOptions>
       return reply.status(404).send(errorBody(404, 'NOT_FOUND', 'Stock Material not found'));
     }
     const canManage = await capabilityService.hasCapability(request.user!.id, 'material:manage');
-    return reply.status(200).send({ ...material, can_manage: canManage });
+    // F008-T7 (#180, #175 P9): "หยุดใช้" on a Stock Material in use, "เปิดใช้อีกครั้ง" on an Inactive one.
+    return reply.status(200).send({ ...material, can_manage: canManage, can_inactivate: canManage && material.is_active, can_reactivate: canManage && !material.is_active });
   });
 
   /**
@@ -300,6 +323,60 @@ export const stockMaterialRoutes: FastifyPluginAsync<StockMaterialRoutesOptions>
     try {
       const { retry_token: _retryToken, ...input } = write.data;
       const recorded = await stockMaterialService.replaceUnits(request.user!.id, id.trim().toLowerCase(), input as ReplaceUnitsInput, { retryToken: write.retryToken });
+      return reply.status(200).send(recorded);
+    } catch (err) {
+      const refusal = refusalOf(err);
+      if (!refusal) {
+        throw err;
+      }
+      return reply.status(refusal.statusCode).send(refusal);
+    }
+  });
+
+  /**
+   * POST /stock-materials/:id/inactivate
+   * Makes the Stock Material Inactive ("หยุดใช้", F008-T7), with an optional note, at the version the request read.
+   * Protected: requires 'material:manage' capability (Supply Officer)
+   */
+  fastify.post('/stock-materials/:id/inactivate', { preHandler: [requireCapability('material:manage')] }, async (request, reply) => {
+    const { id } = request.params as { id: string };
+    if (!isValidUuid(id)) {
+      return reply.status(400).send(errorBody(400, 'INVALID_ID', 'Stock Material ID must be a valid UUID string'));
+    }
+    const write = parseWrite(InactivateStockMaterialSchema, request);
+    if ('refusal' in write) {
+      return reply.status(400).send(write.refusal);
+    }
+    try {
+      const { retry_token: _retryToken, ...input } = write.data;
+      const recorded = await stockMaterialService.inactivate(request.user!.id, id.trim().toLowerCase(), input as InactivateStockMaterialInput, { retryToken: write.retryToken });
+      return reply.status(200).send(recorded);
+    } catch (err) {
+      const refusal = refusalOf(err);
+      if (!refusal) {
+        throw err;
+      }
+      return reply.status(refusal.statusCode).send(refusal);
+    }
+  });
+
+  /**
+   * POST /stock-materials/:id/reactivate
+   * Reactivates an Inactive Stock Material ("เปิดใช้อีกครั้ง", F008-T7) at the version the request read.
+   * Protected: requires 'material:manage' capability (Supply Officer)
+   */
+  fastify.post('/stock-materials/:id/reactivate', { preHandler: [requireCapability('material:manage')] }, async (request, reply) => {
+    const { id } = request.params as { id: string };
+    if (!isValidUuid(id)) {
+      return reply.status(400).send(errorBody(400, 'INVALID_ID', 'Stock Material ID must be a valid UUID string'));
+    }
+    const write = parseWrite(ReactivateStockMaterialSchema, request);
+    if ('refusal' in write) {
+      return reply.status(400).send(write.refusal);
+    }
+    try {
+      const { retry_token: _retryToken, ...input } = write.data;
+      const recorded = await stockMaterialService.reactivate(request.user!.id, id.trim().toLowerCase(), input as ReactivateStockMaterialInput, { retryToken: write.retryToken });
       return reply.status(200).send(recorded);
     } catch (err) {
       const refusal = refusalOf(err);

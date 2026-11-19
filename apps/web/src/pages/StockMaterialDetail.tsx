@@ -3,6 +3,7 @@ import { Link, useNavigate, useParams } from 'react-router';
 import { QueryClient, QueryClientProvider, useQuery } from '@tanstack/react-query';
 import { StockMaterialCorrectionForm } from '../components/StockMaterialCorrectionForm';
 import { StockMaterialDetailsEditor } from '../components/StockMaterialDetailsEditor';
+import { StockMaterialStatusForm } from '../components/StockMaterialStatusForm';
 import { StockMaterialUnitsEditor } from '../components/StockMaterialUnitsEditor';
 import {
   ACTIVE_LABEL,
@@ -17,6 +18,7 @@ import {
   MATERIAL_CORRECTION_LABEL,
   MINIMUM_STOCK_LABEL,
   MODEL_LABEL,
+  REACTIVATE_LABEL,
   RECORDED_FIELD_LABELS,
   SPECIFICATION_LABEL,
   STOCK_MATERIAL_LABEL,
@@ -53,8 +55,8 @@ const actionStyle: React.CSSProperties = {
 };
 const headStyle: React.CSSProperties = { padding: '0.5rem 0.75rem', fontWeight: 600, color: '#374151', whiteSpace: 'nowrap' };
 
-// A recorded value as the history shows it: the Units as lines, a Brand or a Material Category by its name then, text
-// as it was, none as "-".
+// A recorded value as the history shows it: the Units as lines, a Brand or a Material Category by its name then, the
+// status as ใช้งานอยู่ or หยุดใช้, text as it was, none as "-".
 const recordedValue = (field: string, value: unknown): React.ReactNode => {
   if (value === null || value === undefined) {
     return '-';
@@ -67,18 +69,26 @@ const recordedValue = (field: string, value: unknown): React.ReactNode => {
   if (field === 'brand' || field === 'material_category') {
     return (value as NamedListEntry).name;
   }
+  if (field === 'is_active') {
+    return value ? ACTIVE_LABEL : INACTIVE_LABEL;
+  }
   return String(value);
 };
 
 const HistoryEntry: React.FC<{ entry: StockMaterialHistoryEntry }> = ({ entry }) => (
   <li data-testid={`stock-material-history-${entry.version}`} style={{ borderLeft: '3px solid #d1d5db', padding: '0.25rem 0 0.75rem 0.75rem', marginBottom: '0.5rem' }}>
-    <div style={{ fontWeight: 600, color: '#111827' }}>{HISTORY_KIND_LABELS[entry.kind] ?? entry.kind}</div>
+    <div style={{ fontWeight: 600, color: '#111827' }}>{HISTORY_KIND_LABELS[entry.kind]}</div>
     <div style={{ fontSize: '0.8125rem', color: '#6b7280', marginBottom: '0.25rem' }}>
       บันทึกเมื่อ <time dateTime={entry.recorded_at}>{THAI_DATE_TIME.format(new Date(entry.recorded_at))}</time> โดย {entry.recorded_by_username ?? entry.recorded_by}
     </div>
     {entry.reason !== null && (
       <div data-testid={`stock-material-history-${entry.version}-reason`} style={{ fontSize: '0.875rem', color: '#111827', marginBottom: '0.25rem', whiteSpace: 'pre-line' }}>
         เหตุผล: {entry.reason}
+      </div>
+    )}
+    {entry.note !== null && (
+      <div data-testid={`stock-material-history-${entry.version}-note`} style={{ fontSize: '0.875rem', color: '#111827', marginBottom: '0.25rem', whiteSpace: 'pre-line' }}>
+        หมายเหตุ: {entry.note}
       </div>
     )}
     <dl style={{ display: 'grid', gridTemplateColumns: 'max-content 1fr', gap: '0.25rem 1rem', margin: 0, fontSize: '0.875rem' }}>
@@ -104,6 +114,9 @@ const StockMaterialDetailContent: React.FC<{ id: string }> = ({ id }) => {
   const [isEditingUnits, setIsEditingUnits] = useState(false);
   const [isEditingDetails, setIsEditingDetails] = useState(false);
   const [isCorrecting, setIsCorrecting] = useState(false);
+  // The status action opened: its form shows while the server still offers it, so a reload after another Supply
+  // Officer changed the status never turns "หยุดใช้" into "เปิดใช้อีกครั้ง".
+  const [statusAction, setStatusAction] = useState<'inactivate' | 'reactivate' | null>(null);
 
   const material = useQuery<MaterialDetail, Error & { status?: number }>({
     queryKey: ['stock-material', id],
@@ -183,7 +196,40 @@ const StockMaterialDetailContent: React.FC<{ id: string }> = ({ id }) => {
                   {EDIT_DETAILS_LABEL}
                 </button>
               )}
+              {detail.can_inactivate && statusAction !== 'inactivate' && (
+                <button type="button" id="stock-material-inactivate" onClick={() => setStatusAction('inactivate')} style={actionStyle}>
+                  {INACTIVE_LABEL}
+                </button>
+              )}
+              {detail.can_reactivate && statusAction !== 'reactivate' && (
+                <button type="button" id="stock-material-reactivate" onClick={() => setStatusAction('reactivate')} style={actionStyle}>
+                  {REACTIVATE_LABEL}
+                </button>
+              )}
             </div>
+            {((statusAction === 'inactivate' && detail.can_inactivate) || (statusAction === 'reactivate' && detail.can_reactivate)) && (
+              <div style={{ marginTop: '1rem' }}>
+                {/* A new read starts the form again from what it shows, so a save never carries a status read before it. */}
+                <StockMaterialStatusForm
+                  key={detail.version}
+                  material={detail}
+                  action={statusAction}
+                  onRefresh={refresh}
+                  onSaved={async () => {
+                    await material.refetch();
+                    setStatusAction(null);
+                  }}
+                  onCancel={() => setStatusAction(null)}
+                  onPermissionRevoked={(status) => {
+                    if (status === 401) {
+                      navigate('/login', { replace: true });
+                      return;
+                    }
+                    void material.refetch();
+                  }}
+                />
+              </div>
+            )}
             {detail.can_manage && isCorrecting && (
               <div style={{ marginTop: '1rem' }}>
                 {/* A new read starts the form again from what it shows, so a save never carries values read before it. */}
@@ -305,8 +351,8 @@ const StockMaterialDetailContent: React.FC<{ id: string }> = ({ id }) => {
 };
 
 /**
- * A Stock Material's page (F008-T1, T3, T4, T5, T6): every field with its Material Correction and the editor of its
- * other details, its Units with their editor, and its history (#175 Q15, Q18).
+ * A Stock Material's page (F008-T1, T3, T4, T5, T6, T7): every field with its Material Correction, the editor of its
+ * other details and "หยุดใช้" or "เปิดใช้อีกครั้ง", its Units with their editor, and its history (#175 Q13, Q15, Q18).
  */
 export const StockMaterialDetail: React.FC = () => {
   const { id = '' } = useParams<{ id: string }>();

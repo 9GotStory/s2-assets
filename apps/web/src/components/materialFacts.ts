@@ -110,6 +110,9 @@ export interface StockMaterialDetail {
   units: StockMaterialUnit[];
   history: StockMaterialHistoryEntry[];
   can_manage: boolean;
+  // F008-T7 (#180, #175 P9): "หยุดใช้" on a Stock Material in use, "เปิดใช้อีกครั้ง" on an Inactive one.
+  can_inactivate: boolean;
+  can_reactivate: boolean;
 }
 
 export const STOCK_MATERIAL_LABEL = 'วัสดุ';
@@ -125,6 +128,7 @@ export const CONVERSION_FACTOR_LABEL = 'อัตราแปลง';
 export const WHOLE_NUMBER_UNIT_LABEL = 'นับเป็นจำนวนเต็มเท่านั้น';
 export const ACTIVE_LABEL = 'ใช้งานอยู่';
 export const INACTIVE_LABEL = 'หยุดใช้';
+export const REACTIVATE_LABEL = 'เปิดใช้อีกครั้ง';
 // glossary: no entry — the list's action, made of the term วัสดุ (Stock Material)
 export const ADD_STOCK_MATERIAL_LABEL = 'เพิ่มวัสดุ';
 // glossary: no entry — the form's inline action, made of the term หน่วยนับ (Unit)
@@ -148,12 +152,14 @@ export const MINIMUM_STOCK_SET_LABEL = 'ตั้งจำนวนขั้น�
 export const MINIMUM_STOCK_NOT_SET_LABEL = 'ยังไม่ตั้งจำนวนขั้นต่ำ';
 
 // What each kind of history entry is called on the Stock Material page. F008-T1 writes CREATED, T3 UNITS_CHANGED,
-// T4 DETAILS_CHANGED and T5 CORRECTED; the tickets that write the other kinds name them.
-export const HISTORY_KIND_LABELS: Partial<Record<StockMaterialHistoryKind, string>> = {
+// T4 DETAILS_CHANGED, T5 CORRECTED, and T7 INACTIVATED and REACTIVATED.
+export const HISTORY_KIND_LABELS: Record<StockMaterialHistoryKind, string> = {
   CREATED: 'สร้างรายการ',
   CORRECTED: MATERIAL_CORRECTION_LABEL,
   UNITS_CHANGED: EDIT_UNITS_LABEL,
   DETAILS_CHANGED: EDIT_DETAILS_LABEL,
+  INACTIVATED: INACTIVE_LABEL,
+  REACTIVATED: REACTIVATE_LABEL,
 };
 
 // What each recorded field is called in a history entry.
@@ -166,6 +172,8 @@ export const RECORDED_FIELD_LABELS: Record<string, string> = {
   note: 'หมายเหตุ',
   minimum_stock: MINIMUM_STOCK_LABEL,
   units: UNIT_LABEL,
+  // F008-T7 (#180): whether the Stock Material is ใช้งานอยู่ or หยุดใช้.
+  is_active: 'สถานะ',
 };
 
 // A Minimum Stock with its Base Unit, as "10 รีม", or "-" for none (F008-T6, #175 MC-20).
