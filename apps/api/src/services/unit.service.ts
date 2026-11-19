@@ -1,14 +1,11 @@
 import pg from 'pg';
 import { normalizeLine } from './assignment.service.ts';
+import { comparedName } from './compared-name.ts';
 import { commitOnce } from './retryable-write.ts';
 import { ValidationError } from './validation-error.ts';
 
 // F008-T1 (#176, #175 P7): the longest Unit name.
 export const UNIT_NAME_MAX_LENGTH = 200;
-
-// A Unit name as the list compares names: ignoring case and repeated spaces (#175 Q20). The unique index of
-// 0025_material_catalog is on this same expression.
-const comparedName = (expression: string) => `lower(regexp_replace(btrim(${expression}), ' +', ' ', 'g'))`;
 
 // One entry of the shared Unit list (หน่วยนับ).
 export interface UnitEntry {

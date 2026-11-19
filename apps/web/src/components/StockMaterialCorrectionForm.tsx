@@ -1,8 +1,8 @@
 import React, { useState } from 'react';
-import { ListEntryAddField, ListEntrySelect } from './ListEntryFields';
+import { ListEntrySelect } from './ListEntryFields';
 import { LoanSaveForm } from './LoanSaveForm';
 import { fieldInputStyle, fieldLabelStyle } from './ReferenceContextFields';
-import { ADD_BRAND_LABEL, BRAND_LABEL, MATERIAL_CORRECTION_LABEL, MODEL_LABEL, SPECIFICATION_LABEL, STOCK_MATERIAL_LABEL, type StockMaterialDetail } from './materialFacts';
+import { BRAND_LABEL, MATERIAL_CORRECTION_LABEL, MODEL_LABEL, SPECIFICATION_LABEL, STOCK_MATERIAL_LABEL, type StockMaterialDetail } from './materialFacts';
 import { useBrandList, useCsrfToken } from './materialQueries';
 
 const fieldStyle: React.CSSProperties = { marginBottom: '0.75rem' };
@@ -103,21 +103,7 @@ export const StockMaterialCorrectionForm: React.FC<StockMaterialCorrectionFormPr
             </label>
             <input id="stock-material-correction-name" type="text" value={name} maxLength={200} onChange={(e) => setName(e.target.value)} style={fieldInputStyle} />
           </div>
-          <ListEntrySelect id="stock-material-correction-brand" label={BRAND_LABEL} entries={brands.data.items} value={brandId} onChange={setBrandId}>
-            <ListEntryAddField
-              id="stock-material-correction-new-brand"
-              path="/brands"
-              concept={BRAND_LABEL}
-              addLabel={ADD_BRAND_LABEL}
-              placeholder="ชื่อยี่ห้อใหม่"
-              csrfToken={csrfToken}
-              disabled={isLocked || csrfToken === null}
-              onAdded={async (brand) => {
-                await brands.refetch();
-                setBrandId(brand.id);
-              }}
-            />
-          </ListEntrySelect>
+          <ListEntrySelect id="stock-material-correction-brand" label={BRAND_LABEL} entries={brands.data.items} value={brandId} onChange={setBrandId} />
           <div style={fieldStyle}>
             <label htmlFor="stock-material-correction-model" style={fieldLabelStyle}>
               {MODEL_LABEL} (ไม่บังคับ)

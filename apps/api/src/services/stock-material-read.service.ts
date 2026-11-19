@@ -1,7 +1,7 @@
 import pg from 'pg';
 import { containsPattern } from './asset-lookups.ts';
 import { joinCatalogListEntry, type NamedListEntry } from './catalog-list-entries.ts';
-import { comparedName } from './catalog-list.service.ts';
+import { comparedName } from './compared-name.ts';
 import { joinUnitEntry } from './unit-entries.ts';
 
 // One row of the Stock Material list (#175 Q15).

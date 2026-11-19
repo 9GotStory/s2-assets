@@ -38,6 +38,13 @@ describe('Duplicate Candidates and Material Correction (Seam A - F008-T5)', () =
     params: [name, officer.id, sheet],
   });
 
+  // What a Material Correction renaming the Stock Material `id` to `name` writes under the same lock, held uncommitted.
+  const renameHeld = (id: string, name: string) => ({
+    sql: `WITH held AS (SELECT pg_advisory_xact_lock(hashtext('stock-material:identity')))
+          UPDATE stock_materials SET name = $2, version = version + 1 FROM held WHERE id = $1`,
+    params: [id, name],
+  });
+
   // Creates a Stock Material named `name`, counted in แผ่น, confirming any Duplicate Candidate, and answers its id.
   const createdNamed = async (name: string, overrides: Record<string, unknown> = {}): Promise<string> => {
     const res = await createMaterial({ name, base_unit: { unit_id: sheet }, explicit_continuation: true, ...overrides });
@@ -274,6 +281,17 @@ describe('Duplicate Candidates and Material Correction (Seam A - F008-T5)', () =
 
       expect(res.statusCode).toBe(409);
       expect(res.json().candidates.map((candidate: any) => candidate.name)).toEqual([`${name} ขนาดใหญ่`]);
+    });
+
+    it('waits for a Material Correction renaming a Stock Material to a similar name and then warns of it', async () => {
+      const name = freshName('แผ่นใสพลาสติก');
+      const renamed = await createdNamed(freshName('ฟิล์มเคลือบบัตร'));
+      expect((await candidatesOf(name)).total_count).toBe(0);
+
+      const [res] = await whileWriting(renameHeld(renamed, `${name} แบบหนา`), () => [createMaterial(named(name))], () => untilWaitingOnAdvisoryLock('stock-material:identity'));
+
+      expect(res.statusCode).toBe(409);
+      expect(res.json().candidates.map((candidate: any) => candidate.id)).toEqual([renamed]);
     });
   });
 
@@ -567,6 +585,38 @@ describe('Duplicate Candidates and Material Correction (Seam A - F008-T5)', () =
       expect(res.statusCode).toBe(409);
       expect(res.json().candidates.map((candidate: any) => candidate.name)).toEqual([`${name} ม้วนใหญ่`]);
       expect(await materialOf(page.id)).toEqual(page);
+    });
+
+    it('waits for another Material Correction renaming a Stock Material to a similar name and then warns of it', async () => {
+      const name = freshName('กระดาษคาร์บอน');
+      const page = await pageNamed(name);
+      const renamed = await createdNamed(freshName('กระดาษไข'));
+      expect((await candidatesOf(name, page.id)).total_count).toBe(0);
+
+      const [res] = await whileWriting(
+        renameHeld(renamed, `${name} สีน้ำเงิน`),
+        () => [correct(page.id, correctionOf(page, { model: 'แผ่นบาง' }))],
+        () => untilWaitingOnAdvisoryLock('stock-material:identity')
+      );
+
+      expect(res.statusCode).toBe(409);
+      expect(res.json().candidates.map((candidate: any) => candidate.id)).toEqual([renamed]);
+      expect(await materialOf(page.id)).toEqual(page);
+    });
+
+    it('waits for the Brand it chooses being renamed and then records its new name as the one after (P6)', async () => {
+      const chosen = await brandNamed(freshName('ยี่ห้อใหม่สะกดผิด'));
+      const page = await pageNamed(freshName('ถ่านกระดุม'));
+
+      const [res] = await whileWriting(
+        // What renaming a Brand writes (F008-T8), held uncommitted.
+        { sql: `UPDATE brands SET name = 'ยี่ห้อใหม่สะกดถูก ' || id::text, version = version + 1 WHERE id = $1`, params: [chosen] },
+        () => [correct(page.id, correctionOf(page, { brand_id: chosen }))],
+        () => untilWaiting('brands', 1, 'FOR SHARE')
+      );
+
+      expect(res.statusCode).toBe(200);
+      expect((await materialOf(page.id)).history[1].changes).toEqual([{ field: 'brand', before: null, after: { id: chosen, name: `ยี่ห้อใหม่สะกดถูก ${chosen}` } }]);
     });
 
     it('answers 404 for a Stock Material that does not exist, and 400 for an id that is not one', async () => {

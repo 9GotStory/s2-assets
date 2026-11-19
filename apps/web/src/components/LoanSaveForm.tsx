@@ -1,5 +1,5 @@
 import React, { useRef, useState } from 'react';
-import { DuplicateCandidateWarning } from './DuplicateCandidates';
+import { DuplicateCandidateWarning } from './DuplicateCandidateWarning';
 import { ConflictWarning } from './LoanConflicts';
 import type { DuplicateCandidatesFound } from './materialFacts';
 import type { WarnedLoanConflict } from './loanFacts';

@@ -242,6 +242,9 @@ test.describe.serial('Stock Material journeys: Real SPA -> Composed API -> Postg
     const candidate = warning.locator('tbody tr');
     await expect(candidate).toHaveCount(1);
     await expect(candidate.locator('td')).toHaveText(['กระดาษถ่ายเอกสาร A4', '-', 'Double A', '80 แกรม สีขาว', 'แผ่น', 'ใช้งานอยู่']);
+    // Its page opens beside the form, which keeps what was typed.
+    await expect(candidate.getByRole('link', { name: 'กระดาษถ่ายเอกสาร A4' })).toHaveAttribute('href', /^\/stock-materials\/[0-9a-f-]{36}$/);
+    await expect(candidate.getByRole('link', { name: 'กระดาษถ่ายเอกสาร A4' })).toHaveAttribute('target', '_blank');
     await expect(page.locator('#stock-material-name')).toBeDisabled();
     await expect(page).toHaveURL(/\/stock-materials\/new$/);
     // "กลับไปแก้ไข" unlocks the form; the same save warns again.

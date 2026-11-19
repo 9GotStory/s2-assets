@@ -31,7 +31,7 @@ export const DuplicateCandidateWarning: React.FC<DuplicateCandidateWarningProps>
     <div style={{ fontWeight: 600 }}>
       พบ{DUPLICATE_CANDIDATE_LABEL} {found.total_count} รายการ
     </div>
-    <div style={{ marginTop: '0.25rem' }}>ถ้าเป็นของสิ่งเดียวกัน ให้ใช้รายการเดิมแทน รายการที่{INACTIVE_LABEL}ก็ยังใช้ได้เมื่อเปิดใช้อีกครั้ง</div>
+    <div style={{ marginTop: '0.25rem' }}>ถ้าเป็นของสิ่งเดียวกัน ให้ใช้รายการเดิมแทน</div>
     <div style={{ overflowX: 'auto' }}>
       <table style={{ width: '100%', borderCollapse: 'collapse', margin: '0.5rem 0', fontSize: '0.8125rem' }}>
         <thead>

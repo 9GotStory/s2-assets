@@ -139,20 +139,27 @@ const chosenEntry = async (client: pg.PoolClient, kind: CatalogListKind, id: str
   return entry;
 };
 
-// #175 P7: the name and the Model are one line each; the Specification and the note are free text, keeping tab and
-// line breaks inside them (CODING_STANDARDS, "A text field's kind decides its control characters").
-const normalizeFacts = (input: CreateStockMaterialInput): StockMaterialFacts => {
+// What tells a Stock Material apart, as a create or a Material Correction states it (#175 Q2, Q11), once validated.
+// #175 P7: the name and the Model are one line each; the Specification is free text, keeping tab and line breaks
+// inside it (CODING_STANDARDS, "A text field's kind decides its control characters"), as the note does.
+const normalizeIdentity = (input: Pick<CreateStockMaterialInput, 'name' | 'brand_id' | 'model' | 'specification'>) => {
   const name = normalizeLine(input.name, 'name', STOCK_MATERIAL_NAME_MAX_LENGTH);
   if (name === null) {
     throw new ValidationError('name must not be blank');
   }
-  const units = normalizeUnitSet(input.base_unit, (input.alternate_units ?? []).map((alternate) => ({ ...alternate, is_active: true })));
   return {
     name,
+    brand_id: entryIdOf(input.brand_id, 'brand_id'),
     model: normalizeLine(input.model, 'model', MODEL_MAX_LENGTH),
     specification: normalizeText(input.specification, 'specification', SPECIFICATION_MAX_LENGTH, ''),
+  };
+};
+
+const normalizeFacts = (input: CreateStockMaterialInput): StockMaterialFacts => {
+  const units = normalizeUnitSet(input.base_unit, (input.alternate_units ?? []).map((alternate) => ({ ...alternate, is_active: true })));
+  return {
+    ...normalizeIdentity(input),
     note: normalizeText(input.note, 'note', REMARK_MAX_LENGTH, ''),
-    brand_id: entryIdOf(input.brand_id, 'brand_id'),
     material_category_id: entryIdOf(input.material_category_id, 'material_category_id'),
     units,
     // In the Base Unit the request names, whose whole-number rule it states.
@@ -294,16 +301,7 @@ export class StockMaterialService {
    */
   async correct(actorId: string, stockMaterialId: string, input: CorrectStockMaterialInput, { retryToken }: { retryToken: string }): Promise<StockMaterialVersion> {
     const expectedVersion = input.expected_version;
-    const name = normalizeLine(input.name, 'name', STOCK_MATERIAL_NAME_MAX_LENGTH);
-    if (name === null) {
-      throw new ValidationError('name must not be blank');
-    }
-    const identity = {
-      name,
-      brand_id: entryIdOf(input.brand_id, 'brand_id'),
-      model: normalizeLine(input.model, 'model', MODEL_MAX_LENGTH),
-      specification: normalizeText(input.specification, 'specification', SPECIFICATION_MAX_LENGTH, ''),
-    };
+    const identity = normalizeIdentity(input);
     const reason = normalizeText(input.reason, 'reason', REMARK_MAX_LENGTH, '');
     if (reason === null) {
       throw new ValidationError('reason must not be blank');
