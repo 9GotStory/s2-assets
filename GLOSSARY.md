@@ -350,8 +350,8 @@ _Avoid_: packaging unit
 
 **Conversion Factor** (อัตราแปลง):
 How many Base Units one Alternate Unit holds, given straight to the Base Unit and shown as
-"1 กล่อง = 5 รีม". An Inactive Alternate Unit's factor may be unknown, shown as "-", as when the
-Base Unit changed and it got no new one; reactivating it needs one (#178).
+"1 กล่อง = 5 รีม". An Inactive Alternate Unit given no new factor when the Base Unit changes has
+none, shown as "-"; reactivating it needs one (#178).
 
 **Whole-number Unit** (นับเป็นจำนวนเต็มเท่านั้น):
 A Unit of a Stock Material in which every quantity must be whole. The system never rounds a

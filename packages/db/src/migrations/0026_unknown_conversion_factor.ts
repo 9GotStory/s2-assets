@@ -1,8 +1,8 @@
 import { Kysely, sql } from 'kysely';
 
-// F008-T3 (#178): an Inactive Alternate Unit's Conversion Factor may be unknown, so that one given no new factor when
-// the Base Unit changes keeps none, rather than one that converts to the old Base Unit (#178 PO decision 1, comment
-// 6998878850; #175 P2). The Base Unit and every active Alternate Unit keep a known factor, so reactivating an
+// F008-T3 (#178): when the Base Unit changes, an Inactive Alternate Unit given no new Conversion Factor keeps none,
+// rather than one that converts to the old Base Unit (#178 PO decision 1, comment 6998878850; #175 P2); the Units
+// write keeps every other known factor known (decision 1 at delivery, comment 6999893572). The Base Unit and every active Alternate Unit keep a known factor, so reactivating an
 // Alternate Unit takes one.
 
 export async function up(db: Kysely<any>): Promise<void> {

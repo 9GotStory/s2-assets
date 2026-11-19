@@ -38,7 +38,7 @@ export interface StockMaterialUnit {
   name: string;
   unit_is_active: boolean;
   is_base: boolean;
-  // Null when unknown, which only an Inactive Alternate Unit can be (F008-T3, #178).
+  // Null on an Inactive Alternate Unit given no new factor when the Base Unit changed (F008-T3, #178).
   conversion_factor: string | null;
   whole_number_only: boolean;
   is_active: boolean;
@@ -49,7 +49,7 @@ export interface RecordedUnit {
   unit_id: string;
   name: string;
   is_base: boolean;
-  // Null when unknown, which only an Inactive Alternate Unit can be (F008-T3, #178).
+  // Null on an Inactive Alternate Unit given no new factor when the Base Unit changed (F008-T3, #178).
   conversion_factor: string | null;
   whole_number_only: boolean;
   is_active: boolean;

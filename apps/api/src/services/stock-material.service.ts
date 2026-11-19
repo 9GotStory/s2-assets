@@ -167,6 +167,14 @@ export class StockMaterialService {
       if (units.length === before.length && units.every((unit) => sameSetting(stored.get(unit.unit_id)!, unit))) {
         throw new ValidationError('This Units write changes nothing');
       }
+      // A factor goes unknown only with the Base Unit it converted to; one still true is never discarded (#178
+      // decision 1, comment 6999893572).
+      if (stored.get(units[0].unit_id)?.is_base) {
+        const blanked = units.findIndex((unit) => unit.conversion_factor === null && (stored.get(unit.unit_id)?.conversion_factor ?? null) !== null);
+        if (blanked !== -1) {
+          throw new ValidationError(`${unitFieldOf(blanked)}.conversion_factor must stay known: only a Base Unit change leaves a factor unknown`);
+        }
+      }
       // A Unit new to the Stock Material, a new Base Unit and a reactivated Alternate Unit are new choices; a Unit kept
       // as it was may keep an Inactive list entry (#175 Q21).
       await assertSelectable(client, units, (unit) => {

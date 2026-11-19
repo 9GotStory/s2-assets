@@ -278,13 +278,20 @@ describe('Stock Material Units (Seam A - F008-T3)', () => {
       await expectUnitsRefused(page.id, { ...payload, base_unit: { ...payload.base_unit, is_active: false } }, 'base_unit');
     });
 
-    it('needs a factor for every active Alternate Unit, and lets an Inactive one leave it unknown', async () => {
+    it('needs a factor for every active Alternate Unit', async () => {
       const page = await paperWithBox();
       const payload = unitsAsRead(page);
-      await expectUnitsRefused(page.id, { ...payload, alternate_units: [{ ...payload.alternate_units[0], conversion_factor: null }] }, 'alternate_units[0].conversion_factor');
 
-      expect((await replaceUnits(page.id, { ...payload, alternate_units: [{ ...payload.alternate_units[0], conversion_factor: null, is_active: false }] })).statusCode).toBe(200);
-      expect((await materialOf(page.id)).units[1]).toMatchObject({ unit_id: box, conversion_factor: null, is_active: false });
+      await expectUnitsRefused(page.id, { ...payload, alternate_units: [{ ...payload.alternate_units[0], conversion_factor: null }] }, 'alternate_units[0].conversion_factor');
+    });
+
+    it('keeps a known factor known unless the Base Unit changes, an Inactive Alternate Unit\'s included (#178 decision 1)', async () => {
+      const page = await paperWithBox();
+      const payload = unitsAsRead(page);
+      expect((await replaceUnits(page.id, { ...payload, alternate_units: [{ ...payload.alternate_units[0], is_active: false }] })).statusCode).toBe(200);
+      const inactive = unitsAsRead(await materialOf(page.id));
+
+      await expectUnitsRefused(page.id, { ...inactive, alternate_units: [{ ...inactive.alternate_units[0], conversion_factor: null }] }, 'alternate_units[0].conversion_factor must stay known');
     });
 
     it('applies the same Alternate Unit rules as creating', async () => {
@@ -468,7 +475,10 @@ describe('Stock Material Units (Seam A - F008-T3)', () => {
       ]);
       expect(unitsRecordedBy(after.history[2])).toContainEqual({ unit_id: ream, name: 'รีม', is_base: false, conversion_factor: null, whole_number_only: true, is_active: false });
 
-      const unknown = unitsAsRead(after);
+      // A write that leaves the Base Unit as it is keeps an unknown factor unknown.
+      const changed = unitsAsRead(after);
+      expect((await replaceUnits(page.id, { ...changed, alternate_units: changed.alternate_units.map((entry) => (entry.unit_id === box ? { ...entry, conversion_factor: '2000' } : entry)) })).statusCode).toBe(200);
+      const unknown = unitsAsRead(await materialOf(page.id));
       await expectUnitsRefused(page.id, { ...unknown, alternate_units: unknown.alternate_units.map((entry) => (entry.unit_id === ream ? { ...entry, is_active: true } : entry)) }, 'conversion_factor');
       expect(
         (await replaceUnits(page.id, { ...unknown, alternate_units: unknown.alternate_units.map((entry) => (entry.unit_id === ream ? { ...entry, conversion_factor: '500', is_active: true } : entry)) })).statusCode
