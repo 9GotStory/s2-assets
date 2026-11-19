@@ -152,9 +152,9 @@ describe('Stock Material (Seam A - F008-T1)', () => {
       await expectRefused(base({ base_unit: { unit_id: retired } }), 'base_unit.unit_id');
     });
 
-    it('takes no field it does not know, an Alternate Unit included until F008-T3', async () => {
+    it('takes no field it does not know', async () => {
       await expectRefused(base({ code: 'M-001' }), 'code');
-      await expectRefused(base({ alternate_units: [] }), 'alternate_units');
+      await expectRefused(base({ base_unit: { unit_id: sheet, is_active: false } }), 'base_unit');
     });
   });
 

@@ -1,10 +1,12 @@
 import React, { useEffect, useState } from 'react';
 import { Link, useNavigate, useParams } from 'react-router';
 import { QueryClient, QueryClientProvider, useQuery } from '@tanstack/react-query';
+import { StockMaterialUnitsEditor } from '../components/StockMaterialUnitsEditor';
 import {
   ACTIVE_LABEL,
   BASE_UNIT_LABEL,
   CONVERSION_FACTOR_LABEL,
+  EDIT_UNITS_LABEL,
   HISTORY_KIND_LABELS,
   INACTIVE_LABEL,
   MODEL_LABEL,
@@ -13,6 +15,7 @@ import {
   STOCK_MATERIAL_LABEL,
   UNIT_LABEL,
   WHOLE_NUMBER_UNIT_LABEL,
+  conversionLine,
   unitLine,
   type RecordedUnit,
   type StockMaterialDetail as MaterialDetail,
@@ -70,6 +73,7 @@ const HistoryEntry: React.FC<{ entry: StockMaterialHistoryEntry }> = ({ entry })
 
 const StockMaterialDetailContent: React.FC<{ id: string }> = ({ id }) => {
   const navigate = useNavigate();
+  const [isEditingUnits, setIsEditingUnits] = useState(false);
 
   const material = useQuery<MaterialDetail, Error & { status?: number }>({
     queryKey: ['stock-material', id],
@@ -94,6 +98,7 @@ const StockMaterialDetailContent: React.FC<{ id: string }> = ({ id }) => {
   // A failed read hides what an earlier one showed: a lost grant fails closed.
   const detail = material.isError ? undefined : material.data;
   const baseUnit = detail?.units.find((unit) => unit.is_base);
+  const refresh = async () => (await material.refetch()).isSuccess;
 
   return (
     <main style={{ minHeight: '100vh', backgroundColor: '#f3f4f6', padding: '1rem', fontFamily: 'system-ui, -apple-system, sans-serif', boxSizing: 'border-box' }}>
@@ -132,7 +137,39 @@ const StockMaterialDetailContent: React.FC<{ id: string }> = ({ id }) => {
               </dd>
             </dl>
 
-            <h2 style={sectionHeadingStyle}>{UNIT_LABEL}</h2>
+            <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', gap: '1rem' }}>
+              <h2 style={sectionHeadingStyle}>{UNIT_LABEL}</h2>
+              {detail.can_manage && !isEditingUnits && (
+                <button
+                  type="button"
+                  id="stock-material-edit-units"
+                  onClick={() => setIsEditingUnits(true)}
+                  style={{ padding: '0.375rem 0.875rem', backgroundColor: '#ffffff', color: '#1d4ed8', border: '1px solid #93c5fd', borderRadius: '6px', fontSize: '0.875rem', fontWeight: 500 }}
+                >
+                  {EDIT_UNITS_LABEL}
+                </button>
+              )}
+            </div>
+            {detail.can_manage && isEditingUnits && (
+              // A new read starts the editor again from what it shows, so a save never carries a set read before it.
+              <StockMaterialUnitsEditor
+                key={detail.version}
+                material={detail}
+                onRefresh={refresh}
+                onSaved={async () => {
+                  await material.refetch();
+                  setIsEditingUnits(false);
+                }}
+                onCancel={() => setIsEditingUnits(false)}
+                onPermissionRevoked={(status) => {
+                  if (status === 401) {
+                    navigate('/login', { replace: true });
+                    return;
+                  }
+                  void material.refetch();
+                }}
+              />
+            )}
             <div style={{ overflowX: 'auto' }}>
               <table id="stock-material-units" style={{ width: '100%', borderCollapse: 'collapse', textAlign: 'left', fontSize: '0.875rem' }}>
                 <thead>
@@ -148,8 +185,13 @@ const StockMaterialDetailContent: React.FC<{ id: string }> = ({ id }) => {
                       <td style={cellStyle}>
                         {unit.name}
                         {unit.is_base && <span style={{ marginLeft: '0.5rem', fontSize: '0.75rem', color: '#1d4ed8' }}>({BASE_UNIT_LABEL})</span>}
+                        {!unit.is_active && (
+                          <span data-testid="stock-material-unit-inactive" style={{ marginLeft: '0.5rem', padding: '0.125rem 0.5rem', fontSize: '0.75rem', borderRadius: '9999px', backgroundColor: '#f3f4f6', color: '#4b5563' }}>
+                            {INACTIVE_LABEL}
+                          </span>
+                        )}
                       </td>
-                      <td style={cellStyle}>{unit.is_base ? '-' : `1 ${unit.name} = ${unit.conversion_factor} ${baseUnit?.name ?? ''}`}</td>
+                      <td style={cellStyle}>{unit.is_base || unit.conversion_factor === null ? '-' : conversionLine(unit, baseUnit?.name ?? '')}</td>
                       <td style={cellStyle}>{unit.whole_number_only ? 'ใช่' : 'ไม่ใช่ (มีเศษได้)'}</td>
                     </tr>
                   ))}
@@ -170,7 +212,7 @@ const StockMaterialDetailContent: React.FC<{ id: string }> = ({ id }) => {
   );
 };
 
-/** A Stock Material's page (F008-T1): every field, its Units and its history (#175 Q15, Q18). */
+/** A Stock Material's page (F008-T1, T3): every field, its Units with their editor, and its history (#175 Q15, Q18). */
 export const StockMaterialDetail: React.FC = () => {
   const { id = '' } = useParams<{ id: string }>();
   const [queryClient] = useState(() => new QueryClient({ defaultOptions: { queries: { retry: false, refetchOnWindowFocus: true } } }));

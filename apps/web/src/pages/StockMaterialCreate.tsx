@@ -3,17 +3,8 @@ import { Link, useNavigate } from 'react-router';
 import { QueryClient, QueryClientProvider, useQuery } from '@tanstack/react-query';
 import { LoanSaveForm } from '../components/LoanSaveForm';
 import { fieldInputStyle, fieldLabelStyle } from '../components/ReferenceContextFields';
-import {
-  ADD_STOCK_MATERIAL_LABEL,
-  ADD_UNIT_LABEL,
-  BASE_UNIT_LABEL,
-  MODEL_LABEL,
-  SPECIFICATION_LABEL,
-  STOCK_MATERIAL_LABEL,
-  WHOLE_NUMBER_UNIT_LABEL,
-  type UnitEntry,
-  type UnitList,
-} from '../components/materialFacts';
+import { UnitSetFields, emptyUnitSet, unitSetError, withBaseUnit, type UnitSetValue } from '../components/UnitSetFields';
+import { ADD_STOCK_MATERIAL_LABEL, ADD_UNIT_LABEL, MODEL_LABEL, SPECIFICATION_LABEL, STOCK_MATERIAL_LABEL, type UnitEntry, type UnitList } from '../components/materialFacts';
 
 const fieldStyle: React.CSSProperties = { marginBottom: '0.75rem' };
 
@@ -21,8 +12,9 @@ const fieldStyle: React.CSSProperties = { marginBottom: '0.75rem' };
 type UnitAddState = { status: 'idle' } | { status: 'sending' } | { status: 'message'; text: string; isError: boolean };
 
 /**
- * Adds a Unit straight from the Stock Material form (#175 Q15, P5) and chooses it. A name already in the list is
- * chosen instead when it is active; an Inactive one is reactivated from the maintenance page (F008-T8).
+ * Adds a Unit straight from the Stock Material form (#175 Q15, P5) and chooses it: as the Base Unit while none is
+ * chosen, then as a new Alternate Unit (F008-T3). A name already in the list is chosen instead when it is active; an
+ * Inactive one is reactivated from the maintenance page (F008-T8).
  */
 const UnitAddField: React.FC<{ csrfToken: string | null; disabled: boolean; onAdded: (unit: UnitEntry) => Promise<void> }> = ({ csrfToken, disabled, onAdded }) => {
   const [name, setName] = useState('');
@@ -107,8 +99,7 @@ const StockMaterialCreateContent: React.FC = () => {
   const [model, setModel] = useState('');
   const [specification, setSpecification] = useState('');
   const [note, setNote] = useState('');
-  const [baseUnitId, setBaseUnitId] = useState('');
-  const [wholeNumberOnly, setWholeNumberOnly] = useState(true);
+  const [unitSet, setUnitSet] = useState<UnitSetValue>(emptyUnitSet);
 
   const units = useQuery<UnitList, Error & { status?: number }>({
     queryKey: ['units'],
@@ -141,25 +132,24 @@ const StockMaterialCreateContent: React.FC = () => {
     }
   }, [isSignedOut, navigate]);
 
-  // Only active Units are offered for a new choice (#175 Q21).
-  const activeUnits = (units.data?.items ?? []).filter((unit) => unit.is_active);
+  const unitList = units.data?.items ?? [];
+  const nameOf = (unitId: string) => unitList.find((unit) => unit.id === unitId)?.name ?? '';
 
   const requestError = (): string | null => {
     if (name.trim() === '') {
       return 'กรุณากรอกชื่อวัสดุ';
     }
-    if (baseUnitId === '') {
-      return `กรุณาเลือก${BASE_UNIT_LABEL}`;
-    }
-    return null;
+    return unitSetError(unitSet, nameOf);
   };
 
+  // Every Alternate Unit of a new Stock Material is active.
   const requestBody = () => ({
     name: name.trim(),
     model: model.trim() || null,
     specification: specification.trim() || null,
     note: note.trim() || null,
-    base_unit: { unit_id: baseUnitId, whole_number_only: wholeNumberOnly },
+    base_unit: { unit_id: unitSet.base_unit_id, whole_number_only: unitSet.base_whole_number_only },
+    alternate_units: unitSet.alternates.map(({ unit_id, conversion_factor, whole_number_only }) => ({ unit_id, conversion_factor: conversion_factor.trim(), whole_number_only })),
   });
 
   return (
@@ -230,31 +220,29 @@ const StockMaterialCreateContent: React.FC = () => {
                   </label>
                   <textarea id="stock-material-note" value={note} maxLength={2000} rows={3} onChange={(e) => setNote(e.target.value)} style={fieldInputStyle} />
                 </div>
-                <fieldset style={{ border: '1px solid #e5e7eb', borderRadius: '6px', padding: '0.75rem', margin: '0 0 0.75rem 0', minWidth: 0 }}>
-                  <legend style={{ fontSize: '0.875rem', fontWeight: 600, color: '#374151' }}>{BASE_UNIT_LABEL}</legend>
-                  <label htmlFor="stock-material-base-unit" style={{ position: 'absolute', left: '-9999px' }}>
-                    {BASE_UNIT_LABEL}
-                  </label>
-                  <select id="stock-material-base-unit" value={baseUnitId} onChange={(e) => setBaseUnitId(e.target.value)} style={fieldInputStyle}>
-                    <option value="">-- เลือก{BASE_UNIT_LABEL} --</option>
-                    {activeUnits.map((unit) => (
-                      <option key={unit.id} value={unit.id}>
-                        {unit.name}
-                      </option>
-                    ))}
-                  </select>
-                  <UnitAddField
-                    csrfToken={csrfToken}
-                    disabled={isLocked || csrfToken === null}
-                    onAdded={async (unit) => {
-                      await units.refetch();
-                      setBaseUnitId(unit.id);
-                    }}
-                  />
-                  <label style={{ display: 'block', marginTop: '0.75rem', fontSize: '0.875rem', color: '#111827' }}>
-                    <input id="stock-material-base-unit-whole" type="checkbox" checked={wholeNumberOnly} onChange={(e) => setWholeNumberOnly(e.target.checked)} /> {WHOLE_NUMBER_UNIT_LABEL}
-                  </label>
-                </fieldset>
+                <UnitSetFields
+                  idPrefix="stock-material"
+                  value={unitSet}
+                  onChange={setUnitSet}
+                  units={unitList}
+                  kept={null}
+                  unitAdder={
+                    <UnitAddField
+                      csrfToken={csrfToken}
+                      disabled={isLocked || csrfToken === null}
+                      onAdded={async (unit) => {
+                        await units.refetch();
+                        setUnitSet((current) =>
+                          current.base_unit_id === ''
+                            ? withBaseUnit(current, unit.id, null)
+                            : current.base_unit_id === unit.id || current.alternates.some((row) => row.unit_id === unit.id)
+                              ? current
+                              : { ...current, alternates: [...current.alternates, { key: unit.id, unit_id: unit.id, conversion_factor: '', whole_number_only: true, is_active: true }] }
+                        );
+                      }}
+                    />
+                  }
+                />
               </fieldset>
             )}
           </LoanSaveForm>
@@ -264,7 +252,10 @@ const StockMaterialCreateContent: React.FC = () => {
   );
 };
 
-/** "เพิ่มวัสดุ" (F008-T1): creates a Stock Material with its Base Unit, adding a missing Unit straight from the form. */
+/**
+ * "เพิ่มวัสดุ" (F008-T1, T3): creates a Stock Material with its Base Unit and Alternate Units, adding a missing Unit
+ * straight from the form.
+ */
 export const StockMaterialCreate: React.FC = () => {
   const [queryClient] = useState(() => new QueryClient({ defaultOptions: { queries: { retry: false, refetchOnWindowFocus: false } } }));
 

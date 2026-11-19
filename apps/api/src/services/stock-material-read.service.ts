@@ -34,13 +34,14 @@ export interface StockMaterialUnit {
   // Whether the list entry is Inactive; a Stock Material keeps an Inactive Unit it already uses (Q21).
   unit_is_active: boolean;
   is_base: boolean;
-  // A decimal string, without trailing zeros (#175 P1).
-  conversion_factor: string;
+  // A decimal string, without trailing zeros (#175 P1); null on an Inactive Alternate Unit given no factor when the
+  // Base Unit changed (F008-T3, #178).
+  conversion_factor: string | null;
   whole_number_only: boolean;
   is_active: boolean;
 }
 
-// The kinds of change a history entry records: F008-T1 writes CREATED; T3, T5 and T7 the others, which
+// The kinds of change a history entry records: F008-T1 writes CREATED, T3 UNITS_CHANGED; T5 and T7 the others, which
 // 0025_material_catalog already takes. T4 and T6 add theirs with their own migrations.
 export type StockMaterialHistoryKind = 'CREATED' | 'CORRECTED' | 'UNITS_CHANGED' | 'INACTIVATED' | 'REACTIVATED';
 
@@ -71,6 +72,23 @@ export interface StockMaterialDetail {
   units: StockMaterialUnit[];
   // Oldest first.
   history: StockMaterialHistoryEntry[];
+}
+
+/**
+ * A Stock Material's Units, the Base Unit first and then the Alternate Units by name, each under the name its list
+ * entry has now. A write reads them through `client` inside its transaction, for the history it records (#175 P6).
+ */
+export async function stockMaterialUnitsOf(client: pg.Pool | pg.PoolClient, stockMaterialId: string): Promise<StockMaterialUnit[]> {
+  const res = await client.query(
+    `SELECT su.unit_id, u.name, u.is_active AS unit_is_active, su.is_base, trim_scale(su.conversion_factor)::text AS conversion_factor,
+            su.whole_number_only, su.is_active
+     FROM stock_material_units su
+     ${joinUnitEntry('u', 'su.unit_id')}
+     WHERE su.stock_material_id = $1
+     ORDER BY su.is_base DESC, lower(u.name) ASC, u.id ASC`,
+    [stockMaterialId]
+  );
+  return res.rows;
 }
 
 const toRow = (row: any): StockMaterialRow => ({
@@ -138,15 +156,7 @@ export class StockMaterialReadService {
     if (!material) {
       return null;
     }
-    const units = await this.db.query(
-      `SELECT su.unit_id, u.name, u.is_active AS unit_is_active, su.is_base, trim_scale(su.conversion_factor)::text AS conversion_factor,
-              su.whole_number_only, su.is_active
-       FROM stock_material_units su
-       ${joinUnitEntry('u', 'su.unit_id')}
-       WHERE su.stock_material_id = $1
-       ORDER BY su.is_base DESC, lower(u.name) ASC, u.id ASC`,
-      [id]
-    );
+    const units = await stockMaterialUnitsOf(this.db, id);
     const history = await this.db.query(
       `SELECT h.version, h.kind, h.changes, h.reason, h.note, h.recorded_by, u.username AS recorded_by_username, h.recorded_at
        FROM stock_material_history h
@@ -159,7 +169,7 @@ export class StockMaterialReadService {
       ...material,
       created_by_username: material.created_by_username ?? null,
       recorded_at: new Date(material.recorded_at).toISOString(),
-      units: units.rows,
+      units,
       history: history.rows.map((row: any) => ({ ...row, recorded_by_username: row.recorded_by_username ?? null, recorded_at: new Date(row.recorded_at).toISOString() })),
     };
   }

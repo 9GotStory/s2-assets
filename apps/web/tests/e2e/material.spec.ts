@@ -22,6 +22,7 @@ const migrationFolder = path.resolve(__dirname, '../../../../packages/db/src/mig
 
 // F008-T1 (#176): Journey J1 starts (a Supply Officer creates a Stock Material with a new Unit and finds it), and
 // Journey J3 (a Read-only User reads the catalog with no action; an Asset Custodian has no "วัสดุ" menu).
+// F008-T3 (#178): Journey J1 goes on with an Alternate Unit ("1 กล่อง = 5 รีม") and the Units editor.
 test.describe.serial('Stock Material journeys: Real SPA -> Composed API -> PostgreSQL (Seam B)', () => {
   let container: StartedPostgreSqlContainer;
   let pool: pg.Pool;
@@ -183,6 +184,77 @@ test.describe.serial('Stock Material journeys: Real SPA -> Composed API -> Postg
     await expect(rows.first()).toContainText('แผ่น');
   });
 
+  test('Journey F008-T3.1: a Supply Officer creates a Stock Material with an Alternate Unit, sees "1 กล่อง = 5 รีม", and changes its Base Unit in the Units editor', async ({ page, context }) => {
+    // แผ่น, which Journey F008-T1.1 adds when it runs first.
+    if ((await pool.query(`SELECT 1 FROM units WHERE name = 'แผ่น'`)).rows.length === 0) {
+      await new UnitService({ db: pool }).add(officerUserId, 'แผ่น', { retryToken: crypto.randomUUID() });
+    }
+    await loginAs(context, officerUserId);
+    await page.goto(`${targetBaseUrl}/stock-materials/new`);
+    await page.locator('#stock-material-name').fill('กระดาษถ่ายเอกสาร A4 แบบกล่อง');
+
+    // A Unit added from the form becomes the Base Unit while none is chosen, then an Alternate Unit.
+    await page.locator('#stock-material-new-unit').fill('รีม');
+    await page.locator('#stock-material-new-unit-add').click();
+    await expect(page.locator('[data-testid="stock-material-new-unit-message"]')).toContainText('เพิ่มหน่วยนับ "รีม" แล้ว');
+    await expect(page.locator('#stock-material-base-unit option:checked')).toHaveText('รีม');
+    await page.locator('#stock-material-new-unit').fill('กล่อง');
+    await page.locator('#stock-material-new-unit-add').click();
+    await expect(page.locator('[data-testid="stock-material-new-unit-message"]')).toContainText('เพิ่มหน่วยนับ "กล่อง" แล้ว');
+    const boxRow = page.locator('[data-testid="stock-material-alternate-0"]');
+    await expect(page.locator('#stock-material-alternate-0-unit option:checked')).toHaveText('กล่อง');
+    await expect(boxRow).toContainText('รีม');
+    await expect(page.locator('#stock-material-alternate-0-whole')).toBeChecked();
+
+    // Neither a factor left blank nor one entered before the Base Unit changed is sent.
+    await page.locator('#stock-material-submit').click();
+    await expect(page.locator('[data-testid="stock-material-form-error"]')).toContainText('กรุณากรอกอัตราแปลงของ กล่อง');
+    await page.locator('#stock-material-alternate-0-factor').fill('5');
+    await page.locator('#stock-material-base-unit').selectOption({ label: 'แผ่น' });
+    await expect(page.locator('#stock-material-alternate-0-factor')).toHaveValue('');
+    await expect(boxRow).toContainText('แผ่น');
+    await page.locator('#stock-material-base-unit').selectOption({ label: 'รีม' });
+    await page.locator('#stock-material-alternate-0-factor').fill('5');
+    await page.locator('#stock-material-submit').click();
+
+    await expect(page).toHaveURL(/\/stock-materials\/[0-9a-f-]{36}$/);
+    await expect(page.getByRole('heading', { level: 1, name: 'กระดาษถ่ายเอกสาร A4 แบบกล่อง' })).toBeVisible();
+    const units = page.locator('#stock-material-units tbody tr');
+    await expect(units).toHaveCount(2);
+    await expect(units.nth(0)).toContainText('รีม(หน่วยนับหลัก)');
+    await expect(units.nth(1)).toContainText('1 กล่อง = 5 รีม');
+    await expect(page.locator('[data-testid="stock-material-history-1"]')).toContainText('1 กล่อง = 5 รีม (นับเป็นจำนวนเต็มเท่านั้น)');
+
+    // The Units editor: แผ่น becomes the Base Unit, which clears every factor and keeps รีม as an Alternate Unit.
+    await page.locator('#stock-material-edit-units').click();
+    await expect(page.locator('#stock-material-units-alternate-0-factor')).toHaveValue('5');
+    await expect(page.locator('#stock-material-units-alternate-0-remove')).toHaveCount(0);
+    await page.locator('#stock-material-units-base-unit').selectOption({ label: 'แผ่น' });
+    await expect(page.locator('#stock-material-units-alternate-0-unit')).toHaveText('รีม');
+    await expect(page.locator('#stock-material-units-alternate-0-factor')).toHaveValue('');
+    await expect(page.locator('#stock-material-units-alternate-1-unit')).toHaveText('กล่อง');
+    await expect(page.locator('#stock-material-units-alternate-1-factor')).toHaveValue('');
+    await page.locator('#stock-material-units-submit').click();
+    await expect(page.locator('[data-testid="stock-material-units-form-error"]')).toContainText('กรุณากรอกอัตราแปลงของ รีม');
+    // รีม is made Inactive with its factor unknown; กล่อง gets its factor to แผ่น.
+    await page.locator('#stock-material-units-alternate-0-inactive').check();
+    await page.locator('#stock-material-units-alternate-1-factor').fill('2500');
+    await page.locator('#stock-material-units-submit').click();
+
+    await expect(page.locator('#stock-material-units-form')).toHaveCount(0);
+    await expect(units).toHaveCount(3);
+    await expect(units.nth(0)).toContainText('แผ่น(หน่วยนับหลัก)');
+    await expect(units.nth(1)).toContainText('1 กล่อง = 2500 แผ่น');
+    await expect(units.nth(1).locator('[data-testid="stock-material-unit-inactive"]')).toHaveCount(0);
+    await expect(units.nth(2)).toContainText('รีม');
+    await expect(units.nth(2).locator('[data-testid="stock-material-unit-inactive"]')).toHaveText('หยุดใช้');
+    const changed = page.locator('[data-testid="stock-material-history-2"]');
+    await expect(changed).toContainText('แก้ไขหน่วยนับ');
+    await expect(changed).toContainText('officer_material');
+    await expect(changed.locator('s')).toContainText('หน่วยนับหลัก รีม');
+    await expect(changed).toContainText('รีม: อัตราแปลง - (นับเป็นจำนวนเต็มเท่านั้น) (หยุดใช้)');
+  });
+
   test('Journey F008-T1.2: a Read-only User reads the list and a Stock Material page with no action, and an Asset Custodian has no "วัสดุ" menu', async ({ page, context }) => {
     const unit = await new UnitService({ db: pool }).add(officerUserId, 'ขวด', { retryToken: crypto.randomUUID() });
     const { stock_material_id: id } = await new StockMaterialService({ db: pool }).create(
@@ -208,6 +280,8 @@ test.describe.serial('Stock Material journeys: Real SPA -> Composed API -> Postg
     await expect(page.locator(`[data-testid="stock-material-unit-${unit.id}"]`)).toContainText('ไม่ใช่ (มีเศษได้)');
     await expect(page.locator('[data-testid="stock-material-status"]')).toHaveText('ใช้งานอยู่');
     await expect(page.locator('[data-testid="stock-material-history-1"]')).toContainText('หน่วยนับหลัก ขวด');
+    // The Supply Officer was offered "แก้ไขหน่วยนับ" on a Stock Material page (Journey F008-T3.1).
+    await expect(page.locator('#stock-material-edit-units')).toHaveCount(0);
 
     // The form refuses a viewer without material:manage.
     await page.goto(`${targetBaseUrl}/stock-materials/new`);

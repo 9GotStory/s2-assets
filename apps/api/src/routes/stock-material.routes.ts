@@ -5,9 +5,10 @@ import { invalidQueryBody, pageQueryFields } from './list-query.ts';
 import { errorBody, parseWrite } from './write-request.ts';
 import { isValidUuid, type CapabilityService } from '../services/capability.service.ts';
 import { hasDisallowedControlChars } from '../services/control-characters.ts';
-import { RetryTokenConflictError } from '../services/service-errors.ts';
+import { NotFoundError, RetryTokenConflictError, StaleBeforeConflictError } from '../services/service-errors.ts';
 import type { StockMaterialReadService } from '../services/stock-material-read.service.ts';
-import type { CreateStockMaterialInput, StockMaterialService } from '../services/stock-material.service.ts';
+import { ALTERNATE_UNITS_MAX } from '../services/stock-material-units.ts';
+import type { CreateStockMaterialInput, ReplaceUnitsInput, StockMaterialService } from '../services/stock-material.service.ts';
 import { ValidationError } from '../services/validation-error.ts';
 
 export interface StockMaterialRoutesOptions {
@@ -16,7 +17,8 @@ export interface StockMaterialRoutesOptions {
   capabilityService: CapabilityService;
 }
 
-// #175 Q2, Q5, Q6: what creating a Stock Material takes in F008-T1.
+// #175 Q2, Q5, Q6: what creating a Stock Material takes, its Alternate Units from F008-T3. A factor left out is
+// refused by the service, which names the field as the other Unit rules do.
 const CreateStockMaterialSchema = z
   .object({
     name: z.string(),
@@ -24,6 +26,23 @@ const CreateStockMaterialSchema = z
     specification: z.string().nullable().optional(),
     note: z.string().nullable().optional(),
     base_unit: z.object({ unit_id: z.string(), whole_number_only: z.boolean().optional() }).strict(),
+    alternate_units: z
+      .array(z.object({ unit_id: z.string(), conversion_factor: z.string().nullable().optional(), whole_number_only: z.boolean().optional() }).strict())
+      .max(ALTERNATE_UNITS_MAX)
+      .optional(),
+    retry_token: z.string().optional(),
+  })
+  .strict();
+
+// F008-T3 (#178, #175 P2): the whole Unit set a Units write leaves. It replaces the set, so each Unit says its
+// whole-number rule and whether it is active; the Base Unit is always active.
+const ReplaceUnitsSchema = z
+  .object({
+    expected_version: z.number().int().positive(),
+    base_unit: z.object({ unit_id: z.string(), whole_number_only: z.boolean() }).strict(),
+    alternate_units: z
+      .array(z.object({ unit_id: z.string(), conversion_factor: z.string().nullable().optional(), whole_number_only: z.boolean(), is_active: z.boolean() }).strict())
+      .max(ALTERNATE_UNITS_MAX),
     retry_token: z.string().optional(),
   })
   .strict();
@@ -45,7 +64,10 @@ const StockMaterialListQuerySchema = z
 
 // The answer to a refused write, or null for an error that is not a refusal.
 const refusalOf = (err: unknown) => {
-  if (err instanceof RetryTokenConflictError || err instanceof ValidationError) {
+  if (err instanceof StaleBeforeConflictError) {
+    return { ...errorBody(err.statusCode, err.code, err.message), current_values: err.current_values, expected_values: err.expected_values };
+  }
+  if (err instanceof RetryTokenConflictError || err instanceof NotFoundError || err instanceof ValidationError) {
     return errorBody(err.statusCode, err.code, err.message);
   }
   return null;
@@ -105,6 +127,33 @@ export const stockMaterialRoutes: FastifyPluginAsync<StockMaterialRoutesOptions>
     try {
       const { retry_token: _retryToken, ...input } = write.data;
       return reply.status(201).send(await stockMaterialService.create(request.user!.id, input as CreateStockMaterialInput, { retryToken: write.retryToken }));
+    } catch (err) {
+      const refusal = refusalOf(err);
+      if (!refusal) {
+        throw err;
+      }
+      return reply.status(refusal.statusCode).send(refusal);
+    }
+  });
+
+  /**
+   * PUT /stock-materials/:id/units
+   * Replaces the Stock Material's whole Unit set at the version the request read ("แก้ไขหน่วยนับ", F008-T3).
+   * Protected: requires 'material:manage' capability (Supply Officer)
+   */
+  fastify.put('/stock-materials/:id/units', { preHandler: [requireCapability('material:manage')] }, async (request, reply) => {
+    const { id } = request.params as { id: string };
+    if (!isValidUuid(id)) {
+      return reply.status(400).send(errorBody(400, 'INVALID_ID', 'Stock Material ID must be a valid UUID string'));
+    }
+    const write = parseWrite(ReplaceUnitsSchema, request);
+    if ('refusal' in write) {
+      return reply.status(400).send(write.refusal);
+    }
+    try {
+      const { retry_token: _retryToken, ...input } = write.data;
+      const recorded = await stockMaterialService.replaceUnits(request.user!.id, id.trim().toLowerCase(), input as ReplaceUnitsInput, { retryToken: write.retryToken });
+      return reply.status(200).send(recorded);
     } catch (err) {
       const refusal = refusalOf(err);
       if (!refusal) {

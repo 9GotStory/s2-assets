@@ -40,6 +40,7 @@ const MIGRATIONS = [
   '0023_retirements',
   '0024_retirement_corrections',
   '0025_material_catalog',
+  '0026_unknown_conversion_factor',
 ] as const;
 
 describe('Database Migrations Integration', () => {
