@@ -1,7 +1,8 @@
 import React, { useState } from 'react';
 import { LoanSaveForm } from './LoanSaveForm';
-import { UnitSetFields, alternateRequestOf, unitSetError, unitSetOf, type UnitSetValue } from './UnitSetFields';
-import { EDIT_UNITS_LABEL, type StockMaterialDetail } from './materialFacts';
+import { MinimumStockField } from './MinimumStockField';
+import { UnitSetFields, alternateRequestOf, unitNameOf, unitSetError, unitSetOf, type UnitSetValue } from './UnitSetFields';
+import { EDIT_UNITS_LABEL, MINIMUM_STOCK_LABEL, minimumStockLine, type StockMaterialDetail } from './materialFacts';
 import { useCsrfToken, useUnitList } from './materialQueries';
 
 export interface StockMaterialUnitsEditorProps {
@@ -16,11 +17,13 @@ export interface StockMaterialUnitsEditorProps {
 /**
  * "แก้ไขหน่วยนับ" (F008-T3, #178): one save replaces the Stock Material's whole Unit set at the version the page read
  * (#175 P2, Q23). A Unit it already has is never removed, only made Inactive; changing the Base Unit clears every
- * อัตราแปลง and keeps the old Base Unit as an Alternate Unit, to get a factor or be made Inactive.
+ * อัตราแปลง and keeps the old Base Unit as an Alternate Unit, to get a factor or be made Inactive. F008-T6 (#182
+ * decision 2): it also asks for the จำนวนขั้นต่ำ again in the new Base Unit, blank for none, when there is one.
  */
 export const StockMaterialUnitsEditor: React.FC<StockMaterialUnitsEditorProps> = ({ material, onRefresh, onSaved, onCancel, onPermissionRevoked }) => {
   const [unitSet, setUnitSet] = useState<UnitSetValue>(() => unitSetOf(material.units));
   const [kept] = useState<ReadonlySet<string>>(() => new Set(material.units.map(({ unit_id }) => unit_id)));
+  const [minimumStock, setMinimumStock] = useState('');
 
   const units = useUnitList();
   const session = useCsrfToken(true);
@@ -40,6 +43,9 @@ export const StockMaterialUnitsEditor: React.FC<StockMaterialUnitsEditorProps> =
     );
   }
   const unitList = units.data.items;
+  const oldBase = material.units.find((unit) => unit.is_base);
+  // Another Base Unit takes a Minimum Stock again, so that 10 รีม never becomes 10 กล่อง.
+  const asksMinimumStock = material.minimum_stock !== null && unitSet.base_unit_id !== oldBase?.unit_id;
 
   return (
     <LoanSaveForm
@@ -53,6 +59,7 @@ export const StockMaterialUnitsEditor: React.FC<StockMaterialUnitsEditorProps> =
         expected_version: material.version,
         base_unit: { unit_id: unitSet.base_unit_id, whole_number_only: unitSet.base_whole_number_only },
         alternate_units: unitSet.alternates.map(alternateRequestOf),
+        ...(asksMinimumStock ? { minimum_stock: minimumStock.trim() || null } : {}),
       })}
       refusedList={() => null}
       forbiddenMessage="คุณไม่มีสิทธิ์แก้ไขหน่วยนับของวัสดุ"
@@ -66,6 +73,15 @@ export const StockMaterialUnitsEditor: React.FC<StockMaterialUnitsEditorProps> =
       {(isLocked) => (
         <fieldset disabled={isLocked} style={{ border: 'none', padding: 0, margin: '0 0 1rem 0', minWidth: 0 }}>
           <UnitSetFields idPrefix="stock-material-units" value={unitSet} onChange={setUnitSet} units={unitList} kept={kept} />
+          {asksMinimumStock && (
+            <MinimumStockField
+              id="stock-material-units-minimum-stock"
+              value={minimumStock}
+              onChange={setMinimumStock}
+              baseName={unitNameOf(unitList, unitSet.base_unit_id)}
+              hint={`${MINIMUM_STOCK_LABEL}เดิม ${minimumStockLine(material.minimum_stock, oldBase?.name ?? '')}: กรอกใหม่ในหน่วยนับหลักใหม่ หรือเว้นว่างเพื่อไม่ตั้ง`}
+            />
+          )}
         </fieldset>
       )}
     </LoanSaveForm>

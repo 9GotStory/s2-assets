@@ -1,4 +1,4 @@
-// What the API answers about the Stock Material catalog (F008-T1, T3, T4), and its labels from GLOSSARY.md (#175 Q17).
+// What the API answers about the Stock Material catalog (F008-T1, T3, T4, T6), and its labels from GLOSSARY.md (#175 Q17).
 
 // One entry of a list of the catalog: the shared Unit list (F008-T1), the Brand or the Material Category list (F008-T4).
 export interface ListEntry {
@@ -36,6 +36,8 @@ export interface StockMaterialRow {
   base_unit: { unit_id: string; name: string };
   brand: NamedListEntry | null;
   material_category: NamedListEntry | null;
+  // F008-T6 (#182): in the Base Unit, a decimal string without trailing zeros, or none.
+  minimum_stock: string | null;
 }
 
 export interface StockMaterialList {
@@ -91,6 +93,8 @@ export interface StockMaterialDetail {
   specification: string | null;
   note: string | null;
   material_category: NamedListEntry | null;
+  // F008-T6 (#182): in the Base Unit, a decimal string without trailing zeros, or none.
+  minimum_stock: string | null;
   is_active: boolean;
   version: number;
   created_by: string;
@@ -127,6 +131,11 @@ export const ADD_BRAND_LABEL = 'เพิ่มยี่ห้อ';
 // glossary: no entry — the form's inline action, made of the term หมวดวัสดุ (Material Category)
 export const ADD_MATERIAL_CATEGORY_LABEL = 'เพิ่มหมวดวัสดุ';
 export const EDIT_DETAILS_LABEL = 'แก้ไขข้อมูลอื่น';
+export const MINIMUM_STOCK_LABEL = 'จำนวนขั้นต่ำ';
+// glossary: no entry — the list filter's option, made of the term จำนวนขั้นต่ำ (Minimum Stock)
+export const MINIMUM_STOCK_SET_LABEL = 'ตั้งจำนวนขั้นต่ำแล้ว';
+// glossary: no entry — the list filter's option, made of the term จำนวนขั้นต่ำ (Minimum Stock)
+export const MINIMUM_STOCK_NOT_SET_LABEL = 'ยังไม่ตั้งจำนวนขั้นต่ำ';
 
 // What each kind of history entry is called on the Stock Material page. F008-T1 writes CREATED, T3 UNITS_CHANGED and
 // T4 DETAILS_CHANGED; the tickets that write the other kinds name them.
@@ -144,8 +153,22 @@ export const RECORDED_FIELD_LABELS: Record<string, string> = {
   specification: SPECIFICATION_LABEL,
   material_category: MATERIAL_CATEGORY_LABEL,
   note: 'หมายเหตุ',
+  minimum_stock: MINIMUM_STOCK_LABEL,
   units: UNIT_LABEL,
 };
+
+// A Minimum Stock with its Base Unit, as "10 รีม", or "-" for none (F008-T6, #175 MC-20).
+export const minimumStockLine = (minimumStock: string | null, baseName: string): string => (minimumStock === null ? '-' : `${minimumStock} ${baseName}`);
+
+// An amount as typed, as the server stores it: trimmed, without leading zeros or trailing decimal zeros ("010.50" is
+// "10.5"), so that a form compares it the way the server does (CODING_STANDARDS); what is not a decimal stays as typed
+// but for those zeros, for the server to refuse.
+export const amountAsStored = (text: string): string =>
+  text
+    .trim()
+    .replace(/^0+(?=\d)/, '')
+    .replace(/(\.\d*?)0+$/, '$1')
+    .replace(/\.$/, '');
 
 // A known Conversion Factor as "1 กล่อง = 5 รีม" (#175 Q5).
 export const conversionLine = (unitName: string, conversionFactor: string, baseName: string): string => `1 ${unitName} = ${conversionFactor} ${baseName}`;

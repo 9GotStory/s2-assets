@@ -13,6 +13,7 @@ import {
   HISTORY_KIND_LABELS,
   INACTIVE_LABEL,
   MATERIAL_CATEGORY_LABEL,
+  MINIMUM_STOCK_LABEL,
   MODEL_LABEL,
   RECORDED_FIELD_LABELS,
   SPECIFICATION_LABEL,
@@ -20,6 +21,7 @@ import {
   UNIT_LABEL,
   WHOLE_NUMBER_UNIT_LABEL,
   conversionLine,
+  minimumStockLine,
   unitLine,
   type NamedListEntry,
   type RecordedUnit,
@@ -145,6 +147,8 @@ const StockMaterialDetailContent: React.FC<{ id: string }> = ({ id }) => {
               <dd data-testid="stock-material-material-category" style={{ margin: 0 }}>{detail.material_category?.name ?? '-'}</dd>
               <dt style={{ fontWeight: 500, color: '#4b5563' }}>หมายเหตุ</dt>
               <dd data-testid="stock-material-note" style={{ margin: 0, whiteSpace: 'pre-line' }}>{detail.note ?? '-'}</dd>
+              <dt style={{ fontWeight: 500, color: '#4b5563' }}>{MINIMUM_STOCK_LABEL}</dt>
+              <dd data-testid="stock-material-minimum-stock" style={{ margin: 0 }}>{minimumStockLine(detail.minimum_stock, baseUnit?.name ?? '')}</dd>
               <dt style={{ fontWeight: 500, color: '#4b5563' }}>สร้างเมื่อ</dt>
               <dd style={{ margin: 0 }}>
                 <time dateTime={detail.recorded_at}>{THAI_DATE_TIME.format(new Date(detail.recorded_at))}</time> โดย {detail.created_by_username ?? detail.created_by}
@@ -259,7 +263,7 @@ const StockMaterialDetailContent: React.FC<{ id: string }> = ({ id }) => {
 };
 
 /**
- * A Stock Material's page (F008-T1, T3, T4): every field with the editor of its other details, its Units with their
+ * A Stock Material's page (F008-T1, T3, T4, T6): every field with the editor of its other details, its Units with their
  * editor, and its history (#175 Q15, Q18).
  */
 export const StockMaterialDetail: React.FC = () => {

@@ -5,8 +5,8 @@ import { CATALOG_LISTS, type CatalogListKind, type NamedListEntry } from './cata
 import { catalogListEntryOf, selectableCatalogListEntry } from './catalog-list.service.ts';
 import { commitOnce } from './retryable-write.ts';
 import { NotFoundError, StaleBeforeConflictError } from './service-errors.ts';
-import { stockMaterialUnitsOf, type StockMaterialUnit } from './stock-material-read.service.ts';
-import { normalizeUnitSet, unitFieldOf, type AlternateUnitInput, type BaseUnitInput, type UnitSetting } from './stock-material-units.ts';
+import { stockMaterialUnitsOf, type StockMaterialHistoryChange, type StockMaterialUnit } from './stock-material-read.service.ts';
+import { baseUnitAmountOf, normalizeUnitSet, unitFieldOf, type AlternateUnitInput, type BaseUnitInput, type UnitSetting } from './stock-material-units.ts';
 import { unselectableUnitsAmong } from './unit.service.ts';
 import { ValidationError } from './validation-error.ts';
 
@@ -27,6 +27,8 @@ export interface CreateStockMaterialInput {
   base_unit: BaseUnitInput;
   // F008-T3 (#178): the other Units it is counted in, each active with its Conversion Factor (MC-05, Q5).
   alternate_units?: Omit<AlternateUnitInput, 'is_active'>[];
+  // F008-T6 (#182 decision 1): in the Base Unit, a decimal string, or none (#175 MC-20).
+  minimum_stock?: string | null;
 }
 
 // F008-T3 (#178, #175 P2): the whole Unit set a Units write leaves, at the version the request read.
@@ -34,6 +36,9 @@ export interface ReplaceUnitsInput {
   expected_version: number;
   base_unit: BaseUnitInput;
   alternate_units: AlternateUnitInput[];
+  // F008-T6 (#182 decision 2): the Minimum Stock in the new Base Unit, null for none, stated only when the Base Unit
+  // changes, as each active Alternate Unit's factor is (P2).
+  minimum_stock?: string | null;
 }
 
 // F008-T4 (#179, #175 Q11): the other details a write changes without a reason, each stated, null for none.
@@ -41,6 +46,8 @@ export interface ChangeDetailsInput {
   expected_version: number;
   material_category_id: string | null;
   note: string | null;
+  // F008-T6 (#182): in the Base Unit, a decimal string (#175 MC-20, P1).
+  minimum_stock: string | null;
 }
 
 // What a Stock Material write answers: the Stock Material it wrote and the version a later write must expect.
@@ -59,6 +66,7 @@ interface StockMaterialFacts {
   material_category_id: string | null;
   // The Base Unit first, then the Alternate Units as requested.
   units: UnitSetting[];
+  minimum_stock: string | null;
 }
 
 // The entry of a list that a request names in `field`, or null when it names none.
@@ -93,6 +101,7 @@ const normalizeFacts = (input: CreateStockMaterialInput): StockMaterialFacts => 
   if (name === null) {
     throw new ValidationError('name must not be blank');
   }
+  const units = normalizeUnitSet(input.base_unit, (input.alternate_units ?? []).map((alternate) => ({ ...alternate, is_active: true })));
   return {
     name,
     model: normalizeLine(input.model, 'model', MODEL_MAX_LENGTH),
@@ -100,8 +109,45 @@ const normalizeFacts = (input: CreateStockMaterialInput): StockMaterialFacts => 
     note: normalizeText(input.note, 'note', REMARK_MAX_LENGTH, ''),
     brand_id: entryIdOf(input.brand_id, 'brand_id'),
     material_category_id: entryIdOf(input.material_category_id, 'material_category_id'),
-    units: normalizeUnitSet(input.base_unit, (input.alternate_units ?? []).map((alternate) => ({ ...alternate, is_active: true }))),
+    units,
+    // In the Base Unit the request names, whose whole-number rule it states.
+    minimum_stock: minimumStockOf(input.minimum_stock, units[0].whole_number_only),
   };
+};
+
+// The Minimum Stock as a request states it, refused as the other amounts of the Base Unit are; whether it must be
+// whole is decided against the Base Unit it is counted in (#175 P3).
+const minimumStockOf = (text: string | null | undefined, baseIsWhole: boolean): string | null =>
+  text === undefined || text === null ? null : baseUnitAmountOf(text, 'minimum_stock', baseIsWhole);
+
+/**
+ * The Minimum Stock a Units write leaves, or the refusal (#175 MC-20, P3; #182 decision 2). It counts the Base Unit:
+ * another Base Unit takes it again as `stated`, so that 10 รีม never becomes 10 กล่อง, and needs it stated while there
+ * is one; the same Base Unit keeps it, refusing a `stated` one, and may become whole-number-only only while it is
+ * whole. `stored` is read under the Stock Material's lock, which a details write takes to change it.
+ */
+const minimumStockAfterUnitsWrite = (stored: string | null, stated: string | null | undefined, baseUnitChanges: boolean, baseIsWhole: boolean): string | null => {
+  if (baseUnitChanges) {
+    if (stated === undefined && stored !== null) {
+      throw new ValidationError(`minimum_stock must be stated again in the new Base Unit, as the Minimum Stock ${stored} counts the old one`);
+    }
+    return stated ?? null;
+  }
+  if (stated !== undefined) {
+    throw new ValidationError('minimum_stock changes through other details unless the Base Unit changes');
+  }
+  // Without trailing zeros, as the reads give it, a fraction is written with a point.
+  if (baseIsWhole && stored?.includes('.')) {
+    throw new ValidationError(`base_unit.whole_number_only cannot be set while the Minimum Stock ${stored} has a fraction`);
+  }
+  return stored;
+};
+
+// Whether the Base Unit of the Stock Material is whole-number-only, as a write reads it under the Stock Material's lock,
+// which a Units write takes to change it.
+const baseUnitIsWhole = async (client: pg.PoolClient, stockMaterialId: string): Promise<boolean> => {
+  const res = await client.query('SELECT whole_number_only FROM stock_material_units WHERE stock_material_id = $1 AND is_base', [stockMaterialId]);
+  return res.rows[0].whole_number_only;
 };
 
 // A Unit of a Stock Material as a history entry records it: its setting under the Unit's name then (#175 P6).
@@ -162,16 +208,25 @@ export class StockMaterialService {
       const materialCategory = await chosenEntry(client, 'material-category', facts.material_category_id);
 
       const res = await client.query(
-        `INSERT INTO stock_materials (name, model, specification, note, brand_id, material_category_id, created_by) VALUES ($1, $2, $3, $4, $5, $6, $7) RETURNING id, version`,
-        [facts.name, facts.model, facts.specification, facts.note, facts.brand_id, facts.material_category_id, actorId]
+        `INSERT INTO stock_materials (name, model, specification, note, brand_id, material_category_id, minimum_stock, created_by)
+         VALUES ($1, $2, $3, $4, $5, $6, $7, $8) RETURNING id, version`,
+        [facts.name, facts.model, facts.specification, facts.note, facts.brand_id, facts.material_category_id, facts.minimum_stock, actorId]
       );
       const { id, version } = res.rows[0];
       await writeUnits(client, id, facts.units, new Set());
 
       // The values created, each only when it has one, the Brand, the Material Category and the Units under the names
       // they have now (#175 P6).
-      const recorded = { name: facts.name, brand, model: facts.model, specification: facts.specification, material_category: materialCategory, note: facts.note };
-      const changes: { field: string; before: null; after: unknown }[] = Object.entries(recorded)
+      const recorded = {
+        name: facts.name,
+        brand,
+        model: facts.model,
+        specification: facts.specification,
+        material_category: materialCategory,
+        note: facts.note,
+        minimum_stock: facts.minimum_stock,
+      };
+      const changes: StockMaterialHistoryChange[] = Object.entries(recorded)
         .filter(([, value]) => value !== null)
         .map(([field, after]) => ({ field, before: null, after }));
       changes.push({ field: 'units', before: null, after: (await stockMaterialUnitsOf(client, id)).map(recordedUnit) });
@@ -186,17 +241,22 @@ export class StockMaterialService {
   /**
    * F008-T4 (#179): changes the Stock Material's Material Category and note, without a reason but with a history entry
    * of what changed (#175 Q11, MC-26). A Material Category kept as it was may be Inactive by now; a new one must be
-   * active (Q21).
+   * active (Q21). F008-T6 (#182): and its Minimum Stock, which moves no stock (MC-20).
    */
   async changeDetails(actorId: string, stockMaterialId: string, input: ChangeDetailsInput, { retryToken }: { retryToken: string }): Promise<StockMaterialVersion> {
     const expectedVersion = input.expected_version;
     const details = {
       material_category_id: entryIdOf(input.material_category_id, 'material_category_id'),
       note: normalizeText(input.note, 'note', REMARK_MAX_LENGTH, ''),
+      // Its whole-number rule waits for the Base Unit, read under the lock.
+      minimum_stock: minimumStockOf(input.minimum_stock, false),
     };
     const payload = { stock_material_id: stockMaterialId, expected_version: expectedVersion, ...details };
     return commitOnce(this.db, { actorId, operation: 'stock-material:details', retryToken, payload, explicitContinuation: false }, async (client) => {
-      const res = await client.query('SELECT version, material_category_id, note FROM stock_materials WHERE id = $1 FOR UPDATE', [stockMaterialId]);
+      const res = await client.query(
+        'SELECT version, material_category_id, note, trim_scale(minimum_stock)::text AS minimum_stock FROM stock_materials WHERE id = $1 FOR UPDATE',
+        [stockMaterialId]
+      );
       if (res.rows.length === 0) {
         throw new NotFoundError('Stock Material not found');
       }
@@ -205,12 +265,14 @@ export class StockMaterialService {
         throw new StaleBeforeConflictError('The Stock Material changed since it was read', { version: stored.version }, { version: expectedVersion });
       }
       const categoryChanged = details.material_category_id !== stored.material_category_id;
-      if (!categoryChanged && details.note === stored.note) {
+      if (!categoryChanged && details.note === stored.note && details.minimum_stock === stored.minimum_stock) {
         throw new ValidationError('This details write changes nothing');
       }
+      // Checked again, now against the Base Unit as the lock leaves it (P3).
+      minimumStockOf(details.minimum_stock, await baseUnitIsWhole(client, stockMaterialId));
 
       // What changed, the Material Category under its name now on either side (#175 P6).
-      const changes: { field: string; before: unknown; after: unknown }[] = [];
+      const changes: StockMaterialHistoryChange[] = [];
       if (categoryChanged) {
         changes.push({
           field: 'material_category',
@@ -221,10 +283,13 @@ export class StockMaterialService {
       if (details.note !== stored.note) {
         changes.push({ field: 'note', before: stored.note, after: details.note });
       }
+      if (details.minimum_stock !== stored.minimum_stock) {
+        changes.push({ field: 'minimum_stock', before: stored.minimum_stock, after: details.minimum_stock });
+      }
 
       const updated = await client.query(
-        'UPDATE stock_materials SET material_category_id = $2, note = $3, version = version + 1 WHERE id = $1 RETURNING version',
-        [stockMaterialId, details.material_category_id, details.note]
+        'UPDATE stock_materials SET material_category_id = $2, note = $3, minimum_stock = $4, version = version + 1 WHERE id = $1 RETURNING version',
+        [stockMaterialId, details.material_category_id, details.note, details.minimum_stock]
       );
       const { version } = updated.rows[0];
       await client.query(
@@ -238,18 +303,22 @@ export class StockMaterialService {
   /**
    * F008-T3 (#178): replaces the Stock Material's whole Unit set (#175 P2): a factor or a whole-number rule changed,
    * an Alternate Unit added, made Inactive or reactivated, or another Base Unit. No Unit is removed, and the Base
-   * Unit stays changeable in Feature 008 (MC-21, Q9).
+   * Unit stays changeable in Feature 008 (MC-21, Q9). F008-T6 (#182): another Base Unit takes the Minimum Stock again.
    */
   async replaceUnits(actorId: string, stockMaterialId: string, input: ReplaceUnitsInput, { retryToken }: { retryToken: string }): Promise<StockMaterialVersion> {
     const expectedVersion = input.expected_version;
     const units = normalizeUnitSet(input.base_unit, input.alternate_units);
-    const payload = { stock_material_id: stockMaterialId, expected_version: expectedVersion, units };
+    // Left out, it is not stated; in the Base Unit the request names, whose whole-number rule it states.
+    const minimumStock = input.minimum_stock === undefined ? undefined : minimumStockOf(input.minimum_stock, units[0].whole_number_only);
+    const payload = { stock_material_id: stockMaterialId, expected_version: expectedVersion, units, minimum_stock: minimumStock };
     return commitOnce(this.db, { actorId, operation: 'stock-material:units', retryToken, payload, explicitContinuation: false }, async (client) => {
-      const res = await client.query('SELECT version FROM stock_materials WHERE id = $1 FOR UPDATE', [stockMaterialId]);
+      const res = await client.query('SELECT version, trim_scale(minimum_stock)::text AS minimum_stock FROM stock_materials WHERE id = $1 FOR UPDATE', [
+        stockMaterialId,
+      ]);
       if (res.rows.length === 0) {
         throw new NotFoundError('Stock Material not found');
       }
-      const { version } = res.rows[0];
+      const { version, minimum_stock: storedMinimumStock } = res.rows[0];
       if (version !== expectedVersion) {
         throw new StaleBeforeConflictError('The Stock Material changed since it was read', { version }, { version: expectedVersion });
       }
@@ -261,12 +330,14 @@ export class StockMaterialService {
       if (dropped) {
         throw new ValidationError(`alternate_units must keep the Unit ${dropped.unit_id}: a Unit of a Stock Material is never removed, only made Inactive`);
       }
+      const baseUnitChanges = !stored.get(units[0].unit_id)?.is_base;
+      const minimumStockAfter = minimumStockAfterUnitsWrite(storedMinimumStock, minimumStock, baseUnitChanges, units[0].whole_number_only);
       if (units.length === before.length && units.every((unit) => sameSetting(stored.get(unit.unit_id)!, unit))) {
         throw new ValidationError('This Units write changes nothing');
       }
       // A factor goes unknown only with the Base Unit it converted to; one still true is never discarded (#178
       // decision 1, comment 6999893572).
-      if (stored.get(units[0].unit_id)?.is_base) {
+      if (!baseUnitChanges) {
         const blanked = units.findIndex((unit) => unit.conversion_factor === null && (stored.get(unit.unit_id)?.conversion_factor ?? null) !== null);
         if (blanked !== -1) {
           throw new ValidationError(`${unitFieldOf(blanked)}.conversion_factor must stay known: only a Base Unit change leaves a factor unknown`);
@@ -280,9 +351,16 @@ export class StockMaterialService {
       });
 
       await writeUnits(client, stockMaterialId, units, new Set(stored.keys()));
-      const updated = await client.query('UPDATE stock_materials SET version = version + 1 WHERE id = $1 RETURNING version', [stockMaterialId]);
+      const updated = await client.query('UPDATE stock_materials SET minimum_stock = $2, version = version + 1 WHERE id = $1 RETURNING version', [
+        stockMaterialId,
+        minimumStockAfter,
+      ]);
       const after = await stockMaterialUnitsOf(client, stockMaterialId);
-      const changes = [{ field: 'units', before: before.map(recordedUnit), after: after.map(recordedUnit) }];
+      const changes: StockMaterialHistoryChange[] = [{ field: 'units', before: before.map(recordedUnit), after: after.map(recordedUnit) }];
+      // A Minimum Stock stated again counts another Base Unit, even with the same number.
+      if (baseUnitChanges && (storedMinimumStock !== null || minimumStockAfter !== null)) {
+        changes.push({ field: 'minimum_stock', before: storedMinimumStock, after: minimumStockAfter });
+      }
       await client.query(
         `INSERT INTO stock_material_history (stock_material_id, version, kind, changes, recorded_by) VALUES ($1, $2, 'UNITS_CHANGED', $3::jsonb, $4)`,
         [stockMaterialId, updated.rows[0].version, JSON.stringify(changes), actorId]

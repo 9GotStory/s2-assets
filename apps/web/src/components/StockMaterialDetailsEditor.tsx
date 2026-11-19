@@ -1,8 +1,9 @@
 import React, { useState } from 'react';
 import { ListEntryAddField, ListEntrySelect } from './ListEntryFields';
 import { LoanSaveForm } from './LoanSaveForm';
+import { MinimumStockField } from './MinimumStockField';
 import { fieldInputStyle, fieldLabelStyle } from './ReferenceContextFields';
-import { ADD_MATERIAL_CATEGORY_LABEL, EDIT_DETAILS_LABEL, MATERIAL_CATEGORY_LABEL, type StockMaterialDetail } from './materialFacts';
+import { ADD_MATERIAL_CATEGORY_LABEL, EDIT_DETAILS_LABEL, MATERIAL_CATEGORY_LABEL, amountAsStored, type StockMaterialDetail } from './materialFacts';
 import { useCsrfToken, useMaterialCategoryList } from './materialQueries';
 
 export interface StockMaterialDetailsEditorProps {
@@ -16,11 +17,13 @@ export interface StockMaterialDetailsEditorProps {
 
 /**
  * "แก้ไขข้อมูลอื่น" (F008-T4, #179): changes the Stock Material's หมวดวัสดุ and หมายเหตุ at the version the page read,
- * without a reason (#175 Q11, Q23). Its name, ยี่ห้อ, รุ่น and คุณลักษณะ change only through a Material Correction.
+ * without a reason (#175 Q11, Q23), and its จำนวนขั้นต่ำ (F008-T6, #182). Its name, ยี่ห้อ, รุ่น and คุณลักษณะ change
+ * only through a Material Correction.
  */
 export const StockMaterialDetailsEditor: React.FC<StockMaterialDetailsEditorProps> = ({ material, onRefresh, onSaved, onCancel, onPermissionRevoked }) => {
   const [materialCategoryId, setMaterialCategoryId] = useState(material.material_category?.id ?? '');
   const [note, setNote] = useState(material.note ?? '');
+  const [minimumStock, setMinimumStock] = useState(material.minimum_stock ?? '');
 
   const materialCategories = useMaterialCategoryList();
   const session = useCsrfToken(true);
@@ -48,11 +51,21 @@ export const StockMaterialDetailsEditor: React.FC<StockMaterialDetailsEditorProp
       saveUrl={`/stock-materials/${encodeURIComponent(material.id)}/details`}
       method="PUT"
       csrfToken={csrfToken}
-      // The server stores the note trimmed, blank as none, so the same text with other spaces around it is no change.
+      // The server stores the note trimmed and the Minimum Stock as a number, each blank as none, so the same text with
+      // other spaces around it, or the same amount written otherwise, is no change.
       requestError={() =>
-        materialCategoryId === (material.material_category?.id ?? '') && note.trim() === (material.note ?? '') ? 'ยังไม่มีข้อมูลที่เปลี่ยน' : null
+        materialCategoryId === (material.material_category?.id ?? '') &&
+        note.trim() === (material.note ?? '') &&
+        amountAsStored(minimumStock) === (material.minimum_stock ?? '')
+          ? 'ยังไม่มีข้อมูลที่เปลี่ยน'
+          : null
       }
-      requestBody={() => ({ expected_version: material.version, material_category_id: materialCategoryId || null, note: note.trim() || null })}
+      requestBody={() => ({
+        expected_version: material.version,
+        material_category_id: materialCategoryId || null,
+        note: note.trim() || null,
+        minimum_stock: minimumStock.trim() || null,
+      })}
       refusedList={() => null}
       forbiddenMessage="คุณไม่มีสิทธิ์แก้ไขข้อมูลวัสดุ"
       refusedMessage="ไม่สามารถบันทึกข้อมูลวัสดุได้"
@@ -91,6 +104,12 @@ export const StockMaterialDetailsEditor: React.FC<StockMaterialDetailsEditorProp
             </label>
             <textarea id="stock-material-details-note" value={note} maxLength={2000} rows={3} onChange={(e) => setNote(e.target.value)} style={fieldInputStyle} />
           </div>
+          <MinimumStockField
+            id="stock-material-details-minimum-stock"
+            value={minimumStock}
+            onChange={setMinimumStock}
+            baseName={material.units.find((unit) => unit.is_base)?.name ?? ''}
+          />
         </fieldset>
       )}
     </LoanSaveForm>

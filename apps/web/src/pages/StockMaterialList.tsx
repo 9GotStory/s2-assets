@@ -9,10 +9,14 @@ import {
   BRAND_LABEL,
   INACTIVE_LABEL,
   MATERIAL_CATEGORY_LABEL,
+  MINIMUM_STOCK_LABEL,
+  MINIMUM_STOCK_NOT_SET_LABEL,
+  MINIMUM_STOCK_SET_LABEL,
   MODEL_LABEL,
   NO_MATERIAL_CATEGORY_LABEL,
   SPECIFICATION_LABEL,
   STOCK_MATERIAL_LABEL,
+  minimumStockLine,
   type StockMaterialList as MaterialList,
 } from '../components/materialFacts';
 
@@ -28,16 +32,18 @@ const pageButtonStyle: React.CSSProperties = { padding: '0.375rem 0.875rem', bac
 
 const StockMaterialListContent: React.FC = () => {
   const navigate = useNavigate();
-  // The search, the Material Category filter and the page live in the URL, so a reload or a link keeps them.
+  // The search, the filters and the page live in the URL, so a reload or a link keeps them.
   const [params, setParams] = useSearchParams();
   const search = params.get('search') ?? '';
   // A Material Category's id, "none" for the Stock Materials with none, or empty for every one (F008-T4).
   const materialCategoryId = params.get('material_category_id') ?? '';
+  // "set", "not_set", or empty for every one (F008-T6).
+  const minimumStock = params.get('minimum_stock') ?? '';
   const offset = Math.max(0, Number(params.get('offset')) || 0);
   const [searchInput, setSearchInput] = useState(search);
 
   const materials = useQuery<MaterialList, Error & { status?: number }>({
-    queryKey: ['stock-materials', search, materialCategoryId, offset],
+    queryKey: ['stock-materials', search, materialCategoryId, minimumStock, offset],
     queryFn: async ({ signal }) => {
       const query = new URLSearchParams({ limit: String(PAGE_SIZE), offset: String(offset) });
       if (search.trim() !== '') {
@@ -45,6 +51,9 @@ const StockMaterialListContent: React.FC = () => {
       }
       if (materialCategoryId !== '') {
         query.set('material_category_id', materialCategoryId);
+      }
+      if (minimumStock !== '') {
+        query.set('minimum_stock', minimumStock);
       }
       const res = await fetch(`/stock-materials?${query}`, { credentials: 'include', signal });
       if (!res.ok) {
@@ -70,7 +79,7 @@ const StockMaterialListContent: React.FC = () => {
   const list = materials.isError ? undefined : materials.data;
   const isForbidden = materials.error?.status === 403;
 
-  const goTo = (next: { search?: string; materialCategoryId?: string; offset?: number }) => {
+  const goTo = (next: { search?: string; materialCategoryId?: string; minimumStock?: string; offset?: number }) => {
     const query = new URLSearchParams();
     const nextSearch = (next.search ?? search).trim();
     if (nextSearch !== '') {
@@ -79,6 +88,10 @@ const StockMaterialListContent: React.FC = () => {
     const nextCategory = next.materialCategoryId ?? materialCategoryId;
     if (nextCategory !== '') {
       query.set('material_category_id', nextCategory);
+    }
+    const nextMinimumStock = next.minimumStock ?? minimumStock;
+    if (nextMinimumStock !== '') {
+      query.set('minimum_stock', nextMinimumStock);
     }
     if (next.offset) {
       query.set('offset', String(next.offset));
@@ -166,6 +179,19 @@ const StockMaterialListContent: React.FC = () => {
                   </option>
                 ))}
               </select>
+              <label htmlFor="stock-material-minimum-stock-filter" style={{ fontSize: '0.875rem', color: '#374151' }}>
+                {MINIMUM_STOCK_LABEL}
+              </label>
+              <select
+                id="stock-material-minimum-stock-filter"
+                value={minimumStock}
+                onChange={(e) => goTo({ minimumStock: e.target.value, offset: 0 })}
+                style={{ ...fieldInputStyle, width: 'auto', flex: '0 1 10rem' }}
+              >
+                <option value="">ทั้งหมด</option>
+                <option value="set">{MINIMUM_STOCK_SET_LABEL}</option>
+                <option value="not_set">{MINIMUM_STOCK_NOT_SET_LABEL}</option>
+              </select>
             </div>
 
             <section aria-label={STOCK_MATERIAL_LABEL} id="stock-material-list-region">
@@ -174,7 +200,7 @@ const StockMaterialListContent: React.FC = () => {
                   id="stock-material-list-empty"
                   style={{ padding: '3rem 1rem', textAlign: 'center', backgroundColor: '#f9fafb', borderRadius: '6px', border: '1px dashed #d1d5db', color: '#6b7280', fontSize: '0.9375rem' }}
                 >
-                  {search.trim() === '' && materialCategoryId === '' ? 'ยังไม่มีวัสดุ' : 'ไม่พบวัสดุที่ค้นหา'}
+                  {search.trim() === '' && materialCategoryId === '' && minimumStock === '' ? 'ยังไม่มีวัสดุ' : 'ไม่พบวัสดุที่ค้นหา'}
                 </div>
               ) : (
                 <div style={{ overflowX: 'auto' }}>
@@ -187,6 +213,7 @@ const StockMaterialListContent: React.FC = () => {
                         <th style={headStyle}>{SPECIFICATION_LABEL}</th>
                         <th style={headStyle}>{MATERIAL_CATEGORY_LABEL}</th>
                         <th style={headStyle}>{BASE_UNIT_LABEL}</th>
+                        <th style={headStyle}>{MINIMUM_STOCK_LABEL}</th>
                       </tr>
                     </thead>
                     <tbody>
@@ -202,6 +229,7 @@ const StockMaterialListContent: React.FC = () => {
                           <td style={{ ...cellStyle, whiteSpace: 'pre-line' }}>{material.specification ?? '-'}</td>
                           <td style={cellStyle}>{material.material_category?.name ?? '-'}</td>
                           <td style={cellStyle}>{material.base_unit.name}</td>
+                          <td style={cellStyle}>{minimumStockLine(material.minimum_stock, material.base_unit.name)}</td>
                         </tr>
                       ))}
                     </tbody>
@@ -230,8 +258,8 @@ const StockMaterialListContent: React.FC = () => {
 };
 
 /**
- * The Stock Material list ("วัสดุ", F008-T1, T4): every Stock Material by name, searchable by name, Brand, Model and
- * Specification, filtered by Material Category, and "เพิ่มวัสดุ" for holders.
+ * The Stock Material list ("วัสดุ", F008-T1, T4, T6): every Stock Material by name, searchable by name, Brand, Model and
+ * Specification, filtered by Material Category and by whether a Minimum Stock is set, and "เพิ่มวัสดุ" for holders.
  */
 export const StockMaterialList: React.FC = () => {
   const [queryClient] = useState(() => new QueryClient({ defaultOptions: { queries: { retry: false, refetchOnWindowFocus: true } } }));

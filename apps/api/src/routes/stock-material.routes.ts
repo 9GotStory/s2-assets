@@ -32,6 +32,8 @@ const CreateStockMaterialSchema = z
       .array(z.object({ unit_id: z.string(), conversion_factor: z.string().nullable().optional(), whole_number_only: z.boolean().optional() }).strict())
       .max(ALTERNATE_UNITS_MAX)
       .optional(),
+    // F008-T6 (#182 decision 1): a decimal string in the Base Unit, which the service checks.
+    minimum_stock: z.string().nullable().optional(),
     retry_token: z.string().optional(),
   })
   .strict();
@@ -45,6 +47,8 @@ const ReplaceUnitsSchema = z
     alternate_units: z
       .array(z.object({ unit_id: z.string(), conversion_factor: z.string().nullable().optional(), whole_number_only: z.boolean(), is_active: z.boolean() }).strict())
       .max(ALTERNATE_UNITS_MAX),
+    // F008-T6 (#182 decision 2): the Minimum Stock in the new Base Unit, stated only when the Base Unit changes.
+    minimum_stock: z.string().nullable().optional(),
     retry_token: z.string().optional(),
   })
   .strict();
@@ -56,6 +60,8 @@ const ChangeDetailsSchema = z
     expected_version: z.number().int().positive(),
     material_category_id: z.string().nullable(),
     note: z.string().nullable(),
+    // F008-T6 (#182): a decimal string in the Base Unit, which the service checks and names when refused.
+    minimum_stock: z.string().nullable(),
     retry_token: z.string().optional(),
   })
   .strict();
@@ -78,6 +84,8 @@ const StockMaterialListQuerySchema = z
       // PostgreSQL reads a UUID in either case but refuses spaces around it.
       .transform((value) => value.trim())
       .optional(),
+    // F008-T6 (#182): the Stock Materials with a Minimum Stock set, or still without one (#175 MC-20).
+    minimum_stock: z.enum(['set', 'not_set']).optional(),
     ...pageQueryFields,
   })
   .strict();
@@ -100,7 +108,7 @@ export const stockMaterialRoutes: FastifyPluginAsync<StockMaterialRoutesOptions>
   /**
    * GET /stock-materials
    * The Stock Materials by name, a page at a time, found by text in the name, the Brand's name, the Model or the
-   * Specification and by Material Category (F008-T4), with `can_manage` telling the page whether to offer "เพิ่มวัสดุ"
+   * Specification, by Material Category (F008-T4) and by whether a Minimum Stock is set (F008-T6), with `can_manage` telling the page whether to offer "เพิ่มวัสดุ"
    * (#175 P9).
    * Protected: requires 'material:view' capability (Supply Officer, Administrator, Read-only User)
    */
@@ -110,8 +118,8 @@ export const stockMaterialRoutes: FastifyPluginAsync<StockMaterialRoutesOptions>
     if (!parsed.success) {
       return reply.status(400).send(invalidQueryBody(parsed.error));
     }
-    const { limit = 25, offset = 0, search, material_category_id } = parsed.data;
-    const list = await stockMaterialReadService.list({ search, material_category_id, limit, offset });
+    const { limit = 25, offset = 0, search, material_category_id, minimum_stock } = parsed.data;
+    const list = await stockMaterialReadService.list({ search, material_category_id, minimum_stock, limit, offset });
     const canManage = await capabilityService.hasCapability(request.user!.id, 'material:manage');
     return reply.status(200).send({ ...list, can_manage: canManage });
   });
