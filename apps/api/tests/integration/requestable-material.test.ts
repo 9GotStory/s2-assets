@@ -345,6 +345,10 @@ describe('Requestable Material (Seam A - F009-T1)', () => {
       expect(await listed(`search=${encodeURIComponent(tag)}&offset=5`)).toMatchObject({ items: [], total_count: 3, has_more: false });
     });
 
+    it('answers 25 rows from the first by default', async () => {
+      expect(await listed('')).toMatchObject({ limit: 25, offset: 0 });
+    });
+
     it('refuses a query it does not take: a page past 100, a blank or overlong search, a control character, or a field it does not know', async () => {
       for (const [query, message] of [
         ['limit=101', 'limit: must be between 1 and 100'],
@@ -394,19 +398,23 @@ describe('Requestable Material (Seam A - F009-T1)', () => {
   describe('permissions (Q18, P9)', () => {
     it('lets the Supply Officer, the Administrator and the Read-only User read the list and the page, and no one else', async () => {
       const id = await created({ name: 'ผงซักฟอกขอเบิกที่ทุกคนไม่ควรเห็น' });
+      const urls = [`/requestable-materials?search=${encodeURIComponent('ผงซักฟอกขอเบิก')}`, `/requestable-materials/${id}`];
 
       for (const viewer of [officer, admin, readonly]) {
-        expect((await api.get(viewer, '/requestable-materials')).statusCode).toBe(200);
-        expect((await api.get(viewer, `/requestable-materials/${id}`)).statusCode).toBe(200);
+        for (const url of urls) {
+          const res = await api.get(viewer, url);
+          expect(res.statusCode).toBe(200);
+          expect(res.body).toContain('ผงซักฟอกขอเบิก');
+        }
       }
       for (const other of [custodian, staff, maintainer]) {
-        for (const url of ['/requestable-materials', `/requestable-materials/${id}`]) {
+        for (const url of urls) {
           const res = await api.get(other, url);
           expect(res.statusCode).toBe(403);
           expect(res.body).not.toContain('ผงซักฟอกขอเบิก');
         }
       }
-      for (const url of ['/requestable-materials', `/requestable-materials/${id}`]) {
+      for (const url of urls) {
         const anonymous = await api.app.inject({ method: 'GET', url });
         expect(anonymous.statusCode).toBe(401);
         expect(anonymous.body).not.toContain(id);
@@ -417,7 +425,8 @@ describe('Requestable Material (Seam A - F009-T1)', () => {
     it('needs material:view itself to read, and fails closed when the lookup fails', async () => {
       const id = await created({ name: 'น้ำยาล้างจานขอเบิกที่ไม่ควรเห็น' });
 
-      for (const url of ['/requestable-materials', `/requestable-materials/${id}`]) {
+      for (const url of [`/requestable-materials?search=${encodeURIComponent('น้ำยาล้างจานขอเบิก')}`, `/requestable-materials/${id}`]) {
+        expect((await api.get(admin, url)).body).toContain('น้ำยาล้างจานขอเบิก');
         const denied = await withCapabilityAnswer(api.app, 'material:view', async () => false, () => api.get(admin, url));
         expect(denied.statusCode).toBe(403);
         expect(denied.body).not.toContain('น้ำยาล้างจานขอเบิก');
@@ -506,6 +515,18 @@ describe('Requestable Material (Seam A - F009-T1)', () => {
 
       expect(theirs.statusCode).toBe(201);
       expect(theirs.json().requestable_material_id).not.toBe(mine.json().requestable_material_id);
+    });
+
+    it('scopes a token to its operation: the same actor\'s token from another write creates anew', async () => {
+      const token = crypto.randomUUID();
+      expect((await api.post(officer, '/units', { name: `หน่วยโทเค็น ${crypto.randomUUID().slice(0, 8)}` }, { 'x-retry-token': token })).statusCode).toBe(201);
+      const before = await requestableCount();
+
+      const res = await createRequestable(base(), token);
+
+      expect(res.statusCode).toBe(201);
+      expect(res.json().requestable_material_id).toMatch(UUID);
+      expect(await requestableCount()).toBe(before + 1);
     });
 
     it('writes once for concurrent identical submissions, each answered with the committed result', async () => {

@@ -196,6 +196,9 @@ export const RECORDED_FIELD_LABELS: Record<string, string> = {
   is_active: 'สถานะ',
 };
 
+// Whether quantities in a Unit or of a Requestable Material must be whole (นับเป็นจำนวนเต็มเท่านั้น), as a page says it.
+export const wholeNumberLine = (wholeNumberOnly: boolean): string => (wholeNumberOnly ? 'ใช่' : 'ไม่ใช่ (มีเศษได้)');
+
 // A Minimum Stock with its Base Unit, as "10 รีม", or "-" for none (F008-T6, #175 MC-20).
 export const minimumStockLine = (minimumStock: string | null, baseName: string): string => (minimumStock === null ? '-' : `${minimumStock} ${baseName}`);
 

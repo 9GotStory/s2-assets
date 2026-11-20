@@ -2,7 +2,7 @@ import React, { useEffect, useState } from 'react';
 import { Link, useNavigate, useSearchParams } from 'react-router';
 import { QueryClient, QueryClientProvider, useQuery } from '@tanstack/react-query';
 import { fieldInputStyle } from '../components/ReferenceContextFields';
-import { ACTIVE_LABEL, INACTIVE_LABEL, WHOLE_NUMBER_UNIT_LABEL } from '../components/materialFacts';
+import { ACTIVE_LABEL, INACTIVE_LABEL, WHOLE_NUMBER_UNIT_LABEL, wholeNumberLine } from '../components/materialFacts';
 import {
   ADD_REQUESTABLE_MATERIAL_LABEL,
   REQUEST_UNIT_LABEL,
@@ -158,7 +158,7 @@ const RequestableMaterialListContent: React.FC = () => {
                             </Link>
                           </td>
                           <td style={cellStyle}>{requestable.request_unit.name}</td>
-                          <td style={cellStyle}>{requestable.whole_number_only ? 'ใช่' : 'ไม่ใช่ (มีเศษได้)'}</td>
+                          <td style={cellStyle}>{wholeNumberLine(requestable.whole_number_only)}</td>
                           <td style={cellStyle}>{requestable.is_active ? ACTIVE_LABEL : INACTIVE_LABEL}</td>
                         </tr>
                       ))}

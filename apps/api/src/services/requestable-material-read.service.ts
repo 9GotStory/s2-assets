@@ -34,9 +34,9 @@ export interface RequestableMaterialList {
   has_more: boolean;
 }
 
-// The kinds of change a history entry records: F009-T1 writes CREATED, T7 INACTIVATED and REACTIVATED, T8 RENAMED and
-// DETAILS_CHANGED (0029_requestable_materials).
-export type RequestableMaterialHistoryKind = 'CREATED' | 'RENAMED' | 'DETAILS_CHANGED' | 'INACTIVATED' | 'REACTIVATED';
+// The kinds of change a history entry records: F009-T1 writes CREATED; T7 adds INACTIVATED and REACTIVATED, T8 RENAMED
+// and DETAILS_CHANGED, which 0029_requestable_materials already takes.
+export type RequestableMaterialHistoryKind = 'CREATED';
 
 // One entry of a Requestable Material's history, with the values it recorded as they were then, the Request Unit as
 // { id, name } (#202 Q17, #175 P6).

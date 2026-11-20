@@ -1,7 +1,7 @@
 import React, { useEffect, useState } from 'react';
 import { Link, useNavigate, useParams } from 'react-router';
 import { QueryClient, QueryClientProvider, useQuery } from '@tanstack/react-query';
-import { ACTIVE_LABEL, INACTIVE_LABEL, WHOLE_NUMBER_UNIT_LABEL } from '../components/materialFacts';
+import { ACTIVE_LABEL, INACTIVE_LABEL, WHOLE_NUMBER_UNIT_LABEL, wholeNumberLine } from '../components/materialFacts';
 import {
   REQUEST_UNIT_LABEL,
   REQUESTABLE_HISTORY_KIND_LABELS,
@@ -29,9 +29,6 @@ const RECORDED_FIELD_LABELS: Record<RequestableMaterialRecordedChange['field'], 
   whole_number_only: WHOLE_NUMBER_UNIT_LABEL,
   description: 'รายละเอียด',
 };
-
-// Whether the quantities must be whole, as the page says it.
-const wholeNumberLine = (wholeNumberOnly: boolean) => (wholeNumberOnly ? 'ใช่' : 'ไม่ใช่ (มีเศษได้)');
 
 // A recorded value as the history shows it: the Request Unit by its name then, the whole-number setting as ใช่ or
 // ไม่ใช่, text as it was.

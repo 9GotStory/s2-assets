@@ -1,6 +1,6 @@
 // What the API answers about the Requestable Materials (F009-T1), and their labels from GLOSSARY.md (#202, Web).
 
-import type { NamedListEntry } from './materialFacts';
+import { HISTORY_KIND_LABELS, type NamedListEntry } from './materialFacts';
 
 // The Request Unit of a Requestable Material, under the name its list entry has now.
 export interface RequestUnit {
@@ -70,5 +70,5 @@ export const ADD_REQUESTABLE_MATERIAL_LABEL = 'เพิ่มวัสดุส
 
 // What the kind of each history entry is called on the Requestable Material page.
 export const REQUESTABLE_HISTORY_KIND_LABELS: Record<RequestableMaterialHistoryKind, string> = {
-  CREATED: 'สร้างรายการ',
+  CREATED: HISTORY_KIND_LABELS.CREATED,
 };
