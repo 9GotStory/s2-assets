@@ -2,7 +2,7 @@ import React, { useEffect, useState } from 'react';
 import { useNavigate, Link } from 'react-router';
 import { REPAIR_LIST_LABEL, REPAIR_SECTION_LABEL } from '../components/repairFacts';
 import { VERIFICATION_ROUND_LABEL } from '../components/verificationFacts';
-import { STOCK_MATERIAL_LABEL } from '../components/materialFacts';
+import { CATALOG_LISTS_LABEL, STOCK_MATERIAL_LABEL } from '../components/materialFacts';
 
 export interface SafeUser {
   id: string;
@@ -590,7 +590,7 @@ export const Dashboard: React.FC = () => {
               {STOCK_MATERIAL_LABEL}
             </h2>
             <p style={{ margin: '0 0 1rem 0', fontSize: '0.875rem', color: '#4b5563' }}>
-              ดูและค้นหารายการวัสดุสิ้นเปลือง พร้อมหน่วยนับของแต่ละรายการ
+              ดูและค้นหารายการวัสดุสิ้นเปลือง พร้อมหน่วยนับของแต่ละรายการ และดูแลรายการยี่ห้อ หมวดวัสดุ และหน่วยนับ
             </p>
             <div style={{ display: 'flex', gap: '0.75rem', flexWrap: 'wrap' }}>
               <Link
@@ -608,6 +608,22 @@ export const Dashboard: React.FC = () => {
                 }}
               >
                 รายการ{STOCK_MATERIAL_LABEL}
+              </Link>
+              <Link
+                to="/stock-materials/lists"
+                id="nav-catalog-lists"
+                style={{
+                  display: 'inline-block',
+                  padding: '0.5rem 1rem',
+                  backgroundColor: '#4b5563',
+                  color: '#ffffff',
+                  textDecoration: 'none',
+                  borderRadius: '4px',
+                  fontSize: '0.875rem',
+                  fontWeight: 500,
+                }}
+              >
+                {CATALOG_LISTS_LABEL}
               </Link>
             </div>
           </section>

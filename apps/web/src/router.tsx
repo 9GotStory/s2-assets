@@ -19,6 +19,7 @@ import { VerificationRoundList } from './pages/VerificationRoundList';
 import { StockMaterialList } from './pages/StockMaterialList';
 import { StockMaterialCreate } from './pages/StockMaterialCreate';
 import { StockMaterialDetail } from './pages/StockMaterialDetail';
+import { CatalogListMaintenance } from './pages/CatalogListMaintenance';
 
 export const ProtectedDetailBoundary: React.FC = () => {
   const navigate = useNavigate();
@@ -372,6 +373,10 @@ export const routes: RouteObject[] = [
   {
     path: '/stock-materials/new',
     element: <StockMaterialCreate />,
+  },
+  {
+    path: '/stock-materials/lists',
+    element: <CatalogListMaintenance />,
   },
   {
     path: '/stock-materials/:id',

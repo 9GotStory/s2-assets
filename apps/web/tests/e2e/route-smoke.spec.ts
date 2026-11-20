@@ -60,6 +60,8 @@ const SMOKE: Record<string, { url: (f: Fixtures) => string; heading: (f: Fixture
   // F008-T1 (#176): every catalog viewer reads the Stock Materials; creating one is material:manage.
   '/stock-materials': { url: () => '/stock-materials', heading: () => 'วัสดุ' },
   '/stock-materials/new': { skip: 'a write: material:manage' },
+  // F008-T8 (#183): every catalog viewer reads the Brand, Material Category and Unit lists; keeping them is material:manage.
+  '/stock-materials/lists': { url: () => '/stock-materials/lists', heading: () => 'ยี่ห้อ หมวดวัสดุ และหน่วยนับ' },
   '/stock-materials/:id': { url: (f) => `/stock-materials/${f.stockMaterialId}`, heading: (f) => f.stockMaterialName },
 };
 

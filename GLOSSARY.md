@@ -373,6 +373,11 @@ is deleted, and stock an Inactive Stock Material still holds can still be handle
 (เปิดใช้อีกครั้ง) brings back the same one. One not Inactive is ใช้งานอยู่.
 _Avoid_: archived
 
+**Rename** (เปลี่ยนชื่อ):
+Changing how a Brand, Material Category or Unit is spelled, never what it means. Every Stock Material
+using it shows the new name, while each history keeps the name as it was when recorded; the entry's
+own history keeps the old name and the new (#183).
+
 **Duplicate Candidate** (รายการที่อาจซ้ำ):
 An existing Stock Material, Inactive ones included, whose name looks like that of one being created
 or corrected, shown as a warning. A person decides whether it is a different thing, confirming
