@@ -4,10 +4,12 @@ import { LoanSaveForm } from './LoanSaveForm';
 import { MinimumStockField } from './MinimumStockField';
 import { fieldInputStyle, fieldLabelStyle } from './ReferenceContextFields';
 import { ADD_MATERIAL_CATEGORY_LABEL, EDIT_DETAILS_LABEL, MATERIAL_CATEGORY_LABEL, amountAsStored, type StockMaterialDetail } from './materialFacts';
-import { useCsrfToken, useMaterialCategoryList } from './materialQueries';
+import { useMaterialCategoryList } from './materialQueries';
 
 export interface StockMaterialDetailsEditorProps {
   material: StockMaterialDetail;
+  // The session's CSRF token: the page offers the form only once it is in hand (#135).
+  csrfToken: string;
   // Reads the Stock Material again and returns whether it could.
   onRefresh: () => Promise<boolean>;
   onSaved: () => Promise<void>;
@@ -20,14 +22,12 @@ export interface StockMaterialDetailsEditorProps {
  * without a reason (#175 Q11, Q23), and its จำนวนขั้นต่ำ (F008-T6, #182). Its name, ยี่ห้อ, รุ่น and คุณลักษณะ change
  * only through a Material Correction.
  */
-export const StockMaterialDetailsEditor: React.FC<StockMaterialDetailsEditorProps> = ({ material, onRefresh, onSaved, onCancel, onPermissionRevoked }) => {
+export const StockMaterialDetailsEditor: React.FC<StockMaterialDetailsEditorProps> = ({ material, csrfToken, onRefresh, onSaved, onCancel, onPermissionRevoked }) => {
   const [materialCategoryId, setMaterialCategoryId] = useState(material.material_category?.id ?? '');
   const [note, setNote] = useState(material.note ?? '');
   const [minimumStock, setMinimumStock] = useState(material.minimum_stock ?? '');
 
   const materialCategories = useMaterialCategoryList();
-  const session = useCsrfToken(true);
-  const csrfToken = session.data ?? null;
 
   if (materialCategories.isError) {
     return (
@@ -36,7 +36,7 @@ export const StockMaterialDetailsEditor: React.FC<StockMaterialDetailsEditorProp
       </div>
     );
   }
-  if (!materialCategories.data || session.isPending) {
+  if (!materialCategories.data) {
     return (
       <div role="status" aria-busy="true" style={{ padding: '1rem', color: '#6b7280', fontSize: '0.875rem' }}>
         กำลังโหลด...
@@ -91,7 +91,7 @@ export const StockMaterialDetailsEditor: React.FC<StockMaterialDetailsEditorProp
               addLabel={ADD_MATERIAL_CATEGORY_LABEL}
               placeholder="ชื่อหมวดวัสดุใหม่"
               csrfToken={csrfToken}
-              disabled={isLocked || csrfToken === null}
+              disabled={isLocked}
               onAdded={async (category) => {
                 await materialCategories.refetch();
                 setMaterialCategoryId(category.id);

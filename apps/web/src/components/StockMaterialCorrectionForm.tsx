@@ -3,12 +3,14 @@ import { ListEntrySelect } from './ListEntryFields';
 import { LoanSaveForm } from './LoanSaveForm';
 import { fieldInputStyle, fieldLabelStyle } from './ReferenceContextFields';
 import { BRAND_LABEL, MATERIAL_CORRECTION_LABEL, MODEL_LABEL, SPECIFICATION_LABEL, STOCK_MATERIAL_LABEL, type StockMaterialDetail } from './materialFacts';
-import { useBrandList, useCsrfToken } from './materialQueries';
+import { useBrandList } from './materialQueries';
 
 const fieldStyle: React.CSSProperties = { marginBottom: '0.75rem' };
 
 export interface StockMaterialCorrectionFormProps {
   material: StockMaterialDetail;
+  // The session's CSRF token: the page offers the form only once it is in hand (#135).
+  csrfToken: string;
   // Reads the Stock Material again and returns whether it could.
   onRefresh: () => Promise<boolean>;
   onSaved: () => Promise<void>;
@@ -22,7 +24,7 @@ export interface StockMaterialCorrectionFormProps {
  * or specification is a new Stock Material (MC-11, MC-18), and a save with Duplicate Candidates waits for
  * "เป็นคนละรายการ" (MC-17).
  */
-export const StockMaterialCorrectionForm: React.FC<StockMaterialCorrectionFormProps> = ({ material, onRefresh, onSaved, onCancel, onPermissionRevoked }) => {
+export const StockMaterialCorrectionForm: React.FC<StockMaterialCorrectionFormProps> = ({ material, csrfToken, onRefresh, onSaved, onCancel, onPermissionRevoked }) => {
   const [name, setName] = useState(material.name);
   const [brandId, setBrandId] = useState(material.brand?.id ?? '');
   const [model, setModel] = useState(material.model ?? '');
@@ -30,8 +32,6 @@ export const StockMaterialCorrectionForm: React.FC<StockMaterialCorrectionFormPr
   const [reason, setReason] = useState('');
 
   const brands = useBrandList();
-  const session = useCsrfToken(true);
-  const csrfToken = session.data ?? null;
 
   if (brands.isError) {
     return (
@@ -40,7 +40,7 @@ export const StockMaterialCorrectionForm: React.FC<StockMaterialCorrectionFormPr
       </div>
     );
   }
-  if (!brands.data || session.isPending) {
+  if (!brands.data) {
     return (
       <div role="status" aria-busy="true" style={{ padding: '1rem', color: '#6b7280', fontSize: '0.875rem' }}>
         กำลังโหลด...

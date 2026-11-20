@@ -14,7 +14,9 @@ export interface LoanSaveFormProps {
   // POST unless the write edits its target in place (F006-T6: PATCH of a Verification Round) or replaces a whole
   // set (F008-T3: PUT of a Stock Material's Units).
   method?: 'POST' | 'PATCH' | 'PUT';
-  csrfToken: string | null;
+  // The session's CSRF token: a page renders the form only once it is in hand, since a save sent without it is refused
+  // as if the grant were gone (#135).
+  csrfToken: string;
   // Why this request cannot be sent, or null when it can. The server decides again.
   requestError: () => string | null;
   requestBody: () => Record<string, unknown>;
@@ -132,7 +134,7 @@ export const LoanSaveForm: React.FC<LoanSaveFormProps> = ({
         headers: {
           'Content-Type': 'application/json',
           'x-retry-token': request.retry_token,
-          ...(csrfToken ? { 'x-csrf-token': csrfToken } : {}),
+          'x-csrf-token': csrfToken,
         },
         credentials: 'include',
         body: JSON.stringify(request),

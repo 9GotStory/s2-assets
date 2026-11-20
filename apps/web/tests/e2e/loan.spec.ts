@@ -711,12 +711,20 @@ test.describe.serial('Loan journeys: Real SPA -> Composed API -> PostgreSQL (Sea
     await page.locator('#loan-submit').click();
     await expect(page.locator('[data-testid="loan-on-loan"]')).toContainText('คุณผู้ยืมรายใหม่ E2E');
 
-    // The last item back closes the Loan, and the action goes with it.
+    // The last item back closes the Loan, and the action goes with it. The session answers late: the action waits for
+    // its CSRF token, or a quick submit would be refused as if the grant were gone (#135).
+    await page.route('**/auth/session-check', async (route) => {
+      await new Promise((resolve) => setTimeout(resolve, 1500));
+      await route.continue();
+    });
     await page.goto(`${targetBaseUrl}/loans/${loanId}`);
+    await expect(page.locator('#loan-status')).toContainText('คืนแล้ว 1 จาก 2 รายการ');
+    await expect(page.locator('main button[id$="-action"]')).toHaveCount(0);
     await page.locator('#loan-return-action').click();
     await page.locator(`#loan-return-select-${stillOutItem}`).check();
     await page.locator(`#loan-return-condition-${stillOutItem}`).selectOption('NORMAL');
     await page.locator('#loan-return-submit').click();
+    await page.unroute('**/auth/session-check');
     await expect(page.locator('#loan-status')).toContainText('คืนครบ');
     await expect(page.locator('#loan-status')).toContainText('คืนแล้ว 2 จาก 2 รายการ');
     await expect(page.locator('#loan-return-action')).toHaveCount(0);

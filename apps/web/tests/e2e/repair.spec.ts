@@ -500,11 +500,19 @@ test.describe.serial('Repair journeys: Real SPA -> Composed API -> PostgreSQL (S
     await expect(page.locator('[data-testid="repair-under-repair"]')).toContainText('อยู่ระหว่างซ่อม');
     await expect(page.locator(`[data-testid="repair-history-voided-outcome-${outcomeId}-voided"]`)).toHaveText('ยกเลิกแล้ว');
 
-    // Voiding the record ends Under Repair; it stays shown, struck through, with no action left on it.
+    // Voiding the record ends Under Repair; it stays shown, struck through, with no action left on it. The session
+    // answers late: the action waits for its CSRF token, or a quick submit would be refused as if the grant were gone (#135).
+    await page.route('**/auth/session-check', async (route) => {
+      await new Promise((resolve) => setTimeout(resolve, 1500));
+      await route.continue();
+    });
     await page.locator('#repair-current-link').click();
+    await expect(page.locator('#repair-status')).toHaveText('อยู่ระหว่างซ่อม');
+    await expect(page.locator('main button[id$="-action"]')).toHaveCount(0);
     await page.locator('#repair-void-action').click();
     await page.locator('#repair-void-reason').fill('ไม่เคยส่งซ่อมจริง');
     await page.locator('#repair-void-submit').click();
+    await page.unroute('**/auth/session-check');
     await expect(page.locator('[data-testid="repair-voided"]')).toBeVisible();
     await expect(page.locator('#repair-status')).toHaveText('ยกเลิกแล้ว');
     await expect(corrections).toHaveCount(3);

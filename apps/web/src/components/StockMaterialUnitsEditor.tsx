@@ -3,10 +3,12 @@ import { LoanSaveForm } from './LoanSaveForm';
 import { MinimumStockField } from './MinimumStockField';
 import { UnitSetFields, alternateRequestOf, unitNameOf, unitSetError, unitSetOf, type UnitSetValue } from './UnitSetFields';
 import { EDIT_UNITS_LABEL, MINIMUM_STOCK_LABEL, minimumStockLine, type StockMaterialDetail } from './materialFacts';
-import { useCsrfToken, useUnitList } from './materialQueries';
+import { useUnitList } from './materialQueries';
 
 export interface StockMaterialUnitsEditorProps {
   material: StockMaterialDetail;
+  // The session's CSRF token: the page offers the form only once it is in hand (#135).
+  csrfToken: string;
   // Reads the Stock Material again and returns whether it could.
   onRefresh: () => Promise<boolean>;
   onSaved: () => Promise<void>;
@@ -20,13 +22,12 @@ export interface StockMaterialUnitsEditorProps {
  * อัตราแปลง and keeps the old Base Unit as an Alternate Unit, to get a factor or be made Inactive. F008-T6 (#182
  * decision 2): it also asks for the จำนวนขั้นต่ำ again in the new Base Unit, blank for none, when there is one.
  */
-export const StockMaterialUnitsEditor: React.FC<StockMaterialUnitsEditorProps> = ({ material, onRefresh, onSaved, onCancel, onPermissionRevoked }) => {
+export const StockMaterialUnitsEditor: React.FC<StockMaterialUnitsEditorProps> = ({ material, csrfToken, onRefresh, onSaved, onCancel, onPermissionRevoked }) => {
   const [unitSet, setUnitSet] = useState<UnitSetValue>(() => unitSetOf(material.units));
   const [kept] = useState<ReadonlySet<string>>(() => new Set(material.units.map(({ unit_id }) => unit_id)));
   const [minimumStock, setMinimumStock] = useState('');
 
   const units = useUnitList();
-  const session = useCsrfToken(true);
 
   if (units.isError) {
     return (
@@ -35,7 +36,7 @@ export const StockMaterialUnitsEditor: React.FC<StockMaterialUnitsEditorProps> =
       </div>
     );
   }
-  if (!units.data || session.isPending) {
+  if (!units.data) {
     return (
       <div role="status" aria-busy="true" style={{ padding: '1rem', color: '#6b7280', fontSize: '0.875rem' }}>
         กำลังโหลด...
@@ -53,7 +54,7 @@ export const StockMaterialUnitsEditor: React.FC<StockMaterialUnitsEditorProps> =
       heading={EDIT_UNITS_LABEL}
       saveUrl={`/stock-materials/${encodeURIComponent(material.id)}/units`}
       method="PUT"
-      csrfToken={session.data ?? null}
+      csrfToken={csrfToken}
       requestError={() => unitSetError(unitSet, unitList)}
       requestBody={() => ({
         expected_version: material.version,

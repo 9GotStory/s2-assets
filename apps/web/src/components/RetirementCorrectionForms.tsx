@@ -17,7 +17,7 @@ import {
 
 export interface RetirementCorrectionFormProps {
   retirement: Retirement;
-  csrfToken: string | null;
+  csrfToken: string;
   onRecorded: () => Promise<void>;
   // Reads the latest Asset and returns the Retirement's version, or null when the read failed.
   onRefresh: () => Promise<number | null>;

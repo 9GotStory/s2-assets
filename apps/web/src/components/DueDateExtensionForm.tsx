@@ -6,7 +6,7 @@ import { DUE_DATE_EXTENSION_LABEL, isOutstanding, type Loan } from './loanFacts'
 
 export interface DueDateExtensionFormProps {
   loan: Loan;
-  csrfToken: string | null;
+  csrfToken: string;
   onRecorded: () => Promise<void>;
   // Reads the latest Loan and returns its version, or null when the read failed.
   onRefresh: () => Promise<number | null>;

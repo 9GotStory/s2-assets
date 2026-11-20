@@ -7,7 +7,7 @@ import { LATE_ADDITION_LABEL, RESULT_LABELS, type OpenVerificationRound } from '
 export interface VerificationLateAdditionFormProps {
   assetId: string;
   round: OpenVerificationRound;
-  csrfToken: string | null;
+  csrfToken: string;
   onAdded: () => Promise<void>;
   onClose: () => void;
   onPermissionRevoked?: (statusCode?: number) => void;

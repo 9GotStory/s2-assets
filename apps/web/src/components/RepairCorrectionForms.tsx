@@ -31,7 +31,7 @@ export interface RepairCorrectionFormProps {
   target: RepairCorrectionTarget;
   // What the form calls the fact it corrects: "รายการซ่อม" or "ผลการซ่อม".
   targetLabel: string;
-  csrfToken: string | null;
+  csrfToken: string;
   onRecorded: () => Promise<void>;
   // Reads the latest Repair Record and returns its version, or null when the read failed.
   onRefresh: () => Promise<number | null>;

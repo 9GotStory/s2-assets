@@ -24,7 +24,7 @@ import {
 export interface VerificationRecordFormProps {
   assetId: string;
   round: OpenVerificationRound;
-  csrfToken: string | null;
+  csrfToken: string;
   // A Re-verification names the current revision it saw (F006-T4); a first result names none.
   expectedRevisionId?: string;
   onRecorded: () => Promise<void>;

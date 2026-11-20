@@ -8,7 +8,7 @@ import { RECORD_REPAIR_OUTCOME_LABEL, costError, type RepairOutcomeRefusal, type
 
 export interface RepairOutcomeFormProps {
   record: RepairRecord;
-  csrfToken: string | null;
+  csrfToken: string;
   onRecorded: () => Promise<void>;
   // Reads the latest Repair Record and returns its version, or null when the read failed.
   onRefresh: () => Promise<number | null>;

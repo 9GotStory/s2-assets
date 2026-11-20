@@ -38,8 +38,9 @@ const StockMaterialCreateContent: React.FC = () => {
   const materialCategories = useMaterialCategoryList();
   const canManage = units.data?.can_manage === true && !units.isError;
   const session = useCsrfToken(canManage);
-  // The form waits for the token: a request sent without it is refused as if the grant were gone.
+  // The form waits for the token: a request sent without it is refused as if the grant were gone (#135).
   const csrfToken = session.data ?? null;
+  const mayCreate = canManage && csrfToken !== null;
 
   const isSignedOut = units.error?.status === 401;
   useEffect(() => {
@@ -97,7 +98,7 @@ const StockMaterialCreateContent: React.FC = () => {
           </div>
         ) : null}
 
-        {canManage && (
+        {mayCreate && (
           <LoanSaveForm
             idPrefix="stock-material"
             heading="ข้อมูลวัสดุ"
@@ -136,7 +137,7 @@ const StockMaterialCreateContent: React.FC = () => {
                     addLabel={ADD_BRAND_LABEL}
                     placeholder="ชื่อยี่ห้อใหม่"
                     csrfToken={csrfToken}
-                    disabled={isLocked || csrfToken === null}
+                    disabled={isLocked}
                     onAdded={async (brand) => {
                       await brands.refetch();
                       setBrandId(brand.id);
@@ -169,7 +170,7 @@ const StockMaterialCreateContent: React.FC = () => {
                     addLabel={ADD_MATERIAL_CATEGORY_LABEL}
                     placeholder="ชื่อหมวดวัสดุใหม่"
                     csrfToken={csrfToken}
-                    disabled={isLocked || csrfToken === null}
+                    disabled={isLocked}
                     onAdded={async (category) => {
                       await materialCategories.refetch();
                       setMaterialCategoryId(category.id);
@@ -196,7 +197,7 @@ const StockMaterialCreateContent: React.FC = () => {
                       addLabel={ADD_UNIT_LABEL}
                       placeholder="ชื่อหน่วยนับใหม่ เช่น รีม"
                       csrfToken={csrfToken}
-                      disabled={isLocked || csrfToken === null}
+                      disabled={isLocked}
                       onAdded={async (unit) => {
                         await units.refetch();
                         setUnitSet((current) =>
