@@ -1,8 +1,7 @@
 import pg from 'pg';
 import { containsPattern } from './asset-lookups.ts';
-import { joinCatalogListEntry, type NamedListEntry } from './catalog-list-entries.ts';
+import { joinCatalogListEntry, joinUnitEntry, type CatalogListKind, type NamedListEntry } from './catalog-list-entries.ts';
 import { comparedName } from './compared-name.ts';
-import { joinUnitEntry } from './unit-entries.ts';
 
 // One row of the Stock Material list (#175 Q15).
 export interface StockMaterialRow {
@@ -114,19 +113,41 @@ export interface StockMaterialDetail {
 
 /**
  * A Stock Material's Units, the Base Unit first and then the Alternate Units by name, each under the name its list
- * entry has now. A write reads them through `client` inside its transaction, for the history it records (#175 P6).
+ * entry has now. A write reads them through `client` inside its transaction, for the history it records (#175 P6),
+ * `locked`: each Unit's list entry is then locked FOR SHARE before its name is read, so that a rename waits for the
+ * write or is seen by it (F008-T8, CODING_STANDARDS).
  */
-export async function stockMaterialUnitsOf(client: pg.Pool | pg.PoolClient, stockMaterialId: string): Promise<StockMaterialUnit[]> {
+export async function stockMaterialUnitsOf(client: pg.Pool | pg.PoolClient, stockMaterialId: string, { locked = false }: { locked?: boolean } = {}): Promise<StockMaterialUnit[]> {
   const res = await client.query(
     `SELECT su.unit_id, u.name, u.is_active AS unit_is_active, su.is_base, trim_scale(su.conversion_factor)::text AS conversion_factor,
             su.whole_number_only, su.is_active
      FROM stock_material_units su
      ${joinUnitEntry('u', 'su.unit_id')}
      WHERE su.stock_material_id = $1
-     ORDER BY su.is_base DESC, lower(u.name) ASC, u.id ASC`,
+     ORDER BY su.is_base DESC, lower(u.name) ASC, u.id ASC
+     ${locked ? 'FOR SHARE OF u' : ''}`,
     [stockMaterialId]
   );
   return res.rows;
+}
+
+// How many Stock Materials name each entry of a list: a Unit as the Base Unit or an Alternate Unit, a Brand or a
+// Material Category as its own.
+const USAGE_QUERIES: Record<CatalogListKind, string> = {
+  unit: 'SELECT unit_id AS id, count(*)::int AS usage_count FROM stock_material_units GROUP BY unit_id',
+  brand: 'SELECT brand_id AS id, count(*)::int AS usage_count FROM stock_materials WHERE brand_id IS NOT NULL GROUP BY brand_id',
+  'material-category':
+    'SELECT material_category_id AS id, count(*)::int AS usage_count FROM stock_materials WHERE material_category_id IS NOT NULL GROUP BY material_category_id',
+};
+
+/**
+ * F008-T8 (#183): how many Stock Materials name each entry of the list `kind`, by its id, which a rename shows before
+ * saving (#175 Q19). It counts every one the new name would show on: Inactive Stock Materials and Inactive Alternate
+ * Units included (#183 decision 3). An entry that none names is left out.
+ */
+export async function stockMaterialUsageOf(runner: pg.Pool | pg.PoolClient, kind: CatalogListKind): Promise<Map<string, number>> {
+  const res = await runner.query(USAGE_QUERIES[kind]);
+  return new Map(res.rows.map((row: { id: string; usage_count: number }) => [row.id, row.usage_count]));
 }
 
 // The entry a row joined as `<prefix>_id` and `<prefix>_name`, or null when it names none.

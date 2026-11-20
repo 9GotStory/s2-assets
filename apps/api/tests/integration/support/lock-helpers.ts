@@ -17,11 +17,12 @@ type LockMode = 'FOR UPDATE' | 'FOR SHARE';
  */
 export function lockHelpers(context: () => { api: ApiHarness }) {
   // How many writes wait on a row lock of `table`, as the services take it: `FROM <table> WHERE id … FOR UPDATE`,
-  // or `FROM <table> … FOR SHARE`.
+  // or `FROM <table> … FOR SHARE`, or `JOIN <table> … FOR SHARE OF` it, as F008-T8 locks the Units a Stock Material
+  // names; `\M` ends the table's name, so units is not stock_material_units.
   const waitersOnLock = async (table: LockedTable, mode: LockMode): Promise<number> => {
     const res = await context().api.pool.query(
-      `SELECT count(*)::int AS n FROM pg_stat_activity WHERE wait_event_type = 'Lock' AND query LIKE $1`,
-      [mode === 'FOR UPDATE' ? `%FROM ${table} WHERE id%FOR UPDATE%` : `%FROM ${table}%FOR SHARE%`]
+      `SELECT count(*)::int AS n FROM pg_stat_activity WHERE wait_event_type = 'Lock' AND query ~ $1`,
+      [mode === 'FOR UPDATE' ? `FROM ${table} WHERE id.*FOR UPDATE` : `(FROM|JOIN) ${table}\\M.*FOR SHARE`]
     );
     return res.rows[0].n;
   };

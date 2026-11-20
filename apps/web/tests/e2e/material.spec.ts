@@ -9,7 +9,6 @@ import { runMigrator } from '../../../../packages/db/src/migrator.ts';
 import { buildApp } from '../../../api/src/app.ts';
 import { UserService } from '../../../api/src/services/user.service.ts';
 import { SessionService } from '../../../api/src/services/session.service.ts';
-import { UnitService } from '../../../api/src/services/unit.service.ts';
 import { StockMaterialService } from '../../../api/src/services/stock-material.service.ts';
 import { CatalogListService } from '../../../api/src/services/catalog-list.service.ts';
 import { repositoryProxyConfig } from '../../vite.config.ts';
@@ -207,7 +206,7 @@ test.describe.serial('Stock Material journeys: Real SPA -> Composed API -> Postg
   test('Journey F008-T3.1: a Supply Officer creates a Stock Material with an Alternate Unit, sees "1 กล่อง = 5 รีม", and changes its Base Unit in the Units editor', async ({ page, context }) => {
     // แผ่น and กระดาษถ่ายเอกสาร A4, which Journey F008-T1.1 adds when it runs first.
     if ((await pool.query(`SELECT 1 FROM units WHERE name = 'แผ่น'`)).rows.length === 0) {
-      await new UnitService({ db: pool }).add(officerUserId, 'แผ่น', { retryToken: crypto.randomUUID() });
+      await new CatalogListService({ db: pool }).add(officerUserId, 'unit', 'แผ่น', { retryToken: crypto.randomUUID() });
     }
     if ((await pool.query(`SELECT 1 FROM stock_materials WHERE name = 'กระดาษถ่ายเอกสาร A4'`)).rows.length === 0) {
       const sheet = (await pool.query(`SELECT id FROM units WHERE name = 'แผ่น'`)).rows[0].id;
@@ -472,7 +471,7 @@ test.describe.serial('Stock Material journeys: Real SPA -> Composed API -> Postg
   test('Journey F008-T5.1: a Supply Officer makes a Material Correction with a reason, warned that a different item is a new Stock Material and of a Duplicate Candidate, and finds it in the history', async ({ page, context }) => {
     const tag = crypto.randomUUID().slice(0, 4);
     const cartridge = freshUnitName('ตลับ');
-    const unit = await new UnitService({ db: pool }).add(officerUserId, cartridge, { retryToken: crypto.randomUUID() });
+    const unit = await new CatalogListService({ db: pool }).add(officerUserId, 'unit', cartridge, { retryToken: crypto.randomUUID() });
     const brand = await new CatalogListService({ db: pool }).add(officerUserId, 'brand', `HP ${tag}`, { retryToken: crypto.randomUUID() });
     const service = new StockMaterialService({ db: pool });
     const { stock_material_id: id } = await service.create(
@@ -554,7 +553,7 @@ test.describe.serial('Stock Material journeys: Real SPA -> Composed API -> Postg
   test('Journey F008-T7.1: a Supply Officer makes a Stock Material Inactive with a note, finds it with the status filter and its "หยุดใช้" badge, and reactivates it as the same record, each refused as stale when another Supply Officer changed the status first', async ({ page, context }) => {
     const tag = crypto.randomUUID().slice(0, 8);
     const box = freshUnitName('กล่อง');
-    const unit = await new UnitService({ db: pool }).add(officerUserId, box, { retryToken: crypto.randomUUID() });
+    const unit = await new CatalogListService({ db: pool }).add(officerUserId, 'unit', box, { retryToken: crypto.randomUUID() });
     const name = `ลวดเย็บกระดาษ ${tag}`;
     const service = new StockMaterialService({ db: pool });
     const { stock_material_id: id } = await service.create(
@@ -668,7 +667,7 @@ test.describe.serial('Stock Material journeys: Real SPA -> Composed API -> Postg
 
   test('Journey F008-T1.2: a Read-only User reads the list and a Stock Material page with no action, and an Asset Custodian has no "วัสดุ" menu', async ({ page, context }) => {
     const bottle = freshUnitName('ขวด');
-    const unit = await new UnitService({ db: pool }).add(officerUserId, bottle, { retryToken: crypto.randomUUID() });
+    const unit = await new CatalogListService({ db: pool }).add(officerUserId, 'unit', bottle, { retryToken: crypto.randomUUID() });
     const { stock_material_id: id } = await new StockMaterialService({ db: pool }).create(
       officerUserId,
       { name: 'น้ำยาเช็ดกระจก', model: 'Glass Clean', specification: '500 มล.', base_unit: { unit_id: unit.id, whole_number_only: false } },

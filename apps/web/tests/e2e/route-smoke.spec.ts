@@ -14,7 +14,7 @@ import { AcquisitionService } from '../../../api/src/services/acquisition.servic
 import { LoanService } from '../../../api/src/services/loan.service.ts';
 import { RepairService } from '../../../api/src/services/repair.service.ts';
 import { VerificationService } from '../../../api/src/services/verification.service.ts';
-import { UnitService } from '../../../api/src/services/unit.service.ts';
+import { CatalogListService } from '../../../api/src/services/catalog-list.service.ts';
 import { StockMaterialService } from '../../../api/src/services/stock-material.service.ts';
 import { repositoryProxyConfig } from '../../vite.config.ts';
 
@@ -148,7 +148,7 @@ test.describe.serial('Route smoke: Real SPA -> Composed API -> PostgreSQL (Seam 
       { retryToken: crypto.randomUUID() }
     );
     const stockMaterialName = 'กระดาษ E2E route smoke';
-    const unit = await new UnitService({ db: pool }).add(officerUserId, 'รีม', { retryToken: crypto.randomUUID() });
+    const unit = await new CatalogListService({ db: pool }).add(officerUserId, 'unit', 'รีม', { retryToken: crypto.randomUUID() });
     const { stock_material_id: stockMaterialId } = await new StockMaterialService({ db: pool }).create(
       officerUserId,
       { name: stockMaterialName, base_unit: { unit_id: unit.id } },

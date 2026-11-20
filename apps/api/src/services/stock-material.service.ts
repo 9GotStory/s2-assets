@@ -2,12 +2,11 @@ import pg from 'pg';
 import { REMARK_MAX_LENGTH, normalizeLine, normalizeText } from './assignment.service.ts';
 import { isValidUuid } from './capability.service.ts';
 import { CATALOG_LISTS, type CatalogListKind, type NamedListEntry } from './catalog-list-entries.ts';
-import { catalogListEntryOf, selectableCatalogListEntry } from './catalog-list.service.ts';
+import { catalogListEntryOf, selectableCatalogListEntry, unselectableUnitsAmong } from './catalog-list.service.ts';
 import { commitOnce } from './retryable-write.ts';
 import { NotFoundError, StaleBeforeConflictError } from './service-errors.ts';
 import { duplicateCandidatesOf, stockMaterialUnitsOf, type DuplicateCandidates, type StockMaterialHistoryChange, type StockMaterialHistoryKind, type StockMaterialUnit } from './stock-material-read.service.ts';
 import { baseUnitAmountOf, normalizeUnitSet, unitFieldOf, type AlternateUnitInput, type BaseUnitInput, type UnitSetting } from './stock-material-units.ts';
-import { unselectableUnitsAmong } from './unit.service.ts';
 import { ValidationError } from './validation-error.ts';
 
 // #175 P7: the longest name, Model and Specification; the note takes REMARK_MAX_LENGTH.
@@ -460,7 +459,9 @@ export class StockMaterialService {
         throw new StaleBeforeConflictError('The Stock Material changed since it was read', { version }, { version: expectedVersion });
       }
 
-      const before = await stockMaterialUnitsOf(client, stockMaterialId);
+      // Each Unit kept is locked before its name is read, so a rename is recorded on both sides or neither; a Unit added
+      // is locked as a new choice below (#183 carry-over from #179).
+      const before = await stockMaterialUnitsOf(client, stockMaterialId, { locked: true });
       const stored = new Map(before.map((unit) => [unit.unit_id, unit]));
       const requested = new Set(units.map(({ unit_id }) => unit_id));
       const dropped = before.find(({ unit_id }) => !requested.has(unit_id));

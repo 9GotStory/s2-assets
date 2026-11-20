@@ -66,7 +66,7 @@ describe.each([
       const entry = res.json();
       expect(entry).toEqual({ id: expect.stringMatching(UUID), name: 'Double A', is_active: true, version: 1 });
       for (const viewer of [officer, admin, readonly]) {
-        expect((await listOf(viewer)).items).toContainEqual(entry);
+        expect((await listOf(viewer)).items).toContainEqual(expect.objectContaining(entry));
       }
     });
 
@@ -74,14 +74,13 @@ describe.each([
       const prefix = `ลำดับ ${crypto.randomUUID().slice(0, 6)}`;
       const second = await entryId(`${prefix} ข`);
       const first = await entryId(`${prefix} ก`);
-      // Making an entry Inactive comes with F008-T8; here it is written where it is stored.
-      await api.pool.query(`UPDATE ${table} SET is_active = false WHERE id = $1`, [second]);
+      expect((await api.post(officer, `${path}/${second}/inactivate`, { expected_version: 1 }, { 'x-retry-token': crypto.randomUUID() })).statusCode).toBe(200);
 
       const listed = (await listOf()).items.filter((entry: { name: string }) => entry.name.startsWith(prefix));
 
-      expect(listed).toEqual([
+      expect(listed).toMatchObject([
         { id: first, name: `${prefix} ก`, is_active: true, version: 1 },
-        { id: second, name: `${prefix} ข`, is_active: false, version: 1 },
+        { id: second, name: `${prefix} ข`, is_active: false, version: 2 },
       ]);
     });
 
