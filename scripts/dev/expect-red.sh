@@ -8,6 +8,9 @@
 #   scripts/dev/expect-red.sh apps/api/src/routes/loan.routes.ts "'must not be blank'" "'blank'" \
 #     -- scripts/ci/integration.sh tests/integration/loan-list.test.ts -t "refuse a value"
 #
+# A condition joined by && or || takes a break per operand: drop each one in turn, since a break of the whole
+# condition leaves an operand no test needs (F008-T6, #182).
+#
 # A void that cascades is filtered twice: a Loan void marks each LoanItem voided, and a Repair Record void
 # its Outcome. A break that removes one of the two filters stays green, so remove both (F007-T6, #160).
 #
@@ -51,7 +54,8 @@ for b in breaks:
     print(f"expect-red.sh: {b['name']}: breaking {files}", file=sys.stderr, flush=True)
     triples = [arg for e in edits for arg in (e['file'], e['old'], e['new'])]
     run = subprocess.run([script, *triples, '--', *b['test']], capture_output=True, text=True)
-    out = run.stdout + run.stderr
+    # Colour codes would hide the × or ✘ at the start of a line (F008-T2 retro, #177).
+    out = re.sub(r'\x1b\[[0-9;]*m', '', run.stdout + run.stderr)
     # The first failing test, as Vitest (×) or Playwright (✘) names it; pnpm's own failure line is not one.
     failed = [m.group(1).strip() for m in re.finditer(r'^\s*[×✘]\s+(.*)$', out, re.M) if 'pnpm recursive exec' not in m.group(1)]
     result = {0: 'RED', 1: 'STAYED GREEN'}.get(run.returncode, 'ERROR')

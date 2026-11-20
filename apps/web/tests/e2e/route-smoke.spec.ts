@@ -14,6 +14,8 @@ import { AcquisitionService } from '../../../api/src/services/acquisition.servic
 import { LoanService } from '../../../api/src/services/loan.service.ts';
 import { RepairService } from '../../../api/src/services/repair.service.ts';
 import { VerificationService } from '../../../api/src/services/verification.service.ts';
+import { CatalogListService } from '../../../api/src/services/catalog-list.service.ts';
+import { StockMaterialService } from '../../../api/src/services/stock-material.service.ts';
 import { repositoryProxyConfig } from '../../vite.config.ts';
 
 const { Pool } = pg;
@@ -31,6 +33,8 @@ interface Fixtures {
   loanId: string;
   repairRecordId: string;
   verificationRoundId: string;
+  stockMaterialId: string;
+  stockMaterialName: string;
 }
 
 // Each route of router.tsx: the page a Read-only User opens and its heading, or why it is not opened.
@@ -53,6 +57,12 @@ const SMOKE: Record<string, { url: (f: Fixtures) => string; heading: (f: Fixture
   '/verification-rounds/:id': { url: (f) => `/verification-rounds/${f.verificationRoundId}`, heading: () => 'ตรวจประจำปี E2E route smoke' },
   // Every registry viewer reads the Reference Lists; maintaining them is reference:maintain.
   '/admin/references': { url: () => '/admin/references', heading: () => 'รายการข้อมูลอ้างอิง (Reference Lists)' },
+  // F008-T1 (#176): every catalog viewer reads the Stock Materials; creating one is material:manage.
+  '/stock-materials': { url: () => '/stock-materials', heading: () => 'วัสดุ' },
+  '/stock-materials/new': { skip: 'a write: material:manage' },
+  // F008-T8 (#183): every catalog viewer reads the Brand, Material Category and Unit lists; keeping them is material:manage.
+  '/stock-materials/lists': { url: () => '/stock-materials/lists', heading: () => 'ยี่ห้อ หมวดวัสดุ และหน่วยนับ' },
+  '/stock-materials/:id': { url: (f) => `/stock-materials/${f.stockMaterialId}`, heading: (f) => f.stockMaterialName },
 };
 
 // The paths router.tsx declares, read from its text: importing it builds a browser router, which needs a window.
@@ -115,6 +125,7 @@ test.describe.serial('Route smoke: Real SPA -> Composed API -> PostgreSQL (Seam 
       return res.rows[0].id;
     };
     const custodianUserId = await createUser('custodian_smoke', 'ASSET_CUSTODIAN');
+    const officerUserId = await createUser('officer_smoke', 'SUPPLY_OFFICER');
     readonlyUserId = await createUser('readonly_smoke', 'READ_ONLY');
 
     const assetService = new AssetService({ db: pool });
@@ -138,7 +149,14 @@ test.describe.serial('Route smoke: Real SPA -> Composed API -> PostgreSQL (Seam 
       { name: 'ตรวจประจำปี E2E route smoke', fiscal_year: 2569 },
       { retryToken: crypto.randomUUID() }
     );
-    fixtures = { assetId: asset.id, assetName, acquisitionId: acquisition.id, loanId, repairRecordId, verificationRoundId };
+    const stockMaterialName = 'กระดาษ E2E route smoke';
+    const unit = await new CatalogListService({ db: pool }).add(officerUserId, 'unit', 'รีม', { retryToken: crypto.randomUUID() });
+    const { stock_material_id: stockMaterialId } = await new StockMaterialService({ db: pool }).create(
+      officerUserId,
+      { name: stockMaterialName, base_unit: { unit_id: unit.id } },
+      { retryToken: crypto.randomUUID() }
+    );
+    fixtures = { assetId: asset.id, assetName, acquisitionId: acquisition.id, loanId, repairRecordId, verificationRoundId, stockMaterialId, stockMaterialName };
 
     const testProxy: Record<string, any> = {};
     for (const [route, opts] of Object.entries(repositoryProxyConfig)) {
@@ -174,19 +192,21 @@ test.describe.serial('Route smoke: Real SPA -> Composed API -> PostgreSQL (Seam 
     test(`Route smoke: a Read-only User opens ${routePath} and sees its heading with no error`, async ({ page, context }) => {
       const session = await sessionService.createSession(readonlyUserId);
       await context.addCookies([{ name: 'session', value: session.token, url: targetBaseUrl }]);
-      // Every read the page makes, and the status each answered with once it has.
-      const reads: { url: string; status?: number }[] = [];
+      // Every read the page makes, and the status each answered with once it has. A read is matched by its request,
+      // not its URL: when a page reads one URL twice at once and cancels one, as the Dashboard's effects do, a URL
+      // match could drop the other read while its status is still awaited (F008-T1).
+      const reads: { request: unknown; url: string; status?: number }[] = [];
       page.on('request', (request) => {
         if (['fetch', 'xhr'].includes(request.resourceType())) {
-          reads.push({ url: request.url() });
+          reads.push({ request, url: request.url() });
         }
       });
       page.on('requestfinished', async (request) => {
-        const read = reads.find(({ url, status }) => url === request.url() && status === undefined);
+        const read = reads.find((entry) => entry.request === request);
         if (read) read.status = (await request.response())?.status() ?? 0;
       });
       page.on('requestfailed', (request) => {
-        const read = reads.find(({ url, status }) => url === request.url() && status === undefined);
+        const read = reads.find((entry) => entry.request === request);
         if (!read) return;
         // A page cancels a read it no longer needs, as when an effect runs again; that read did not fail.
         if (request.failure()?.errorText === 'net::ERR_ABORTED') {
@@ -199,9 +219,10 @@ test.describe.serial('Route smoke: Real SPA -> Composed API -> PostgreSQL (Seam 
       await page.goto(`${targetBaseUrl}${row.url(fixtures)}`);
 
       await expect(page.getByRole('heading', { level: 1, name: row.heading(fixtures), exact: true })).toBeVisible();
-      await expect.poll(() => reads.filter(({ status }) => status === undefined).length).toBe(0);
+      // The URLs, not a count, so that a failure names the read still waiting (#176 retro).
+      await expect.poll(() => reads.filter(({ status }) => status === undefined).map(({ url }) => url)).toEqual([]);
       // A read that failed or was refused; 0 is one that never got an answer.
-      expect(reads.filter(({ status }) => status === 0 || status! >= 400)).toEqual([]);
+      expect(reads.filter(({ status }) => status === 0 || status! >= 400).map(({ url, status }) => ({ url, status }))).toEqual([]);
       await expect(page.getByRole('alert')).toHaveCount(0);
     });
   }

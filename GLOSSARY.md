@@ -314,7 +314,94 @@ Asset not voided, such as a Reassignment, a Loan, a Loan Return, a Repair Record
 usually because the Retirement was backdated. Facts on the same day are not one. It goes away once
 a correction fixes whichever fact was wrong; the system never guesses which one.
 
+## Materials
+
+**Stock Material** (วัสดุ):
+A consumable kept as a quantity rather than piece by piece, under an identity of its own that no
+name, Brand, Model or Specification stands for. Things whose stock must be counted apart are
+separate Stock Materials.
+_Avoid_: สินค้า
+
+**Brand** (ยี่ห้อ):
+The maker's name on a Stock Material, chosen from a shared list that those allowed may add to, and
+absent when unknown. It says nothing about where the Stock Material was received from.
+_Avoid_: Manufacturer
+
+**Model** (รุ่น):
+The maker's model name or number of a Stock Material, as text.
+
+**Specification** (คุณลักษณะ):
+The further details that set a Stock Material apart, such as size, colour or grade, as text. A
+variant is part of its Specification, not a separate thing.
+
+**Material Category** (หมวดวัสดุ):
+A group from a flat shared list that sorts Stock Materials, at most one for each and possibly none
+(ไม่มีหมวด). It never decides what a Stock Material is.
+
+**Unit** (หน่วยนับ):
+A name for how a quantity is counted, such as แผ่น, รีม or ลิตร, from a shared list.
+
+**Base Unit** (หน่วยนับหลัก):
+The one Unit in which a Stock Material's stock is kept and every quantity of it is finally counted.
+
+**Alternate Unit** (หน่วยนับอื่น):
+Another Unit a Stock Material may be handled in, with its own Conversion Factor.
+_Avoid_: packaging unit
+
+**Conversion Factor** (อัตราแปลง):
+How many Base Units one Alternate Unit holds, given straight to the Base Unit and shown as
+"1 กล่อง = 5 รีม". An Inactive Alternate Unit given no new factor when the Base Unit changes has
+none, shown as "-"; reactivating it needs one (#178).
+
+**Whole-number Unit** (นับเป็นจำนวนเต็มเท่านั้น):
+A Unit of a Stock Material in which every quantity must be whole. The system never rounds a
+quantity to make it fit.
+
+**Original Quantity** and **Original Unit**:
+The quantity and Unit of a transaction as they were entered.
+
+**Base Quantity**:
+A transaction's quantity in the Base Unit.
+
+**Conversion Snapshot**:
+The Conversion Factor a transaction used, kept with it so that later changes never alter its Base
+Quantity.
+
+**Inactive** (หยุดใช้):
+A Stock Material, Brand, Material Category or Unit no longer offered for new work. Nothing about it
+is deleted, and stock an Inactive Stock Material still holds can still be handled. Reactivating
+(เปิดใช้อีกครั้ง) brings back the same one. One not Inactive is ใช้งานอยู่.
+_Avoid_: archived
+
+**Rename** (เปลี่ยนชื่อ):
+Changing how a Brand, Material Category or Unit is spelled, never what it means. Every Stock Material
+using it shows the new name, while each history keeps the name as it was when recorded; the entry's
+own history keeps the old name and the new (#183).
+
+**Duplicate Candidate** (รายการที่อาจซ้ำ):
+An existing Stock Material, Inactive ones included, whose name looks like that of one being created
+or corrected, shown as a warning. A person decides whether it is a different thing, confirming
+"เป็นคนละรายการ" to save; the system never merges.
+
+**Minimum Stock** (จำนวนขั้นต่ำ):
+An optional threshold in the Base Unit below which a Stock Material's stock counts as low. Setting it
+moves no stock.
+_Avoid_: reorder point, safety stock
+
+**Material Correction** (แก้ไขรายการที่บันทึกผิด):
+A traceable fix, with a reason, to the name, Brand, Model or Specification of a Stock Material that
+was wrong as recorded, which stays the same thing. It never rewrites history: a different thing is a
+new Stock Material.
+
+**Other Details** (ข้อมูลอื่น):
+A Stock Material's Material Category, Minimum Stock and note, which a Supply Officer changes
+(แก้ไขข้อมูลอื่น) without a reason, each change recorded in its history. A change that changes
+nothing is refused.
+
 ## Roles
+
+**Supply Officer** (เจ้าหน้าที่พัสดุ):
+The role that keeps the Stock Material catalog, its Brands, Material Categories and Units.
 
 **Asset Custodian** (ผู้ดูแลทะเบียนครุภัณฑ์):
 The role that keeps the Asset register, including its assignment work.

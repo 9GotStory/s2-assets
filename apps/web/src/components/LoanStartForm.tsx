@@ -23,7 +23,7 @@ export interface LoanFormAsset {
 export interface LoanStartFormProps {
   assets: LoanFormAsset[];
   actorId: string | null;
-  csrfToken: string | null;
+  csrfToken: string;
   onStarted: () => Promise<void>;
   onCancel: () => void;
   onPermissionRevoked?: (statusCode?: number) => void;

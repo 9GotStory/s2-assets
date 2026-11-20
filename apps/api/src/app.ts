@@ -23,6 +23,8 @@ import { retirementRoutes } from './routes/retirement.routes.ts';
 import { acquisitionRoutes } from './routes/acquisition.routes.ts';
 import { evidenceRoutes } from './routes/evidence.routes.ts';
 import { referenceRoutes } from './routes/reference.routes.ts';
+import { stockMaterialRoutes } from './routes/stock-material.routes.ts';
+import { catalogListRoutes } from './routes/catalog-list.routes.ts';
 import { UserService, type DatabaseClient } from './services/user.service.ts';
 import { SessionService } from './services/session.service.ts';
 import { CapabilityService } from './services/capability.service.ts';
@@ -46,6 +48,9 @@ import { RetirementReadService } from './services/retirement-read.service.ts';
 import { RetirementService } from './services/retirement.service.ts';
 import { AcquisitionService } from './services/acquisition.service.ts';
 import { EvidenceService } from './services/evidence.service.ts';
+import { StockMaterialService } from './services/stock-material.service.ts';
+import { StockMaterialReadService } from './services/stock-material-read.service.ts';
+import { CatalogListService } from './services/catalog-list.service.ts';
 
 export interface AppOptions {
   config?: Partial<Config>;
@@ -312,6 +317,18 @@ export async function buildApp(options: AppOptions = {}): Promise<FastifyInstanc
 
     await app.register(retirementRoutes, {
       retirementService: new RetirementService({ db: dbClient, clock: options.clock }),
+    });
+
+    // F008-T1 (#176): the Stock Material catalog
+    await app.register(stockMaterialRoutes, {
+      stockMaterialService: new StockMaterialService({ db: dbClient }),
+      stockMaterialReadService: new StockMaterialReadService({ db: dbClient }),
+      capabilityService,
+    });
+    // F008-T1, T4 (#176, #179): its Unit, Brand and Material Category lists
+    await app.register(catalogListRoutes, {
+      catalogListService: new CatalogListService({ db: dbClient }),
+      capabilityService,
     });
 
     // Acquisition routes mounted under /acquisitions

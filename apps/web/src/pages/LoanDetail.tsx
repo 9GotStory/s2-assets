@@ -138,6 +138,8 @@ const LoanDetailContent: React.FC = () => {
     },
     enabled: canRecordLoan || canCorrectLoan || canRecordRepair,
   });
+  // Each write action waits for the token: a request sent without it is refused as if the grant were gone (#135).
+  const csrfToken = session.data?.csrfToken ?? null;
 
   const isSignedOut = loan.error?.status === 401;
   useEffect(() => {
@@ -177,13 +179,13 @@ const LoanDetailContent: React.FC = () => {
   const returnedCount = counted.filter(({ ending_kind: endingKind }) => endingKind === 'LOAN_RETURN').length;
   const notReturnedCount = counted.filter(({ ending_kind: endingKind }) => endingKind === 'NOT_RETURNED').length;
   // A Loan Return also takes an item closed as Not Returned; the other writes take Outstanding items only.
-  const mayReturn = canRecordLoan && items.some(isReturnable);
-  const mayChangeOutstanding = canRecordLoan && items.some(isOutstanding);
+  const mayReturn = canRecordLoan && csrfToken !== null && items.some(isReturnable);
+  const mayChangeOutstanding = canRecordLoan && csrfToken !== null && items.some(isOutstanding);
   // A voided fact is neither amended nor voided again (#74 Q25).
-  const mayCorrect = canCorrectLoan && !isVoided;
+  const mayCorrect = canCorrectLoan && csrfToken !== null && !isVoided;
+  const mayRepair = canRecordRepair && csrfToken !== null;
   const formProps = {
     loan: loan.data,
-    csrfToken: session.data?.csrfToken ?? null,
     onRecorded: async () => {
       await loan.refetch();
       setOpenForm(null);
@@ -292,18 +294,18 @@ const LoanDetailContent: React.FC = () => {
         </dl>
         {correctionActions('loan', { kind: 'LOAN' })}
 
-        {openCorrection && (
+        {mayCorrect && openCorrection && (
           <div style={{ marginTop: '1rem' }}>
             {openCorrection.correction === 'AMEND' ? (
-              <LoanAmendForm {...correctionProps(openCorrection.target)} />
+              <LoanAmendForm {...correctionProps(openCorrection.target)} csrfToken={csrfToken} />
             ) : (
-              <LoanVoidForm {...correctionProps(openCorrection.target)} />
+              <LoanVoidForm {...correctionProps(openCorrection.target)} csrfToken={csrfToken} />
             )}
           </div>
         )}
-        {mayReturn && openForm === 'return' && <LoanReturnForm {...formProps} />}
-        {mayChangeOutstanding && openForm === 'extension' && <DueDateExtensionForm {...formProps} />}
-        {mayChangeOutstanding && openForm === 'not-returned' && <NotReturnedForm {...formProps} />}
+        {mayReturn && openForm === 'return' && <LoanReturnForm {...formProps} csrfToken={csrfToken} />}
+        {mayChangeOutstanding && openForm === 'extension' && <DueDateExtensionForm {...formProps} csrfToken={csrfToken} />}
+        {mayChangeOutstanding && openForm === 'not-returned' && <NotReturnedForm {...formProps} csrfToken={csrfToken} />}
         {(mayReturn || mayChangeOutstanding) && openForm === null && (
           <div style={{ display: 'flex', flexWrap: 'wrap', gap: '0.5rem', margin: '1rem 0' }}>
             {mayReturn && (
@@ -386,17 +388,17 @@ const LoanDetailContent: React.FC = () => {
                   {correctionActions(`loan-return-${item.loan_return.id}`, { kind: 'LOAN_RETURN', id: item.loan_return.id })}
                   {/* "ส่งซ่อม" from a Loan Return recorded ชำรุด: nothing is saved until the form is (#98 Q5). A Retired
                       Asset is never sent (F007-T2, DR-08). */}
-                  {canRecordRepair && openForm === null && item.loan_return.condition === 'DAMAGED' && !item.asset.retired && (
+                  {mayRepair && openForm === null && item.loan_return.condition === 'DAMAGED' && !item.asset.retired && (
                     <button type="button" id={`loan-return-${item.loan_return.id}-repair-action`} onClick={() => setOpenForm({ repairFrom: item.loan_return!.id })} style={{ ...secondaryActionStyle, marginTop: '0.375rem' }}>
                       {REPAIR_START_LABEL}
                     </button>
                   )}
-                  {canRecordRepair && repairFrom === item.loan_return.id && (
+                  {mayRepair && repairFrom === item.loan_return.id && (
                     <div style={{ marginTop: '0.75rem' }}>
                       <RepairStartForm
                         assetId={item.asset.id}
                         repairSource={{ kind: 'LOAN_RETURN', loanReturnId: item.loan_return.id, returnDate: item.loan_return.return_date, conditionNote: item.loan_return.condition_note }}
-                        csrfToken={formProps.csrfToken}
+                        csrfToken={csrfToken}
                         onStarted={formProps.onRecorded}
                         onCancel={formProps.onCancel}
                         onPermissionRevoked={formProps.onPermissionRevoked}

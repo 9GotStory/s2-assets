@@ -1,7 +1,8 @@
 #!/usr/bin/env bash
-# Lint and typecheck before each commit, so a commit never waits for scripts/ci/all.sh to find a
-# lint error (F006-T1 retro). Every commit gets the whitespace check first (F007-T6 retro, #160); a
-# commit of Markdown files alone needs nothing more (CLAUDE.md, Checks).
+# Lint, typecheck and the API unit tests before each commit, so a commit never waits for
+# scripts/ci/all.sh to find a lint error (F006-T1 retro) or a unit test the change broke (#176
+# retro). Every commit gets the whitespace check first (F007-T6 retro, #160); a commit of Markdown
+# files alone needs nothing more (CLAUDE.md, Checks).
 # Enable once per clone: git config core.hooksPath .githooks
 set -euo pipefail
 cd "$(git rev-parse --show-toplevel)"

@@ -149,6 +149,8 @@ const RepairDetailContent: React.FC = () => {
     },
     enabled: canRecordRepair || canCorrectRepair,
   });
+  // Each write action waits for the token: a request sent without it is refused as if the grant were gone (#135).
+  const csrfToken = session.data?.csrfToken ?? null;
 
   const isSignedOut = record.error?.status === 401;
   useEffect(() => {
@@ -192,13 +194,12 @@ const RepairDetailContent: React.FC = () => {
     return outcome ? `${REPAIR_OUTCOME_LABEL}: ${REPAIR_OUTCOME_LABELS[repairKind][outcome.outcome]}` : UNDER_REPAIR_LABELS[repairKind];
   };
   // A voided record, or one that has its outcome, takes no other; the server would refuse it.
-  const mayRecordOutcome = canRecordRepair && !isVoided && outcome === null;
+  const mayRecordOutcome = canRecordRepair && csrfToken !== null && !isVoided && outcome === null;
   // A voided fact is neither amended nor voided again (#98 Q18).
-  const mayCorrect = canCorrectRepair && !isVoided;
+  const mayCorrect = canCorrectRepair && csrfToken !== null && !isVoided;
 
   const formProps = {
     record: record.data,
-    csrfToken: session.data?.csrfToken ?? null,
     onRecorded: async () => {
       await record.refetch();
       setOpenForm(null);
@@ -218,13 +219,14 @@ const RepairDetailContent: React.FC = () => {
   };
   const openCorrection = typeof openForm === 'object' && openForm !== null ? openForm : null;
   const correctionForm = (target: RepairCorrectionTarget) =>
+    mayCorrect &&
     openCorrection &&
     openCorrection.target.kind === target.kind && (
       <div style={{ margin: '1rem 0' }}>
         {openCorrection.correction === 'AMEND' ? (
-          <RepairAmendForm {...formProps} target={openCorrection.target} targetLabel={REPAIR_CORRECTION_TARGET_LABELS[target.kind]} />
+          <RepairAmendForm {...formProps} csrfToken={csrfToken} target={openCorrection.target} targetLabel={REPAIR_CORRECTION_TARGET_LABELS[target.kind]} />
         ) : (
-          <RepairVoidForm {...formProps} target={openCorrection.target} targetLabel={REPAIR_CORRECTION_TARGET_LABELS[target.kind]} />
+          <RepairVoidForm {...formProps} csrfToken={csrfToken} target={openCorrection.target} targetLabel={REPAIR_CORRECTION_TARGET_LABELS[target.kind]} />
         )}
       </div>
     );
@@ -373,7 +375,7 @@ const RepairDetailContent: React.FC = () => {
             <OutcomeFacts key={voided.id} outcome={voided} repairKind={repairKind} idPrefix={`repair-voided-outcome-${voided.id}`} isVoided />
           ))}
 
-          {mayRecordOutcome && openForm === 'outcome' && <RepairOutcomeForm {...formProps} />}
+          {mayRecordOutcome && openForm === 'outcome' && <RepairOutcomeForm {...formProps} csrfToken={csrfToken} />}
           {mayRecordOutcome && openForm === null && (
             <button
               type="button"

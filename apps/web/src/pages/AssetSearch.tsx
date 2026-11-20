@@ -927,7 +927,8 @@ export const AssetSearch: React.FC = () => {
           />
         )}
         {/* F004-T4 (#78): one Loan of the selected rows. The server refuses by name any that cannot be lent. */}
-        {openPanel === 'LOAN' && (
+        {/* The search reads the session first, so its CSRF token is in hand before a row is (#135). */}
+        {openPanel === 'LOAN' && csrfToken !== null && (
           <LoanStartForm
             assets={[...selection.values()]}
             actorId={listActorId}

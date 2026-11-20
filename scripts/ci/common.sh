@@ -83,3 +83,12 @@ remove_test_containers_on_exit() {
   trap 'exit 130' INT
   trap 'exit 143' TERM
 }
+
+# Runs the API unit tests in the tooling image, built and installed beforehand: tests/unit, or the
+# vitest arguments given. Output is uncoloured, so expect-red.sh and all.sh can read the test names.
+# quality.sh and unit.sh share it; neither calls the other, because a job holds the lock above.
+api_unit_tests() {
+  (($#)) || set -- tests/unit
+  podman run --rm --userns=keep-id --security-opt label=disable -v "$PWD:/work" -w /work -e NO_COLOR=1 \
+    s2-assets-dev:ci pnpm --filter api exec vitest run "$@"
+}

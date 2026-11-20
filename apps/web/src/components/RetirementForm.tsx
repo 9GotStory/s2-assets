@@ -20,7 +20,7 @@ import {
 
 export interface RetirementFormProps {
   assetId: string;
-  csrfToken: string | null;
+  csrfToken: string;
   onRetired: () => Promise<void>;
   onCancel: () => void;
   onPermissionRevoked?: (statusCode?: number) => void;

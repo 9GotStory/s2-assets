@@ -8,7 +8,7 @@ import { FISCAL_YEAR_LABEL, OPEN_VERIFICATION_ROUND_LABEL, WHOLE_REGISTER_LABEL,
 export interface VerificationRoundOpenFormProps {
   lists: ReferenceLists;
   listsError: string | null;
-  csrfToken: string | null;
+  csrfToken: string;
   onOpened: () => Promise<void>;
   onCancel: () => void;
   onPermissionRevoked?: (statusCode?: number) => void;

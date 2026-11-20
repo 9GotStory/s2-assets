@@ -19,7 +19,7 @@ type RoundAction = 'EDIT' | 'CLOSE' | 'REOPEN' | 'VOID';
 
 export interface VerificationRoundActionsProps {
   round: VerificationRound;
-  csrfToken: string | null;
+  csrfToken: string;
   // Reads the Round and its entries again after a write.
   onChanged: () => Promise<void>;
   // Reads the Round again after a stale save, and returns whether it could.

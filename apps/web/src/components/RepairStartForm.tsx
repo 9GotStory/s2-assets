@@ -35,7 +35,7 @@ const notedDamageOf = (source: RepairStartSource | undefined): string => (source
 export interface RepairStartFormProps {
   assetId: string;
   repairSource?: RepairStartSource;
-  csrfToken: string | null;
+  csrfToken: string;
   onStarted: () => Promise<void>;
   onCancel: () => void;
   onPermissionRevoked?: (statusCode?: number) => void;

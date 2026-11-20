@@ -6,8 +6,8 @@
 # The steps: build the tooling image and assert its Node and pnpm; install the frozen lockfile; lint and
 # scripts/check-aria-labels.sh; typecheck; API unit tests; the API and Web production builds; the API
 # and migration images.
-#   --quick          stop after the typecheck and the Web dev proxy's unit test, for the implementation loop
-#                    and .githooks/pre-commit.
+#   --quick          stop after the typecheck and the API unit tests, for the implementation loop and
+#                    .githooks/pre-commit.
 #   --base <rev>     first run `git diff --check` and scripts/check-glossary.sh against <rev>.
 #   --remove-images  remove the three images afterwards, as CI does.
 set -euo pipefail
@@ -75,15 +75,14 @@ in_tooling pnpm run lint
 scripts/check-aria-labels.sh
 note "typecheck"
 in_tooling pnpm run typecheck
+# The quick run takes them too: a unit test can pin a shape the change touches, as Case 12 of
+# capability.service.test.ts pinned the Read-only capabilities (#176 retro), and the dev proxy's test
+# catches a route under a new first path segment before any journey (#159 retro).
+note "API unit tests"
+api_unit_tests
 if $quick; then
-  # A route under a new first path segment needs its proxy entry before any journey can reach it (#159 retro).
-  note "Web dev proxy"
-  in_tooling pnpm --filter api exec vitest run tests/unit/dev-proxy.test.ts
   exit 0
 fi
-
-note "API unit tests"
-in_tooling pnpm --filter api exec vitest run tests/unit
 note "API production build"
 in_tooling pnpm --filter api run build
 note "Web production build"

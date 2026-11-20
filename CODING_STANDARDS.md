@@ -9,7 +9,10 @@ and CI.
 A Seam A test covers each capability check that a change adds or touches:
 - it denies that one capability, through `withCapabilityAnswer` in
   `apps/api/tests/integration/support/capability-helpers.ts`;
-- it asserts the refusal and, for a route that can commit a write, that nothing was written.
+- it asserts the refusal and, for a route that can commit a write, that nothing was written;
+- its actor holds every capability a wrong gate could check instead, such as the Administrator for a
+  read that `asset:view` would also let through. An actor who lacks the substitute is refused by the
+  wrong gate too, and the test stays green (#176: `GET /units` gated by `asset:view`).
 
 Roles grant capabilities together, so the role map can hide a gate that fails open. In F003-T1
 (#51), a registration refused for `assignment:reassign` answered 403 and still committed the Asset.
@@ -27,13 +30,24 @@ F004-T6 (#80), `not.toContain('090')` over JSON that holds UUIDs failed whenever
 ## A refusal test sends a request only its rule refuses
 
 Each refused request breaks the rule under test and nothing else, so the test goes red when that
-rule goes; check it with `scripts/dev/expect-red.sh`, and several rules at once with its `--batch`
+rule goes. A cap case sends one entry over the cap, every entry valid and distinct; check it with `scripts/dev/expect-red.sh`, and several rules at once with its `--batch`
 mode, which tabulates which break went red. A loop of refused payloads that asserts only
 the error code hides which rule refused each one; ESLint flags such a loop over a literal array
 (`eslint.config.mjs`, #155), and one from before #155 carries an exemption until a ticket
-touches its file. In F006-T1 (#126), the filter-cap case sent 101 random UUIDs, which the
+touches its file. A loop whose payloads break different rules asserts each rule's own message, since
+the field name is in all of them: in F008-T7 (#180), an overlong note and a control character were
+both asserted only by "note". In F006-T1 (#126), the filter-cap case sent 101 random UUIDs, which the
 unknown-entry check refused as well, and it stayed green with the cap removed. It now names one
-real entry 1001 times.
+real entry 1001 times. In F008-T3 (#178), the Alternate Unit cap case sent 101 copies of one Unit,
+which the duplicate rule refused too; it now sends 101 distinct Units.
+
+## A relaxed constraint has a test of each path that must not reach it
+
+When a migration relaxes a constraint, such as dropping `NOT NULL` or widening a `CHECK`, so that a
+decided case can store a new state, a Seam A test refuses each other write that could now reach that
+state. The database no longer refuses it, so only the service does. In F008-T3 (#178), migration 0026
+let a Conversion Factor be unknown so that a Base Unit change could leave one; the Units write also let
+a factor be blanked with the Base Unit unchanged, and only the Spec review found it.
 
 ## An order test of a paged list splits a tie across a page break
 
@@ -78,6 +92,24 @@ and neither waits for the other (PostgreSQL 18, §13.3.2, Table 13.3). A write t
 while it is not voided takes a lock the void also takes before it checks, and its order test queues
 the void first. F006-T4 (#129) found this for the Verification Revision that T7 and T8 cite.
 
+A name that a history entry records as it was then (#175 P6) is a read of its list entry: lock that
+entry `FOR SHARE` before reading the name, so a rename waits for the write or is seen by it, and give
+it an order test that holds the rename's `UPDATE`. This holds for an entry the write keeps or replaces
+as well as one it newly chooses, and before the rename exists: plan the order against the write a later
+ticket builds. In F008-T4 (#179), the Material Category that a details write replaced was read unlocked,
+because the rename comes in T8; only the Standards review found it.
+
+An advisory lock orders writes on a set no row lock can hold, such as the Stock Materials a Duplicate
+Candidate check matches. Every write that can bring a row into the set changes the fact: a create, and an
+update of the compared column such as a Material Correction's rename. Each gets an order test that holds
+its statement with `whileWriting`, waits with `untilWaitingOnAdvisoryLock` and starts with no match. In
+F008-T5 (#181), only a held create was queued; the Standards review found the rename missing.
+
+When one locked read decides several rules, each rule gets its own order test, and that test passes
+every rule checked before it: it expects the version the held write leaves, so only the rule under test
+decides. In F008-T7 (#180), each order test expected the version from before the held write, so the stale
+check refused every time; the "already Inactive" rule got its test from the Standards review.
+
 ## A journey step waits for the URL it changes
 
 A journey step that changes the URL, such as a filter link or a select that navigates, waits for that
@@ -116,7 +148,9 @@ A new concept that a user sees, such as a status, an action or a domain term, ge
 `GLOSSARY.md` entry in the same change. In F004-T5 (#79), the Loan status "ปิดแล้ว" reached its
 pull request with no entry, and neither review round flagged it. A form field's label, such as
 "ค่าใช้จ่าย" or "เอกสารอ้างอิง", needs no entry of its own unless it names a domain term (#99, PO
-decision on the F005-T1 retro).
+decision on the F005-T1 retro). The script holds an exemption to its reason: "a form field", or a
+term the label is made of, as "<term> (<Term>)". Review still judges whether that term covers the
+label's meaning.
 
 ## A text field's kind decides its control characters
 

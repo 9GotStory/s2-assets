@@ -41,7 +41,29 @@ const WRITES_TO_RETIREMENT_TABLES = writesTo(RETIREMENT_TABLES, 'retirement.serv
 const READS_RETIREMENT_TABLES = readsFrom(RETIREMENT_TABLES, 'services/retirement*.ts');
 // Every block on apps/api/src keeps the Retirement guards except the Retirement modules' own.
 const RETIREMENT_GUARDS = [WRITES_TO_RETIREMENT_TABLES, READS_RETIREMENT_TABLES];
-const apiSyntaxRule = (...guards) => ({ 'no-restricted-syntax': ['error', NO_PROMISED_REPLY, ...guards] });
+// #176 retro: the Stock Material tables belong to services/stock-material*.ts.
+const STOCK_MATERIAL_TABLES = 'stock_material\\w*';
+const WRITES_TO_STOCK_MATERIAL_TABLES = writesTo(STOCK_MATERIAL_TABLES, 'stock-material.service.ts');
+const READS_STOCK_MATERIAL_TABLES = readsFrom(STOCK_MATERIAL_TABLES, 'services/stock-material*.ts');
+const STOCK_MATERIAL_GUARDS = [WRITES_TO_STOCK_MATERIAL_TABLES, READS_STOCK_MATERIAL_TABLES];
+// #176, #179: the Unit, Brand and Material Category lists belong to catalog-list.service.ts, which other modules read
+// through catalog-list*.ts (catalog-list-entries.ts for a join); #183 decision 1 brought the Unit list in.
+const CATALOG_LIST_TABLES = 'units|unit_history|brands|brand_history|material_categories|material_category_history';
+const WRITES_TO_CATALOG_LIST_TABLES = writesTo(CATALOG_LIST_TABLES, 'catalog-list.service.ts');
+const READS_CATALOG_LIST_TABLES = readsFrom(CATALOG_LIST_TABLES, 'services/catalog-list*.ts');
+const CATALOG_LIST_GUARDS = [WRITES_TO_CATALOG_LIST_TABLES, READS_CATALOG_LIST_TABLES];
+// Every block on apps/api/src keeps the Material Catalog guards except the owning modules' own.
+const MATERIAL_GUARDS = [...STOCK_MATERIAL_GUARDS, ...CATALOG_LIST_GUARDS];
+// #181 retro: names are compared by one expression, comparedName in compared-name.ts, which the unique indexes of the
+// Unit, Brand and Material Category lists share (CODING_STANDARDS, a derived condition); a copy drifts unseen.
+const OWN_COMPARED_NAME = sqlText(
+  'regexp_replace\\s*\\(\\s*btrim',
+  'Compare names with comparedName from compared-name.ts, the one source of the expression (#181).',
+  'i'
+);
+const apiSyntaxRule = (...guards) => ({ 'no-restricted-syntax': ['error', NO_PROMISED_REPLY, OWN_COMPARED_NAME, ...guards] });
+// What every module of apps/api/src keeps, but for the modules that own a table.
+const API_GUARDS = [WRITES_TO_LOAN_TABLES, WRITES_TO_ASSIGNMENT_CHANGES, WRITES_TO_REPAIR_TABLES, READS_LOAN_TABLES, READS_REPAIR_TABLES, ...RETIREMENT_GUARDS, ...MATERIAL_GUARDS];
 
 // An awaited expect, by its matcher, and whether it goes through .not.
 const matcher = (name) => `[expression.argument.callee.property.name='${name}']`;
@@ -92,42 +114,56 @@ export default tseslint.config(
     // A FastifyReply is thenable: awaiting a Promise<FastifyReply> waits until the reply is sent and
     // yields undefined, so a helper that hands one back lets its route run on after a 403 (#51).
     files: ['apps/api/src/**/*.ts'],
-    rules: apiSyntaxRule(
-      WRITES_TO_LOAN_TABLES,
-      WRITES_TO_ASSIGNMENT_CHANGES,
-      WRITES_TO_REPAIR_TABLES,
-      READS_LOAN_TABLES,
-      READS_REPAIR_TABLES,
-      ...RETIREMENT_GUARDS
-    ),
+    rules: apiSyntaxRule(...API_GUARDS),
+  },
+  {
+    // The one source of the name comparison.
+    files: ['apps/api/src/services/compared-name.ts'],
+    rules: { 'no-restricted-syntax': ['error', NO_PROMISED_REPLY, ...API_GUARDS] },
   },
   {
     files: ['apps/api/src/services/loan*.ts'],
-    rules: apiSyntaxRule(WRITES_TO_LOAN_TABLES, WRITES_TO_ASSIGNMENT_CHANGES, WRITES_TO_REPAIR_TABLES, READS_REPAIR_TABLES, ...RETIREMENT_GUARDS),
+    rules: apiSyntaxRule(WRITES_TO_LOAN_TABLES, WRITES_TO_ASSIGNMENT_CHANGES, WRITES_TO_REPAIR_TABLES, READS_REPAIR_TABLES, ...RETIREMENT_GUARDS, ...MATERIAL_GUARDS),
   },
   {
     files: ['apps/api/src/services/loan.service.ts'],
-    rules: apiSyntaxRule(WRITES_TO_ASSIGNMENT_CHANGES, WRITES_TO_REPAIR_TABLES, READS_REPAIR_TABLES, ...RETIREMENT_GUARDS),
+    rules: apiSyntaxRule(WRITES_TO_ASSIGNMENT_CHANGES, WRITES_TO_REPAIR_TABLES, READS_REPAIR_TABLES, ...RETIREMENT_GUARDS, ...MATERIAL_GUARDS),
   },
   {
     files: ['apps/api/src/services/assignment.service.ts'],
-    rules: apiSyntaxRule(WRITES_TO_LOAN_TABLES, WRITES_TO_REPAIR_TABLES, READS_LOAN_TABLES, READS_REPAIR_TABLES, ...RETIREMENT_GUARDS),
+    rules: apiSyntaxRule(WRITES_TO_LOAN_TABLES, WRITES_TO_REPAIR_TABLES, READS_LOAN_TABLES, READS_REPAIR_TABLES, ...RETIREMENT_GUARDS, ...MATERIAL_GUARDS),
   },
   {
     files: ['apps/api/src/services/repair*.ts'],
-    rules: apiSyntaxRule(WRITES_TO_LOAN_TABLES, WRITES_TO_ASSIGNMENT_CHANGES, WRITES_TO_REPAIR_TABLES, READS_LOAN_TABLES, ...RETIREMENT_GUARDS),
+    rules: apiSyntaxRule(WRITES_TO_LOAN_TABLES, WRITES_TO_ASSIGNMENT_CHANGES, WRITES_TO_REPAIR_TABLES, READS_LOAN_TABLES, ...RETIREMENT_GUARDS, ...MATERIAL_GUARDS),
   },
   {
     files: ['apps/api/src/services/repair.service.ts'],
-    rules: apiSyntaxRule(WRITES_TO_LOAN_TABLES, WRITES_TO_ASSIGNMENT_CHANGES, READS_LOAN_TABLES, ...RETIREMENT_GUARDS),
+    rules: apiSyntaxRule(WRITES_TO_LOAN_TABLES, WRITES_TO_ASSIGNMENT_CHANGES, READS_LOAN_TABLES, ...RETIREMENT_GUARDS, ...MATERIAL_GUARDS),
   },
   {
     files: ['apps/api/src/services/retirement*.ts'],
-    rules: apiSyntaxRule(WRITES_TO_LOAN_TABLES, WRITES_TO_ASSIGNMENT_CHANGES, WRITES_TO_REPAIR_TABLES, READS_LOAN_TABLES, READS_REPAIR_TABLES, WRITES_TO_RETIREMENT_TABLES),
+    rules: apiSyntaxRule(WRITES_TO_LOAN_TABLES, WRITES_TO_ASSIGNMENT_CHANGES, WRITES_TO_REPAIR_TABLES, READS_LOAN_TABLES, READS_REPAIR_TABLES, WRITES_TO_RETIREMENT_TABLES, ...MATERIAL_GUARDS),
   },
   {
     files: ['apps/api/src/services/retirement.service.ts'],
-    rules: apiSyntaxRule(WRITES_TO_LOAN_TABLES, WRITES_TO_ASSIGNMENT_CHANGES, WRITES_TO_REPAIR_TABLES, READS_LOAN_TABLES, READS_REPAIR_TABLES),
+    rules: apiSyntaxRule(WRITES_TO_LOAN_TABLES, WRITES_TO_ASSIGNMENT_CHANGES, WRITES_TO_REPAIR_TABLES, READS_LOAN_TABLES, READS_REPAIR_TABLES, ...MATERIAL_GUARDS),
+  },
+  {
+    files: ['apps/api/src/services/stock-material*.ts'],
+    rules: apiSyntaxRule(WRITES_TO_LOAN_TABLES, WRITES_TO_ASSIGNMENT_CHANGES, WRITES_TO_REPAIR_TABLES, READS_LOAN_TABLES, READS_REPAIR_TABLES, ...RETIREMENT_GUARDS, WRITES_TO_STOCK_MATERIAL_TABLES, ...CATALOG_LIST_GUARDS),
+  },
+  {
+    files: ['apps/api/src/services/stock-material.service.ts'],
+    rules: apiSyntaxRule(WRITES_TO_LOAN_TABLES, WRITES_TO_ASSIGNMENT_CHANGES, WRITES_TO_REPAIR_TABLES, READS_LOAN_TABLES, READS_REPAIR_TABLES, ...RETIREMENT_GUARDS, ...CATALOG_LIST_GUARDS),
+  },
+  {
+    files: ['apps/api/src/services/catalog-list*.ts'],
+    rules: apiSyntaxRule(WRITES_TO_LOAN_TABLES, WRITES_TO_ASSIGNMENT_CHANGES, WRITES_TO_REPAIR_TABLES, READS_LOAN_TABLES, READS_REPAIR_TABLES, ...RETIREMENT_GUARDS, ...STOCK_MATERIAL_GUARDS, WRITES_TO_CATALOG_LIST_TABLES),
+  },
+  {
+    files: ['apps/api/src/services/catalog-list.service.ts'],
+    rules: apiSyntaxRule(WRITES_TO_LOAN_TABLES, WRITES_TO_ASSIGNMENT_CHANGES, WRITES_TO_REPAIR_TABLES, READS_LOAN_TABLES, READS_REPAIR_TABLES, ...RETIREMENT_GUARDS, ...STOCK_MATERIAL_GUARDS),
   },
   {
     // #76: data kept across a key change shows one query's values under another's.

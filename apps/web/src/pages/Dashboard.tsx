@@ -2,6 +2,7 @@ import React, { useEffect, useState } from 'react';
 import { useNavigate, Link } from 'react-router';
 import { REPAIR_LIST_LABEL, REPAIR_SECTION_LABEL } from '../components/repairFacts';
 import { VERIFICATION_ROUND_LABEL } from '../components/verificationFacts';
+import { CATALOG_LISTS_LABEL, STOCK_MATERIAL_LABEL } from '../components/materialFacts';
 
 export interface SafeUser {
   id: string;
@@ -22,6 +23,9 @@ export const Dashboard: React.FC = () => {
   const [isLoading, setIsLoading] = useState(true);
   const [isLoggingOut, setIsLoggingOut] = useState(false);
   const [logoutError, setLogoutError] = useState<string | null>(null);
+  // F008-T1 (#175 P9): the "วัสดุ" menu shows only to holders of material:view, which the server answers by
+  // reading the Stock Material list; anything but a 200 hides it.
+  const [canViewMaterials, setCanViewMaterials] = useState(false);
 
   const navigate = useNavigate();
 
@@ -62,6 +66,19 @@ export const Dashboard: React.FC = () => {
     };
 
     verifySession();
+
+    const probeMaterials = async () => {
+      try {
+        const response = await fetch('/stock-materials?limit=1', { method: 'GET', credentials: 'include', signal: controller.signal });
+        // The answer is read to its end, so the request finishes instead of staying open with the page.
+        await response.text();
+        setCanViewMaterials(response.ok);
+      } catch {
+        // An aborted or failed read leaves the menu hidden.
+      }
+    };
+
+    probeMaterials();
 
     return () => {
       controller.abort();
@@ -548,6 +565,69 @@ export const Dashboard: React.FC = () => {
             </Link>
           </div>
         </section>
+
+        {canViewMaterials && (
+          <section
+            aria-labelledby="material-heading"
+            id="nav-material-section"
+            style={{
+              backgroundColor: '#f9fafb',
+              borderRadius: '6px',
+              padding: '1.25rem',
+              marginBottom: '1.5rem',
+            }}
+          >
+            <h2
+              id="material-heading"
+              style={{
+                fontSize: '1.125rem',
+                fontWeight: 600,
+                marginTop: 0,
+                marginBottom: '0.5rem',
+                color: '#374151',
+              }}
+            >
+              {STOCK_MATERIAL_LABEL}
+            </h2>
+            <p style={{ margin: '0 0 1rem 0', fontSize: '0.875rem', color: '#4b5563' }}>
+              ดูและค้นหารายการวัสดุสิ้นเปลือง พร้อมหน่วยนับของแต่ละรายการ และดูแลรายการยี่ห้อ หมวดวัสดุ และหน่วยนับ
+            </p>
+            <div style={{ display: 'flex', gap: '0.75rem', flexWrap: 'wrap' }}>
+              <Link
+                to="/stock-materials"
+                id="nav-stock-material-list"
+                style={{
+                  display: 'inline-block',
+                  padding: '0.5rem 1rem',
+                  backgroundColor: '#4b5563',
+                  color: '#ffffff',
+                  textDecoration: 'none',
+                  borderRadius: '4px',
+                  fontSize: '0.875rem',
+                  fontWeight: 500,
+                }}
+              >
+                รายการ{STOCK_MATERIAL_LABEL}
+              </Link>
+              <Link
+                to="/stock-materials/lists"
+                id="nav-catalog-lists"
+                style={{
+                  display: 'inline-block',
+                  padding: '0.5rem 1rem',
+                  backgroundColor: '#4b5563',
+                  color: '#ffffff',
+                  textDecoration: 'none',
+                  borderRadius: '4px',
+                  fontSize: '0.875rem',
+                  fontWeight: 500,
+                }}
+              >
+                {CATALOG_LISTS_LABEL}
+              </Link>
+            </div>
+          </section>
+        )}
       </div>
     </main>
   );

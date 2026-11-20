@@ -5,7 +5,7 @@ import type { ApiHarness } from './api-harness.ts';
 const QUEUED_TIMEOUT_MS = 15_000;
 
 // The tables whose rows the services lock for a write.
-type LockedTable = 'loans' | 'assets' | 'repair_records' | 'verification_rounds' | 'verification_scope_entries' | 'verification_revisions';
+type LockedTable = 'loans' | 'assets' | 'repair_records' | 'verification_rounds' | 'verification_scope_entries' | 'verification_revisions' | 'units' | 'stock_materials' | 'brands' | 'material_categories';
 
 // How a service locks a row: `FOR UPDATE` to change it, `FOR SHARE` to cite it (CODING_STANDARDS, the foreign key
 // paragraph). A share lock is taken in a join, so its wait is matched without `WHERE id`.
@@ -17,17 +17,31 @@ type LockMode = 'FOR UPDATE' | 'FOR SHARE';
  */
 export function lockHelpers(context: () => { api: ApiHarness }) {
   // How many writes wait on a row lock of `table`, as the services take it: `FROM <table> WHERE id … FOR UPDATE`,
-  // or `FROM <table> … FOR SHARE`.
+  // or `FROM <table> … FOR SHARE`, or `JOIN <table> … FOR SHARE OF` it, as F008-T8 locks the Units a Stock Material
+  // names; `\M` ends the table's name, so units is not stock_material_units.
   const waitersOnLock = async (table: LockedTable, mode: LockMode): Promise<number> => {
     const res = await context().api.pool.query(
-      `SELECT count(*)::int AS n FROM pg_stat_activity WHERE wait_event_type = 'Lock' AND query LIKE $1`,
-      [mode === 'FOR UPDATE' ? `%FROM ${table} WHERE id%FOR UPDATE%` : `%FROM ${table}%FOR SHARE%`]
+      `SELECT count(*)::int AS n FROM pg_stat_activity WHERE wait_event_type = 'Lock' AND query ~ $1`,
+      [mode === 'FOR UPDATE' ? `FROM ${table} WHERE id.*FOR UPDATE` : `(FROM|JOIN) ${table}\\M.*FOR SHARE`]
     );
     return res.rows[0].n;
   };
 
   const untilWaiting = async (table: LockedTable, count = 1, mode: LockMode = 'FOR UPDATE'): Promise<void> => {
     await expect.poll(() => waitersOnLock(table, mode), { timeout: 10_000, interval: 50 }).toBeGreaterThanOrEqual(count);
+  };
+
+  // Waits until `count` writes wait on the transaction-level advisory lock named `key`, which the services take by
+  // its literal name, as F008-T5 does for 'stock-material:identity'.
+  const untilWaitingOnAdvisoryLock = async (key: string, count = 1): Promise<void> => {
+    const waiters = async (): Promise<number> => {
+      const res = await context().api.pool.query(
+        `SELECT count(*)::int AS n FROM pg_stat_activity WHERE wait_event_type = 'Lock' AND wait_event = 'advisory' AND query LIKE $1`,
+        [`%pg_advisory_xact_lock(hashtext('${key}'))%`]
+      );
+      return res.rows[0].n;
+    };
+    await expect.poll(waiters, { timeout: 10_000, interval: 50 }).toBeGreaterThanOrEqual(count);
   };
 
   /**
@@ -85,5 +99,5 @@ export function lockHelpers(context: () => { api: ApiHarness }) {
     return Promise.all(pending);
   };
 
-  return { whileHolding, whileWriting, untilWaiting };
+  return { whileHolding, whileWriting, untilWaiting, untilWaitingOnAdvisoryLock };
 }

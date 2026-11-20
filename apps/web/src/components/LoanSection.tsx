@@ -77,8 +77,8 @@ export const LoanSection: React.FC<LoanSectionProps> = ({
   });
 
   // While the Asset is On Loan, or its item ended Not Returned, the page links to that Loan instead of
-  // offering another: the server would refuse it (LR-11, #74 Q21).
-  const mayStart = canRecordLoan && !onLoan && !notReturned;
+  // offering another: the server would refuse it (LR-11, #74 Q21). The action waits for the CSRF token (#135).
+  const mayStart = canRecordLoan && csrfToken !== null && !onLoan && !notReturned;
 
   return (
     <section aria-labelledby="loan-heading" id="loan-section" style={{ marginBottom: '2rem' }}>

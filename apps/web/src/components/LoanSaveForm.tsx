@@ -1,5 +1,7 @@
 import React, { useRef, useState } from 'react';
+import { DuplicateCandidateWarning } from './DuplicateCandidateWarning';
 import { ConflictWarning } from './LoanConflicts';
+import type { DuplicateCandidatesFound } from './materialFacts';
 import type { WarnedLoanConflict } from './loanFacts';
 import type { WarnedRepairConflict } from './repairFacts';
 import type { RetirementConflict } from './retirementFacts';
@@ -9,9 +11,12 @@ export interface LoanSaveFormProps {
   idPrefix: string;
   heading: string;
   saveUrl: string;
-  // POST unless the write edits its target in place (F006-T6: PATCH of a Verification Round).
-  method?: 'POST' | 'PATCH';
-  csrfToken: string | null;
+  // POST unless the write edits its target in place (F006-T6: PATCH of a Verification Round) or replaces a whole
+  // set (F008-T3: PUT of a Stock Material's Units).
+  method?: 'POST' | 'PATCH' | 'PUT';
+  // The session's CSRF token: a page renders the form only once it is in hand, since a save sent without it is refused
+  // as if the grant were gone (#135).
+  csrfToken: string;
   // Why this request cannot be sent, or null when it can. The server decides again.
   requestError: () => string | null;
   requestBody: () => Record<string, unknown>;
@@ -19,7 +24,8 @@ export interface LoanSaveFormProps {
   refusedList: (body: any) => React.ReactNode;
   forbiddenMessage: string;
   refusedMessage: string;
-  onSaved: () => Promise<void>;
+  // Called with the saved write's answer, such as the id a create returns (F008-T1).
+  onSaved: (body: any) => Promise<void>;
   // Reads the latest facts and returns whether it could. A form on a Loan that exists passes this,
   // and a save refused as stale then offers it.
   onRefresh?: () => Promise<boolean>;
@@ -58,6 +64,12 @@ const confirmedConflictsOf = ({ conflicts, repairConflicts, retirementConflicts 
   ...retirementConflicts.map(({ kind, fact_id: factId }) => ({ conflicting_fact_kind: kind, conflicting_fact_id: factId })),
 ];
 
+// F008-T5 (#181): the Duplicate Candidates a Stock Material write was refused with, and the request they were found for.
+interface PendingDuplicateCandidates {
+  request: SaveRequest;
+  found: DuplicateCandidatesFound;
+}
+
 const recoveryButtonStyle: React.CSSProperties = {
   marginLeft: '1rem',
   padding: '0.375rem 0.75rem',
@@ -75,7 +87,8 @@ const recoveryButtonStyle: React.CSSProperties = {
  * after an unknown outcome resends the same request under the same token, so one action records one
  * fact. A stale save is refused until the latest facts are read. A save that would create Loan Conflicts,
  * Repair Conflicts or Retirement Conflicts waits for confirmation, with the fields locked so that what is confirmed is the
- * request warned about, under the same retry token (#74 Q20, #98 Q17).
+ * request warned about, under the same retry token (#74 Q20, #98 Q17); so does a Stock Material write with Duplicate
+ * Candidates, until "เป็นคนละรายการ" (F008-T5, #181).
  */
 export const LoanSaveForm: React.FC<LoanSaveFormProps> = ({
   idPrefix,
@@ -100,16 +113,18 @@ export const LoanSaveForm: React.FC<LoanSaveFormProps> = ({
   const [refused, setRefused] = useState<React.ReactNode>(null);
   const [isSubmitting, setIsSubmitting] = useState(false);
   const [conflictWarning, setConflictWarning] = useState<PendingConflicts | null>(null);
+  const [duplicateWarning, setDuplicateWarning] = useState<PendingDuplicateCandidates | null>(null);
   // The request whose outcome is unknown.
   const uncertainRef = useRef<SaveRequest | null>(null);
 
-  const isLocked = isSubmitting || failure?.next === 'retry' || conflictWarning !== null;
+  const isLocked = isSubmitting || failure?.next === 'retry' || conflictWarning !== null || duplicateWarning !== null;
 
   const send = async (request: SaveRequest) => {
     setIsSubmitting(true);
     setFailure(null);
     setRefused(null);
     setConflictWarning(null);
+    setDuplicateWarning(null);
     uncertainRef.current = request;
 
     let res: Response;
@@ -119,7 +134,7 @@ export const LoanSaveForm: React.FC<LoanSaveFormProps> = ({
         headers: {
           'Content-Type': 'application/json',
           'x-retry-token': request.retry_token,
-          ...(csrfToken ? { 'x-csrf-token': csrfToken } : {}),
+          'x-csrf-token': csrfToken,
         },
         credentials: 'include',
         body: JSON.stringify(request),
@@ -132,7 +147,7 @@ export const LoanSaveForm: React.FC<LoanSaveFormProps> = ({
 
     if (res.ok) {
       uncertainRef.current = null;
-      await onSaved();
+      await onSaved(await res.json().catch(() => null));
       return;
     }
 
@@ -153,6 +168,10 @@ export const LoanSaveForm: React.FC<LoanSaveFormProps> = ({
           repairConflicts: body.repair_conflicts ?? [],
           retirementConflicts: body.retirement_conflicts ?? [],
         });
+        return;
+      }
+      if (body?.code === 'DUPLICATE_CANDIDATES_FOUND') {
+        setDuplicateWarning({ request, found: { candidates: body.candidates, total_count: body.total_count } });
         return;
       }
       if (body?.code === 'STALE_BEFORE_CONFLICT' && onRefresh) {
@@ -242,6 +261,15 @@ export const LoanSaveForm: React.FC<LoanSaveFormProps> = ({
           // The refused warning stored nothing, so the same token carries the confirmed request.
           onConfirm={() => void send({ ...conflictWarning.request, confirmed_conflicts: confirmedConflictsOf(conflictWarning) })}
           onBack={() => setConflictWarning(null)}
+        />
+      )}
+
+      {duplicateWarning && (
+        <DuplicateCandidateWarning
+          found={duplicateWarning.found}
+          // The refused warning stored nothing, so the same token carries the confirmed request (#175 P4).
+          onConfirm={() => void send({ ...duplicateWarning.request, explicit_continuation: true })}
+          onBack={() => setDuplicateWarning(null)}
         />
       )}
 

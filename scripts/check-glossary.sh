@@ -58,11 +58,24 @@ done < <(git diff --no-color --unified=0 "$base...$head" -- "${SOURCE[@]}")
 
 # A *_LABEL exported from the web app is text a user sees, such as a status, an action or a filter: a new one
 # needs its GLOSSARY.md entry in the same change (CODING_STANDARDS, "Each name says its concept in the
-# glossary's words"). A label that names no new concept, such as a form field, a heading or a button made of
-# terms already there, is exempt by a comment on the line before it: `// glossary: no entry — <why>`.
+# glossary's words"). A label that names no new concept is exempt by a comment on the line before it,
+# `// glossary: no entry — <why>`, whose reason either says it is "a form field" or names, as "<term> (<Term>)",
+# a GLOSSARY.md term the label is made of: "เพิ่มยี่ห้อ" is made of "ยี่ห้อ (Brand)". A new action or filter such
+# as "แก้ไขข้อมูลอื่น" contains no such term, so it gets its entry (#179).
 label_pattern="^export const [A-Z0-9_]+_LABEL = '([^']+)'"
+exemption='// glossary: no entry — '
 glossary=$(git show "$head:GLOSSARY.md")
 unlisted=0
+# Whether the exemption `reason` holds for the label `text`.
+exempts() {
+  local reason=$1 text=$2 term
+  [[ $reason == *'a form field'* ]] && return 0
+  while IFS= read -r term; do
+    term=${term% (*}
+    [[ -n $term && $text == *"$term"* ]] && grep -qF -- "($term)" <<<"$glossary" && return 0
+  done < <(grep -oE -- '[^[:space:]()]+ \([A-Z][^)]*\)' <<<"$reason" || true)
+  return 1
+}
 prev=
 file=
 while IFS= read -r line; do
@@ -72,8 +85,13 @@ while IFS= read -r line; do
   esac
   if [[ $line == +* && ${line:1} =~ $label_pattern ]]; then
     text=${BASH_REMATCH[1]}
-    if [[ $prev != *'// glossary: no entry — '* ]] && ! grep -qF -- "$text" <<<"$glossary"; then
+    if grep -qF -- "$text" <<<"$glossary"; then
+      :
+    elif [[ $prev != *"$exemption"* ]]; then
       echo "check-glossary: $file: label \"$text\" has no GLOSSARY.md entry, in: ${line:1:160}"
+      unlisted=1
+    elif ! exempts "${prev#*"$exemption"}" "$text"; then
+      echo "check-glossary: $file: label \"$text\" is exempt, but its reason names no GLOSSARY.md term the label is made of, in: ${prev:1:160}"
       unlisted=1
     fi
   fi
@@ -84,7 +102,7 @@ if ((found)); then
   echo "check-glossary: use the GLOSSARY.md term instead; a name that exists at $base stays usable." >&2
 fi
 if ((unlisted)); then
-  echo "check-glossary: add the term to GLOSSARY.md; a label that names no new concept takes \`// glossary: no entry — <why>\` on the line before." >&2
+  echo "check-glossary: add the term to GLOSSARY.md; a label that names no new concept takes \`// glossary: no entry — <why>\` on the line before, naming the term it is made of as \"<term> (<Term>)\", or saying \"a form field\"." >&2
 fi
 if ((found || unlisted)); then
   exit 1
