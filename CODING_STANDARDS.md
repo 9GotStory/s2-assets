@@ -34,7 +34,9 @@ rule goes. A cap case sends one entry over the cap, every entry valid and distin
 mode, which tabulates which break went red. A loop of refused payloads that asserts only
 the error code hides which rule refused each one; ESLint flags such a loop over a literal array
 (`eslint.config.mjs`, #155), and one from before #155 carries an exemption until a ticket
-touches its file. In F006-T1 (#126), the filter-cap case sent 101 random UUIDs, which the
+touches its file. A loop whose payloads break different rules asserts each rule's own message, since
+the field name is in all of them: in F008-T7 (#180), an overlong note and a control character were
+both asserted only by "note". In F006-T1 (#126), the filter-cap case sent 101 random UUIDs, which the
 unknown-entry check refused as well, and it stayed green with the cap removed. It now names one
 real entry 1001 times. In F008-T3 (#178), the Alternate Unit cap case sent 101 copies of one Unit,
 which the duplicate rule refused too; it now sends 101 distinct Units.
@@ -102,6 +104,11 @@ Candidate check matches. Every write that can bring a row into the set changes t
 update of the compared column such as a Material Correction's rename. Each gets an order test that holds
 its statement with `whileWriting`, waits with `untilWaitingOnAdvisoryLock` and starts with no match. In
 F008-T5 (#181), only a held create was queued; the Standards review found the rename missing.
+
+When one locked read decides several rules, each rule gets its own order test, and that test passes
+every rule checked before it: it expects the version the held write leaves, so only the rule under test
+decides. In F008-T7 (#180), each order test expected the version from before the held write, so the stale
+check refused every time; the "already Inactive" rule got its test from the Standards review.
 
 ## A journey step waits for the URL it changes
 
