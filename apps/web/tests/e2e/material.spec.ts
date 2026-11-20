@@ -116,6 +116,14 @@ test.describe.serial('Stock Material journeys: Real SPA -> Composed API -> Postg
     if (container) await container.stop();
   });
 
+  // The session answers late, so that a page shows its facts before the CSRF token arrives: a write action waits for the
+  // token, or a quick save would be refused as if the grant were gone (#135).
+  const delaySessionCheck = (page: any) =>
+    page.route('**/auth/session-check', async (route: any) => {
+      await new Promise((resolve) => setTimeout(resolve, 3000));
+      await route.continue();
+    });
+
   const loginAs = async (context: any, userId: string) => {
     const session = await sessionService.createSession(userId);
     await context.addCookies([{ name: 'session', value: session.token, url: targetBaseUrl }]);
@@ -414,11 +422,15 @@ test.describe.serial('Stock Material journeys: Real SPA -> Composed API -> Postg
     const can = freshUnitName('กระป๋อง');
     const gallon = freshUnitName('แกลลอน');
     await loginAs(context, officerUserId);
+    // The session answers late: the form waits for its CSRF token, or a quick save would be refused as if the grant
+    // were gone (#135).
+    await delaySessionCheck(page);
     await page.goto(`${targetBaseUrl}/stock-materials/new`);
     await page.locator('#stock-material-name').fill('น้ำยาล้างจาน');
     await page.locator('#stock-material-new-unit').fill(can);
     await page.locator('#stock-material-new-unit-add').click();
     await expect(page.locator('#stock-material-base-unit option:checked')).toHaveText(can);
+    await page.unroute('**/auth/session-check');
     await page.locator('#stock-material-new-unit').fill(gallon);
     await page.locator('#stock-material-new-unit-add').click();
     await expect(page.locator('#stock-material-alternate-0-unit option:checked')).toHaveText(gallon);
@@ -450,13 +462,18 @@ test.describe.serial('Stock Material journeys: Real SPA -> Composed API -> Postg
     await expect(page).toHaveURL(/minimum_stock=set$/);
     await expect(page.locator('#stock-material-list-empty')).toContainText('ไม่พบวัสดุที่ค้นหา');
 
-    // "แก้ไขข้อมูลอื่น" sets 20 กระป๋อง without a reason; the same amount written otherwise is no change.
+    // "แก้ไขข้อมูลอื่น" sets 20 กระป๋อง without a reason; the same amount written otherwise is no change. The session
+    // answers late: the action waits for its CSRF token (#135).
+    await delaySessionCheck(page);
     await page.goto(detailUrl);
+    await expect(page.locator('[data-testid="stock-material-minimum-stock"]')).toHaveText('-');
+    await expect(page.locator('#stock-material-correct, #stock-material-edit-details, #stock-material-inactivate, #stock-material-edit-units')).toHaveCount(0);
     await page.locator('#stock-material-edit-details').click();
     await expect(page.locator('#stock-material-details-minimum-stock + span')).toHaveText(can);
     await page.locator('#stock-material-details-minimum-stock').fill('20');
     await page.locator('#stock-material-details-submit').click();
     await expect(page.locator('#stock-material-details-form')).toHaveCount(0);
+    await page.unroute('**/auth/session-check');
     await expect(page.locator('[data-testid="stock-material-minimum-stock"]')).toHaveText(`20 ${can}`);
     const set = page.locator('[data-testid="stock-material-history-2"]');
     await expect(set).toContainText('แก้ไขข้อมูลอื่น');
@@ -671,14 +688,17 @@ test.describe.serial('Stock Material journeys: Real SPA -> Composed API -> Postg
     await expect(page.locator('#stock-material-status-form')).toHaveCount(0);
     await expect(page.locator('#stock-material-inactivate')).toBeVisible();
     await service.inactivate(officerUserId, id, { expected_version: 5 }, { retryToken: crypto.randomUUID() });
+    await delaySessionCheck(page);
     await page.reload();
     await expect(status).toHaveText('หยุดใช้');
+    await expect(page.locator('#stock-material-reactivate')).toHaveCount(0);
 
     await page.locator('#stock-material-reactivate').click();
     await expect(page.locator('#stock-material-reactivate')).toHaveCount(0);
     await expect(page.locator('[data-testid="stock-material-status-notice"]')).toContainText('รายการเดิม');
     await expect(page.locator('#stock-material-status-note')).toHaveCount(0);
     await page.locator('#stock-material-status-submit').click();
+    await page.unroute('**/auth/session-check');
     await expect(status).toHaveText('ใช้งานอยู่');
     await expect(page.locator('#stock-material-inactivate')).toBeVisible();
     await expect(page.locator('#stock-material-reactivate')).toHaveCount(0);
@@ -710,8 +730,13 @@ test.describe.serial('Stock Material journeys: Real SPA -> Composed API -> Postg
     const status = page.locator(`[data-testid="brand-status-${brand.id}"]`);
 
     await loginAs(context, officerUserId);
+    // The session answers late: the actions wait for its CSRF token, or a quick save would be refused as if the grant
+    // were gone (#135).
+    await delaySessionCheck(page);
     await page.goto(`${targetBaseUrl}/stock-materials/lists`);
     await expect(status).toHaveText('ใช้งานอยู่');
+    await expect(page.locator('#catalog-list-brand button')).toHaveCount(0);
+    await expect(page.locator('#catalog-list-brand th', { hasText: 'ดำเนินการ' })).toHaveCount(0);
     await expect(page.locator(`[data-testid="brand-usage-${brand.id}"]`)).toHaveText('1 รายการ');
     // In use, it is offered "หยุดใช้" and not "เปิดใช้อีกครั้ง".
     await expect(page.locator(`#brand-reactivate-${brand.id}`)).toHaveCount(0);
@@ -719,6 +744,7 @@ test.describe.serial('Stock Material journeys: Real SPA -> Composed API -> Postg
     await expect(page.locator('[data-testid="brand-status-notice"]')).toContainText('วัสดุ 1 รายการที่ใช้ยี่ห้อนี้ยังแสดงยี่ห้อนี้ตามเดิม');
     await page.locator('#brand-status-submit').click();
     await expect(page.locator('#brand-status-form')).toHaveCount(0);
+    await page.unroute('**/auth/session-check');
     await expect(status).toHaveText('หยุดใช้');
     await expect(page.locator(`#brand-inactivate-${brand.id}`)).toHaveCount(0);
 

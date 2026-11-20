@@ -256,10 +256,13 @@ export const VerificationPanel: React.FC<VerificationPanelProps> = ({
     await onRecorded();
     setOpenForm(null);
   };
-  // The Asset page reads the Asset only once /auth/session-check has answered, so the CSRF token is there before
-  // this form is (#135).
-  const mayRecord = canRecord && entry !== null && entry.current === null;
-  const mayRepair = canRecordRepair && current !== null && isFoundDamaged(current);
+  // The Asset page reads the Asset only once /auth/session-check has answered; an action still waits for the CSRF token
+  // it gave (#135).
+  const mayAddLate = canManage && csrfToken !== null;
+  const mayReverify = canRecord && csrfToken !== null;
+  const mayVoid = canCorrect && csrfToken !== null;
+  const mayRecord = canRecord && csrfToken !== null && entry !== null && entry.current === null;
+  const mayRepair = canRecordRepair && csrfToken !== null && current !== null && isFoundDamaged(current);
   const mayReassign = canReassign && current !== null && hasLocationMismatch(current);
 
   return (
@@ -294,7 +297,7 @@ export const VerificationPanel: React.FC<VerificationPanelProps> = ({
           {canManage || retired ? 'ครุภัณฑ์นี้ไม่อยู่ในรายการของรอบตรวจนี้' : 'ครุภัณฑ์นี้ไม่อยู่ในรายการของรอบตรวจนี้ กรุณาแจ้งผู้ดูแลพัสดุ'}
         </p>
       )}
-      {entry === null && canManage && (
+      {entry === null && mayAddLate && (
         <div style={{ marginTop: '0.75rem' }}>
           {openForm === 'LATE_ADDITION' ? (
             <VerificationLateAdditionForm
@@ -325,19 +328,19 @@ export const VerificationPanel: React.FC<VerificationPanelProps> = ({
               {REPAIR_START_LABEL}
             </button>
           )}
-          {canRecord && (
+          {mayReverify && (
             <button type="button" id="verification-reverify-action" onClick={() => setOpenForm('REVERIFY')} style={actionStyle}>
               {REVERIFICATION_LABEL}
             </button>
           )}
-          {canCorrect && (
+          {mayVoid && (
             <button type="button" id="verification-void-action" onClick={() => setOpenForm('VOID')} style={{ ...actionStyle, color: '#991b1b', borderColor: '#991b1b' }}>
               {CORRECTION_LABELS.VOIDED}
             </button>
           )}
         </div>
       )}
-      {current && openForm === 'REVERIFY' && canRecord && (
+      {current && openForm === 'REVERIFY' && mayReverify && (
         <div style={{ marginTop: '0.75rem' }}>
           <VerificationRecordForm
             key={current.id}
@@ -379,7 +382,7 @@ export const VerificationPanel: React.FC<VerificationPanelProps> = ({
           />
         </div>
       )}
-      {current && openForm === 'VOID' && canCorrect && (
+      {current && openForm === 'VOID' && mayVoid && (
         <div style={{ marginTop: '0.75rem' }}>
           <VerificationVoidForm
             key={current.id}

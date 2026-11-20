@@ -15,7 +15,7 @@ export interface LoanCorrectionFormProps {
   // What the form calls the fact it corrects, such as "การยืม" or "การคืน: โน้ตบุ๊ก A".
   targetLabel: string;
   actorId: string | null;
-  csrfToken: string | null;
+  csrfToken: string;
   onRecorded: () => Promise<void>;
   // Reads the latest Loan and returns its version, or null when the read failed.
   onRefresh: () => Promise<number | null>;

@@ -2,10 +2,11 @@ import React, { useState } from 'react';
 import { LoanSaveForm } from './LoanSaveForm';
 import { fieldInputStyle, fieldLabelStyle } from './ReferenceContextFields';
 import { INACTIVE_LABEL, REACTIVATE_LABEL, type StockMaterialDetail } from './materialFacts';
-import { useCsrfToken } from './materialQueries';
 
 export interface StockMaterialStatusFormProps {
   material: StockMaterialDetail;
+  // The session's CSRF token: the page offers the form only once it is in hand (#135).
+  csrfToken: string;
   // What the page offered: "หยุดใช้" or "เปิดใช้อีกครั้ง".
   action: 'inactivate' | 'reactivate';
   // Reads the Stock Material again and returns whether it could.
@@ -20,19 +21,8 @@ export interface StockMaterialStatusFormProps {
  * reactivates an Inactive one as the same record, at the version the page read (#175 MC-14, Q13, Q23). Nothing else
  * changes and nothing is deleted.
  */
-export const StockMaterialStatusForm: React.FC<StockMaterialStatusFormProps> = ({ material, action, onRefresh, onSaved, onCancel, onPermissionRevoked }) => {
+export const StockMaterialStatusForm: React.FC<StockMaterialStatusFormProps> = ({ material, action, csrfToken, onRefresh, onSaved, onCancel, onPermissionRevoked }) => {
   const [note, setNote] = useState('');
-
-  const session = useCsrfToken(true);
-  const csrfToken = session.data ?? null;
-
-  if (session.isPending) {
-    return (
-      <div role="status" aria-busy="true" style={{ padding: '1rem', color: '#6b7280', fontSize: '0.875rem' }}>
-        กำลังโหลด...
-      </div>
-    );
-  }
 
   const inactivating = action === 'inactivate';
   return (

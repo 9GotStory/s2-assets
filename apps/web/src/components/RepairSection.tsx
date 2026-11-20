@@ -98,8 +98,8 @@ export const RepairSection: React.FC<RepairSectionProps> = ({
   });
 
   // While the Asset is Under Repair, the page links to that Repair Record instead of offering another:
-  // the server would refuse it (#98 Q3, Q21).
-  const mayStart = canRecordRepair && !underRepair;
+  // the server would refuse it (#98 Q3, Q21). The action waits for the CSRF token (#135).
+  const mayStart = canRecordRepair && csrfToken !== null && !underRepair;
 
   return (
     <section aria-labelledby="repair-heading" id="repair-section" style={{ marginBottom: '2rem' }}>

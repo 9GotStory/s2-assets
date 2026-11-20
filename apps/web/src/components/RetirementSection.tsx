@@ -73,13 +73,11 @@ export const RetirementSection: React.FC<RetirementSectionProps> = ({
 }) => {
   const [isOpen, setIsOpen] = useState(false);
   const [openCorrection, setOpenCorrection] = useState<'AMEND' | 'VOID' | null>(null);
-  // The action waits for the CSRF token, so that a save never goes without it (#135).
+  // The actions wait for the CSRF token, so that a save never goes without it (#135).
   const mayRetire = canRetire && csrfToken !== null;
-  // A voided Retirement is neither amended nor voided again (#154 P2).
-  const mayCorrect = (retirement: Retirement) => canCorrectRetirement && csrfToken !== null && !retirement.is_voided;
+  const mayCorrect = canCorrectRetirement && csrfToken !== null;
   const correctionFormProps = (retirement: Retirement) => ({
     retirement,
-    csrfToken,
     onRecorded: async () => {
       await onRetired();
       setOpenCorrection(null);
@@ -131,7 +129,8 @@ export const RetirementSection: React.FC<RetirementSectionProps> = ({
               </div>
               {!retirement.is_voided && <RetirementConflictNotice conflicts={retirementConflicts} />}
               {retirement.corrections.length > 0 && <RetirementCorrectionList retirementId={retirement.id} corrections={retirement.corrections} />}
-              {mayCorrect(retirement) && openCorrection === null && (
+              {/* A voided Retirement is neither amended nor voided again (#154 P2). */}
+              {mayCorrect && !retirement.is_voided && openCorrection === null && (
                 <div style={{ marginTop: '0.5rem' }}>
                   <button type="button" id="retirement-amend-action" onClick={() => setOpenCorrection('AMEND')} style={correctionActionStyle}>
                     {CORRECTION_LABELS.AMENDED}
@@ -141,9 +140,13 @@ export const RetirementSection: React.FC<RetirementSectionProps> = ({
                   </button>
                 </div>
               )}
-              {mayCorrect(retirement) && openCorrection !== null && (
+              {mayCorrect && !retirement.is_voided && openCorrection !== null && (
                 <div style={{ marginTop: '0.75rem' }}>
-                  {openCorrection === 'AMEND' ? <RetirementAmendForm {...correctionFormProps(retirement)} /> : <RetirementVoidForm {...correctionFormProps(retirement)} />}
+                  {openCorrection === 'AMEND' ? (
+                    <RetirementAmendForm {...correctionFormProps(retirement)} csrfToken={csrfToken} />
+                  ) : (
+                    <RetirementVoidForm {...correctionFormProps(retirement)} csrfToken={csrfToken} />
+                  )}
                 </div>
               )}
             </li>

@@ -9,7 +9,7 @@ import { NOT_RETURNED_LABEL, assetLabel, isReturnable, type Loan, type LoanCondi
 
 export interface LoanReturnFormProps {
   loan: Loan;
-  csrfToken: string | null;
+  csrfToken: string;
   onRecorded: () => Promise<void>;
   // Reads the latest Loan and returns its version, or null when the read failed.
   onRefresh: () => Promise<number | null>;

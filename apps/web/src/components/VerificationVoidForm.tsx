@@ -10,7 +10,7 @@ export interface VerificationVoidFormProps {
   round: OpenVerificationRound;
   // The current revision the user saw, which the void names.
   revision: VerificationRevision;
-  csrfToken: string | null;
+  csrfToken: string;
   onVoided: () => Promise<void>;
   onClose: () => void;
   onPermissionRevoked?: (statusCode?: number) => void;

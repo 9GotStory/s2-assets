@@ -75,6 +75,8 @@ const ListSection: React.FC<ListSectionProps> = ({ spec, list }) => {
   const canManage = data?.can_manage === true;
   const session = useCsrfToken(canManage);
   const csrfToken = session.data ?? null;
+  // The actions wait for the token: a request sent without it is refused as if the grant were gone (#135).
+  const mayManage = canManage && csrfToken !== null;
 
   // The entry `id` as the list last read it: a form sends the version the page shows now, read again after a stale save.
   const entryOf = (id: string): ListedEntry | undefined => data?.items.find((entry) => entry.id === id);
@@ -132,7 +134,7 @@ const ListSection: React.FC<ListSectionProps> = ({ spec, list }) => {
   );
 
   const renderForm = () => {
-    if (form === null || session.isPending) {
+    if (form === null || !mayManage) {
       return null;
     }
     if (form.mode === 'add') {
@@ -224,7 +226,7 @@ const ListSection: React.FC<ListSectionProps> = ({ spec, list }) => {
         <h2 id={`catalog-list-${kind}-heading`} style={{ fontSize: '1.125rem', fontWeight: 600, color: '#111827', margin: 0 }}>
           {concept}
         </h2>
-        {canManage && form?.mode !== 'add' && (
+        {mayManage && form?.mode !== 'add' && (
           <button type="button" id={`${kind}-add`} onClick={() => open({ mode: 'add' })} style={actionStyle}>
             {addLabel}
           </button>
@@ -260,7 +262,7 @@ const ListSection: React.FC<ListSectionProps> = ({ spec, list }) => {
                 <th style={headStyle}>สถานะ</th>
                 <th style={headStyle}>วัสดุที่ใช้อยู่</th>
                 <th style={headStyle}>ประวัติ</th>
-                {canManage && <th style={headStyle}>ดำเนินการ</th>}
+                {mayManage && <th style={headStyle}>ดำเนินการ</th>}
               </tr>
             </thead>
             <tbody>
@@ -288,7 +290,7 @@ const ListSection: React.FC<ListSectionProps> = ({ spec, list }) => {
                       </ol>
                     </details>
                   </td>
-                  {canManage && (
+                  {mayManage && (
                     <td style={{ ...cellStyle, whiteSpace: 'nowrap' }}>
                       <button type="button" id={`${kind}-rename-${entry.id}`} onClick={() => open({ mode: 'rename', id: entry.id })} style={actionStyle}>
                         {RENAME_LABEL}

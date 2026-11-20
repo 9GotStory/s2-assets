@@ -5,6 +5,7 @@ import { StockMaterialCorrectionForm } from '../components/StockMaterialCorrecti
 import { StockMaterialDetailsEditor } from '../components/StockMaterialDetailsEditor';
 import { StockMaterialStatusForm } from '../components/StockMaterialStatusForm';
 import { StockMaterialUnitsEditor } from '../components/StockMaterialUnitsEditor';
+import { useCsrfToken } from '../components/materialQueries';
 import {
   ACTIVE_LABEL,
   BASE_UNIT_LABEL,
@@ -142,6 +143,12 @@ const StockMaterialDetailContent: React.FC<{ id: string }> = ({ id }) => {
   const detail = material.isError ? undefined : material.data;
   const baseUnit = detail?.units.find((unit) => unit.is_base);
   const refresh = async () => (await material.refetch()).isSuccess;
+  const session = useCsrfToken(detail?.can_manage === true || detail?.can_inactivate === true || detail?.can_reactivate === true);
+  // Each write action waits for the token: a request sent without it is refused as if the grant were gone (#135).
+  const csrfToken = session.data ?? null;
+  const mayManage = detail?.can_manage === true && csrfToken !== null;
+  const mayInactivate = detail?.can_inactivate === true && csrfToken !== null;
+  const mayReactivate = detail?.can_reactivate === true && csrfToken !== null;
 
   return (
     <main style={{ minHeight: '100vh', backgroundColor: '#f3f4f6', padding: '1rem', fontFamily: 'system-ui, -apple-system, sans-serif', boxSizing: 'border-box' }}>
@@ -186,34 +193,35 @@ const StockMaterialDetailContent: React.FC<{ id: string }> = ({ id }) => {
               </dd>
             </dl>
             <div style={{ display: 'flex', flexWrap: 'wrap', gap: '0.5rem' }}>
-              {detail.can_manage && !isCorrecting && (
+              {mayManage && !isCorrecting && (
                 <button type="button" id="stock-material-correct" onClick={() => setIsCorrecting(true)} style={actionStyle}>
                   {MATERIAL_CORRECTION_LABEL}
                 </button>
               )}
-              {detail.can_manage && !isEditingDetails && (
+              {mayManage && !isEditingDetails && (
                 <button type="button" id="stock-material-edit-details" onClick={() => setIsEditingDetails(true)} style={actionStyle}>
                   {EDIT_DETAILS_LABEL}
                 </button>
               )}
-              {detail.can_inactivate && statusAction !== 'inactivate' && (
+              {mayInactivate && statusAction !== 'inactivate' && (
                 <button type="button" id="stock-material-inactivate" onClick={() => setStatusAction('inactivate')} style={actionStyle}>
                   {INACTIVE_LABEL}
                 </button>
               )}
-              {detail.can_reactivate && statusAction !== 'reactivate' && (
+              {mayReactivate && statusAction !== 'reactivate' && (
                 <button type="button" id="stock-material-reactivate" onClick={() => setStatusAction('reactivate')} style={actionStyle}>
                   {REACTIVATE_LABEL}
                 </button>
               )}
             </div>
-            {((statusAction === 'inactivate' && detail.can_inactivate) || (statusAction === 'reactivate' && detail.can_reactivate)) && (
+            {((statusAction === 'inactivate' && mayInactivate) || (statusAction === 'reactivate' && mayReactivate)) && (
               <div style={{ marginTop: '1rem' }}>
                 {/* A new read starts the form again from what it shows, so a save never carries a status read before it. */}
                 <StockMaterialStatusForm
                   key={detail.version}
                   material={detail}
                   action={statusAction}
+                  csrfToken={csrfToken}
                   onRefresh={refresh}
                   onSaved={async () => {
                     await material.refetch();
@@ -230,12 +238,13 @@ const StockMaterialDetailContent: React.FC<{ id: string }> = ({ id }) => {
                 />
               </div>
             )}
-            {detail.can_manage && isCorrecting && (
+            {mayManage && isCorrecting && (
               <div style={{ marginTop: '1rem' }}>
                 {/* A new read starts the form again from what it shows, so a save never carries values read before it. */}
                 <StockMaterialCorrectionForm
                   key={detail.version}
                   material={detail}
+                  csrfToken={csrfToken}
                   onRefresh={refresh}
                   onSaved={async () => {
                     await material.refetch();
@@ -252,12 +261,13 @@ const StockMaterialDetailContent: React.FC<{ id: string }> = ({ id }) => {
                 />
               </div>
             )}
-            {detail.can_manage && isEditingDetails && (
+            {mayManage && isEditingDetails && (
               <div style={{ marginTop: '1rem' }}>
                 {/* A new read starts the editor again from what it shows, so a save never carries details read before it. */}
                 <StockMaterialDetailsEditor
                   key={detail.version}
                   material={detail}
+                  csrfToken={csrfToken}
                   onRefresh={refresh}
                   onSaved={async () => {
                     await material.refetch();
@@ -277,7 +287,7 @@ const StockMaterialDetailContent: React.FC<{ id: string }> = ({ id }) => {
 
             <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', gap: '1rem' }}>
               <h2 style={sectionHeadingStyle}>{UNIT_LABEL}</h2>
-              {detail.can_manage && !isEditingUnits && (
+              {mayManage && !isEditingUnits && (
                 <button
                   type="button"
                   id="stock-material-edit-units"
@@ -288,11 +298,12 @@ const StockMaterialDetailContent: React.FC<{ id: string }> = ({ id }) => {
                 </button>
               )}
             </div>
-            {detail.can_manage && isEditingUnits && (
+            {mayManage && isEditingUnits && (
               // A new read starts the editor again from what it shows, so a save never carries a set read before it.
               <StockMaterialUnitsEditor
                 key={detail.version}
                 material={detail}
+                csrfToken={csrfToken}
                 onRefresh={refresh}
                 onSaved={async () => {
                   await material.refetch();

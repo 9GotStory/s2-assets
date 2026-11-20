@@ -212,10 +212,11 @@ const RoundEventItem: React.FC<{ event: VerificationRoundEvent }> = ({ event }) 
   </li>
 );
 
-// What a row needs to send its Asset for repair (F006-T7): absent for a viewer without 'repair:record'.
+// What a row needs to send its Asset for repair (F006-T7): absent for a viewer without 'repair:record', and until the
+// session's CSRF token is in hand (#135).
 interface RowRepairAction {
   roundName: string;
-  csrfToken: string | null;
+  csrfToken: string;
   onStarted: () => Promise<void>;
   onPermissionRevoked: (statusCode?: number) => void;
 }
@@ -470,7 +471,8 @@ const VerificationRoundDetailContent: React.FC = () => {
     }
     void round.refetch();
   };
-  const repairAction: RowRepairAction | null = round.data.can_record_repair
+  const repairAction: RowRepairAction | null =
+    round.data.can_record_repair && csrfToken !== null
     ? {
         roundName: name,
         csrfToken,
