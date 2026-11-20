@@ -38,7 +38,7 @@ export interface CatalogListHistoryEntry {
   action: 'CREATED' | 'CHANGED';
   changes: Record<string, { before: string | boolean | null; after: string | boolean }>;
   actor_id: string;
-  actor_username: string | null;
+  actor_username: string;
   recorded_at: string;
 }
 
@@ -114,16 +114,15 @@ export class CatalogListService {
     const historyRes = await this.db.query(
       `SELECT h.${column} AS entry_id, h.version, h.action, h.changes, h.actor_id, u.username AS actor_username, h.recorded_at
        FROM ${history} h
-       LEFT JOIN users u ON u.id = h.actor_id
+       JOIN users u ON u.id = h.actor_id
        ORDER BY h.version ASC`
     );
     const histories = new Map<string, CatalogListHistoryEntry[]>();
-    for (const { entry_id: entryId, recorded_at: recordedAt, actor_username: actorUsername, ...change } of historyRes.rows) {
-      const entries = histories.get(entryId) ?? [];
-      entries.push({ ...change, actor_username: actorUsername ?? null, recorded_at: new Date(recordedAt).toISOString() });
-      histories.set(entryId, entries);
+    for (const { entry_id: entryId, recorded_at: recordedAt, ...change } of historyRes.rows) {
+      histories.set(entryId, [...(histories.get(entryId) ?? []), { ...change, recorded_at: new Date(recordedAt).toISOString() }]);
     }
-    return res.rows.map((entry: CatalogListEntry) => ({ ...entry, usage_count: usage.get(entry.id) ?? 0, history: histories.get(entry.id) ?? [] }));
+    // An entry is added with its history in one transaction, so every entry read has one.
+    return res.rows.map((entry: CatalogListEntry) => ({ ...entry, usage_count: usage.get(entry.id) ?? 0, history: histories.get(entry.id)! }));
   }
 
   async add(actorId: string, kind: CatalogListKind, rawName: string, { retryToken }: { retryToken: string }): Promise<CatalogListEntry> {

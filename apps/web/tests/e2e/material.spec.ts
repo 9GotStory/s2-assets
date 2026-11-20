@@ -729,9 +729,26 @@ test.describe.serial('Stock Material journeys: Real SPA -> Composed API -> Postg
     await expect(page.locator('#stock-material-brand option', { hasText: `Elephant ${tag}` })).toHaveCount(1);
     await expect(page.locator('#stock-material-brand option', { hasText: `Horse ${tag}` })).toHaveCount(0);
 
-    // Adding its name again is refused with the Inactive entry, which the form offers to reactivate (Q20).
+    // A rename to its name is refused with the Inactive entry, offering nothing there (Q20).
     await page.goto(`${targetBaseUrl}/stock-materials/lists`);
+    const elephant = page.locator('#catalog-list-brand tbody tr', { hasText: `Elephant ${tag}` });
+    await elephant.getByRole('button', { name: 'เปลี่ยนชื่อ' }).click();
+    await page.locator('#brand-name').fill(`Horse ${tag}`);
+    await page.locator('#brand-rename-submit').click();
+    await expect(page.locator('[data-testid="brand-rename-refused"]')).toContainText(`ยี่ห้อ "Horse ${tag}" อยู่ในรายการแล้วแต่ถูกหยุดใช้`);
+    await expect(page.locator('#brand-add-offer-reactivate')).toHaveCount(0);
+    await page.locator('#brand-rename-cancel').click();
+
+    // Adding needs a name, and an active entry's name is refused with it.
     await page.locator('#brand-add').click();
+    await expect(page.locator('#brand-add')).toHaveCount(0);
+    await page.locator('#brand-add-submit').click();
+    await expect(page.locator('[data-testid="brand-add-form-error"]')).toContainText('กรุณากรอกชื่อยี่ห้อ');
+    await page.locator('#brand-name').fill(`elephant ${tag}`);
+    await page.locator('#brand-add-submit').click();
+    await expect(page.locator('[data-testid="brand-add-refused"]')).toHaveText(`มียี่ห้อ "Elephant ${tag}" อยู่ในรายการแล้ว`);
+
+    // Adding its name again is refused with the Inactive entry, which the form offers to reactivate (Q20).
     await page.locator('#brand-name').fill(` horse ${tag} `);
     await page.locator('#brand-add-submit').click();
     await expect(page.locator('[data-testid="brand-add-refused"]')).toContainText(`ยี่ห้อ "Horse ${tag}" อยู่ในรายการแล้วแต่ถูกหยุดใช้`);
@@ -749,6 +766,16 @@ test.describe.serial('Stock Material journeys: Real SPA -> Composed API -> Postg
 
     // Renamed by another Supply Officer while the form is open, the rename is refused as stale; read again, it saves.
     await page.locator(`#brand-rename-${brand.id}`).click();
+    await page.locator('#brand-name').fill(' ');
+    await page.locator('#brand-rename-submit').click();
+    await expect(page.locator('[data-testid="brand-rename-form-error"]')).toContainText('กรุณากรอกชื่อยี่ห้อใหม่');
+    await page.locator('#brand-name').fill(` Horse ${tag} `);
+    await page.locator('#brand-rename-submit').click();
+    await expect(page.locator('[data-testid="brand-rename-form-error"]')).toContainText('ชื่อใหม่ยังเหมือนชื่อเดิม');
+    // A refusal other than a name in the list shows the server's reason.
+    await page.locator('#brand-name').fill(`Horse\t${tag}`);
+    await page.locator('#brand-rename-submit').click();
+    await expect(page.locator('[data-testid="brand-rename-form-error"]')).toContainText('name must not contain control characters');
     await page.locator('#brand-name').fill(`HORSE ${tag}`);
     await lists.rename(officerUserId, 'brand', brand.id, { expected_version: 3, name: `Horse ตราม้า ${tag}` }, { retryToken: crypto.randomUUID() });
     await page.locator('#brand-rename-submit').click();
@@ -820,6 +847,7 @@ test.describe.serial('Stock Material journeys: Real SPA -> Composed API -> Postg
     for (const kind of ['brand', 'material-category', 'unit']) {
       await expect(page.locator(`#${kind}-add`)).toHaveCount(0);
     }
+    await expect(page.locator('th', { hasText: 'ดำเนินการ' })).toHaveCount(0);
     await expect(page.locator('[id*="-rename-"], [id*="-inactivate-"], [id*="-reactivate-"]')).toHaveCount(0);
 
     // The form refuses a viewer without material:manage.

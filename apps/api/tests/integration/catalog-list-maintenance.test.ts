@@ -128,6 +128,15 @@ describe.each([
       expect(page.history).toHaveLength(1);
     });
 
+    it('renames an Inactive entry, which stays Inactive', async () => {
+      const id = await inactiveEntryId();
+
+      const res = await rename(id, { expected_version: 2, name: `ชื่อที่หยุดใช้แก้แล้ว ${id.slice(0, 8)}` });
+
+      expect(res.statusCode).toBe(200);
+      expect(res.json()).toMatchObject({ is_active: false, version: 3 });
+    });
+
     it('takes a change of case or spaces alone, which normalizes the spelling', async () => {
       const id = await entryId('a4 paper');
 
@@ -187,6 +196,30 @@ describe.each([
       const malformed = await rename('not-a-uuid', { expected_version: 1, name: 'ไม่มี' });
       expect(malformed.statusCode).toBe(400);
       expect(malformed.json().code).toBe('INVALID_ID');
+    });
+
+    it('takes no field it does not know', async () => {
+      const id = await entryId();
+
+      const res = await rename(id, { expected_version: 1, name: 'ชื่อพร้อมสถานะ', is_active: false });
+
+      expect(res.statusCode).toBe(400);
+      expect(res.json().message).toContain('is_active');
+      expect(await listed(id)).toMatchObject({ is_active: true, version: 1 });
+    });
+
+    it('reads the id in either case and with spaces around it, as the same entry', async () => {
+      const id = await entryId();
+      const token = crypto.randomUUID();
+
+      const res = await rename(encodeURIComponent(` ${id.toUpperCase()} `), { expected_version: 1, name: 'ชื่อจาก id ตัวใหญ่' }, token);
+      expect(res.statusCode).toBe(200);
+      expect(res.json().id).toBe(id);
+
+      // The replay names the same entry, so it is the same request.
+      const replay = await rename(id, { expected_version: 1, name: 'ชื่อจาก id ตัวใหญ่' }, token);
+      expect(replay.statusCode).toBe(200);
+      expect(replay.json()).toEqual(res.json());
     });
 
     it('answers 404 for an entry of another list', async () => {
@@ -515,6 +548,18 @@ describe.each([
         expect(list.can_manage).toBe(false);
         expect(list.items.find((entry: { id: string }) => entry.id === id)).toMatchObject({ usage_count: 0, history: [{ action: 'CREATED' }] });
       }
+    });
+  });
+
+  describe('retry token scope', () => {
+    it('scopes a token to its operation: a rename, an Inactive and a reactivation under one token are each their own write', async () => {
+      const id = await entryId();
+      const token = crypto.randomUUID();
+
+      expect((await inactivate(id, { expected_version: 1 }, token)).json()).toMatchObject({ is_active: false, version: 2 });
+      expect((await reactivate(id, { expected_version: 2 }, token)).json()).toMatchObject({ is_active: true, version: 3 });
+      expect((await rename(id, { expected_version: 3, name: `ชื่อโทเคนเดียว ${id.slice(0, 8)}` }, token)).json()).toMatchObject({ version: 4 });
+      expect(await listed(id)).toMatchObject({ version: 4 });
     });
   });
 

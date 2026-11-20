@@ -17,7 +17,7 @@ export interface ListEntryHistoryEntry {
   action: 'CREATED' | 'CHANGED';
   changes: { name?: { before: string | null; after: string }; is_active?: { before: boolean | null; after: boolean } };
   actor_id: string;
-  actor_username: string | null;
+  actor_username: string;
   recorded_at: string;
 }
 

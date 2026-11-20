@@ -73,7 +73,7 @@ const ListSection: React.FC<ListSectionProps> = ({ spec, list }) => {
   const session = useCsrfToken(canManage);
   const csrfToken = session.data ?? null;
 
-  // The entry `id` as the list last read it, so that a form sends the version its page now shows.
+  // The entry `id` as the list last read it: a form sends the version the page shows now, read again after a stale save.
   const entryOf = (id: string): ListedEntry | undefined => data?.items.find((entry) => entry.id === id);
 
   const open = (next: OpenForm | null) => {
@@ -93,7 +93,7 @@ const ListSection: React.FC<ListSectionProps> = ({ spec, list }) => {
   // The name a refused write found in the list, naming that entry; an Inactive one is offered for reactivation on
   // the add form (#175 Q20).
   const nameTaken = (body: any, offerReactivation: boolean): React.ReactNode => {
-    if (body?.code !== 'DUPLICATE_NAME' || !body.entry) {
+    if (body?.code !== 'DUPLICATE_NAME') {
       return null;
     }
     const entry: ListEntry = body.entry;
@@ -163,8 +163,9 @@ const ListSection: React.FC<ListSectionProps> = ({ spec, list }) => {
           heading={`${RENAME_LABEL}${concept} "${entry.name}"`}
           saveUrl={`${path}/${encodeURIComponent(entry.id)}/rename`}
           csrfToken={csrfToken}
-          requestError={() => (name.trim() === '' ? `กรุณากรอกชื่อ${concept}ใหม่` : null)}
-          requestBody={() => ({ expected_version: entryOf(form.id)?.version ?? entry.version, name: name.trim() })}
+          // The server compares the name as it stores it, trimmed (CODING_STANDARDS, an amend form).
+          requestError={() => (name.trim() === '' ? `กรุณากรอกชื่อ${concept}ใหม่` : name.trim() === entry.name ? 'ชื่อใหม่ยังเหมือนชื่อเดิม' : null)}
+          requestBody={() => ({ expected_version: entry.version, name: name.trim() })}
           refusedList={(body) => nameTaken(body, false)}
           forbiddenMessage={`คุณไม่มีสิทธิ์${RENAME_LABEL}${concept}`}
           refusedMessage={`ไม่สามารถ${RENAME_LABEL}${concept}ได้`}
@@ -193,7 +194,7 @@ const ListSection: React.FC<ListSectionProps> = ({ spec, list }) => {
         saveUrl={`${path}/${encodeURIComponent(entry.id)}/${form.action}`}
         csrfToken={csrfToken}
         requestError={() => null}
-        requestBody={() => ({ expected_version: entryOf(form.id)?.version ?? entry.version })}
+        requestBody={() => ({ expected_version: entry.version })}
         refusedList={() => null}
         forbiddenMessage={`คุณไม่มีสิทธิ์เปลี่ยนสถานะ${concept}`}
         refusedMessage={`ไม่สามารถเปลี่ยนสถานะ${concept}ได้`}
@@ -278,7 +279,7 @@ const ListSection: React.FC<ListSectionProps> = ({ spec, list }) => {
                         {entry.history.map((change) => (
                           <li key={change.version} style={{ marginBottom: '0.25rem' }}>
                             {historyLine(concept, change)} — <time dateTime={change.recorded_at}>{THAI_DATE_TIME.format(new Date(change.recorded_at))}</time> โดย{' '}
-                            {change.actor_username ?? change.actor_id}
+                            {change.actor_username}
                           </li>
                         ))}
                       </ol>

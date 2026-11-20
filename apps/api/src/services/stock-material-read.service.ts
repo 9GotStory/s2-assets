@@ -132,12 +132,11 @@ export async function stockMaterialUnitsOf(client: pg.Pool | pg.PoolClient, stoc
 }
 
 // How many Stock Materials name each entry of a list: a Unit as the Base Unit or an Alternate Unit, a Brand or a
-// Material Category as its own.
+// Material Category as its own; those naming none count under no entry's id.
 const USAGE_QUERIES: Record<CatalogListKind, string> = {
   unit: 'SELECT unit_id AS id, count(*)::int AS usage_count FROM stock_material_units GROUP BY unit_id',
-  brand: 'SELECT brand_id AS id, count(*)::int AS usage_count FROM stock_materials WHERE brand_id IS NOT NULL GROUP BY brand_id',
-  'material-category':
-    'SELECT material_category_id AS id, count(*)::int AS usage_count FROM stock_materials WHERE material_category_id IS NOT NULL GROUP BY material_category_id',
+  brand: 'SELECT brand_id AS id, count(*)::int AS usage_count FROM stock_materials GROUP BY brand_id',
+  'material-category': 'SELECT material_category_id AS id, count(*)::int AS usage_count FROM stock_materials GROUP BY material_category_id',
 };
 
 /**
