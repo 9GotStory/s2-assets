@@ -15,6 +15,7 @@ import { LoanService } from '../../../api/src/services/loan.service.ts';
 import { RepairService } from '../../../api/src/services/repair.service.ts';
 import { VerificationService } from '../../../api/src/services/verification.service.ts';
 import { CatalogListService } from '../../../api/src/services/catalog-list.service.ts';
+import { RequestableMaterialService } from '../../../api/src/services/requestable-material.service.ts';
 import { StockMaterialService } from '../../../api/src/services/stock-material.service.ts';
 import { repositoryProxyConfig } from '../../vite.config.ts';
 
@@ -35,6 +36,8 @@ interface Fixtures {
   verificationRoundId: string;
   stockMaterialId: string;
   stockMaterialName: string;
+  requestableMaterialId: string;
+  requestableMaterialName: string;
 }
 
 // Each route of router.tsx: the page a Read-only User opens and its heading, or why it is not opened.
@@ -63,6 +66,10 @@ const SMOKE: Record<string, { url: (f: Fixtures) => string; heading: (f: Fixture
   // F008-T8 (#183): every catalog viewer reads the Brand, Material Category and Unit lists; keeping them is material:manage.
   '/stock-materials/lists': { url: () => '/stock-materials/lists', heading: () => 'ยี่ห้อ หมวดวัสดุ และหน่วยนับ' },
   '/stock-materials/:id': { url: (f) => `/stock-materials/${f.stockMaterialId}`, heading: (f) => f.stockMaterialName },
+  // F009-T1 (#203): every catalog viewer reads the Requestable Materials; creating one is material:manage.
+  '/requestable-materials': { url: () => '/requestable-materials', heading: () => 'วัสดุสำหรับขอเบิก' },
+  '/requestable-materials/new': { skip: 'a write: material:manage' },
+  '/requestable-materials/:id': { url: (f) => `/requestable-materials/${f.requestableMaterialId}`, heading: (f) => f.requestableMaterialName },
 };
 
 // The paths router.tsx declares, read from its text: importing it builds a browser router, which needs a window.
@@ -156,7 +163,13 @@ test.describe.serial('Route smoke: Real SPA -> Composed API -> PostgreSQL (Seam 
       { name: stockMaterialName, base_unit: { unit_id: unit.id } },
       { retryToken: crypto.randomUUID() }
     );
-    fixtures = { assetId: asset.id, assetName, acquisitionId: acquisition.id, loanId, repairRecordId, verificationRoundId, stockMaterialId, stockMaterialName };
+    const requestableMaterialName = 'กระดาษ A4 E2E route smoke';
+    const { requestable_material_id: requestableMaterialId } = await new RequestableMaterialService({ db: pool }).create(
+      officerUserId,
+      { name: requestableMaterialName, request_unit_id: unit.id },
+      { retryToken: crypto.randomUUID() }
+    );
+    fixtures = { assetId: asset.id, assetName, acquisitionId: acquisition.id, loanId, repairRecordId, verificationRoundId, stockMaterialId, stockMaterialName, requestableMaterialId, requestableMaterialName };
 
     const testProxy: Record<string, any> = {};
     for (const [route, opts] of Object.entries(repositoryProxyConfig)) {
