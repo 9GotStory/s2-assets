@@ -10,6 +10,7 @@ import { buildApp } from '../../../api/src/app.ts';
 import { UserService } from '../../../api/src/services/user.service.ts';
 import { SessionService } from '../../../api/src/services/session.service.ts';
 import { CatalogListService } from '../../../api/src/services/catalog-list.service.ts';
+import { RequestableMaterialService } from '../../../api/src/services/requestable-material.service.ts';
 import { repositoryProxyConfig } from '../../vite.config.ts';
 
 const { Pool } = pg;
@@ -31,6 +32,7 @@ test.describe.serial('Material Request journeys: Real SPA -> Composed API -> Pos
   let sessionService: SessionService;
 
   let officerUserId: string;
+  let reamId: string;
 
   test.beforeAll(async () => {
     test.setTimeout(120_000);
@@ -74,7 +76,7 @@ test.describe.serial('Material Request journeys: Real SPA -> Composed API -> Pos
     officerUserId = await createUser('officer_request', 'SUPPLY_OFFICER');
     // The Unit list the Supply Officer chooses from: รีม, and แผ่น made Inactive, which is not offered (#202 Q15).
     const units = new CatalogListService({ db: pool });
-    await units.add(officerUserId, 'unit', 'รีม', { retryToken: crypto.randomUUID() });
+    reamId = (await units.add(officerUserId, 'unit', 'รีม', { retryToken: crypto.randomUUID() })).id;
     const sheet = await units.add(officerUserId, 'unit', 'แผ่น', { retryToken: crypto.randomUUID() });
     await units.inactivate(officerUserId, 'unit', sheet.id, { expected_version: sheet.version }, { retryToken: crypto.randomUUID() });
 
@@ -159,13 +161,38 @@ test.describe.serial('Material Request journeys: Real SPA -> Composed API -> Pos
     await expect(created).toContainText('สร้างรายการ');
     await expect(created).toContainText('officer_request');
     await expect(created).toContainText('หน่วยที่ขอรีม');
+    await expect(created).toContainText('นับเป็นจำนวนเต็มเท่านั้นใช่');
+    await expect(created).toContainText('รายละเอียดกระดาษถ่ายเอกสารขนาด A4');
 
-    // The list finds it by its name, ignoring case and repeated spaces, with its Request Unit and status.
+    // Another Supply Officer's entry, whose quantities may have fractions and which has no description.
+    const { requestable_material_id: penId } = await new RequestableMaterialService({ db: pool }).create(
+      officerUserId,
+      { name: 'ปากกาน้ำเงิน', request_unit_id: reamId, whole_number_only: false },
+      { retryToken: crypto.randomUUID() }
+    );
+
+    // The list shows both by name, each with its Request Unit, whole-number setting and status.
     await page.locator('#back-requestable-material-list-link').click();
     await expect(page).toHaveURL(/\/requestable-materials$/);
-    await page.locator('#requestable-material-search').fill('กระดาษ   a4');
+    const pen = page.locator(`[data-testid="requestable-material-row-${penId}"]`);
+    await expect(page.locator('#requestable-material-list-table tbody tr')).toHaveCount(2);
+    await expect(pen).toContainText('ปากกาน้ำเงิน');
+    await expect(pen).toContainText('ไม่ใช่ (มีเศษได้)');
+    await pen.getByRole('link', { name: 'ปากกาน้ำเงิน' }).click();
+    await expect(page).toHaveURL(new RegExp(`/requestable-materials/${penId}$`));
+    await expect(page.locator('[data-testid="requestable-material-whole-number-only"]')).toHaveText('ไม่ใช่ (มีเศษได้)');
+    await expect(page.locator('[data-testid="requestable-material-description"]')).toHaveText('-');
+    await page.locator('#back-requestable-material-list-link').click();
+    await expect(page).toHaveURL(/\/requestable-materials$/);
+
+    // A search finds by name, ignoring case and repeated spaces, or finds nothing.
+    await page.locator('#requestable-material-search').fill('ดินสอ');
     await page.locator('#requestable-material-search-submit').click();
     await expect(page).toHaveURL(/\/requestable-materials\?search=/);
+    await expect(page.locator('#requestable-material-list-empty')).toContainText('ไม่พบวัสดุสำหรับขอเบิกที่ค้นหา');
+    await page.locator('#requestable-material-search').fill('กระดาษ   a4');
+    await page.locator('#requestable-material-search-submit').click();
+    await expect(page).toHaveURL(/\/requestable-materials\?search=%E0%B8%81/);
     const rows = page.locator('#requestable-material-list-table tbody tr');
     await expect(rows).toHaveCount(1);
     await expect(rows.first()).toContainText('กระดาษ A4');

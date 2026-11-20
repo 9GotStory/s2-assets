@@ -4,7 +4,7 @@ import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import { LoanSaveForm } from '../components/LoanSaveForm';
 import { fieldInputStyle, fieldLabelStyle } from '../components/ReferenceContextFields';
 import { useCsrfToken, useUnitList } from '../components/materialQueries';
-import { INACTIVE_LABEL, WHOLE_NUMBER_UNIT_LABEL } from '../components/materialFacts';
+import { WHOLE_NUMBER_UNIT_LABEL } from '../components/materialFacts';
 import { ADD_REQUESTABLE_MATERIAL_LABEL, REQUEST_UNIT_LABEL, REQUESTABLE_MATERIAL_LABEL, type RequestableMaterialNameTaken } from '../components/requestableMaterialFacts';
 
 const fieldStyle: React.CSSProperties = { marginBottom: '0.75rem' };
@@ -52,7 +52,7 @@ const RequestableMaterialCreateContent: React.FC = () => {
     description: description.trim() || null,
   });
 
-  // A name already used names the Requestable Material that holds it, Inactive or not (#202 Q6).
+  // A name already used names the Requestable Material that holds it (#202 Q6); T7 offers reactivating an Inactive one.
   const nameTaken = (body: RequestableMaterialNameTaken | null) =>
     body?.code === 'DUPLICATE_NAME' ? (
       <span data-testid="requestable-material-name-taken">
@@ -60,7 +60,6 @@ const RequestableMaterialCreateContent: React.FC = () => {
         <Link to={`/requestable-materials/${body.entry.id}`} style={{ color: '#991b1b', fontWeight: 600 }}>
           {body.entry.name}
         </Link>
-        {!body.entry.is_active && ` (${INACTIVE_LABEL})`}
       </span>
     ) : null;
 

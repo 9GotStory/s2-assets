@@ -28,16 +28,22 @@ export interface RequestableMaterialList {
   can_manage: boolean;
 }
 
-// F009-T1 writes CREATED; T7 INACTIVATED and REACTIVATED; T8 RENAMED and DETAILS_CHANGED.
-export type RequestableMaterialHistoryKind = 'CREATED' | 'RENAMED' | 'DETAILS_CHANGED' | 'INACTIVATED' | 'REACTIVATED';
+// F009-T1 writes CREATED; T7 adds INACTIVATED and REACTIVATED, T8 RENAMED and DETAILS_CHANGED.
+export type RequestableMaterialHistoryKind = 'CREATED';
 
-// One entry of a Requestable Material's history, the Request Unit under its name then (#202 Q17, #175 P6).
+// A value a creation records, none before it: the Request Unit under its name then (#202 Q17, #175 P6).
+export type RequestableMaterialRecordedChange =
+  | { field: 'name' | 'description'; before: null; after: string }
+  | { field: 'request_unit'; before: null; after: NamedListEntry }
+  | { field: 'whole_number_only'; before: null; after: boolean };
+
+// One entry of a Requestable Material's history.
 export interface RequestableMaterialHistoryEntry {
   version: number;
   kind: RequestableMaterialHistoryKind;
-  changes: { field: string; before: string | boolean | NamedListEntry | null; after: string | boolean | NamedListEntry }[];
+  changes: RequestableMaterialRecordedChange[];
   recorded_by: string;
-  recorded_by_username: string | null;
+  recorded_by_username: string;
   recorded_at: string;
 }
 
@@ -45,7 +51,7 @@ export interface RequestableMaterialDetail extends RequestableMaterialRow {
   description: string | null;
   version: number;
   created_by: string;
-  created_by_username: string | null;
+  created_by_username: string;
   recorded_at: string;
   history: RequestableMaterialHistoryEntry[];
   can_manage: boolean;
@@ -62,7 +68,7 @@ export const REQUEST_UNIT_LABEL = 'หน่วยที่ขอ';
 // glossary: no entry — the list's action, made of the term วัสดุสำหรับขอเบิก (Requestable Material)
 export const ADD_REQUESTABLE_MATERIAL_LABEL = 'เพิ่มวัสดุสำหรับขอเบิก';
 
-// What the kind of each history entry is called on the Requestable Material page; T7 and T8 add theirs.
-export const REQUESTABLE_HISTORY_KIND_LABELS: Partial<Record<RequestableMaterialHistoryKind, string>> = {
+// What the kind of each history entry is called on the Requestable Material page.
+export const REQUESTABLE_HISTORY_KIND_LABELS: Record<RequestableMaterialHistoryKind, string> = {
   CREATED: 'สร้างรายการ',
 };

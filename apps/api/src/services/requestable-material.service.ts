@@ -47,7 +47,7 @@ export class RequestableMaterialNameTakenError extends Error {
 }
 
 // The refusal of the unique index on the compared name (0029_requestable_materials).
-const isNameTaken = (err: any) => err?.code === '23505' && err?.constraint === 'requestable_materials_name_unique';
+const isNameTaken = (err: any) => err?.constraint === 'requestable_materials_name_unique';
 
 // A request's facts once validated, before any lock. The retry fingerprint covers these.
 const normalizeFacts = (input: CreateRequestableMaterialInput) => {

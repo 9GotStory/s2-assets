@@ -45,7 +45,7 @@ export interface RequestableMaterialHistoryEntry {
   kind: RequestableMaterialHistoryKind;
   changes: { field: string; before: string | boolean | NamedListEntry | null; after: string | boolean | NamedListEntry }[];
   recorded_by: string;
-  recorded_by_username: string | null;
+  recorded_by_username: string;
   recorded_at: string;
 }
 
@@ -53,7 +53,7 @@ export interface RequestableMaterialDetail extends RequestableMaterialRow {
   description: string | null;
   version: number;
   created_by: string;
-  created_by_username: string | null;
+  created_by_username: string;
   recorded_at: string;
   // Oldest first.
   history: RequestableMaterialHistoryEntry[];
@@ -106,7 +106,8 @@ export class RequestableMaterialReadService {
        ORDER BY lower(p.name) ASC, p.id ASC`,
       values
     );
-    const totalCount: number = res.rows[0]?.total_count ?? 0;
+    // `counted` has one row, which the page joins.
+    const totalCount: number = res.rows[0].total_count;
     const items = res.rows.filter((row: any) => row.id !== null).map(toRow);
     return { items, limit: filters.limit, offset: filters.offset, total_count: totalCount, has_more: filters.offset + items.length < totalCount };
   }
@@ -117,7 +118,7 @@ export class RequestableMaterialReadService {
       `SELECT ${ROW_COLUMNS}, r.description, r.version, r.created_by, c.username AS created_by_username, r.recorded_at
        FROM requestable_materials r
        ${joinUnitEntry('u', 'r.request_unit_id')}
-       LEFT JOIN users c ON c.id = r.created_by
+       JOIN users c ON c.id = r.created_by
        WHERE r.id = $1`,
       [id]
     );
@@ -128,7 +129,7 @@ export class RequestableMaterialReadService {
     const history = await this.db.query(
       `SELECT h.version, h.kind, h.changes, h.recorded_by, u.username AS recorded_by_username, h.recorded_at
        FROM requestable_material_history h
-       LEFT JOIN users u ON u.id = h.recorded_by
+       JOIN users u ON u.id = h.recorded_by
        WHERE h.requestable_material_id = $1
        ORDER BY h.version ASC`,
       [id]
@@ -138,9 +139,9 @@ export class RequestableMaterialReadService {
       description: row.description,
       version: row.version,
       created_by: row.created_by,
-      created_by_username: row.created_by_username ?? null,
+      created_by_username: row.created_by_username,
       recorded_at: new Date(row.recorded_at).toISOString(),
-      history: history.rows.map((entry: any) => ({ ...entry, recorded_by_username: entry.recorded_by_username ?? null, recorded_at: new Date(entry.recorded_at).toISOString() })),
+      history: history.rows.map((entry: any) => ({ ...entry, recorded_at: new Date(entry.recorded_at).toISOString() })),
     };
   }
 }

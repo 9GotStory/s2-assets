@@ -1,13 +1,14 @@
 import React, { useEffect, useState } from 'react';
 import { Link, useNavigate, useParams } from 'react-router';
 import { QueryClient, QueryClientProvider, useQuery } from '@tanstack/react-query';
-import { ACTIVE_LABEL, INACTIVE_LABEL, WHOLE_NUMBER_UNIT_LABEL, type NamedListEntry } from '../components/materialFacts';
+import { ACTIVE_LABEL, INACTIVE_LABEL, WHOLE_NUMBER_UNIT_LABEL } from '../components/materialFacts';
 import {
   REQUEST_UNIT_LABEL,
   REQUESTABLE_HISTORY_KIND_LABELS,
   REQUESTABLE_MATERIAL_LABEL,
   type RequestableMaterialDetail as RequestableDetail,
   type RequestableMaterialHistoryEntry,
+  type RequestableMaterialRecordedChange,
 } from '../components/requestableMaterialFacts';
 
 const THAI_DATE_TIME = new Intl.DateTimeFormat('th-TH', { dateStyle: 'long', timeStyle: 'short', timeZone: 'Asia/Bangkok' });
@@ -22,7 +23,7 @@ const sectionHeadingStyle: React.CSSProperties = { fontSize: '1.125rem', fontWei
 const termStyle: React.CSSProperties = { fontWeight: 500, color: '#4b5563' };
 
 // What each recorded field is called in a history entry.
-const RECORDED_FIELD_LABELS: Record<string, string> = {
+const RECORDED_FIELD_LABELS: Record<RequestableMaterialRecordedChange['field'], string> = {
   name: 'ชื่อ',
   request_unit: REQUEST_UNIT_LABEL,
   whole_number_only: WHOLE_NUMBER_UNIT_LABEL,
@@ -34,37 +35,27 @@ const wholeNumberLine = (wholeNumberOnly: boolean) => (wholeNumberOnly ? 'ใช
 
 // A recorded value as the history shows it: the Request Unit by its name then, the whole-number setting as ใช่ or
 // ไม่ใช่, text as it was.
-const recordedValue = (field: string, value: unknown): React.ReactNode => {
-  if (value === null || value === undefined) {
-    return '-';
+const recordedValue = (change: RequestableMaterialRecordedChange): string => {
+  if (change.field === 'request_unit') {
+    return change.after.name;
   }
-  if (field === 'request_unit') {
-    return (value as NamedListEntry).name;
+  if (change.field === 'whole_number_only') {
+    return wholeNumberLine(change.after);
   }
-  if (typeof value === 'boolean') {
-    return wholeNumberLine(value);
-  }
-  return String(value);
+  return change.after;
 };
 
 const HistoryEntry: React.FC<{ entry: RequestableMaterialHistoryEntry }> = ({ entry }) => (
   <li data-testid={`requestable-material-history-${entry.version}`} style={{ borderLeft: '3px solid #d1d5db', padding: '0.25rem 0 0.75rem 0.75rem', marginBottom: '0.5rem' }}>
-    <div style={{ fontWeight: 600, color: '#111827' }}>{REQUESTABLE_HISTORY_KIND_LABELS[entry.kind] ?? entry.kind}</div>
+    <div style={{ fontWeight: 600, color: '#111827' }}>{REQUESTABLE_HISTORY_KIND_LABELS[entry.kind]}</div>
     <div style={{ fontSize: '0.8125rem', color: '#6b7280', marginBottom: '0.25rem' }}>
-      บันทึกเมื่อ <time dateTime={entry.recorded_at}>{THAI_DATE_TIME.format(new Date(entry.recorded_at))}</time> โดย {entry.recorded_by_username ?? entry.recorded_by}
+      บันทึกเมื่อ <time dateTime={entry.recorded_at}>{THAI_DATE_TIME.format(new Date(entry.recorded_at))}</time> โดย {entry.recorded_by_username}
     </div>
     <dl style={{ display: 'grid', gridTemplateColumns: 'max-content 1fr', gap: '0.25rem 1rem', margin: 0, fontSize: '0.875rem' }}>
       {entry.changes.map((change) => (
         <React.Fragment key={change.field}>
-          <dt style={{ color: '#4b5563' }}>{RECORDED_FIELD_LABELS[change.field] ?? change.field}</dt>
-          <dd style={{ margin: 0, color: '#111827', whiteSpace: 'pre-line' }}>
-            {change.before !== null && change.before !== undefined && (
-              <>
-                <s>{recordedValue(change.field, change.before)}</s> →{' '}
-              </>
-            )}
-            {recordedValue(change.field, change.after)}
-          </dd>
+          <dt style={{ color: '#4b5563' }}>{RECORDED_FIELD_LABELS[change.field]}</dt>
+          <dd style={{ margin: 0, color: '#111827', whiteSpace: 'pre-line' }}>{recordedValue(change)}</dd>
         </React.Fragment>
       ))}
     </dl>
@@ -125,8 +116,6 @@ const RequestableMaterialDetailContent: React.FC<{ id: string }> = ({ id }) => {
               <dt style={termStyle}>{REQUEST_UNIT_LABEL}</dt>
               <dd data-testid="requestable-material-request-unit" style={{ margin: 0 }}>
                 {detail.request_unit.name}
-                {/* The Unit list's entry went Inactive after it was chosen; the Requestable Material keeps working (#202 Q15). */}
-                {!detail.request_unit.unit_is_active && ` (${INACTIVE_LABEL})`}
               </dd>
               <dt style={termStyle}>{WHOLE_NUMBER_UNIT_LABEL}</dt>
               <dd data-testid="requestable-material-whole-number-only" style={{ margin: 0 }}>{wholeNumberLine(detail.whole_number_only)}</dd>
@@ -134,7 +123,7 @@ const RequestableMaterialDetailContent: React.FC<{ id: string }> = ({ id }) => {
               <dd data-testid="requestable-material-description" style={{ margin: 0, whiteSpace: 'pre-line' }}>{detail.description ?? '-'}</dd>
               <dt style={termStyle}>สร้างเมื่อ</dt>
               <dd style={{ margin: 0 }}>
-                <time dateTime={detail.recorded_at}>{THAI_DATE_TIME.format(new Date(detail.recorded_at))}</time> โดย {detail.created_by_username ?? detail.created_by}
+                <time dateTime={detail.recorded_at}>{THAI_DATE_TIME.format(new Date(detail.recorded_at))}</time> โดย {detail.created_by_username}
               </dd>
             </dl>
 
@@ -151,7 +140,7 @@ const RequestableMaterialDetailContent: React.FC<{ id: string }> = ({ id }) => {
   );
 };
 
-/** A Requestable Material's page (F009-T1): every field and its history (#202 Q17, Q19); T2, T7 and T8 add its actions. */
+/** A Requestable Material's page (F009-T1): every field and its creation in the history (#202 Q17, Q19); T2, T7 and T8 add the rest. */
 export const RequestableMaterialDetail: React.FC = () => {
   const { id = '' } = useParams<{ id: string }>();
   const [queryClient] = useState(() => new QueryClient({ defaultOptions: { queries: { retry: false, refetchOnWindowFocus: true } } }));
