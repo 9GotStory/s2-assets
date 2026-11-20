@@ -9,7 +9,6 @@ import { runMigrator } from '../../../../packages/db/src/migrator.ts';
 import { buildApp } from '../../../api/src/app.ts';
 import { UserService } from '../../../api/src/services/user.service.ts';
 import { SessionService } from '../../../api/src/services/session.service.ts';
-import { UnitService } from '../../../api/src/services/unit.service.ts';
 import { StockMaterialService } from '../../../api/src/services/stock-material.service.ts';
 import { CatalogListService } from '../../../api/src/services/catalog-list.service.ts';
 import { repositoryProxyConfig } from '../../vite.config.ts';
@@ -36,6 +35,9 @@ const freshUnitName = (name: string) => `${name} ${crypto.randomUUID().slice(0, 
 // Material Correction with a reason, warned of a Duplicate Candidate too.
 // F008-T7 (#180): Journey J2 goes on: the Supply Officer makes a Stock Material Inactive with a note, finds it with the
 // status filter and its "หยุดใช้" badge, and reactivates it; Journey J3 is offered neither.
+// F008-T8 (#183, decision 4): Journey J1 renames the Brand it added on "ยี่ห้อ หมวดวัสดุ และหน่วยนับ"; Journey J2 makes a
+// Brand Inactive there, is offered reactivation when adding its name, and reactivates it; Journey J3 reads the lists
+// with no action.
 test.describe.serial('Stock Material journeys: Real SPA -> Composed API -> PostgreSQL (Seam B)', () => {
   let container: StartedPostgreSqlContainer;
   let pool: pg.Pool;
@@ -207,7 +209,7 @@ test.describe.serial('Stock Material journeys: Real SPA -> Composed API -> Postg
   test('Journey F008-T3.1: a Supply Officer creates a Stock Material with an Alternate Unit, sees "1 กล่อง = 5 รีม", and changes its Base Unit in the Units editor', async ({ page, context }) => {
     // แผ่น and กระดาษถ่ายเอกสาร A4, which Journey F008-T1.1 adds when it runs first.
     if ((await pool.query(`SELECT 1 FROM units WHERE name = 'แผ่น'`)).rows.length === 0) {
-      await new UnitService({ db: pool }).add(officerUserId, 'แผ่น', { retryToken: crypto.randomUUID() });
+      await new CatalogListService({ db: pool }).add(officerUserId, 'unit', 'แผ่น', { retryToken: crypto.randomUUID() });
     }
     if ((await pool.query(`SELECT 1 FROM stock_materials WHERE name = 'กระดาษถ่ายเอกสาร A4'`)).rows.length === 0) {
       const sheet = (await pool.query(`SELECT id FROM units WHERE name = 'แผ่น'`)).rows[0].id;
@@ -335,6 +337,7 @@ test.describe.serial('Stock Material journeys: Real SPA -> Composed API -> Postg
 
     // Its page shows the Brand and the Material Category, and its history records them.
     await expect(page).toHaveURL(/\/stock-materials\/[0-9a-f-]{36}$/);
+    const materialUrl = page.url();
     await expect(page.getByRole('heading', { level: 1, name: 'ปากกาลูกลื่น' })).toBeVisible();
     await expect(page.locator('[data-testid="stock-material-brand"]')).toHaveText('Pentel');
     await expect(page.locator('[data-testid="stock-material-material-category"]')).toHaveText('เครื่องเขียน');
@@ -379,6 +382,32 @@ test.describe.serial('Stock Material journeys: Real SPA -> Composed API -> Postg
     await page.locator('#stock-material-material-category-filter').selectOption({ label: 'เครื่องเขียน' });
     await expect(page).toHaveURL(/material_category_id=[0-9a-f-]{36}$/);
     await expect(page.locator('#stock-material-list-empty')).toContainText('ไม่พบวัสดุที่ค้นหา');
+
+    // F008-T8 (#183): the Brand is renamed on "ยี่ห้อ หมวดวัสดุ และหน่วยนับ", which tells first how many Stock Materials
+    // use it; the Stock Material shows the new name, and its history the name as it was recorded (#175 Q19, P6).
+    await openDashboard(page);
+    await page.locator('#nav-catalog-lists').click();
+    await expect(page).toHaveURL(/\/stock-materials\/lists$/);
+    await expect(page.getByRole('heading', { level: 1, name: 'ยี่ห้อ หมวดวัสดุ และหน่วยนับ' })).toBeVisible();
+    const brandRow = page.locator('#catalog-list-brand tbody tr', { hasText: 'Pentel' });
+    const brandId = (await brandRow.getAttribute('id'))!.replace('brand-entry-', '');
+    await expect(page.locator(`[data-testid="brand-usage-${brandId}"]`)).toHaveText('1 รายการ');
+    await page.locator(`#brand-rename-${brandId}`).click();
+    await expect(page.locator('[data-testid="brand-rename-usage"]')).toContainText('มีวัสดุใช้ยี่ห้อนี้อยู่ 1 รายการ');
+    await expect(page.locator('#brand-name')).toHaveValue('Pentel');
+    await page.locator('#brand-name').fill(' PENTEL ');
+    await page.locator('#brand-rename-submit').click();
+    await expect(page.locator('#brand-rename-form')).toHaveCount(0);
+    await expect(page.locator('[data-testid="catalog-list-brand-saved"]')).toContainText('เปลี่ยนชื่อเป็น "PENTEL" แล้ว');
+    await expect(page.locator(`[data-testid="brand-name-${brandId}"]`)).toHaveText('PENTEL');
+    const brandHistory = page.locator(`#brand-history-${brandId}`);
+    await brandHistory.locator('summary').click();
+    await expect(brandHistory.locator('li').nth(1)).toContainText('เปลี่ยนชื่อ "Pentel" เป็น "PENTEL"');
+    await expect(brandHistory.locator('li').nth(1)).toContainText('officer_material');
+
+    await page.goto(materialUrl);
+    await expect(page.locator('[data-testid="stock-material-brand"]')).toHaveText('PENTEL');
+    await expect(created.locator('dt', { hasText: 'ยี่ห้อ' }).locator('+ dd')).toHaveText('Pentel');
   });
 
   test('Journey F008-T6.1: a Supply Officer sets a Minimum Stock through other details, finds the Stock Material with the Minimum Stock filter, and states it again when the Base Unit changes', async ({ page, context }) => {
@@ -472,7 +501,7 @@ test.describe.serial('Stock Material journeys: Real SPA -> Composed API -> Postg
   test('Journey F008-T5.1: a Supply Officer makes a Material Correction with a reason, warned that a different item is a new Stock Material and of a Duplicate Candidate, and finds it in the history', async ({ page, context }) => {
     const tag = crypto.randomUUID().slice(0, 4);
     const cartridge = freshUnitName('ตลับ');
-    const unit = await new UnitService({ db: pool }).add(officerUserId, cartridge, { retryToken: crypto.randomUUID() });
+    const unit = await new CatalogListService({ db: pool }).add(officerUserId, 'unit', cartridge, { retryToken: crypto.randomUUID() });
     const brand = await new CatalogListService({ db: pool }).add(officerUserId, 'brand', `HP ${tag}`, { retryToken: crypto.randomUUID() });
     const service = new StockMaterialService({ db: pool });
     const { stock_material_id: id } = await service.create(
@@ -554,7 +583,7 @@ test.describe.serial('Stock Material journeys: Real SPA -> Composed API -> Postg
   test('Journey F008-T7.1: a Supply Officer makes a Stock Material Inactive with a note, finds it with the status filter and its "หยุดใช้" badge, and reactivates it as the same record, each refused as stale when another Supply Officer changed the status first', async ({ page, context }) => {
     const tag = crypto.randomUUID().slice(0, 8);
     const box = freshUnitName('กล่อง');
-    const unit = await new UnitService({ db: pool }).add(officerUserId, box, { retryToken: crypto.randomUUID() });
+    const unit = await new CatalogListService({ db: pool }).add(officerUserId, 'unit', box, { retryToken: crypto.randomUUID() });
     const name = `ลวดเย็บกระดาษ ${tag}`;
     const service = new StockMaterialService({ db: pool });
     const { stock_material_id: id } = await service.create(
@@ -666,9 +695,101 @@ test.describe.serial('Stock Material journeys: Real SPA -> Composed API -> Postg
     await expect(badge).toHaveCount(0);
   });
 
+  test('Journey F008-T8.1: a Supply Officer makes a Brand Inactive on "ยี่ห้อ หมวดวัสดุ และหน่วยนับ", still sees it on the Stock Material using it, is offered reactivation when adding its name, and reactivates it; a rename is refused as stale when another Supply Officer renamed it first', async ({ page, context }) => {
+    const tag = crypto.randomUUID().slice(0, 8);
+    const lists = new CatalogListService({ db: pool });
+    const unit = await lists.add(officerUserId, 'unit', freshUnitName('ตลับ'), { retryToken: crypto.randomUUID() });
+    const brand = await lists.add(officerUserId, 'brand', `Horse ${tag}`, { retryToken: crypto.randomUUID() });
+    // In use, beside it: the form offers this one.
+    await lists.add(officerUserId, 'brand', `Elephant ${tag}`, { retryToken: crypto.randomUUID() });
+    const { stock_material_id: id } = await new StockMaterialService({ db: pool }).create(
+      officerUserId,
+      { name: `ลวดเสียบ ${tag}`, brand_id: brand.id, base_unit: { unit_id: unit.id }, explicit_continuation: true },
+      { retryToken: crypto.randomUUID() }
+    );
+    const status = page.locator(`[data-testid="brand-status-${brand.id}"]`);
+
+    await loginAs(context, officerUserId);
+    await page.goto(`${targetBaseUrl}/stock-materials/lists`);
+    await expect(status).toHaveText('ใช้งานอยู่');
+    await expect(page.locator(`[data-testid="brand-usage-${brand.id}"]`)).toHaveText('1 รายการ');
+    // In use, it is offered "หยุดใช้" and not "เปิดใช้อีกครั้ง".
+    await expect(page.locator(`#brand-reactivate-${brand.id}`)).toHaveCount(0);
+    await page.locator(`#brand-inactivate-${brand.id}`).click();
+    await expect(page.locator('[data-testid="brand-status-notice"]')).toContainText('วัสดุ 1 รายการที่ใช้ยี่ห้อนี้ยังแสดงยี่ห้อนี้ตามเดิม');
+    await page.locator('#brand-status-submit').click();
+    await expect(page.locator('#brand-status-form')).toHaveCount(0);
+    await expect(status).toHaveText('หยุดใช้');
+    await expect(page.locator(`#brand-inactivate-${brand.id}`)).toHaveCount(0);
+
+    // The Stock Material keeps it and shows it; the form offers it for no new choice (#175 Q21).
+    await page.goto(`${targetBaseUrl}/stock-materials/${id}`);
+    await expect(page.locator('[data-testid="stock-material-brand"]')).toHaveText(`Horse ${tag}`);
+    await page.goto(`${targetBaseUrl}/stock-materials/new`);
+    await expect(page.locator('#stock-material-brand option', { hasText: `Elephant ${tag}` })).toHaveCount(1);
+    await expect(page.locator('#stock-material-brand option', { hasText: `Horse ${tag}` })).toHaveCount(0);
+
+    // A rename to its name is refused with the Inactive entry, offering nothing there (Q20).
+    await page.goto(`${targetBaseUrl}/stock-materials/lists`);
+    const elephant = page.locator('#catalog-list-brand tbody tr', { hasText: `Elephant ${tag}` });
+    await elephant.getByRole('button', { name: 'เปลี่ยนชื่อ' }).click();
+    await page.locator('#brand-name').fill(`Horse ${tag}`);
+    await page.locator('#brand-rename-submit').click();
+    await expect(page.locator('[data-testid="brand-rename-refused"]')).toContainText(`ยี่ห้อ "Horse ${tag}" อยู่ในรายการแล้วแต่ถูกหยุดใช้`);
+    await expect(page.locator('#brand-add-offer-reactivate')).toHaveCount(0);
+    await page.locator('#brand-rename-cancel').click();
+
+    // Adding needs a name, and an active entry's name is refused with it.
+    await page.locator('#brand-add').click();
+    await expect(page.locator('#brand-add')).toHaveCount(0);
+    await page.locator('#brand-add-submit').click();
+    await expect(page.locator('[data-testid="brand-add-form-error"]')).toContainText('กรุณากรอกชื่อยี่ห้อ');
+    await page.locator('#brand-name').fill(`elephant ${tag}`);
+    await page.locator('#brand-add-submit').click();
+    await expect(page.locator('[data-testid="brand-add-refused"]')).toHaveText(`มียี่ห้อ "Elephant ${tag}" อยู่ในรายการแล้ว`);
+
+    // Adding its name again is refused with the Inactive entry, which the form offers to reactivate (Q20).
+    await page.locator('#brand-name').fill(` horse ${tag} `);
+    await page.locator('#brand-add-submit').click();
+    await expect(page.locator('[data-testid="brand-add-refused"]')).toContainText(`ยี่ห้อ "Horse ${tag}" อยู่ในรายการแล้วแต่ถูกหยุดใช้`);
+    await page.locator('#brand-add-offer-reactivate').click();
+    await expect(page.locator('#brand-add-form')).toHaveCount(0);
+    await expect(page.locator('[data-testid="brand-status-notice"]')).toContainText('กลับมาให้เลือกได้อีกครั้งเป็นรายการเดิม');
+    await page.locator('#brand-status-submit').click();
+    await expect(page.locator('#brand-status-form')).toHaveCount(0);
+    await expect(status).toHaveText('ใช้งานอยู่');
+    const history = page.locator(`#brand-history-${brand.id}`);
+    await history.locator('summary').click();
+    await expect(history.locator('li')).toHaveCount(3);
+    await expect(history.locator('li').nth(1)).toContainText('หยุดใช้');
+    await expect(history.locator('li').nth(2)).toContainText('เปิดใช้อีกครั้ง');
+
+    // Renamed by another Supply Officer while the form is open, the rename is refused as stale; read again, it saves.
+    await page.locator(`#brand-rename-${brand.id}`).click();
+    await page.locator('#brand-name').fill(' ');
+    await page.locator('#brand-rename-submit').click();
+    await expect(page.locator('[data-testid="brand-rename-form-error"]')).toContainText('กรุณากรอกชื่อยี่ห้อใหม่');
+    await page.locator('#brand-name').fill(` Horse ${tag} `);
+    await page.locator('#brand-rename-submit').click();
+    await expect(page.locator('[data-testid="brand-rename-form-error"]')).toContainText('ชื่อใหม่ยังเหมือนชื่อเดิม');
+    // A refusal other than a name in the list shows the server's reason.
+    await page.locator('#brand-name').fill(`Horse\t${tag}`);
+    await page.locator('#brand-rename-submit').click();
+    await expect(page.locator('[data-testid="brand-rename-form-error"]')).toContainText('name must not contain control characters');
+    await page.locator('#brand-name').fill(`HORSE ${tag}`);
+    await lists.rename(officerUserId, 'brand', brand.id, { expected_version: 3, name: `Horse ตราม้า ${tag}` }, { retryToken: crypto.randomUUID() });
+    await page.locator('#brand-rename-submit').click();
+    await expect(page.locator('[data-testid="brand-rename-form-error"]')).toContainText('มีผู้แก้ไขรายการนี้ไปแล้ว กรุณาโหลดใหม่');
+    await page.locator('#brand-rename-reload').click();
+    await expect(page.locator(`[data-testid="brand-name-${brand.id}"]`)).toHaveText(`Horse ตราม้า ${tag}`);
+    await page.locator('#brand-rename-submit').click();
+    await expect(page.locator('#brand-rename-form')).toHaveCount(0);
+    await expect(page.locator(`[data-testid="brand-name-${brand.id}"]`)).toHaveText(`HORSE ${tag}`);
+  });
+
   test('Journey F008-T1.2: a Read-only User reads the list and a Stock Material page with no action, and an Asset Custodian has no "วัสดุ" menu', async ({ page, context }) => {
     const bottle = freshUnitName('ขวด');
-    const unit = await new UnitService({ db: pool }).add(officerUserId, bottle, { retryToken: crypto.randomUUID() });
+    const unit = await new CatalogListService({ db: pool }).add(officerUserId, 'unit', bottle, { retryToken: crypto.randomUUID() });
     const { stock_material_id: id } = await new StockMaterialService({ db: pool }).create(
       officerUserId,
       { name: 'น้ำยาเช็ดกระจก', model: 'Glass Clean', specification: '500 มล.', base_unit: { unit_id: unit.id, whole_number_only: false } },
@@ -711,6 +832,24 @@ test.describe.serial('Stock Material journeys: Real SPA -> Composed API -> Postg
     await expect(page.locator('#stock-material-reactivate')).toHaveCount(0);
     await expect(page.locator('#stock-material-inactivate')).toHaveCount(0);
 
+    // F008-T8 (#183): the maintenance page shows the lists, each entry's status, usage count and history, and offers no
+    // action; the Supply Officer was offered adding, "เปลี่ยนชื่อ", "หยุดใช้" and "เปิดใช้อีกครั้ง" (Journeys F008-T4.1, T8.1).
+    await openDashboard(page);
+    await page.locator('#nav-catalog-lists').click();
+    await expect(page).toHaveURL(/\/stock-materials\/lists$/);
+    await expect(page.locator(`[data-testid="unit-name-${unit.id}"]`)).toHaveText(bottle);
+    await expect(page.locator(`[data-testid="unit-usage-${unit.id}"]`)).toHaveText('2 รายการ');
+    await expect(page.locator(`[data-testid="unit-status-${unit.id}"]`)).toHaveText('ใช้งานอยู่');
+    await page.locator(`#unit-history-${unit.id} summary`).click();
+    await expect(page.locator(`#unit-history-${unit.id} li`).first()).toContainText(`เพิ่มหน่วยนับ "${bottle}"`);
+    await expect(page.locator('#catalog-list-brand tbody tr').first()).toBeVisible();
+    await expect(page.locator('#catalog-list-material-category tbody tr').first()).toBeVisible();
+    for (const kind of ['brand', 'material-category', 'unit']) {
+      await expect(page.locator(`#${kind}-add`)).toHaveCount(0);
+    }
+    await expect(page.locator('th', { hasText: 'ดำเนินการ' })).toHaveCount(0);
+    await expect(page.locator('[id*="-rename-"], [id*="-inactivate-"], [id*="-reactivate-"]')).toHaveCount(0);
+
     // The form refuses a viewer without material:manage.
     await page.goto(`${targetBaseUrl}/stock-materials/new`);
     await expect(page.locator('#stock-material-create-forbidden')).toContainText('คุณไม่มีสิทธิ์เพิ่มวัสดุ');
@@ -724,5 +863,9 @@ test.describe.serial('Stock Material journeys: Real SPA -> Composed API -> Postg
     await page.goto(`${targetBaseUrl}/stock-materials`);
     await expect(page.locator('#stock-material-list-error')).toContainText('คุณไม่มีสิทธิ์เข้าถึงรายการวัสดุ');
     await expect(page.locator('#stock-material-list-table')).toHaveCount(0);
+    // Nor do the lists of the maintenance page.
+    await page.goto(`${targetBaseUrl}/stock-materials/lists`);
+    await expect(page.locator('#catalog-list-unit-error')).toContainText('คุณไม่มีสิทธิ์เข้าถึงรายการหน่วยนับ');
+    await expect(page.locator('#catalog-list-unit table')).toHaveCount(0);
   });
 });

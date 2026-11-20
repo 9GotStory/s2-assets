@@ -14,7 +14,7 @@ import { AcquisitionService } from '../../../api/src/services/acquisition.servic
 import { LoanService } from '../../../api/src/services/loan.service.ts';
 import { RepairService } from '../../../api/src/services/repair.service.ts';
 import { VerificationService } from '../../../api/src/services/verification.service.ts';
-import { UnitService } from '../../../api/src/services/unit.service.ts';
+import { CatalogListService } from '../../../api/src/services/catalog-list.service.ts';
 import { StockMaterialService } from '../../../api/src/services/stock-material.service.ts';
 import { repositoryProxyConfig } from '../../vite.config.ts';
 
@@ -60,6 +60,8 @@ const SMOKE: Record<string, { url: (f: Fixtures) => string; heading: (f: Fixture
   // F008-T1 (#176): every catalog viewer reads the Stock Materials; creating one is material:manage.
   '/stock-materials': { url: () => '/stock-materials', heading: () => 'วัสดุ' },
   '/stock-materials/new': { skip: 'a write: material:manage' },
+  // F008-T8 (#183): every catalog viewer reads the Brand, Material Category and Unit lists; keeping them is material:manage.
+  '/stock-materials/lists': { url: () => '/stock-materials/lists', heading: () => 'ยี่ห้อ หมวดวัสดุ และหน่วยนับ' },
   '/stock-materials/:id': { url: (f) => `/stock-materials/${f.stockMaterialId}`, heading: (f) => f.stockMaterialName },
 };
 
@@ -148,7 +150,7 @@ test.describe.serial('Route smoke: Real SPA -> Composed API -> PostgreSQL (Seam 
       { retryToken: crypto.randomUUID() }
     );
     const stockMaterialName = 'กระดาษ E2E route smoke';
-    const unit = await new UnitService({ db: pool }).add(officerUserId, 'รีม', { retryToken: crypto.randomUUID() });
+    const unit = await new CatalogListService({ db: pool }).add(officerUserId, 'unit', 'รีม', { retryToken: crypto.randomUUID() });
     const { stock_material_id: stockMaterialId } = await new StockMaterialService({ db: pool }).create(
       officerUserId,
       { name: stockMaterialName, base_unit: { unit_id: unit.id } },

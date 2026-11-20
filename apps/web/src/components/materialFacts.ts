@@ -1,4 +1,4 @@
-// What the API answers about the Stock Material catalog (F008-T1, T3, T4, T5, T6), and its labels from GLOSSARY.md (#175 Q17).
+// What the API answers about the Stock Material catalog (F008-T1, T3, T4, T5, T6, T8), and its labels from GLOSSARY.md (#175 Q17).
 
 // One entry of a list of the catalog: the shared Unit list (F008-T1), the Brand or the Material Category list (F008-T4).
 export interface ListEntry {
@@ -10,13 +10,30 @@ export interface ListEntry {
 
 export type UnitEntry = ListEntry;
 
+// F008-T8 (#183): one change of a list entry, as the entry's own history records it (#175 P6): its addition, a
+// rename with the old and the new name, or a change of status.
+export interface ListEntryHistoryEntry {
+  version: number;
+  action: 'CREATED' | 'CHANGED';
+  changes: { name?: { before: string | null; after: string }; is_active?: { before: boolean | null; after: boolean } };
+  actor_id: string;
+  actor_username: string;
+  recorded_at: string;
+}
+
+// An entry as its list answers it (F008-T8): how many Stock Materials use it, Inactive ones included, and its history.
+export interface ListedEntry extends ListEntry {
+  usage_count: number;
+  history: ListEntryHistoryEntry[];
+}
+
 export interface UnitList {
-  items: UnitEntry[];
+  items: ListedEntry[];
   can_manage: boolean;
 }
 
 export interface CatalogList {
-  items: ListEntry[];
+  items: ListedEntry[];
   can_manage: boolean;
 }
 
@@ -150,6 +167,9 @@ export const MATERIAL_CORRECTION_LABEL = 'แก้ไขรายการท�
 export const MINIMUM_STOCK_SET_LABEL = 'ตั้งจำนวนขั้นต่ำแล้ว';
 // glossary: no entry — the list filter's option, made of the term จำนวนขั้นต่ำ (Minimum Stock)
 export const MINIMUM_STOCK_NOT_SET_LABEL = 'ยังไม่ตั้งจำนวนขั้นต่ำ';
+// glossary: no entry — the maintenance page of the "วัสดุ" menu, made of the terms ยี่ห้อ (Brand), หมวดวัสดุ (Material Category) and หน่วยนับ (Unit)
+export const CATALOG_LISTS_LABEL = 'ยี่ห้อ หมวดวัสดุ และหน่วยนับ';
+export const RENAME_LABEL = 'เปลี่ยนชื่อ';
 
 // What each kind of history entry is called on the Stock Material page. F008-T1 writes CREATED, T3 UNITS_CHANGED,
 // T4 DETAILS_CHANGED, T5 CORRECTED, and T7 INACTIVATED and REACTIVATED.

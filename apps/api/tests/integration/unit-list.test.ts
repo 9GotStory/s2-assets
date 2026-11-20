@@ -44,7 +44,7 @@ describe('Unit list (Seam A - F008-T1)', () => {
       const entry = res.json();
       expect(entry).toEqual({ id: expect.stringMatching(UUID), name: 'รีม', is_active: true, version: 1 });
       for (const viewer of [officer, admin, readonly]) {
-        expect((await unitsOf(viewer)).items).toContainEqual(entry);
+        expect((await unitsOf(viewer)).items).toContainEqual(expect.objectContaining(entry));
       }
     });
 
@@ -52,13 +52,13 @@ describe('Unit list (Seam A - F008-T1)', () => {
       const prefix = `ลำดับ ${crypto.randomUUID().slice(0, 6)}`;
       const second = await unitNamed(`${prefix} ข`);
       const first = await unitNamed(`${prefix} ก`);
-      await api.pool.query('UPDATE units SET is_active = false WHERE id = $1', [second]);
+      expect((await api.post(officer, `/units/${second}/inactivate`, { expected_version: 1 }, { 'x-retry-token': crypto.randomUUID() })).statusCode).toBe(200);
 
       const listed = (await unitsOf()).items.filter((entry: { name: string }) => entry.name.startsWith(prefix));
 
-      expect(listed).toEqual([
+      expect(listed).toMatchObject([
         { id: first, name: `${prefix} ก`, is_active: true, version: 1 },
-        { id: second, name: `${prefix} ข`, is_active: false, version: 1 },
+        { id: second, name: `${prefix} ข`, is_active: false, version: 2 },
       ]);
     });
 
