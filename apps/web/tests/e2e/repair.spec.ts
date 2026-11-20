@@ -113,6 +113,14 @@ test.describe.serial('Repair journeys: Real SPA -> Composed API -> PostgreSQL (S
     if (container) await container.stop();
   });
 
+  // The session answers late, so that a page shows its facts before the CSRF token arrives: a write action waits for the
+  // token, or a quick save would be refused as if the grant were gone (#135).
+  const delaySessionCheck = (page: any) =>
+    page.route('**/auth/session-check', async (route: any) => {
+      await new Promise((resolve) => setTimeout(resolve, 3000));
+      await route.continue();
+    });
+
   const loginAs = async (context: any, userId: string) => {
     const session = await sessionService.createSession(userId);
     await context.addCookies([{ name: 'session', value: session.token, url: targetBaseUrl }]);
@@ -502,10 +510,7 @@ test.describe.serial('Repair journeys: Real SPA -> Composed API -> PostgreSQL (S
 
     // Voiding the record ends Under Repair; it stays shown, struck through, with no action left on it. The session
     // answers late: the action waits for its CSRF token, or a quick submit would be refused as if the grant were gone (#135).
-    await page.route('**/auth/session-check', async (route) => {
-      await new Promise((resolve) => setTimeout(resolve, 1500));
-      await route.continue();
-    });
+    await delaySessionCheck(page);
     await page.locator('#repair-current-link').click();
     await expect(page.locator('#repair-status')).toHaveText('อยู่ระหว่างซ่อม');
     await expect(page.locator('main button[id$="-action"]')).toHaveCount(0);

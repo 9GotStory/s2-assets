@@ -117,6 +117,14 @@ test.describe.serial('Verification journeys: Real SPA -> Composed API -> Postgre
     if (container) await container.stop();
   });
 
+  // The session answers late, so that a page shows its facts before the CSRF token arrives: a write action waits for the
+  // token, or a quick save would be refused as if the grant were gone (#135).
+  const delaySessionCheck = (page: any) =>
+    page.route('**/auth/session-check', async (route: any) => {
+      await new Promise((resolve) => setTimeout(resolve, 3000));
+      await route.continue();
+    });
+
   const loginAs = async (context: any, userId: string) => {
     const session = await sessionService.createSession(userId);
     await context.addCookies([{ name: 'session', value: session.token, url: targetBaseUrl }]);
@@ -206,10 +214,7 @@ test.describe.serial('Verification journeys: Real SPA -> Composed API -> Postgre
 
     // A second Round is refused while this one is open, naming it. The session answers late: the action waits for
     // its CSRF token, or a quick submit would be refused as if the grant were gone.
-    await page.route('**/auth/session-check', async (route) => {
-      await new Promise((resolve) => setTimeout(resolve, 1500));
-      await route.continue();
-    });
+    await delaySessionCheck(page);
     await page.goto(`${targetBaseUrl}/verification-rounds`);
     await page.locator('#verification-open-action').click();
     await page.locator('#verification-open-name').fill('รอบที่สอง');
@@ -607,10 +612,7 @@ test.describe.serial('Verification journeys: Real SPA -> Composed API -> Postgre
     // The Custodian lists the results awaiting an action and sends the projector from its row. The session answers
     // late: the action waits for its CSRF token, or a quick submit would be refused as if the grant were gone (#135).
     await switchActor(page, context, custodianUserId);
-    await page.route('**/auth/session-check', async (route) => {
-      await new Promise((resolve) => setTimeout(resolve, 1500));
-      await route.continue();
-    });
+    await delaySessionCheck(page);
     await page.goto(`${targetBaseUrl}/verification-rounds/${roundId}`);
     await expect(page.locator(`[data-testid="scope-entry-${projector.id}"]`)).toBeVisible();
     await expect(page.locator('[id^="scope-entry-repair-action-"]')).toHaveCount(0);

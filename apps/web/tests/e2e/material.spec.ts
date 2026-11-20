@@ -116,6 +116,14 @@ test.describe.serial('Stock Material journeys: Real SPA -> Composed API -> Postg
     if (container) await container.stop();
   });
 
+  // The session answers late, so that a page shows its facts before the CSRF token arrives: a write action waits for the
+  // token, or a quick save would be refused as if the grant were gone (#135).
+  const delaySessionCheck = (page: any) =>
+    page.route('**/auth/session-check', async (route: any) => {
+      await new Promise((resolve) => setTimeout(resolve, 3000));
+      await route.continue();
+    });
+
   const loginAs = async (context: any, userId: string) => {
     const session = await sessionService.createSession(userId);
     await context.addCookies([{ name: 'session', value: session.token, url: targetBaseUrl }]);
@@ -416,10 +424,7 @@ test.describe.serial('Stock Material journeys: Real SPA -> Composed API -> Postg
     await loginAs(context, officerUserId);
     // The session answers late: the form waits for its CSRF token, or a quick save would be refused as if the grant
     // were gone (#135).
-    await page.route('**/auth/session-check', async (route) => {
-      await new Promise((resolve) => setTimeout(resolve, 1500));
-      await route.continue();
-    });
+    await delaySessionCheck(page);
     await page.goto(`${targetBaseUrl}/stock-materials/new`);
     await page.locator('#stock-material-name').fill('น้ำยาล้างจาน');
     await page.locator('#stock-material-new-unit').fill(can);
@@ -459,10 +464,7 @@ test.describe.serial('Stock Material journeys: Real SPA -> Composed API -> Postg
 
     // "แก้ไขข้อมูลอื่น" sets 20 กระป๋อง without a reason; the same amount written otherwise is no change. The session
     // answers late: the action waits for its CSRF token (#135).
-    await page.route('**/auth/session-check', async (route) => {
-      await new Promise((resolve) => setTimeout(resolve, 1500));
-      await route.continue();
-    });
+    await delaySessionCheck(page);
     await page.goto(detailUrl);
     await expect(page.locator('[data-testid="stock-material-minimum-stock"]')).toHaveText('-');
     await expect(page.locator('#stock-material-correct, #stock-material-edit-details, #stock-material-inactivate, #stock-material-edit-units')).toHaveCount(0);
@@ -686,14 +688,17 @@ test.describe.serial('Stock Material journeys: Real SPA -> Composed API -> Postg
     await expect(page.locator('#stock-material-status-form')).toHaveCount(0);
     await expect(page.locator('#stock-material-inactivate')).toBeVisible();
     await service.inactivate(officerUserId, id, { expected_version: 5 }, { retryToken: crypto.randomUUID() });
+    await delaySessionCheck(page);
     await page.reload();
     await expect(status).toHaveText('หยุดใช้');
+    await expect(page.locator('#stock-material-reactivate')).toHaveCount(0);
 
     await page.locator('#stock-material-reactivate').click();
     await expect(page.locator('#stock-material-reactivate')).toHaveCount(0);
     await expect(page.locator('[data-testid="stock-material-status-notice"]')).toContainText('รายการเดิม');
     await expect(page.locator('#stock-material-status-note')).toHaveCount(0);
     await page.locator('#stock-material-status-submit').click();
+    await page.unroute('**/auth/session-check');
     await expect(status).toHaveText('ใช้งานอยู่');
     await expect(page.locator('#stock-material-inactivate')).toBeVisible();
     await expect(page.locator('#stock-material-reactivate')).toHaveCount(0);
@@ -727,10 +732,7 @@ test.describe.serial('Stock Material journeys: Real SPA -> Composed API -> Postg
     await loginAs(context, officerUserId);
     // The session answers late: the actions wait for its CSRF token, or a quick save would be refused as if the grant
     // were gone (#135).
-    await page.route('**/auth/session-check', async (route) => {
-      await new Promise((resolve) => setTimeout(resolve, 1500));
-      await route.continue();
-    });
+    await delaySessionCheck(page);
     await page.goto(`${targetBaseUrl}/stock-materials/lists`);
     await expect(status).toHaveText('ใช้งานอยู่');
     await expect(page.locator('#catalog-list-brand button')).toHaveCount(0);
