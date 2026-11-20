@@ -28,6 +28,7 @@ import {
   conversionLine,
   minimumStockLine,
   unitLine,
+  wholeNumberLine,
   type NamedListEntry,
   type RecordedUnit,
   type StockMaterialDetail as MaterialDetail,
@@ -341,7 +342,7 @@ const StockMaterialDetailContent: React.FC<{ id: string }> = ({ id }) => {
                         )}
                       </td>
                       <td style={cellStyle}>{unit.is_base || unit.conversion_factor === null ? '-' : conversionLine(unit.name, unit.conversion_factor, baseUnit?.name ?? '')}</td>
-                      <td style={cellStyle}>{unit.whole_number_only ? 'ใช่' : 'ไม่ใช่ (มีเศษได้)'}</td>
+                      <td style={cellStyle}>{wholeNumberLine(unit.whole_number_only)}</td>
                     </tr>
                   ))}
                 </tbody>

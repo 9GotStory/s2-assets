@@ -3,6 +3,7 @@ import { useNavigate, Link } from 'react-router';
 import { REPAIR_LIST_LABEL, REPAIR_SECTION_LABEL } from '../components/repairFacts';
 import { VERIFICATION_ROUND_LABEL } from '../components/verificationFacts';
 import { CATALOG_LISTS_LABEL, STOCK_MATERIAL_LABEL } from '../components/materialFacts';
+import { REQUESTABLE_MATERIAL_LABEL } from '../components/requestableMaterialFacts';
 
 export interface SafeUser {
   id: string;
@@ -590,7 +591,7 @@ export const Dashboard: React.FC = () => {
               {STOCK_MATERIAL_LABEL}
             </h2>
             <p style={{ margin: '0 0 1rem 0', fontSize: '0.875rem', color: '#4b5563' }}>
-              ดูและค้นหารายการวัสดุสิ้นเปลือง พร้อมหน่วยนับของแต่ละรายการ และดูแลรายการยี่ห้อ หมวดวัสดุ และหน่วยนับ
+              ดูและค้นหารายการวัสดุสิ้นเปลือง พร้อมหน่วยนับของแต่ละรายการ ดูแลรายการยี่ห้อ หมวดวัสดุ และหน่วยนับ และวัสดุสำหรับขอเบิก
             </p>
             <div style={{ display: 'flex', gap: '0.75rem', flexWrap: 'wrap' }}>
               <Link
@@ -624,6 +625,23 @@ export const Dashboard: React.FC = () => {
                 }}
               >
                 {CATALOG_LISTS_LABEL}
+              </Link>
+              {/* F009-T1 (#203, #202 P9): the Requestable Materials, read with material:view as the Stock Materials are. */}
+              <Link
+                to="/requestable-materials"
+                id="nav-requestable-material-list"
+                style={{
+                  display: 'inline-block',
+                  padding: '0.5rem 1rem',
+                  backgroundColor: '#4b5563',
+                  color: '#ffffff',
+                  textDecoration: 'none',
+                  borderRadius: '4px',
+                  fontSize: '0.875rem',
+                  fontWeight: 500,
+                }}
+              >
+                {REQUESTABLE_MATERIAL_LABEL}
               </Link>
             </div>
           </section>

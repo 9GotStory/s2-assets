@@ -25,6 +25,7 @@ import { evidenceRoutes } from './routes/evidence.routes.ts';
 import { referenceRoutes } from './routes/reference.routes.ts';
 import { stockMaterialRoutes } from './routes/stock-material.routes.ts';
 import { catalogListRoutes } from './routes/catalog-list.routes.ts';
+import { requestableMaterialRoutes } from './routes/requestable-material.routes.ts';
 import { UserService, type DatabaseClient } from './services/user.service.ts';
 import { SessionService } from './services/session.service.ts';
 import { CapabilityService } from './services/capability.service.ts';
@@ -51,6 +52,8 @@ import { EvidenceService } from './services/evidence.service.ts';
 import { StockMaterialService } from './services/stock-material.service.ts';
 import { StockMaterialReadService } from './services/stock-material-read.service.ts';
 import { CatalogListService } from './services/catalog-list.service.ts';
+import { RequestableMaterialService } from './services/requestable-material.service.ts';
+import { RequestableMaterialReadService } from './services/requestable-material-read.service.ts';
 
 export interface AppOptions {
   config?: Partial<Config>;
@@ -328,6 +331,12 @@ export async function buildApp(options: AppOptions = {}): Promise<FastifyInstanc
     // F008-T1, T4 (#176, #179): its Unit, Brand and Material Category lists
     await app.register(catalogListRoutes, {
       catalogListService: new CatalogListService({ db: dbClient }),
+      capabilityService,
+    });
+    // F009-T1 (#203): the Requestable Materials
+    await app.register(requestableMaterialRoutes, {
+      requestableMaterialService: new RequestableMaterialService({ db: dbClient }),
+      requestableMaterialReadService: new RequestableMaterialReadService({ db: dbClient }),
       capabilityService,
     });
 

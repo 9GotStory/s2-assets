@@ -20,6 +20,9 @@ import { StockMaterialList } from './pages/StockMaterialList';
 import { StockMaterialCreate } from './pages/StockMaterialCreate';
 import { StockMaterialDetail } from './pages/StockMaterialDetail';
 import { CatalogListMaintenance } from './pages/CatalogListMaintenance';
+import { RequestableMaterialList } from './pages/RequestableMaterialList';
+import { RequestableMaterialCreate } from './pages/RequestableMaterialCreate';
+import { RequestableMaterialDetail } from './pages/RequestableMaterialDetail';
 
 export const ProtectedDetailBoundary: React.FC = () => {
   const navigate = useNavigate();
@@ -381,6 +384,18 @@ export const routes: RouteObject[] = [
   {
     path: '/stock-materials/:id',
     element: <StockMaterialDetail />,
+  },
+  {
+    path: '/requestable-materials',
+    element: <RequestableMaterialList />,
+  },
+  {
+    path: '/requestable-materials/new',
+    element: <RequestableMaterialCreate />,
+  },
+  {
+    path: '/requestable-materials/:id',
+    element: <RequestableMaterialDetail />,
   },
 ];
 

@@ -81,6 +81,17 @@ export const repositoryProxyConfig: Record<string, ProxyOptions> = {
       }
     },
   },
+  // F009-T1 (#203): the Requestable Materials; the list, the form and a Requestable Material's page are the SPA routes
+  // /requestable-materials, /requestable-materials/new and /requestable-materials/:id.
+  '/requestable-materials': {
+    target: 'http://api:3000',
+    changeOrigin: true,
+    bypass: (req) => {
+      if (req.headers.accept?.includes('text/html')) {
+        return '/index.html';
+      }
+    },
+  },
   // F008-T1 (#176): the Unit list of the Stock Material catalog; no SPA route starts with /units.
   '/units': {
     target: 'http://api:3000',
