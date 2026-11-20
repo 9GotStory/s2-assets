@@ -97,7 +97,7 @@ export async function unselectableUnitsAmong(client: pg.PoolClient, unitIds: str
 /**
  * The lists of the Stock Material catalog, following the Reference List pattern of Feature 002 (#175 P5): the shared
  * Unit list (หน่วยนับ, F008-T1), and the Brand (ยี่ห้อ) and Material Category (หมวดวัสดุ) lists (F008-T4). A Supply
- * Officer adds entries; nothing is deleted. Renaming and Inactive come with F008-T8.
+ * Officer adds, renames, makes Inactive and reactivates entries (F008-T8); nothing is deleted.
  */
 export class CatalogListService {
   private readonly db: pg.Pool | any;

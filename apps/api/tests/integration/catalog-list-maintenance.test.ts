@@ -8,6 +8,10 @@ import { materialHelpers } from './support/material-helpers.ts';
 // A Stock Material page as the tests read it.
 type MaterialPage = { units: { name: string }[]; brand: { name: string } | null; material_category: { name: string } | null; history: { changes: { field: string; after: any }[] }[] };
 
+// What a rename, and making an entry Inactive or reactivating it, commit (F008-T8), to hold uncommitted.
+const renameHeld = (table: string, id: string, name: string) => ({ sql: `UPDATE ${table} SET name = $2, version = version + 1 WHERE id = $1`, params: [id, name] });
+const statusHeld = (table: string, id: string, isActive: boolean) => ({ sql: `UPDATE ${table} SET is_active = $2, version = version + 1 WHERE id = $1`, params: [id, isActive] });
+
 // F008-T8 (#183): keeping the Unit, Brand and Material Category lists on the maintenance page "ยี่ห้อ หมวดวัสดุ และ
 // หน่วยนับ": a Supply Officer renames an entry to normalize its spelling, or makes it Inactive and reactivates it; nothing
 // is deleted, merged or aliased (#175 MC-12, MC-26, Q19, Q20, Q21, Q23, P5, P6).
@@ -47,9 +51,7 @@ describe.each([
   const { created, createMaterial, materialOf, unitNamed, replaceUnits, unitsAsRead } = materialHelpers(() => ({ api, officer, reader: readonly }));
   const { whileWriting, untilWaiting } = lockHelpers(() => ({ api }));
 
-  // What a rename, a reactivation and another write of the entry commit (F008-T8), to hold uncommitted.
-  const renameHeld = (id: string, name: string) => ({ sql: `UPDATE ${table} SET name = $2, version = version + 1 WHERE id = $1`, params: [id, name] });
-  const statusHeld = (id: string, isActive: boolean) => ({ sql: `UPDATE ${table} SET is_active = $2, version = version + 1 WHERE id = $1`, params: [id, isActive] });
+  // What any other write of the entry commits, to hold uncommitted.
   const versionHeld = (id: string) => ({ sql: `UPDATE ${table} SET version = version + 1 WHERE id = $1`, params: [id] });
 
   // A new Stock Material naming the entry, confirming any Duplicate Candidate.
@@ -421,7 +423,7 @@ describe.each([
       const id = await entryId();
       const name = `ชื่อเดียวกัน ${crypto.randomUUID().slice(0, 8)}`;
 
-      const [res] = await whileWriting(renameHeld(id, name), () => [rename(id, { expected_version: 2, name })], () => untilWaiting(table));
+      const [res] = await whileWriting(renameHeld(table, id, name), () => [rename(id, { expected_version: 2, name })], () => untilWaiting(table));
 
       expect(res.statusCode).toBe(400);
       expect(res.json().message).toBe('This rename changes nothing');
@@ -440,7 +442,7 @@ describe.each([
     it('makes an entry Inactive only after another makes it Inactive, and then refuses it as already Inactive', async () => {
       const id = await entryId();
 
-      const [res] = await whileWriting(statusHeld(id, false), () => [inactivate(id, { expected_version: 2 })], () => untilWaiting(table));
+      const [res] = await whileWriting(statusHeld(table, id, false), () => [inactivate(id, { expected_version: 2 })], () => untilWaiting(table));
 
       expect(res.statusCode).toBe(400);
       expect(res.json().message).toMatch(/is already Inactive$/);
@@ -459,7 +461,7 @@ describe.each([
     it('reactivates an entry only after another reactivates it, and then refuses it as already active', async () => {
       const id = await inactiveEntryId();
 
-      const [res] = await whileWriting(statusHeld(id, true), () => [reactivate(id, { expected_version: 3 })], () => untilWaiting(table));
+      const [res] = await whileWriting(statusHeld(table, id, true), () => [reactivate(id, { expected_version: 3 })], () => untilWaiting(table));
 
       expect(res.statusCode).toBe(400);
       expect(res.json().message).toMatch(/is already active$/);
@@ -473,7 +475,7 @@ describe.each([
     it('waits for the entry a new Stock Material names being renamed, and records the new name (P6)', async () => {
       const id = await entryId('ชื่อก่อนแก้');
 
-      const [res] = await whileWriting(renameHeld(id, 'ชื่อหลังแก้'), () => [createUsing(id)], () => untilWaiting(table, 1, 'FOR SHARE'));
+      const [res] = await whileWriting(renameHeld(table, id, 'ชื่อหลังแก้'), () => [createUsing(id)], () => untilWaiting(table, 1, 'FOR SHARE'));
 
       expect(res.statusCode).toBe(201);
       expect(recordedOn(await materialOf(res.json().stock_material_id))).toBe('ชื่อหลังแก้');
@@ -482,33 +484,30 @@ describe.each([
     it('waits for an Inactive entry a new Stock Material names being reactivated, and then takes it (Q21)', async () => {
       const id = await inactiveEntryId();
 
-      const [res] = await whileWriting(statusHeld(id, true), () => [createUsing(id)], () => untilWaiting(table, 1, 'FOR SHARE'));
+      const [res] = await whileWriting(statusHeld(table, id, true), () => [createUsing(id)], () => untilWaiting(table, 1, 'FOR SHARE'));
 
       expect(res.statusCode).toBe(201);
     });
   });
 
   describe('permissions (Q1)', () => {
-    // Each write of an existing entry, as the Supply Officer would send it to the entry `id` at version 1.
+    // Each write of an existing entry, as the Supply Officer would send it to the entry `id` at `version`.
     const writes = [
-      { name: 'rename', send: (id: string, actor: Actor) => rename(id, { expected_version: 1, name: `ชื่อไม่ควรเปลี่ยน ${id.slice(0, 8)}` }, crypto.randomUUID(), actor) },
-      { name: 'inactivate', send: (id: string, actor: Actor) => inactivate(id, { expected_version: 1 }, crypto.randomUUID(), actor) },
-      { name: 'reactivate', send: (id: string, actor: Actor) => reactivate(id, { expected_version: 1 }, crypto.randomUUID(), actor) },
+      { name: 'rename', send: (id: string, version: number, actor: Actor) => rename(id, { expected_version: version, name: `ชื่อไม่ควรเปลี่ยน ${id.slice(0, 8)}` }, crypto.randomUUID(), actor) },
+      { name: 'inactivate', send: (id: string, version: number, actor: Actor) => inactivate(id, { expected_version: version }, crypto.randomUUID(), actor) },
+      { name: 'reactivate', send: (id: string, version: number, actor: Actor) => reactivate(id, { expected_version: version }, crypto.randomUUID(), actor) },
     ];
 
     // An entry that each write above would change: active for a rename or an Inactive, Inactive for a reactivation.
     const entryFor = async (write: string) => {
-      const id = await entryId();
-      if (write === 'reactivate') {
-        await api.pool.query(`UPDATE ${table} SET is_active = false WHERE id = $1`, [id]);
-      }
+      const id = write === 'reactivate' ? await inactiveEntryId() : await entryId();
       return { id, before: await listed(id) };
     };
 
     it.each(writes)('lets only the Supply Officer $name an entry', async ({ name, send }) => {
       const { id, before } = await entryFor(name);
       for (const other of others) {
-        const res = await send(id, other);
+        const res = await send(id, before.version, other);
         expect(res.statusCode).toBe(403);
         expect(res.json().error.code).toBe('FORBIDDEN');
       }
@@ -519,8 +518,8 @@ describe.each([
     it.each(writes)('needs material:manage itself to $name, and fails closed when the lookup fails, writing nothing', async ({ name, send }) => {
       const { id, before } = await entryFor(name);
 
-      expect((await withCapabilityAnswer(api.app, 'material:manage', async () => false, () => send(id, officer))).statusCode).toBe(403);
-      const failed = await withCapabilityAnswer(api.app, 'material:manage', async () => { throw new Error('lookup failed'); }, () => send(id, officer));
+      expect((await withCapabilityAnswer(api.app, 'material:manage', async () => false, () => send(id, before.version, officer))).statusCode).toBe(403);
+      const failed = await withCapabilityAnswer(api.app, 'material:manage', async () => { throw new Error('lookup failed'); }, () => send(id, before.version, officer));
       expect(failed.statusCode).toBe(500);
       expect(await listed(id)).toEqual(before);
     });
@@ -532,7 +531,7 @@ describe.each([
           method: 'POST',
           url: `${path}/${id}/${name}`,
           headers: { 'content-type': 'application/json', 'x-retry-token': crypto.randomUUID(), ...headers },
-          payload: name === 'rename' ? { expected_version: 1, name: 'ไม่มีโทเคน CSRF' } : { expected_version: 1 },
+          payload: name === 'rename' ? { expected_version: before.version, name: 'ไม่มีโทเคน CSRF' } : { expected_version: before.version },
         });
 
       expect([401, 403]).toContain((await inject({})).statusCode);
@@ -643,9 +642,6 @@ describe('Stock Material writes queued behind a rename or a reactivation (Seam A
   const { created, materialOf, unitNamed, brandNamed, materialCategoryNamed, replaceUnits, unitsAsRead, changeDetails, correct } = materialHelpers(() => ({ api, officer, reader: readonly }));
   const { whileWriting, untilWaiting } = lockHelpers(() => ({ api }));
 
-  // What a rename and a reactivation commit (F008-T8), to hold uncommitted.
-  const renameHeld = (table: string, id: string, name: string) => ({ sql: `UPDATE ${table} SET name = $2, version = version + 1 WHERE id = $1`, params: [id, name] });
-  const reactivationHeld = (table: string, id: string) => ({ sql: `UPDATE ${table} SET is_active = true, version = version + 1 WHERE id = $1`, params: [id] });
 
   // An entry of the list at `path` made Inactive through the API.
   const inactivated = async (path: string, id: string) => {
@@ -706,7 +702,7 @@ describe('Stock Material writes queued behind a rename or a reactivation (Seam A
     const added = await inactivated('/units', await unitNamed());
     const page = await materialOf(await created());
 
-    const [res] = await whileWriting(reactivationHeld('units', added), () => [replaceUnits(page.id, withAlternate(page, added))], () => untilWaiting('units', 1, 'FOR SHARE'));
+    const [res] = await whileWriting(statusHeld('units', added, true), () => [replaceUnits(page.id, withAlternate(page, added))], () => untilWaiting('units', 1, 'FOR SHARE'));
 
     expect(res.statusCode).toBe(200);
   });
@@ -730,7 +726,7 @@ describe('Stock Material writes queued behind a rename or a reactivation (Seam A
     const page = await materialOf(await created());
 
     const [res] = await whileWriting(
-      reactivationHeld('material_categories', chosen),
+      statusHeld('material_categories', chosen, true),
       () => [changeDetails(page.id, { expected_version: 1, material_category_id: chosen, note: null, minimum_stock: null })],
       () => untilWaiting('material_categories', 1, 'FOR SHARE')
     );
@@ -743,7 +739,7 @@ describe('Stock Material writes queued behind a rename or a reactivation (Seam A
     const page = await materialOf(await created());
 
     const [res] = await whileWriting(
-      reactivationHeld('brands', chosen),
+      statusHeld('brands', chosen, true),
       () => [correct(page.id, { expected_version: 1, name: page.name, brand_id: chosen, model: null, specification: null, reason: 'ระบุยี่ห้อที่ถูกต้อง', explicit_continuation: true })],
       () => untilWaiting('brands', 1, 'FOR SHARE')
     );

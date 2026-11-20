@@ -167,7 +167,7 @@ export const MATERIAL_CORRECTION_LABEL = 'แก้ไขรายการท�
 export const MINIMUM_STOCK_SET_LABEL = 'ตั้งจำนวนขั้นต่ำแล้ว';
 // glossary: no entry — the list filter's option, made of the term จำนวนขั้นต่ำ (Minimum Stock)
 export const MINIMUM_STOCK_NOT_SET_LABEL = 'ยังไม่ตั้งจำนวนขั้นต่ำ';
-// glossary: no entry — the maintenance page of the "วัสดุ" menu, made of the term ยี่ห้อ (Brand)
+// glossary: no entry — the maintenance page of the "วัสดุ" menu, made of the terms ยี่ห้อ (Brand), หมวดวัสดุ (Material Category) and หน่วยนับ (Unit)
 export const CATALOG_LISTS_LABEL = 'ยี่ห้อ หมวดวัสดุ และหน่วยนับ';
 export const RENAME_LABEL = 'เปลี่ยนชื่อ';
 

@@ -38,11 +38,11 @@ const refusalOf = (err: unknown) => {
   return null;
 };
 
-// What a write to an existing entry answers: the entry it wrote, or its refusal (CODING_STANDARDS, "Helpers decide,
+// What a write answers: the entry it wrote, with `statusCode`, or its refusal (CODING_STANDARDS, "Helpers decide,
 // handlers reply").
-const outcomeOf = async (write: () => Promise<CatalogListEntry>): Promise<{ statusCode: number; body: unknown }> => {
+const outcomeOf = async (write: () => Promise<CatalogListEntry>, statusCode = 200): Promise<{ statusCode: number; body: unknown }> => {
   try {
-    return { statusCode: 200, body: await write() };
+    return { statusCode, body: await write() };
   } catch (err) {
     const refusal = refusalOf(err);
     if (!refusal) {
@@ -82,15 +82,8 @@ export const catalogListRoutes: FastifyPluginAsync<CatalogListRoutesOptions> = a
       if ('refusal' in write) {
         return reply.status(400).send(write.refusal);
       }
-      try {
-        return reply.status(201).send(await catalogListService.add(request.user!.id, kind, write.data.name, { retryToken: write.retryToken }));
-      } catch (err) {
-        const refusal = refusalOf(err);
-        if (!refusal) {
-          throw err;
-        }
-        return reply.status(refusal.statusCode).send(refusal);
-      }
+      const { statusCode, body } = await outcomeOf(() => catalogListService.add(request.user!.id, kind, write.data.name, { retryToken: write.retryToken }), 201);
+      return reply.status(statusCode).send(body);
     });
 
     /**

@@ -24,6 +24,9 @@ import { useBrandList, useCsrfToken, useMaterialCategoryList, useUnitList } from
 
 const THAI_DATE_TIME = new Intl.DateTimeFormat('th-TH', { dateStyle: 'long', timeStyle: 'short', timeZone: 'Asia/Bangkok' });
 
+// What a form shows when another write changed the entry since the page read it (#175 Q23).
+const STALE_MESSAGE = 'มีผู้แก้ไขรายการนี้ไปแล้ว กรุณาโหลดใหม่';
+
 const cellStyle: React.CSSProperties = { padding: '0.75rem 1rem', color: '#111827', verticalAlign: 'top' };
 const headStyle: React.CSSProperties = { padding: '0.75rem 1rem', fontWeight: 600, color: '#374151', whiteSpace: 'nowrap' };
 const actionStyle: React.CSSProperties = { padding: '0.25rem 0.625rem', backgroundColor: '#f3f4f6', color: '#374151', border: '1px solid #d1d5db', borderRadius: '6px', fontSize: '0.8125rem', marginRight: '0.5rem' };
@@ -169,7 +172,7 @@ const ListSection: React.FC<ListSectionProps> = ({ spec, list }) => {
           refusedList={(body) => nameTaken(body, false)}
           forbiddenMessage={`คุณไม่มีสิทธิ์${RENAME_LABEL}${concept}`}
           refusedMessage={`ไม่สามารถ${RENAME_LABEL}${concept}ได้`}
-          staleMessage="มีผู้แก้ไขรายการนี้ไปแล้ว กรุณาโหลดใหม่"
+          staleMessage={STALE_MESSAGE}
           submitLabel={RENAME_LABEL}
           onRefresh={refresh}
           onSaved={async (renamed) => done(`${RENAME_LABEL}เป็น "${renamed?.name}" แล้ว`)()}
@@ -198,7 +201,7 @@ const ListSection: React.FC<ListSectionProps> = ({ spec, list }) => {
         refusedList={() => null}
         forbiddenMessage={`คุณไม่มีสิทธิ์เปลี่ยนสถานะ${concept}`}
         refusedMessage={`ไม่สามารถเปลี่ยนสถานะ${concept}ได้`}
-        staleMessage="มีผู้แก้ไขรายการนี้ไปแล้ว กรุณาโหลดใหม่"
+        staleMessage={STALE_MESSAGE}
         submitLabel={inactivating ? INACTIVE_LABEL : REACTIVATE_LABEL}
         onRefresh={refresh}
         onSaved={async () => done(`${inactivating ? INACTIVE_LABEL : REACTIVATE_LABEL}${concept} "${entry.name}" แล้ว`)()}
