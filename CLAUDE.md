@@ -83,7 +83,8 @@ To run one test file or a typecheck, use the same scripts:
 that last one before each commit (enable it once per clone with
 `git config core.hooksPath .githooks`). Before the full run, run
 every integration file that calls a route or names a response field the change touches (`grep -l`
-over `apps/api/tests/integration`): earlier tests pin those shapes and their data. Start the full
+over `apps/api/tests/integration`), and `tests/e2e/route-smoke.spec.ts` when a file under
+`apps/web/src/pages` changes: earlier tests pin those shapes, their data and each page's heading. Start the full
 run once, after the code-review fixes are committed, together with the Product Owner's answer to any
 review decision whose recommended option changes code: a full run started before them has to be run
 again.
