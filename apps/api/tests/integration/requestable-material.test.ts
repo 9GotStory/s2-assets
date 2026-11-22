@@ -330,7 +330,8 @@ describe('Requestable Material (Seam A - F009-T1)', () => {
       expect((await listed(`search=${encodeURIComponent(`_ ${tag}`)}`)).items).toEqual([]);
     });
 
-    // Two names equal ignoring case are refused as one (Q6), so the order by name has no tie to break.
+    // requestable_materials_name_unique refuses two names equal ignoring case (Q6), so the order by name has no tie
+    // and the list keeps no tiebreak (CODING_STANDARDS.md).
     it('pages the list by name ignoring case', async () => {
       const tag = `order ${crypto.randomUUID().slice(0, 8)}`;
       const lowerB = await created({ name: `${tag} b` });

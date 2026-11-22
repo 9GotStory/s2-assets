@@ -97,13 +97,13 @@ export class RequestableMaterialReadService {
        counted AS (SELECT count(*)::int AS total_count FROM filtered),
        paged AS (
          SELECT * FROM filtered
-         ORDER BY lower(name) ASC, id ASC
+         ORDER BY lower(name) ASC
          LIMIT $${values.length - 1} OFFSET $${values.length}
        )
        SELECT p.*, c.total_count
        FROM counted c
        LEFT JOIN paged p ON true
-       ORDER BY lower(p.name) ASC, p.id ASC`,
+       ORDER BY lower(p.name) ASC`,
       values
     );
     // `counted` has one row, which the page joins.

@@ -57,6 +57,11 @@ tiebreak is broken, so the test cannot fail. Put the tied rows on either side of
 `loan-list.test.ts` and `repair-list.test.ts` do. In F005-T3 (#101), both tests first kept their
 same-day pair on one page, and breaking the tiebreak left them green.
 
+When a unique index makes the sort key unique, no tie exists: the order test names that index in
+its comment, and the query keeps no tiebreak, which no test could break. In F009-T1 (#203) names
+equal ignoring case could not both exist under `requestable_materials_name_unique`, so the tied
+pair could not be written.
+
 ## A rule read under a lock has a test of its order
 
 When a write decides a rule on a fact that another write can change, and a shared lock orders the two,

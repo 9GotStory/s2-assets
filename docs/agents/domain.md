@@ -21,6 +21,8 @@ packages are technical boundaries, not separate business vocabularies.
 - `docs/09-feature-map.md`: feature dependencies and boundaries.
 - `TECHNOLOGY.md` v1.2.0: selected technical baseline.
 - The approved feature specification, decisions and exact authorized ticket.
+- `docs/agents/entity-pattern.md`: before building a catalog-style entity, the file and symbol
+  of each layer's prior art, to read by range.
 
 Read only relevant sections. Use the terms in `GLOSSARY.md` and the established
 Asset, Acquisition, Stable ID, Asset Number, Serial Number and Document vocabulary.
