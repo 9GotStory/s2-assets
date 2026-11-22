@@ -115,8 +115,8 @@ const RequestableMaterialDetailContent: React.FC<{ id: string }> = ({ id }) => {
   const csrfToken = session.data ?? null;
   const mayManage = detail?.can_manage === true && csrfToken !== null;
   const ending = compatibleAction?.kind === 'end' ? detail?.compatible_stock_materials.find((entry) => entry.stock_material_id === compatibleAction.stockMaterialId) : undefined;
-  // What a form passes back to the page: a save reads the page again and closes it, a lost grant reads it again or
-  // signs out.
+  // What a form passes back to the page: a save reads the page again and closes it, and a lost grant or session reads
+  // it again, which hides the actions or signs out.
   const formHandlers = {
     onRefresh: refresh,
     onSaved: async () => {
@@ -124,13 +124,7 @@ const RequestableMaterialDetailContent: React.FC<{ id: string }> = ({ id }) => {
       setCompatibleAction(null);
     },
     onCancel: () => setCompatibleAction(null),
-    onPermissionRevoked: (status?: number) => {
-      if (status === 401) {
-        navigate('/login', { replace: true });
-        return;
-      }
-      void requestable.refetch();
-    },
+    onPermissionRevoked: () => void requestable.refetch(),
   };
 
   return (

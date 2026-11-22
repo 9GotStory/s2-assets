@@ -182,7 +182,9 @@ describe('Compatible Stock Material (Seam A - F009-T2)', () => {
 
     it('answers 404 for a Requestable Material that does not exist, and 400 for an id that is not one', async () => {
       const paper = await stockMaterialIn(ream);
-      expect((await add(crypto.randomUUID(), paper, { version: 1 })).statusCode).toBe(404);
+      const missing = await add(crypto.randomUUID(), paper, { version: 1 });
+      expect(missing.statusCode).toBe(404);
+      expect(missing.json()).toMatchObject({ code: 'NOT_FOUND', message: 'Requestable Material not found' });
       expect((await add('not-a-uuid', paper, { version: 1 })).json().code).toBe('INVALID_ID');
     });
 
@@ -267,8 +269,12 @@ describe('Compatible Stock Material (Seam A - F009-T2)', () => {
       const requestable = await requestableIn();
       const paper = await stockMaterialIn(ream);
 
-      expect((await end(requestable, paper)).statusCode).toBe(404);
-      expect((await end(crypto.randomUUID(), paper, { version: 1 })).statusCode).toBe(404);
+      const neverAdded = await end(requestable, paper);
+      expect(neverAdded.statusCode).toBe(404);
+      expect(neverAdded.json()).toMatchObject({ code: 'NOT_FOUND', message: 'Compatible Stock Material not found' });
+      const missing = await end(crypto.randomUUID(), paper, { version: 1 });
+      expect(missing.statusCode).toBe(404);
+      expect(missing.json()).toMatchObject({ code: 'NOT_FOUND', message: 'Requestable Material not found' });
       expect((await end('not-a-uuid', paper, { version: 1 })).json().code).toBe('INVALID_ID');
       expect((await end(requestable, 'not-a-uuid')).json().code).toBe('INVALID_ID');
       expect(await historyCount(requestable)).toBe(1);
