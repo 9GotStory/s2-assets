@@ -148,14 +148,23 @@ export interface StockMaterialForCompatibility {
  * the write or is seen by it (#204 start decision 3, comment 7075904252).
  */
 export async function stockMaterialForCompatibility(client: pg.PoolClient, stockMaterialId: string, requestUnitId: string): Promise<StockMaterialForCompatibility | null> {
-  const res = await client.query('SELECT name, is_active FROM stock_materials WHERE id = $1 FOR SHARE', [stockMaterialId]);
-  if (res.rows.length === 0) {
+  const locked = await lockedStockMaterial(client, stockMaterialId);
+  if (locked === null) {
     return null;
   }
   // A statement of its own, whose snapshot follows the lock: one in the locking statement would miss a Units write
   // committed while it waited (PostgreSQL 18, §13.2.1).
   const handled = await client.query(`SELECT ${handlesUnit('$1::uuid', '$2::uuid')} AS handles_request_unit`, [stockMaterialId, requestUnitId]);
-  return { ...res.rows[0], handles_request_unit: handled.rows[0].handles_request_unit };
+  return { ...locked, handles_request_unit: handled.rows[0].handles_request_unit };
+}
+
+/**
+ * F009-T2 (#204): the name and status of the Stock Material `stockMaterialId`, locked FOR SHARE as
+ * `stockMaterialForCompatibility` locks it, or null when there is none: what an end records (#175 P6).
+ */
+export async function lockedStockMaterial(client: pg.PoolClient, stockMaterialId: string): Promise<{ name: string; is_active: boolean } | null> {
+  const res = await client.query('SELECT name, is_active FROM stock_materials WHERE id = $1 FOR SHARE', [stockMaterialId]);
+  return res.rows[0] ?? null;
 }
 
 // F009-T2 (#204): a Stock Material as a Requestable Material's page lists it among its Compatible Stock Materials.

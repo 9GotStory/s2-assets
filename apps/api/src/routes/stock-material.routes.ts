@@ -1,10 +1,10 @@
 import type { FastifyPluginAsync } from 'fastify';
 import { z } from 'zod';
 import { requireCapability } from '../middleware/authorization.ts';
-import { invalidQueryBody, pageQueryFields } from './list-query.ts';
+import { invalidQueryBody, pageQueryFields, stockMaterialSearchField } from './list-query.ts';
 import { errorBody, parseWrite } from './write-request.ts';
 import { isValidUuid, type CapabilityService } from '../services/capability.service.ts';
-import { hasDisallowedControlChars, hasStrictControlChars } from '../services/control-characters.ts';
+import { hasStrictControlChars } from '../services/control-characters.ts';
 import { NotFoundError, RetryTokenConflictError, StaleBeforeConflictError } from '../services/service-errors.ts';
 import type { StockMaterialReadService } from '../services/stock-material-read.service.ts';
 import { ALTERNATE_UNITS_MAX } from '../services/stock-material-units.ts';
@@ -128,17 +128,6 @@ const ReactivateStockMaterialSchema = z
     retry_token: z.string().optional(),
   })
   .strict();
-
-// A search of the Stock Material list. It searches the Specification, which is free text, so it keeps tab and line
-// breaks inside it as that field does and refuses the rest (CODING_STANDARDS.md). F009-T2 (#204): the Stock
-// Materials a Requestable Material may choose from are found the same way.
-export const stockMaterialSearchField = z
-  .string()
-  .refine((text) => !hasDisallowedControlChars(text), 'must not contain control characters')
-  .refine((text) => Buffer.byteLength(text, 'utf8') <= 4096, 'must be at most 4096 bytes')
-  .transform((text) => text.trim())
-  .refine((text) => text.length > 0, 'must not be blank')
-  .optional();
 
 const StockMaterialListQuerySchema = z
   .object({

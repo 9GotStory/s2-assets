@@ -140,6 +140,23 @@ describe('Compatible Stock Material (Seam A - F009-T2)', () => {
       expect(Date.now() - Date.parse(entry.recorded_at)).toBeLessThan(60_000);
     });
 
+    it('keeps the name each history entry recorded after the Stock Material is renamed (#202 Model)', async () => {
+      const requestable = await requestableIn();
+      const paper = await stockMaterialIn(ream, { name: 'กระดาษชื่อตอนเพิ่ม' });
+      expect((await add(requestable, paper)).statusCode).toBe(200);
+      // What a Material Correction of the name writes (F008-T5).
+      await api.pool.query(`UPDATE stock_materials SET name = 'กระดาษชื่อตอนเลิก', version = version + 1 WHERE id = $1`, [paper]);
+
+      expect((await end(requestable, paper, { version: 2 })).statusCode).toBe(200);
+
+      const page = await requestableOf(requestable);
+      expect(page.history.slice(1).map(({ changes }: any) => changes)).toEqual([
+        [{ field: 'compatible_stock_material', before: null, after: { id: paper, name: 'กระดาษชื่อตอนเพิ่ม' } }],
+        [{ field: 'compatible_stock_material', before: { id: paper, name: 'กระดาษชื่อตอนเลิก' }, after: null }],
+      ]);
+      expect(page.compatible_stock_materials.map(({ name }: any) => name)).toEqual(['กระดาษชื่อตอนเลิก']);
+    });
+
     it('adds a Stock Material whose active Alternate Unit is the Request Unit (ADR 0002)', async () => {
       const requestable = await requestableIn();
       const paper = await stockMaterialWithAlternate(await unitNamed(), ream);

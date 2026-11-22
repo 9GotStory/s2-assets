@@ -11,7 +11,7 @@ import {
   END_COMPATIBLE_STOCK_MATERIAL_LABEL,
   ENDED_COMPATIBLE_STOCK_MATERIAL_LABEL,
   NO_COMPATIBLE_STOCK_MATERIAL_LABEL,
-  lacksCompatibleStockMaterial,
+  isActiveWithoutCompatibleStockMaterial,
   noCompatibleBadgeStyle,
   REQUEST_UNIT_LABEL,
   REQUESTABLE_HISTORY_KIND_LABELS,
@@ -150,7 +150,7 @@ const RequestableMaterialDetailContent: React.FC<{ id: string }> = ({ id }) => {
           <>
             <h1 style={{ fontSize: '1.5rem', fontWeight: 700, color: '#111827', margin: '1rem 0 1rem 0' }}>
               {detail.name}
-              {lacksCompatibleStockMaterial(detail) && (
+              {isActiveWithoutCompatibleStockMaterial(detail) && (
                 <span data-testid="requestable-material-no-compatible-badge" style={{ ...noCompatibleBadgeStyle, verticalAlign: 'middle' }}>
                   {NO_COMPATIBLE_STOCK_MATERIAL_LABEL}
                 </span>

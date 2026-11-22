@@ -5,7 +5,7 @@ import { selectableCatalogListEntry } from './catalog-list.service.ts';
 import { comparedName } from './compared-name.ts';
 import { commitOnce } from './retryable-write.ts';
 import { NotFoundError, StaleBeforeConflictError } from './service-errors.ts';
-import { stockMaterialForCompatibility } from './stock-material-read.service.ts';
+import { lockedStockMaterial, stockMaterialForCompatibility } from './stock-material-read.service.ts';
 import { ValidationError } from './validation-error.ts';
 
 // #202 P7: the longest name and description of a Requestable Material.
@@ -104,6 +104,16 @@ const lockedAtVersion = async (client: pg.PoolClient, id: string, expectedVersio
   return stored;
 };
 
+// F009-T2 (#204): the pair of the Requestable Material and the Stock Material, read after the Requestable Material's
+// lock, or null when it was never added.
+const pairOf = async (client: pg.PoolClient, requestableMaterialId: string, stockMaterialId: string): Promise<{ is_current: boolean } | null> => {
+  const res = await client.query('SELECT is_current FROM compatible_stock_materials WHERE requestable_material_id = $1 AND stock_material_id = $2', [
+    requestableMaterialId,
+    stockMaterialId,
+  ]);
+  return res.rows[0] ?? null;
+};
+
 // Moves the Requestable Material `id` to its next version with a history entry of `kind` listing `changes`, and
 // answers that version.
 const recordChange = async (
@@ -194,11 +204,8 @@ export class RequestableMaterialService {
       if (!stockMaterial.handles_request_unit) {
         throw new ValidationError('stock_material_id names a Stock Material whose active Units do not include the Request Unit');
       }
-      const pair = await client.query('SELECT is_current FROM compatible_stock_materials WHERE requestable_material_id = $1 AND stock_material_id = $2', [
-        requestableMaterialId,
-        stockMaterialId,
-      ]);
-      if (pair.rows[0]?.is_current) {
+      const pair = await pairOf(client, requestableMaterialId, stockMaterialId);
+      if (pair?.is_current) {
         throw new ValidationError('stock_material_id is already a current Compatible Stock Material');
       }
       await client.query(
@@ -226,19 +233,16 @@ export class RequestableMaterialService {
   ): Promise<RequestableMaterialVersion> {
     const payload = { requestable_material_id: requestableMaterialId, stock_material_id: stockMaterialId, expected_version: input.expected_version };
     return commitOnce(this.db, { actorId, operation: 'compatible-stock-material:end', retryToken, payload, explicitContinuation: false }, async (client) => {
-      const { request_unit_id: requestUnitId } = await lockedAtVersion(client, requestableMaterialId, input.expected_version);
-      const pair = await client.query('SELECT is_current FROM compatible_stock_materials WHERE requestable_material_id = $1 AND stock_material_id = $2', [
-        requestableMaterialId,
-        stockMaterialId,
-      ]);
-      if (pair.rows.length === 0) {
+      await lockedAtVersion(client, requestableMaterialId, input.expected_version);
+      const pair = await pairOf(client, requestableMaterialId, stockMaterialId);
+      if (pair === null) {
         throw new NotFoundError('Compatible Stock Material not found');
       }
-      if (!pair.rows[0].is_current) {
+      if (!pair.is_current) {
         throw new ValidationError('The Stock Material is not a current Compatible Stock Material');
       }
       // The pair's foreign key keeps the Stock Material.
-      const stockMaterial = (await stockMaterialForCompatibility(client, stockMaterialId, requestUnitId))!;
+      const stockMaterial = (await lockedStockMaterial(client, stockMaterialId))!;
       await client.query('UPDATE compatible_stock_materials SET is_current = false WHERE requestable_material_id = $1 AND stock_material_id = $2', [
         requestableMaterialId,
         stockMaterialId,

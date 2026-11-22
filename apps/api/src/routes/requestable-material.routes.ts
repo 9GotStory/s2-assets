@@ -1,7 +1,7 @@
 import type { FastifyPluginAsync } from 'fastify';
 import { z } from 'zod';
 import { requireCapability } from '../middleware/authorization.ts';
-import { invalidQueryBody, pageQueryFields } from './list-query.ts';
+import { invalidQueryBody, pageQueryFields, stockMaterialSearchField } from './list-query.ts';
 import { errorBody, parseWrite } from './write-request.ts';
 import { isValidUuid, type CapabilityService } from '../services/capability.service.ts';
 import { hasStrictControlChars } from '../services/control-characters.ts';
@@ -16,7 +16,6 @@ import {
 } from '../services/requestable-material.service.ts';
 import { NotFoundError, RetryTokenConflictError, StaleBeforeConflictError } from '../services/service-errors.ts';
 import { ValidationError } from '../services/validation-error.ts';
-import { stockMaterialSearchField } from './stock-material.routes.ts';
 
 export interface RequestableMaterialRoutesOptions {
   requestableMaterialService: RequestableMaterialService;

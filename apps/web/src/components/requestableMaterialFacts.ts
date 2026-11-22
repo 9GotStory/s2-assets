@@ -121,7 +121,7 @@ export const REQUESTABLE_HISTORY_KIND_LABELS: Record<RequestableMaterialHistoryK
 };
 
 // Whether a Requestable Material shows the "ยังไม่มีวัสดุที่ใช้จ่าย" badge: active, and not offered (#202 Q9).
-export const lacksCompatibleStockMaterial = (requestable: RequestableMaterialRow): boolean => requestable.is_active && !requestable.is_offered;
+export const isActiveWithoutCompatibleStockMaterial = (requestable: RequestableMaterialRow): boolean => requestable.is_active && !requestable.is_offered;
 
 // How the "ยังไม่มีวัสดุที่ใช้จ่าย" badge looks beside the name, in the list and on the page.
 export const noCompatibleBadgeStyle: React.CSSProperties = {

@@ -226,8 +226,14 @@ test.describe.serial('Material Request journeys: Real SPA -> Composed API -> Pos
       { expected_version: 1, base_unit: { unit_id: reamId }, alternate_units: [{ unit_id: box.id, conversion_factor: '5', is_active: false }] },
       { retryToken: crypto.randomUUID() }
     );
+    // A choice names its Brand and Model beside its name.
+    const brandId = (await pool.query(`INSERT INTO brands (name, created_by, updated_by) VALUES ('ตราการ์ด', $1, $1) RETURNING id`, [officerUserId])).rows[0].id;
     const cardPaperId = (
-      await stockMaterials.create(officerUserId, { name: 'กระดาษการ์ดสี A4', base_unit: { unit_id: box.id }, explicit_continuation: true }, { retryToken: crypto.randomUUID() })
+      await stockMaterials.create(
+        officerUserId,
+        { name: 'กระดาษการ์ดสี A4', brand_id: brandId, model: 'CC-160', base_unit: { unit_id: box.id }, explicit_continuation: true },
+        { retryToken: crypto.randomUUID() }
+      )
     ).stock_material_id;
     for (let n = 1; n <= 25; n++) {
       await stockMaterials.create(officerUserId, { name: `แฟ้มเอกสาร ${n}`, base_unit: { unit_id: box.id }, explicit_continuation: true }, { retryToken: crypto.randomUUID() });
@@ -274,17 +280,27 @@ test.describe.serial('Material Request journeys: Real SPA -> Composed API -> Pos
     await page.locator('#compatible-stock-material-search-submit').click();
     await expect(page.locator('#compatible-stock-material-choices li')).toHaveCount(25);
     await expect(page.locator('#compatible-stock-material-add-form')).toContainText('แสดง 25 รายการแรกจาก 27 รายการ');
-    // A search finds nothing, or narrows the list; Enter searches.
+    // A search finds nothing, or narrows the list; Enter searches. A search still being read says so.
+    let releaseSearch = () => {};
+    const searchHeld = new Promise<void>((resolve) => (releaseSearch = resolve));
+    await page.route(choicesUrl, async (route: any) => {
+      await searchHeld;
+      await route.continue();
+    });
     await page.locator('#compatible-stock-material-search').fill('ดินสอ');
     await page.locator('#compatible-stock-material-search-submit').click();
+    await expect(page.getByText('กำลังโหลดรายการวัสดุ...')).toBeVisible();
+    releaseSearch();
     await expect(page.locator('#compatible-stock-material-choices-empty')).toHaveText('ไม่พบวัสดุที่ใช้งานอยู่ที่ค้นหา');
+    await expect(page.getByText('กำลังโหลดรายการวัสดุ...')).toHaveCount(0);
+    await page.unroute(choicesUrl);
     await page.locator('#compatible-stock-material-search').fill('กระดาษ');
     await page.locator('#compatible-stock-material-search').press('Enter');
     await expect(page.locator('#compatible-stock-material-choices li')).toHaveCount(2);
     await expect(page.locator('#compatible-stock-material-add-form')).not.toContainText('รายการแรกจาก');
     const card = page.locator(`[data-testid="stock-material-choice-${cardPaperId}"]`);
     const copy = page.locator(`[data-testid="stock-material-choice-${copyPaperId}"]`);
-    await expect(card).toContainText('กระดาษการ์ดสี A4');
+    await expect(card).toContainText('กระดาษการ์ดสี A4 · ตราการ์ด · CC-160');
     await expect(page.locator(`[data-testid="stock-material-choice-reason-${cardPaperId}"]`)).toHaveText('(ไม่มีหน่วย รีม)');
     await expect(card.getByRole('radio')).toBeDisabled();
     await expect(copy.getByRole('radio')).toBeEnabled();
