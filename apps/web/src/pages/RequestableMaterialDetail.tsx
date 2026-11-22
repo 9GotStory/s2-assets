@@ -148,14 +148,15 @@ const RequestableMaterialDetailContent: React.FC<{ id: string }> = ({ id }) => {
 
         {detail && (
           <>
-            <h1 style={{ fontSize: '1.5rem', fontWeight: 700, color: '#111827', margin: '1rem 0 1rem 0' }}>
-              {detail.name}
+            {/* The badge sits beside the heading, which names the Requestable Material alone. */}
+            <div style={{ display: 'flex', alignItems: 'center', flexWrap: 'wrap', gap: '0.5rem', margin: '1rem 0 1rem 0' }}>
+              <h1 style={{ fontSize: '1.5rem', fontWeight: 700, color: '#111827', margin: 0 }}>{detail.name}</h1>
               {isActiveWithoutCompatibleStockMaterial(detail) && (
-                <span data-testid="requestable-material-no-compatible-badge" style={{ ...noCompatibleBadgeStyle, verticalAlign: 'middle' }}>
+                <span data-testid="requestable-material-no-compatible-badge" style={noCompatibleBadgeStyle}>
                   {NO_COMPATIBLE_STOCK_MATERIAL_LABEL}
                 </span>
               )}
-            </h1>
+            </div>
             <dl id="requestable-material-fields" style={{ display: 'grid', gridTemplateColumns: 'max-content 1fr', gap: '0.5rem 1.5rem', margin: 0, fontSize: '0.9375rem' }}>
               <dt style={termStyle}>สถานะ</dt>
               <dd data-testid="requestable-material-status" style={{ margin: 0 }}>{detail.is_active ? ACTIVE_LABEL : INACTIVE_LABEL}</dd>
