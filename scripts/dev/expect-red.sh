@@ -34,6 +34,11 @@
 # line break inside old or new as \n. Exits 0 when every break is red, 1 when one stayed green,
 # and 2 when one could not be applied.
 #
+# A break that must turn several tests red, such as a read moved ahead of a lock that three order tests
+# cover, lists them in "red": [<part of each test's name>, ...]. The break is red only when every one of
+# them fails, and the table names each that passed as STAYED GREEN: the table shows one failing test,
+# so the others went unseen and were rerun one by one with -t (F009-T3 retro, #205).
+#
 # A web break may skip the journeys after the one it breaks: Playwright takes the rest of e2e.sh's
 # arguments, as in "test": ["scripts/ci/e2e.sh", "tests/e2e/<spec>", "-g", "<pattern>"]. Each spec is a
 # test.describe.serial whose later journeys build on what earlier ones left, so the pattern also matches
@@ -114,10 +119,14 @@ for b in breaks:
     # The first failing test, as Vitest (×) or Playwright (✘) names it; pnpm's own failure line is not one.
     failed = [m.group(1).strip() for m in re.finditer(r'^\s*[×✘]\s+(.*)$', out, re.M) if 'pnpm recursive exec' not in m.group(1)]
     result = {0: 'RED', 1: 'STAYED GREEN'}.get(run.returncode, 'ERROR')
+    # Each test the break names must be among the failures, not only the first.
+    passed = [name for name in b.get('red', []) if not any(name in test for test in failed)] if result == 'RED' else []
+    if passed:
+        result = 'STAYED GREEN'
     worst = max(worst, {'RED': 0, 'STAYED GREEN': 1, 'ERROR': 2}[result])
     # Otherwise this script's own last note says why: the test passed, or the break could not be applied.
     notes = [line for line in out.splitlines() if line.startswith('expect-red.sh:')] or out.strip().splitlines()[-1:]
-    detail = (failed[0] if result == 'RED' and failed else notes[-1] if notes else '')[:160]
+    detail = (failed[0] if result == 'RED' and failed else '; '.join(f'STAYED GREEN: {name}' for name in passed) if passed else notes[-1] if notes else '')[:160]
     print(f"expect-red.sh: {b['name']}: {result}", file=sys.stderr, flush=True)
     rows.append(f"| {b['name']} | {result} | {detail.replace('|', '¦')} |")
 print('| Break | Result | First failing test, or the last output |')
