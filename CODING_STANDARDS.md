@@ -41,6 +41,11 @@ unknown-entry check refused as well, and it stayed green with the cap removed. I
 real entry 1001 times. In F008-T3 (#178), the Alternate Unit cap case sent 101 copies of one Unit,
 which the duplicate rule refused too; it now sends 101 distinct Units.
 
+A refusal test asserts the body's `code` and `message`, beside its status: the error handler answers a
+thrown service error with the same status in its own envelope, so a status alone stays green when the
+route's own answer goes. In F009-T2 (#204), `refusalOf` without its NotFoundError branch still answered
+404; the tests now assert the route's `{ code: 'NOT_FOUND', message }`.
+
 ## A relaxed constraint has a test of each path that must not reach it
 
 When a migration relaxes a constraint, such as dropping `NOT NULL` or widening a `CHECK`, so that a

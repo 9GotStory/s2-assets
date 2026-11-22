@@ -33,10 +33,65 @@
 # or of {"name", "edits": [{"file", "old", "new"}, ...], "test"} for a break of several edits; write a
 # line break inside old or new as \n. Exits 0 when every break is red, 1 when one stayed green,
 # and 2 when one could not be applied.
+#
+# A web break may skip the journeys after the one it breaks: Playwright takes the rest of e2e.sh's
+# arguments, as in "test": ["scripts/ci/e2e.sh", "tests/e2e/<spec>", "-g", "<pattern>"]. Each spec is a
+# test.describe.serial whose later journeys build on what earlier ones left, so the pattern also matches
+# every journey before the broken one: alone, Journey F009-T2.1 fails for want of T1.1's "กระดาษ A4"
+# (F009-T2 retro, #204).
+#
+#   scripts/dev/expect-red.sh --uncovered <base> <breaks.json>
+#
+# lists each line the change adds to source under apps/*/src or packages/*/src since <base> (the working
+# tree included) that holds a branch (if, throw, &&, ||, ??, or a ? : choice), when no break in
+# <breaks.json> edits it: a break covers a line when a line of its old text, at least 8 characters, is
+# part of it, or it is part of that line; a throw right under a covered if goes with it. Run it before --batch, and give each line it lists a break or
+# a reason it has none. Exits 0 when every such line is covered and 1 otherwise. In F009-T2 (#204) a plan
+# of 83 breaks missed the Brand, the Model, a blank search and the loading line of a picker, and only
+# review found them.
 set -euo pipefail
 cd "$(dirname "$0")/../.."
 
 note() { echo "${0##*/}: $*" >&2; }
+
+if [[ ${1-} == --uncovered ]]; then
+  if (($# != 3)) || [[ ! -f $3 ]] || ! git rev-parse --verify --quiet "$2^{commit}" >/dev/null; then
+    note 'usage: expect-red.sh --uncovered <base> <breaks.json>'
+    exit 2
+  fi
+  exec python3 -I - "$2" "$3" <<'EOF'
+import json, re, subprocess, sys
+base, batch = sys.argv[1:]
+diff = subprocess.run(['git', 'diff', '--unified=0', '--no-color', base, '--', 'apps/*/src/*', 'packages/*/src/*'], capture_output=True, text=True, check=True).stdout
+breaks = json.load(open(batch, encoding='utf-8'))
+olds = {}
+for b in breaks:
+    for e in b.get('edits') or [{'file': b['file'], 'old': b['old']}]:
+        olds.setdefault(e['file'], []).extend(part.strip() for part in e['old'].split('\n') if len(part.strip()) >= 8)
+# A branch: if, throw, && or ||, ??, or the ? of a ? : choice (not ?. or an optional `name?:`).
+BRANCH = re.compile(r'\bif \(|\bthrow\b|&&|\|\||\?\?|\s\?\s')
+COMMENT = re.compile(r'^\s*(//|/?\*|\{/\*)')
+path, line, uncovered = None, 0, []
+# A throw right under an if whose break is in the file goes with that if.
+after_covered_if = False
+for raw in diff.splitlines():
+    if raw.startswith('+++ '):
+        path = raw[6:] if raw.startswith('+++ b/') else None
+    elif raw.startswith('@@'):
+        line = int(re.match(r'@@ -\S+ \+(\d+)', raw).group(1))
+        after_covered_if = False
+    elif raw.startswith('+') and path:
+        stripped = raw[1:].strip()
+        covered = any(part in stripped or stripped in part for part in olds.get(path, []))
+        if BRANCH.search(stripped) and not COMMENT.match(stripped):
+            if not covered and not (after_covered_if and stripped.startswith('throw')):
+                uncovered.append(f'{path}:{line}: {stripped[:140]}')
+        after_covered_if = covered and stripped.startswith('if (')
+        line += 1
+print('\n'.join(uncovered) if uncovered else 'expect-red.sh: every added branch line has a break')
+sys.exit(1 if uncovered else 0)
+EOF
+fi
 
 if [[ ${1-} == --batch ]]; then
   if (($# != 2)) || [[ ! -f $2 ]]; then
