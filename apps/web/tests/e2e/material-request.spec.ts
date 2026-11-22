@@ -11,6 +11,7 @@ import { UserService } from '../../../api/src/services/user.service.ts';
 import { SessionService } from '../../../api/src/services/session.service.ts';
 import { CatalogListService } from '../../../api/src/services/catalog-list.service.ts';
 import { RequestableMaterialService } from '../../../api/src/services/requestable-material.service.ts';
+import { StockMaterialService } from '../../../api/src/services/stock-material.service.ts';
 import { repositoryProxyConfig } from '../../vite.config.ts';
 
 const { Pool } = pg;
@@ -21,8 +22,8 @@ const webRoot = path.resolve(__dirname, '../..');
 const migrationFolder = path.resolve(__dirname, '../../../../packages/db/src/migrations');
 
 // Feature 009 (#202, Seam B). F009-T1 (#203): Journey J1 starts: a Supply Officer creates the Requestable Material
-// "กระดาษ A4" with Request Unit รีม and finds it in the list and on its page; T2 goes on with its Compatible Stock
-// Materials.
+// "กระดาษ A4" with Request Unit รีม and finds it in the list and on its page. F009-T2 (#204) completes it with its
+// Compatible Stock Materials and the "ยังไม่มีวัสดุที่ใช้จ่าย" badge.
 test.describe.serial('Material Request journeys: Real SPA -> Composed API -> PostgreSQL (Seam B)', () => {
   let container: StartedPostgreSqlContainer;
   let pool: pg.Pool;
@@ -209,5 +210,183 @@ test.describe.serial('Material Request journeys: Real SPA -> Composed API -> Pos
     await expect(taken).toContainText('มีวัสดุสำหรับขอเบิกชื่อนี้อยู่แล้ว: กระดาษ A4');
     await taken.getByRole('link', { name: 'กระดาษ A4' }).click();
     await expect(page).toHaveURL(pageUrl);
+  });
+
+  test('Journey F009-T2.1: a Supply Officer sees "ยังไม่มีวัสดุที่ใช้จ่าย" on "กระดาษ A4", finds the Stock Material without รีม greyed with its reason, adds a Compatible Stock Material, which removes the badge, ends it and adds it again', async ({ page, context }) => {
+    // A Stock Material counted in รีม, with กล่อง as an Inactive Alternate Unit; one with no รีม among its Units; and
+    // 25 others, more than the picker shows at once.
+    const box = await new CatalogListService({ db: pool }).add(officerUserId, 'unit', 'กล่อง', { retryToken: crypto.randomUUID() });
+    const stockMaterials = new StockMaterialService({ db: pool });
+    const copyPaperId = (
+      await stockMaterials.create(officerUserId, { name: 'กระดาษถ่ายเอกสาร A4 80 แกรม', base_unit: { unit_id: reamId } }, { retryToken: crypto.randomUUID() })
+    ).stock_material_id;
+    await stockMaterials.replaceUnits(
+      officerUserId,
+      copyPaperId,
+      { expected_version: 1, base_unit: { unit_id: reamId }, alternate_units: [{ unit_id: box.id, conversion_factor: '5', is_active: false }] },
+      { retryToken: crypto.randomUUID() }
+    );
+    // A choice names its Brand and Model beside its name.
+    const brandId = (await pool.query(`INSERT INTO brands (name, created_by, updated_by) VALUES ('ตราการ์ด', $1, $1) RETURNING id`, [officerUserId])).rows[0].id;
+    const cardPaperId = (
+      await stockMaterials.create(
+        officerUserId,
+        { name: 'กระดาษการ์ดสี A4', brand_id: brandId, model: 'CC-160', base_unit: { unit_id: box.id }, explicit_continuation: true },
+        { retryToken: crypto.randomUUID() }
+      )
+    ).stock_material_id;
+    for (let n = 1; n <= 25; n++) {
+      await stockMaterials.create(officerUserId, { name: `แฟ้มเอกสาร ${n}`, base_unit: { unit_id: box.id }, explicit_continuation: true }, { retryToken: crypto.randomUUID() });
+    }
+    // An Inactive Requestable Material is not offered either, but shows no badge (#202 Q9): what F009-T7's write leaves.
+    const { requestable_material_id: inkId } = await new RequestableMaterialService({ db: pool }).create(
+      officerUserId,
+      { name: 'หมึกพิมพ์เลิกขอ', request_unit_id: reamId },
+      { retryToken: crypto.randomUUID() }
+    );
+    await pool.query('UPDATE requestable_materials SET is_active = false, version = version + 1 WHERE id = $1', [inkId]);
+
+    await loginAs(context, officerUserId);
+    await page.goto(`${targetBaseUrl}/requestable-materials`);
+    const paperRow = page.locator('#requestable-material-list-table tbody tr').filter({ hasText: 'กระดาษ A4' });
+    const penRow = page.locator('#requestable-material-list-table tbody tr').filter({ hasText: 'ปากกาน้ำเงิน' });
+    // Neither has a Compatible Stock Material yet (#202 Q9).
+    await expect(paperRow).toContainText('ยังไม่มีวัสดุที่ใช้จ่าย');
+    await expect(penRow).toContainText('ยังไม่มีวัสดุที่ใช้จ่าย');
+    const inkRow = page.locator(`[data-testid="requestable-material-row-${inkId}"]`);
+    await expect(inkRow).toContainText('หยุดใช้');
+    await expect(inkRow).not.toContainText('ยังไม่มีวัสดุที่ใช้จ่าย');
+
+    await delaySessionCheck(page);
+    await paperRow.getByRole('link', { name: 'กระดาษ A4' }).click();
+    await expect(page).toHaveURL(/\/requestable-materials\/[0-9a-f-]{36}$/);
+    const pageUrl = page.url();
+    await expect(page.locator('[data-testid="requestable-material-no-compatible-badge"]')).toHaveText('ยังไม่มีวัสดุที่ใช้จ่าย');
+    await expect(page.locator('#compatible-stock-material-empty')).toHaveText('ยังไม่มีวัสดุที่ใช้จ่าย');
+    // The add waits for the CSRF token (#135).
+    await expect(page.locator('#compatible-stock-material-add-action')).toHaveCount(0);
+
+    // The picker lists the active Stock Materials; the one without รีม is greyed with its reason and cannot be chosen
+    // (#202 Q19, ADR 0002).
+    // Its first read fails, and says so; the next shows the first 25 of the 27 active Stock Materials.
+    // Every read fails until the page says so: StrictMode may abort the first and send it again.
+    const choicesUrl = /\/stock-material-choices\?/;
+    await page.route(choicesUrl, (route: any) => route.fulfill({ status: 500, body: '{}' }));
+    await page.locator('#compatible-stock-material-add-action').click();
+    // One action at a time.
+    await expect(page.locator('#compatible-stock-material-add-action')).toHaveCount(0);
+    await expect(page.locator('#compatible-stock-material-choices-error')).toContainText('เกิดข้อผิดพลาดในการโหลดรายการวัสดุ');
+    await page.unroute(choicesUrl);
+    await page.locator('#compatible-stock-material-search-submit').click();
+    await expect(page.locator('#compatible-stock-material-choices li')).toHaveCount(25);
+    await expect(page.locator('#compatible-stock-material-add-form')).toContainText('แสดง 25 รายการแรกจาก 27 รายการ');
+    // A search finds nothing, or narrows the list; Enter searches. A search still being read says so.
+    let releaseSearch = () => {};
+    const searchHeld = new Promise<void>((resolve) => (releaseSearch = resolve));
+    await page.route(choicesUrl, async (route: any) => {
+      await searchHeld;
+      await route.continue();
+    });
+    await page.locator('#compatible-stock-material-search').fill('ดินสอ');
+    await page.locator('#compatible-stock-material-search-submit').click();
+    await expect(page.getByText('กำลังโหลดรายการวัสดุ...')).toBeVisible();
+    releaseSearch();
+    await expect(page.locator('#compatible-stock-material-choices-empty')).toHaveText('ไม่พบวัสดุที่ใช้งานอยู่ที่ค้นหา');
+    await expect(page.getByText('กำลังโหลดรายการวัสดุ...')).toHaveCount(0);
+    await page.unroute(choicesUrl);
+    await page.locator('#compatible-stock-material-search').fill('กระดาษ');
+    await page.locator('#compatible-stock-material-search').press('Enter');
+    await expect(page.locator('#compatible-stock-material-choices li')).toHaveCount(2);
+    await expect(page.locator('#compatible-stock-material-add-form')).not.toContainText('รายการแรกจาก');
+    const card = page.locator(`[data-testid="stock-material-choice-${cardPaperId}"]`);
+    const copy = page.locator(`[data-testid="stock-material-choice-${copyPaperId}"]`);
+    await expect(card).toContainText('กระดาษการ์ดสี A4 · ตราการ์ด · CC-160');
+    await expect(page.locator(`[data-testid="stock-material-choice-reason-${cardPaperId}"]`)).toHaveText('(ไม่มีหน่วย รีม)');
+    await expect(card.getByRole('radio')).toBeDisabled();
+    await expect(copy.getByRole('radio')).toBeEnabled();
+    await expect(page.locator(`[data-testid="stock-material-choice-reason-${copyPaperId}"]`)).toHaveCount(0);
+    // Nothing is chosen for the Supply Officer (MRQ-26).
+    await page.locator('#compatible-stock-material-add-submit').click();
+    await expect(page.locator('[data-testid="compatible-stock-material-add-form-error"]')).toContainText('กรุณาเลือกวัสดุ');
+    await copy.getByRole('radio').check();
+    await page.locator('#compatible-stock-material-add-submit').click();
+
+    // The badge is gone; the Compatible Stock Material shows current with its status and Units, and the add is in
+    // the history under its name.
+    await expect(page.locator(`[data-testid="compatible-stock-material-row-${copyPaperId}"]`)).toContainText('ใช้อยู่');
+    await expect(page.locator('[data-testid="requestable-material-no-compatible-badge"]')).toHaveCount(0);
+    const row = page.locator(`[data-testid="compatible-stock-material-row-${copyPaperId}"]`);
+    await expect(row).toContainText('กระดาษถ่ายเอกสาร A4 80 แกรม');
+    await expect(row).toContainText('ใช้งานอยู่');
+    await expect(row.locator('td').nth(2)).toHaveText('รีม (หน่วยนับหลัก), กล่อง (หยุดใช้)');
+    const added = page.locator('[data-testid="requestable-material-history-2"]');
+    await expect(added).toContainText('เพิ่มวัสดุที่ใช้จ่ายได้');
+    await expect(added).toContainText('วัสดุที่ใช้จ่ายได้กระดาษถ่ายเอกสาร A4 80 แกรม');
+    await expect(added).toContainText('officer_request');
+
+    // In the list, only "ปากกาน้ำเงิน" still has no Compatible Stock Material.
+    await page.locator('#back-requestable-material-list-link').click();
+    await expect(page).toHaveURL(/\/requestable-materials$/);
+    await expect(penRow).toContainText('ยังไม่มีวัสดุที่ใช้จ่าย');
+    await expect(paperRow).toContainText('ใช้งานอยู่');
+    await expect(paperRow).not.toContainText('ยังไม่มีวัสดุที่ใช้จ่าย');
+
+    // Ending it keeps it as ended and brings the badge back; adding it again makes the same one current (P1).
+    await page.goto(pageUrl);
+    await page.locator(`[data-testid="compatible-stock-material-end-${copyPaperId}"]`).click();
+    await expect(page.locator('[data-testid="compatible-stock-material-end-notice"]')).toContainText('เพิ่มกลับได้ภายหลัง');
+    await expect(page.locator('#compatible-stock-material-add-action')).toHaveCount(0);
+    await expect(page.locator(`[data-testid="compatible-stock-material-end-${copyPaperId}"]`)).toHaveCount(0);
+    await page.locator('#compatible-stock-material-end-submit').click();
+    await expect(row).toContainText('เลิกแล้ว');
+    await expect(page.locator('[data-testid="requestable-material-no-compatible-badge"]')).toHaveText('ยังไม่มีวัสดุที่ใช้จ่าย');
+    await expect(page.locator(`[data-testid="compatible-stock-material-end-${copyPaperId}"]`)).toHaveCount(0);
+    const ended = page.locator('[data-testid="requestable-material-history-3"]');
+    await expect(ended).toContainText('เลิกวัสดุที่ใช้จ่ายได้');
+    await expect(ended).toContainText('วัสดุที่ใช้จ่ายได้กระดาษถ่ายเอกสาร A4 80 แกรม');
+
+    await page.locator('#compatible-stock-material-add-action').click();
+    await copy.getByRole('radio').check();
+    await page.locator('#compatible-stock-material-add-submit').click();
+    await expect(row).toContainText('ใช้อยู่');
+    await expect(page.locator('#compatible-stock-material-table tbody tr')).toHaveCount(1);
+    await expect(page.locator('[data-testid="requestable-material-no-compatible-badge"]')).toHaveCount(0);
+    await expect(page.locator('[data-testid="requestable-material-history-4"]')).toContainText('เพิ่มวัสดุที่ใช้จ่ายได้');
+
+    // An added one shows "ใช้อยู่" in the picker and cannot be chosen again.
+    await page.locator('#compatible-stock-material-add-action').click();
+    await expect(page.locator(`[data-testid="stock-material-choice-reason-${copyPaperId}"]`)).toHaveText('(ใช้อยู่)');
+    await expect(copy.getByRole('radio')).toBeDisabled();
+
+    // A save after the grant went is refused, and the page read again offers no action (P9).
+    await page.locator('#compatible-stock-material-add-cancel').click();
+    await page.locator(`[data-testid="compatible-stock-material-end-${copyPaperId}"]`).click();
+    await pool.query(`UPDATE user_roles SET role_id = 'READ_ONLY' WHERE user_id = $1 AND role_id = 'SUPPLY_OFFICER'`, [officerUserId]);
+    try {
+      await page.locator('#compatible-stock-material-end-submit').click();
+      await expect(page.locator('#compatible-stock-material-end-form')).toHaveCount(0);
+      await expect(row).toContainText('ใช้อยู่');
+      await expect(page.locator(`[data-testid="compatible-stock-material-end-${copyPaperId}"]`)).toHaveCount(0);
+      await expect(page.locator('#compatible-stock-material-add-action')).toHaveCount(0);
+    } finally {
+      await pool.query(`UPDATE user_roles SET role_id = 'SUPPLY_OFFICER' WHERE user_id = $1 AND role_id = 'READ_ONLY'`, [officerUserId]);
+    }
+
+    // A save after the session ended signs the Supply Officer out.
+    await page.reload();
+    await page.locator(`[data-testid="compatible-stock-material-end-${copyPaperId}"]`).click();
+    await context.clearCookies();
+    await page.locator('#compatible-stock-material-end-submit').click();
+    await expect(page).toHaveURL(/\/login$/);
+
+    // A Read-only User sees the Compatible Stock Materials and no action on them (#202 Q18, P9).
+    const reader = await pool.query(`INSERT INTO users (username, password_hash, is_active) VALUES ('reader_request', $1, true) RETURNING id`, [await UserService.hashPassword('Password123!')]);
+    await pool.query(`INSERT INTO user_roles (user_id, role_id) VALUES ($1, 'READ_ONLY')`, [reader.rows[0].id]);
+    await loginAs(context, reader.rows[0].id);
+    await page.goto(pageUrl);
+    await expect(row).toContainText('ใช้อยู่');
+    await expect(page.locator('#compatible-stock-material-table thead th')).toHaveText(['วัสดุ', 'สถานะวัสดุ', 'หน่วยนับ', 'การใช้จ่าย']);
+    await expect(page.locator('#compatible-stock-material-add-action')).toHaveCount(0);
+    await expect(page.locator(`[data-testid="compatible-stock-material-end-${copyPaperId}"]`)).toHaveCount(0);
   });
 });

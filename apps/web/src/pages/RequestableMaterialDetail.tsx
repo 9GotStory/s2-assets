@@ -1,8 +1,18 @@
 import React, { useEffect, useState } from 'react';
 import { Link, useNavigate, useParams } from 'react-router';
 import { QueryClient, QueryClientProvider, useQuery } from '@tanstack/react-query';
-import { ACTIVE_LABEL, INACTIVE_LABEL, WHOLE_NUMBER_UNIT_LABEL, wholeNumberLine } from '../components/materialFacts';
+import { CompatibleStockMaterialAddForm, CompatibleStockMaterialEndForm } from '../components/CompatibleStockMaterialForms';
+import { useCsrfToken } from '../components/materialQueries';
+import { ACTIVE_LABEL, BASE_UNIT_LABEL, INACTIVE_LABEL, STOCK_MATERIAL_LABEL, UNIT_LABEL, WHOLE_NUMBER_UNIT_LABEL, wholeNumberLine, type StockMaterialUnit } from '../components/materialFacts';
 import {
+  ADD_COMPATIBLE_STOCK_MATERIAL_LABEL,
+  COMPATIBLE_STOCK_MATERIAL_LABEL,
+  CURRENT_COMPATIBLE_STOCK_MATERIAL_LABEL,
+  END_COMPATIBLE_STOCK_MATERIAL_LABEL,
+  ENDED_COMPATIBLE_STOCK_MATERIAL_LABEL,
+  NO_COMPATIBLE_STOCK_MATERIAL_LABEL,
+  isActiveWithoutCompatibleStockMaterial,
+  noCompatibleBadgeStyle,
   REQUEST_UNIT_LABEL,
   REQUESTABLE_HISTORY_KIND_LABELS,
   REQUESTABLE_MATERIAL_LABEL,
@@ -28,11 +38,15 @@ const RECORDED_FIELD_LABELS: Record<RequestableMaterialRecordedChange['field'], 
   request_unit: REQUEST_UNIT_LABEL,
   whole_number_only: WHOLE_NUMBER_UNIT_LABEL,
   description: 'รายละเอียด',
+  compatible_stock_material: COMPATIBLE_STOCK_MATERIAL_LABEL,
 };
 
 // A recorded value as the history shows it: the Request Unit by its name then, the whole-number setting as ใช่ or
-// ไม่ใช่, text as it was.
+// ไม่ใช่, text as it was; F009-T2: the Stock Material an add or an end names, by its name then.
 const recordedValue = (change: RequestableMaterialRecordedChange): string => {
+  if (change.field === 'compatible_stock_material') {
+    return (change.after ?? change.before)!.name;
+  }
   if (change.field === 'request_unit') {
     return change.after.name;
   }
@@ -59,8 +73,18 @@ const HistoryEntry: React.FC<{ entry: RequestableMaterialHistoryEntry }> = ({ en
   </li>
 );
 
+// A Stock Material's Units as its row lists them: the Base Unit marked, an Inactive Alternate Unit marked.
+const unitsLine = (units: StockMaterialUnit[]): string =>
+  units.map((unit) => `${unit.name}${unit.is_base ? ` (${BASE_UNIT_LABEL})` : ''}${unit.is_active ? '' : ` (${INACTIVE_LABEL})`}`).join(', ');
+
+const headStyle: React.CSSProperties = { textAlign: 'left', padding: '0.5rem 0.75rem', fontSize: '0.8125rem', color: '#4b5563', borderBottom: '1px solid #e5e7eb' };
+const cellStyle: React.CSSProperties = { padding: '0.5rem 0.75rem', fontSize: '0.875rem', color: '#111827', verticalAlign: 'top' };
+const actionStyle: React.CSSProperties = { padding: '0.375rem 0.75rem', borderRadius: '4px', border: '1px solid #d1d5db', backgroundColor: '#ffffff', cursor: 'pointer', fontWeight: 500 };
+
 const RequestableMaterialDetailContent: React.FC<{ id: string }> = ({ id }) => {
   const navigate = useNavigate();
+  // The Compatible Stock Material action opened: the add, or the end of one Stock Material.
+  const [compatibleAction, setCompatibleAction] = useState<{ kind: 'add' } | { kind: 'end'; stockMaterialId: string } | null>(null);
 
   const requestable = useQuery<RequestableDetail, Error & { status?: number }>({
     queryKey: ['requestable-material', id],
@@ -84,6 +108,24 @@ const RequestableMaterialDetailContent: React.FC<{ id: string }> = ({ id }) => {
 
   // A failed read hides what an earlier one showed: a lost grant fails closed.
   const detail = requestable.isError ? undefined : requestable.data;
+  const refresh = async () => (await requestable.refetch()).isSuccess;
+  const session = useCsrfToken(detail?.can_manage === true);
+  // Each write action waits for the token: a request sent without it is refused as if the grant were gone (#135). A
+  // token read before the grant went stays in hand, so `can_manage` decides too (P9).
+  const csrfToken = session.data ?? null;
+  const mayManage = detail?.can_manage === true && csrfToken !== null;
+  const ending = compatibleAction?.kind === 'end' ? detail?.compatible_stock_materials.find((entry) => entry.stock_material_id === compatibleAction.stockMaterialId) : undefined;
+  // What a form passes back to the page: a save reads the page again and closes it, and a lost grant or session reads
+  // it again, which hides the actions or signs out.
+  const formHandlers = {
+    onRefresh: refresh,
+    onSaved: async () => {
+      await requestable.refetch();
+      setCompatibleAction(null);
+    },
+    onCancel: () => setCompatibleAction(null),
+    onPermissionRevoked: () => void requestable.refetch(),
+  };
 
   return (
     <main style={{ minHeight: '100vh', backgroundColor: '#f3f4f6', padding: '1rem', fontFamily: 'system-ui, -apple-system, sans-serif', boxSizing: 'border-box' }}>
@@ -106,7 +148,15 @@ const RequestableMaterialDetailContent: React.FC<{ id: string }> = ({ id }) => {
 
         {detail && (
           <>
-            <h1 style={{ fontSize: '1.5rem', fontWeight: 700, color: '#111827', margin: '1rem 0 1rem 0' }}>{detail.name}</h1>
+            {/* The badge sits beside the heading, which names the Requestable Material alone. */}
+            <div style={{ display: 'flex', alignItems: 'center', flexWrap: 'wrap', gap: '0.5rem', margin: '1rem 0 1rem 0' }}>
+              <h1 style={{ fontSize: '1.5rem', fontWeight: 700, color: '#111827', margin: 0 }}>{detail.name}</h1>
+              {isActiveWithoutCompatibleStockMaterial(detail) && (
+                <span data-testid="requestable-material-no-compatible-badge" style={noCompatibleBadgeStyle}>
+                  {NO_COMPATIBLE_STOCK_MATERIAL_LABEL}
+                </span>
+              )}
+            </div>
             <dl id="requestable-material-fields" style={{ display: 'grid', gridTemplateColumns: 'max-content 1fr', gap: '0.5rem 1.5rem', margin: 0, fontSize: '0.9375rem' }}>
               <dt style={termStyle}>สถานะ</dt>
               <dd data-testid="requestable-material-status" style={{ margin: 0 }}>{detail.is_active ? ACTIVE_LABEL : INACTIVE_LABEL}</dd>
@@ -124,6 +174,70 @@ const RequestableMaterialDetailContent: React.FC<{ id: string }> = ({ id }) => {
               </dd>
             </dl>
 
+            <h2 style={sectionHeadingStyle}>{COMPATIBLE_STOCK_MATERIAL_LABEL}</h2>
+            {detail.compatible_stock_materials.length === 0 ? (
+              <p id="compatible-stock-material-empty" style={{ color: '#6b7280', fontSize: '0.875rem', margin: '0 0 0.75rem 0' }}>
+                {NO_COMPATIBLE_STOCK_MATERIAL_LABEL}
+              </p>
+            ) : (
+              <table id="compatible-stock-material-table" style={{ width: '100%', borderCollapse: 'collapse', marginBottom: '0.75rem' }}>
+                <thead>
+                  <tr>
+                    <th style={headStyle}>{STOCK_MATERIAL_LABEL}</th>
+                    <th style={headStyle}>สถานะ{STOCK_MATERIAL_LABEL}</th>
+                    <th style={headStyle}>{UNIT_LABEL}</th>
+                    {/* Whether it is current (ใช้อยู่) or ended (เลิกแล้ว), beside the Stock Material's own status (#204 review). */}
+                    <th style={headStyle}>การใช้จ่าย</th>
+                    {mayManage && <th style={headStyle} aria-label="การดำเนินการ" />}
+                  </tr>
+                </thead>
+                <tbody>
+                  {detail.compatible_stock_materials.map((compatible) => (
+                    <tr key={compatible.stock_material_id} data-testid={`compatible-stock-material-row-${compatible.stock_material_id}`} style={{ borderBottom: '1px solid #e5e7eb' }}>
+                      <td style={cellStyle}>
+                        <Link to={`/stock-materials/${compatible.stock_material_id}`} style={{ color: '#2563eb', textDecoration: 'underline' }}>
+                          {compatible.name}
+                        </Link>
+                      </td>
+                      <td style={cellStyle}>{compatible.is_active ? ACTIVE_LABEL : INACTIVE_LABEL}</td>
+                      <td style={cellStyle}>{unitsLine(compatible.units)}</td>
+                      <td style={cellStyle}>{compatible.is_current ? CURRENT_COMPATIBLE_STOCK_MATERIAL_LABEL : ENDED_COMPATIBLE_STOCK_MATERIAL_LABEL}</td>
+                      {mayManage && (
+                        <td style={cellStyle}>
+                          {compatible.is_current && compatibleAction === null && (
+                            <button
+                              type="button"
+                              data-testid={`compatible-stock-material-end-${compatible.stock_material_id}`}
+                              onClick={() => setCompatibleAction({ kind: 'end', stockMaterialId: compatible.stock_material_id })}
+                              style={actionStyle}
+                            >
+                              {END_COMPATIBLE_STOCK_MATERIAL_LABEL}
+                            </button>
+                          )}
+                        </td>
+                      )}
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            )}
+            {mayManage && compatibleAction === null && (
+              <button type="button" id="compatible-stock-material-add-action" onClick={() => setCompatibleAction({ kind: 'add' })} style={actionStyle}>
+                {ADD_COMPATIBLE_STOCK_MATERIAL_LABEL}
+              </button>
+            )}
+            {/* A new read starts a form again from what it shows, so a save never carries a version read before it. */}
+            {mayManage && compatibleAction?.kind === 'add' && (
+              <div style={{ marginTop: '1rem' }}>
+                <CompatibleStockMaterialAddForm key={detail.version} requestable={detail} csrfToken={csrfToken} {...formHandlers} />
+              </div>
+            )}
+            {mayManage && ending && (
+              <div style={{ marginTop: '1rem' }}>
+                <CompatibleStockMaterialEndForm key={detail.version} requestable={detail} compatible={ending} csrfToken={csrfToken} {...formHandlers} />
+              </div>
+            )}
+
             <h2 style={sectionHeadingStyle}>ประวัติ</h2>
             <ol id="requestable-material-history" style={{ listStyle: 'none', padding: 0, margin: 0 }}>
               {detail.history.map((entry) => (
@@ -137,7 +251,11 @@ const RequestableMaterialDetailContent: React.FC<{ id: string }> = ({ id }) => {
   );
 };
 
-/** A Requestable Material's page (F009-T1): every field and its creation in the history (#202 Q17, Q19); T2, T7 and T8 add the rest. */
+/**
+ * A Requestable Material's page (F009-T1): every field and its creation in the history (#202 Q17, Q19). F009-T2: its
+ * Compatible Stock Materials, added and ended from here, and the "ยังไม่มีวัสดุที่ใช้จ่าย" badge (Q9); T7 and T8 add
+ * the rest.
+ */
 export const RequestableMaterialDetail: React.FC = () => {
   const { id = '' } = useParams<{ id: string }>();
   const [queryClient] = useState(() => new QueryClient({ defaultOptions: { queries: { retry: false, refetchOnWindowFocus: true } } }));

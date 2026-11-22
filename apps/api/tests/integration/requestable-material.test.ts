@@ -300,13 +300,13 @@ describe('Requestable Material (Seam A - F009-T1)', () => {
   });
 
   describe('the list', () => {
-    it('lists each Requestable Material with its Request Unit, whole-number setting and status', async () => {
+    it('lists each Requestable Material with its Request Unit, whole-number setting and status, and whether it is offered (F009-T2)', async () => {
       const box = await unitNamed('กล่องรายการขอเบิก');
       const id = await created({ name: 'หมึกพิมพ์ขอเบิก รายการ', request_unit_id: box, whole_number_only: false, description: 'สีดำ' });
 
       const { items } = await listed(`search=${encodeURIComponent('หมึกพิมพ์ขอเบิก รายการ')}`);
 
-      expect(items).toEqual([{ id, name: 'หมึกพิมพ์ขอเบิก รายการ', request_unit: { unit_id: box, name: 'กล่องรายการขอเบิก', unit_is_active: true }, whole_number_only: false, is_active: true }]);
+      expect(items).toEqual([{ id, name: 'หมึกพิมพ์ขอเบิก รายการ', request_unit: { unit_id: box, name: 'กล่องรายการขอเบิก', unit_is_active: true }, whole_number_only: false, is_active: true, is_offered: false }]);
     });
 
     it('searches the name ignoring case and repeated spaces, and not the description', async () => {

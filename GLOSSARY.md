@@ -414,7 +414,9 @@ counted.
 
 **Compatible Stock Material** (วัสดุที่ใช้จ่ายได้):
 A Stock Material that a Supply Officer has confirmed can fulfil a Requestable Material, and that
-handles its Request Unit. A name, Material Category, Brand or Model is never proof of it.
+handles its Request Unit. A name, Material Category, Brand or Model is never proof of it. Ending one
+(เลิก) keeps it, with its history, as ended (เลิกแล้ว) beside the current ones (ใช้อยู่); adding it
+again makes it current again (#204).
 
 **No Compatible Stock Material** (ยังไม่มีวัสดุที่ใช้จ่าย):
 A Requestable Material with no Compatible Stock Material, which Requesters are not offered.

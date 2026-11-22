@@ -2,6 +2,7 @@ import pg from 'pg';
 import { containsPattern } from './asset-lookups.ts';
 import { joinCatalogListEntry, joinUnitEntry, type CatalogListKind, type NamedListEntry } from './catalog-list-entries.ts';
 import { comparedName } from './compared-name.ts';
+import { handlesUnit } from './stock-material-handles-unit.ts';
 
 // One row of the Stock Material list (#175 Q15).
 export interface StockMaterialRow {
@@ -131,6 +132,57 @@ export async function stockMaterialUnitsOf(client: pg.Pool | pg.PoolClient, stoc
   return res.rows;
 }
 
+// F009-T2 (#204): what a Compatible Stock Material write needs of the Stock Material it names.
+export interface StockMaterialForCompatibility {
+  // Its name now, which the Requestable Material's history records (#175 P6).
+  name: string;
+  is_active: boolean;
+  // Whether its active Units include the Request Unit (ADR 0002).
+  handles_request_unit: boolean;
+}
+
+/**
+ * F009-T2 (#204): the Stock Material `stockMaterialId` as a write adding or ending a Compatible Stock Material reads it,
+ * through `client` inside its transaction, or null when there is none. It locks the Stock Material FOR SHARE: making it
+ * Inactive or reactivating it, a Units write and a Material Correction each lock it FOR UPDATE first, so each waits for
+ * the write or is seen by it (#204 start decision 3, comment 7075904252).
+ */
+export async function stockMaterialForCompatibility(client: pg.PoolClient, stockMaterialId: string, requestUnitId: string): Promise<StockMaterialForCompatibility | null> {
+  const locked = await lockedStockMaterial(client, stockMaterialId);
+  if (locked === null) {
+    return null;
+  }
+  // A statement of its own, whose snapshot follows the lock: one in the locking statement would miss a Units write
+  // committed while it waited (PostgreSQL 18, §13.2.1).
+  const handled = await client.query(`SELECT ${handlesUnit('$1::uuid', '$2::uuid')} AS handles_request_unit`, [stockMaterialId, requestUnitId]);
+  return { ...locked, handles_request_unit: handled.rows[0].handles_request_unit };
+}
+
+/**
+ * F009-T2 (#204): the name and status of the Stock Material `stockMaterialId`, locked FOR SHARE as
+ * `stockMaterialForCompatibility` locks it, or null when there is none: what an end records (#175 P6).
+ */
+export async function lockedStockMaterial(client: pg.PoolClient, stockMaterialId: string): Promise<{ name: string; is_active: boolean } | null> {
+  const res = await client.query('SELECT name, is_active FROM stock_materials WHERE id = $1 FOR SHARE', [stockMaterialId]);
+  return res.rows[0] ?? null;
+}
+
+// F009-T2 (#204): a Stock Material as a Requestable Material's page lists it among its Compatible Stock Materials.
+export interface StockMaterialSummary {
+  stock_material_id: string;
+  name: string;
+  is_active: boolean;
+  units: StockMaterialUnit[];
+}
+
+/** F009-T2 (#204): the Stock Materials `ids`, by name, each with its status and its Units (#202 Q19). */
+export async function stockMaterialSummariesOf(runner: pg.Pool | pg.PoolClient, ids: string[]): Promise<StockMaterialSummary[]> {
+  const res = await runner.query('SELECT id, name, is_active FROM stock_materials WHERE id = ANY($1::uuid[]) ORDER BY lower(name) ASC, id ASC', [ids]);
+  return Promise.all(
+    res.rows.map(async (row: any) => ({ stock_material_id: row.id, name: row.name, is_active: row.is_active, units: await stockMaterialUnitsOf(runner, row.id) }))
+  );
+}
+
 // How many Stock Materials name each entry of a list: a Unit as the Base Unit or an Alternate Unit, a Brand or a
 // Material Category as its own; those naming none count under no entry's id.
 const USAGE_QUERIES: Record<CatalogListKind, string> = {
@@ -197,6 +249,48 @@ async function pageOf(runner: pg.Pool | pg.PoolClient, conditions: string[], par
   return { items, limit, offset, total_count: totalCount, has_more: offset + items.length < totalCount };
 }
 
+// The condition of a text search over the name, the Brand's name, the Model and the Specification (#175 Q15, MC-10),
+// its pattern pushed onto `params`.
+const searchCondition = (params: unknown[], search: string): string => {
+  params.push(containsPattern(search));
+  const pattern = `$${params.length}`;
+  return `(m.name ILIKE ${pattern} ESCAPE '\\' OR br.name ILIKE ${pattern} ESCAPE '\\' OR m.model ILIKE ${pattern} ESCAPE '\\' OR m.specification ILIKE ${pattern} ESCAPE '\\')`;
+};
+
+// F009-T2 (#204): a Stock Material a Supply Officer may choose as a Compatible Stock Material.
+export interface StockMaterialChoice extends StockMaterialRow {
+  // Whether its active Units include the Request Unit; one that does not is shown greyed (#202 Q19, ADR 0002).
+  handles_request_unit: boolean;
+}
+
+export interface StockMaterialChoices extends Omit<StockMaterialList, 'items'> {
+  items: StockMaterialChoice[];
+}
+
+/**
+ * F009-T2 (#204): a page of the active Stock Materials found by `search` as the Stock Material list finds them, by
+ * name, each saying whether its active Units include the Unit `requestUnitId` (#202 Q8, Q19). It suggests nothing:
+ * a match is never a compatibility (MRQ-15, MRQ-26).
+ */
+export async function stockMaterialChoicesOf(
+  runner: pg.Pool | pg.PoolClient,
+  requestUnitId: string,
+  { search, limit, offset }: { search?: string; limit: number; offset: number }
+): Promise<StockMaterialChoices> {
+  const params: unknown[] = [];
+  const conditions = ['m.is_active'];
+  if (search !== undefined) {
+    conditions.push(searchCondition(params, search));
+  }
+  const page = await pageOf(runner, conditions, params, limit, offset);
+  const handled = await runner.query(`SELECT m.id, ${handlesUnit('m.id', '$2')} AS handles_request_unit FROM stock_materials m WHERE m.id = ANY($1::uuid[])`, [
+    page.items.map(({ id }) => id),
+    requestUnitId,
+  ]);
+  const handles = new Map<string, boolean>(handled.rows.map((row: any) => [row.id, row.handles_request_unit]));
+  return { ...page, items: page.items.map((item) => ({ ...item, handles_request_unit: handles.get(item.id)! })) };
+}
+
 /**
  * F008-T5 (#181): the Duplicate Candidates of `name`: every Stock Material, Inactive ones included, whose name equals
  * it, contains it or is contained in it, ignoring case and repeated spaces (#175 MC-17, Q12), but `excludedId`. The
@@ -221,9 +315,7 @@ export class StockMaterialReadService {
     const params: unknown[] = [];
     const conditions: string[] = [];
     if (filters.search !== undefined) {
-      params.push(containsPattern(filters.search));
-      const pattern = `$${params.length}`;
-      conditions.push(`(m.name ILIKE ${pattern} ESCAPE '\\' OR br.name ILIKE ${pattern} ESCAPE '\\' OR m.model ILIKE ${pattern} ESCAPE '\\' OR m.specification ILIKE ${pattern} ESCAPE '\\')`);
+      conditions.push(searchCondition(params, filters.search));
     }
     if (filters.material_category_id === 'none') {
       conditions.push('m.material_category_id IS NULL');

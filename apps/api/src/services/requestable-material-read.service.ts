@@ -1,6 +1,8 @@
 import pg from 'pg';
 import { joinUnitEntry, type NamedListEntry } from './catalog-list-entries.ts';
 import { comparedName } from './compared-name.ts';
+import { offered } from './requestable-material-offered.ts';
+import { stockMaterialChoicesOf, stockMaterialSummariesOf, type StockMaterialChoices, type StockMaterialSummary } from './stock-material-read.service.ts';
 
 // The Request Unit of a Requestable Material, under the name its list entry has now (#175 Q19).
 export interface RequestUnit {
@@ -17,6 +19,8 @@ export interface RequestableMaterialRow {
   request_unit: RequestUnit;
   whole_number_only: boolean;
   is_active: boolean;
+  // F009-T2 (#204): whether Requesters are offered it (#202 Q9); an active one that is not shows "ยังไม่มีวัสดุที่ใช้จ่าย".
+  is_offered: boolean;
 }
 
 export interface RequestableMaterialListFilters {
@@ -49,17 +53,25 @@ export interface RequestableMaterialHistoryEntry {
   recorded_at: string;
 }
 
+// F009-T2 (#204): a Compatible Stock Material (วัสดุที่ใช้จ่ายได้), with the Stock Material's name, status and Units
+// now, current (ใช้อยู่) or ended (เลิกแล้ว) (#202 P1, Q19).
+export interface CompatibleStockMaterial extends StockMaterialSummary {
+  is_current: boolean;
+}
+
 export interface RequestableMaterialDetail extends RequestableMaterialRow {
   description: string | null;
   version: number;
   created_by: string;
   created_by_username: string;
   recorded_at: string;
+  // The current ones first, each part by the Stock Material's name.
+  compatible_stock_materials: CompatibleStockMaterial[];
   // Oldest first.
   history: RequestableMaterialHistoryEntry[];
 }
 
-const ROW_COLUMNS = `r.id, r.name, r.whole_number_only, r.is_active, u.id AS request_unit_id, u.name AS request_unit_name, u.is_active AS request_unit_is_active`;
+const ROW_COLUMNS = `r.id, r.name, r.whole_number_only, r.is_active, ${offered('r')} AS is_offered, u.id AS request_unit_id, u.name AS request_unit_name, u.is_active AS request_unit_is_active`;
 
 const toRow = (row: any): RequestableMaterialRow => ({
   id: row.id,
@@ -67,6 +79,7 @@ const toRow = (row: any): RequestableMaterialRow => ({
   request_unit: { unit_id: row.request_unit_id, name: row.request_unit_name, unit_is_active: row.request_unit_is_active },
   whole_number_only: row.whole_number_only,
   is_active: row.is_active,
+  is_offered: row.is_offered,
 });
 
 /** F009-T1 (#203): the reads of the Requestable Materials: the list and a Requestable Material's page. */
@@ -134,6 +147,9 @@ export class RequestableMaterialReadService {
        ORDER BY h.version ASC`,
       [id]
     );
+    const pairs = await this.db.query('SELECT stock_material_id, is_current FROM compatible_stock_materials WHERE requestable_material_id = $1', [id]);
+    const current = new Map<string, boolean>(pairs.rows.map((pair: any) => [pair.stock_material_id, pair.is_current]));
+    const compatible = (await stockMaterialSummariesOf(this.db, [...current.keys()])).map((summary) => ({ ...summary, is_current: current.get(summary.stock_material_id)! }));
     return {
       ...toRow(row),
       description: row.description,
@@ -141,7 +157,21 @@ export class RequestableMaterialReadService {
       created_by: row.created_by,
       created_by_username: row.created_by_username,
       recorded_at: new Date(row.recorded_at).toISOString(),
+      // The summaries come by name; a stable sort keeps that order within each part.
+      compatible_stock_materials: [...compatible.filter((entry) => entry.is_current), ...compatible.filter((entry) => !entry.is_current)],
       history: history.rows.map((entry: any) => ({ ...entry, recorded_at: new Date(entry.recorded_at).toISOString() })),
     };
+  }
+
+  /**
+   * F009-T2 (#204): the Stock Materials a Supply Officer may choose as a Compatible Stock Material of the Requestable
+   * Material `id`, each saying whether it handles its Request Unit, or null when there is no such Requestable Material.
+   */
+  async stockMaterialChoices(id: string, filters: { search?: string; limit: number; offset: number }): Promise<StockMaterialChoices | null> {
+    const res = await this.db.query('SELECT request_unit_id FROM requestable_materials WHERE id = $1', [id]);
+    if (res.rows.length === 0) {
+      return null;
+    }
+    return stockMaterialChoicesOf(this.db, res.rows[0].request_unit_id, filters);
   }
 }
