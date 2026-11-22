@@ -186,7 +186,8 @@ const RequestableMaterialDetailContent: React.FC<{ id: string }> = ({ id }) => {
                     <th style={headStyle}>{STOCK_MATERIAL_LABEL}</th>
                     <th style={headStyle}>สถานะ{STOCK_MATERIAL_LABEL}</th>
                     <th style={headStyle}>{UNIT_LABEL}</th>
-                    <th style={headStyle}>สถานะ</th>
+                    {/* Whether it is current (ใช้อยู่) or ended (เลิกแล้ว), beside the Stock Material's own status (#204 review). */}
+                    <th style={headStyle}>การใช้จ่าย</th>
                     {mayManage && <th style={headStyle} aria-label="การดำเนินการ" />}
                   </tr>
                 </thead>

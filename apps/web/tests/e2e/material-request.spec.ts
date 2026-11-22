@@ -385,7 +385,7 @@ test.describe.serial('Material Request journeys: Real SPA -> Composed API -> Pos
     await loginAs(context, reader.rows[0].id);
     await page.goto(pageUrl);
     await expect(row).toContainText('ใช้อยู่');
-    await expect(page.locator('#compatible-stock-material-table thead th')).toHaveCount(4);
+    await expect(page.locator('#compatible-stock-material-table thead th')).toHaveText(['วัสดุ', 'สถานะวัสดุ', 'หน่วยนับ', 'การใช้จ่าย']);
     await expect(page.locator('#compatible-stock-material-add-action')).toHaveCount(0);
     await expect(page.locator(`[data-testid="compatible-stock-material-end-${copyPaperId}"]`)).toHaveCount(0);
   });
