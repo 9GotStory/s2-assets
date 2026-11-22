@@ -168,9 +168,6 @@ export interface StockMaterialSummary {
 
 /** F009-T2 (#204): the Stock Materials `ids`, by name, each with its status and its Units (#202 Q19). */
 export async function stockMaterialSummariesOf(runner: pg.Pool | pg.PoolClient, ids: string[]): Promise<StockMaterialSummary[]> {
-  if (ids.length === 0) {
-    return [];
-  }
   const res = await runner.query('SELECT id, name, is_active FROM stock_materials WHERE id = ANY($1::uuid[]) ORDER BY lower(name) ASC, id ASC', [ids]);
   return Promise.all(
     res.rows.map(async (row: any) => ({ stock_material_id: row.id, name: row.name, is_active: row.is_active, units: await stockMaterialUnitsOf(runner, row.id) }))

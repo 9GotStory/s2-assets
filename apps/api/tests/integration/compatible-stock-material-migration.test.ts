@@ -137,6 +137,10 @@ describe('Compatible Stock Material Migration Integration (Seam C - F009-T2)', (
       const other = (await client.query(`INSERT INTO requestable_materials (name, request_unit_id, created_by) VALUES ('กระดาษถ่ายเอกสาร', $1, $2) RETURNING id`, [ids.unit, ids.user])).rows[0].id;
       await pair(client, { requestable_material_id: other });
       expect((await client.query('SELECT count(*)::int AS n FROM compatible_stock_materials WHERE stock_material_id = $1', [ids.material])).rows[0].n).toBe(2);
+      // The Requestable Materials of a Stock Material are found by an index, for F009-T3's Units write (Q15).
+      expect((await client.query(`SELECT indexdef FROM pg_indexes WHERE indexname = 'idx_compatible_stock_materials_stock_material'`)).rows).toEqual([
+        { indexdef: 'CREATE INDEX idx_compatible_stock_materials_stock_material ON public.compatible_stock_materials USING btree (stock_material_id)' },
+      ]);
     });
   });
 

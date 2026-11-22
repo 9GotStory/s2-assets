@@ -58,9 +58,15 @@ export const CompatibleStockMaterialAddForm: React.FC<CompatibleStockMaterialFor
     },
   });
 
+  // The same search again reads again, as after a failed read.
   const runSearch = () => {
     setChosen(null);
-    setSearch(searchText.trim());
+    const text = searchText.trim();
+    if (text === search) {
+      void choices.refetch();
+    } else {
+      setSearch(text);
+    }
   };
 
   return (
@@ -124,8 +130,9 @@ export const CompatibleStockMaterialAddForm: React.FC<CompatibleStockMaterialFor
           {choices.data && choices.data.items.length > 0 && (
             <ul id="compatible-stock-material-choices" style={{ listStyle: 'none', padding: 0, margin: 0 }}>
               {choices.data.items.map((choice) => {
-                const isCurrent = current.has(choice.id);
-                const selectable = choice.handles_request_unit && !isCurrent;
+                // Why it cannot be chosen, or null when it can: already current, or lacking the Request Unit.
+                const reason = current.has(choice.id) ? CURRENT_COMPATIBLE_STOCK_MATERIAL_LABEL : choice.handles_request_unit ? null : lacksRequestUnitLine(requestable.request_unit.name);
+                const selectable = reason === null;
                 return (
                   <li key={choice.id} data-testid={`stock-material-choice-${choice.id}`} style={{ padding: '0.375rem 0', color: selectable ? '#111827' : '#9ca3af' }}>
                     <label style={{ display: 'flex', gap: '0.5rem', alignItems: 'baseline', cursor: selectable ? 'pointer' : 'not-allowed' }}>
@@ -135,8 +142,7 @@ export const CompatibleStockMaterialAddForm: React.FC<CompatibleStockMaterialFor
                         {choice.brand && ` · ${choice.brand.name}`}
                         {choice.model && ` · ${choice.model}`}
                       </span>
-                      {!choice.handles_request_unit && <span data-testid={`stock-material-choice-reason-${choice.id}`}>({lacksRequestUnitLine(requestable.request_unit.name)})</span>}
-                      {choice.handles_request_unit && isCurrent && <span data-testid={`stock-material-choice-reason-${choice.id}`}>({CURRENT_COMPATIBLE_STOCK_MATERIAL_LABEL})</span>}
+                      {reason !== null && <span data-testid={`stock-material-choice-reason-${choice.id}`}>({reason})</span>}
                     </label>
                   </li>
                 );

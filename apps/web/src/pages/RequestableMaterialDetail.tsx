@@ -110,10 +110,11 @@ const RequestableMaterialDetailContent: React.FC<{ id: string }> = ({ id }) => {
   const detail = requestable.isError ? undefined : requestable.data;
   const refresh = async () => (await requestable.refetch()).isSuccess;
   const session = useCsrfToken(detail?.can_manage === true);
-  // Each write action waits for the token: a request sent without it is refused as if the grant were gone (#135).
+  // Each write action waits for the token: a request sent without it is refused as if the grant were gone (#135). A
+  // token read before the grant went stays in hand, so `can_manage` decides too (P9).
   const csrfToken = session.data ?? null;
   const mayManage = detail?.can_manage === true && csrfToken !== null;
-  const ending = compatibleAction?.kind === 'end' ? detail?.compatible_stock_materials.find((entry) => entry.is_current && entry.stock_material_id === compatibleAction.stockMaterialId) : undefined;
+  const ending = compatibleAction?.kind === 'end' ? detail?.compatible_stock_materials.find((entry) => entry.stock_material_id === compatibleAction.stockMaterialId) : undefined;
   // What a form passes back to the page: a save reads the page again and closes it, a lost grant reads it again or
   // signs out.
   const formHandlers = {
