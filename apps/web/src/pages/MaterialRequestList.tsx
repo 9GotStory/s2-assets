@@ -83,9 +83,9 @@ const MaterialRequestListContent: React.FC = () => {
         </Link>
         <h1 style={{ fontSize: '1.5rem', fontWeight: 700, color: '#111827', margin: '1rem 0 1.5rem 0' }}>{MY_MATERIAL_REQUESTS_LABEL}</h1>
 
-        {requests.isError && !isSignedOut && (
+        {requests.isError && (
           <div role="alert" id="material-request-list-error" style={{ padding: '0.75rem 1rem', marginBottom: '1.5rem', borderRadius: '6px', backgroundColor: '#fee2e2', color: '#991b1b', fontSize: '0.875rem' }}>
-            {LOAD_ERRORS[requests.error.status ?? 0] ?? `เกิดข้อผิดพลาดในการโหลด${MY_MATERIAL_REQUESTS_LABEL}`}{' '}
+            {LOAD_ERRORS[Number(requests.error.status)] ?? `เกิดข้อผิดพลาดในการโหลด${MY_MATERIAL_REQUESTS_LABEL}`}{' '}
             {!isForbidden && (
               <button type="button" id="material-request-list-retry" onClick={() => requests.refetch()}>
                 ลองใหม่

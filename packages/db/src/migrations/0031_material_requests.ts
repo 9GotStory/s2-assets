@@ -83,7 +83,7 @@ export async function down(db: Kysely<any>): Promise<void> {
     SELECT ((SELECT count(*) FROM user_roles WHERE role_id = 'REQUESTER')
             + (SELECT count(*) FROM material_requests)
             + (SELECT count(*) FROM registration_retry_tokens WHERE operation LIKE 'material-request:%'))::text AS count`.execute(db);
-  if (Number(facts.rows[0]?.count || '0') > 0) {
+  if (Number(facts.rows[0].count) > 0) {
     throw new Error('Refusing destructive rollback: Requesters, Material Requests or their retry receipts exist');
   }
 

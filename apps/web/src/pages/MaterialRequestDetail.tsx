@@ -63,9 +63,9 @@ const MaterialRequestDetailContent: React.FC<{ id: string }> = ({ id }) => {
           ← กลับสู่{MY_MATERIAL_REQUESTS_LABEL}
         </Link>
 
-        {request.isError && !isSignedOut && (
+        {request.isError && (
           <div role="alert" id="material-request-error" style={{ padding: '0.75rem 1rem', margin: '1rem 0', borderRadius: '6px', backgroundColor: '#fee2e2', color: '#991b1b', fontSize: '0.875rem' }}>
-            {LOAD_ERRORS[request.error.status ?? 0] ?? `เกิดข้อผิดพลาดในการโหลดข้อมูล${MATERIAL_REQUEST_LABEL}`}{' '}
+            {LOAD_ERRORS[Number(request.error.status)] ?? `เกิดข้อผิดพลาดในการโหลดข้อมูล${MATERIAL_REQUEST_LABEL}`}{' '}
             {!isForbidden && (
               <button type="button" id="material-request-retry" onClick={() => request.refetch()}>
                 ลองใหม่
@@ -87,7 +87,7 @@ const MaterialRequestDetailContent: React.FC<{ id: string }> = ({ id }) => {
                 {MATERIAL_REQUEST_LABEL} {requestNumberLine(detail.request_number)}
               </h1>
               {/* The state beside the heading, not inside it, so the heading keeps its name (#204 lesson). */}
-              <span id="material-request-state" style={{ padding: '0.125rem 0.5rem', backgroundColor: detail.state === 'PENDING' ? '#dbeafe' : '#e5e7eb', color: '#1f2937', borderRadius: '9999px', fontSize: '0.75rem', fontWeight: 600 }}>
+              <span id="material-request-state" style={{ padding: '0.125rem 0.5rem', backgroundColor: '#dbeafe', color: '#1f2937', borderRadius: '9999px', fontSize: '0.75rem', fontWeight: 600 }}>
                 {MATERIAL_REQUEST_STATE_LABELS[detail.state]}
               </span>
             </div>
@@ -130,15 +130,8 @@ const MaterialRequestDetailContent: React.FC<{ id: string }> = ({ id }) => {
                         {item.requested_quantity} {item.request_unit.name}
                       </td>
                       <td style={{ ...cellStyle, whiteSpace: 'pre-line' }}>{item.note ?? '-'}</td>
-                      <td style={cellStyle}>
-                        {MATERIAL_REQUEST_STATE_LABELS[item.state]}
-                        {item.cancelled_at !== null && (
-                          <span style={{ display: 'block', fontSize: '0.75rem', color: '#6b7280' }}>
-                            <time dateTime={item.cancelled_at}>{THAI_DATE_TIME.format(new Date(item.cancelled_at))}</time> โดย {item.cancelled_by_username}
-                            {item.cancel_note && <span style={{ display: 'block', whiteSpace: 'pre-line' }}>{item.cancel_note}</span>}
-                          </span>
-                        )}
-                      </td>
+                      {/* Who Cancelled it, when and why are T5's to show (#202 P4). */}
+                      <td style={cellStyle}>{MATERIAL_REQUEST_STATE_LABELS[item.state]}</td>
                     </tr>
                   ))}
                 </tbody>

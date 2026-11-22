@@ -37,18 +37,22 @@ const QUANTITY_REFUSALS: [string, string][] = [
   ['is too large', `${REQUESTED_QUANTITY_LABEL}มากเกินไป`],
 ];
 
-// A refusal that names a Requested Item, in the words of the form, or null for any other.
+// A refusal that names a Requested Item, in the words of the form, or null for any other. The body is null when the
+// answer is not JSON.
 const refusedRequestedItem = (body: { code?: string; message?: string; position?: number } | null): React.ReactNode => {
-  if (body?.code === 'NOT_OFFERED' && typeof body.position === 'number') {
-    return <span data-testid="material-request-refused-item">{`${requestedItemAt(body.position)}: ${REQUESTABLE_MATERIAL_LABEL}นี้ไม่เปิดให้ขอเบิกแล้ว`}</span>;
+  // Every NOT_OFFERED names the position of its Requested Item.
+  if (body?.code === 'NOT_OFFERED') {
+    return <span data-testid="material-request-refused-item">{`${requestedItemAt(body.position as number)}: ${REQUESTABLE_MATERIAL_LABEL}นี้ไม่เปิดให้ขอเบิกแล้ว`}</span>;
   }
-  const named = /^requested_items\[(\d+)\]\.(\w+) (.*)$/.exec(body?.message ?? '');
-  if (body?.code !== 'VALIDATION_FAILED' || named === null) {
+  // A refusal of a Requested Item's field names it as requested_items[i].<field>; the Requested Quantity's reasons are
+  // put in Thai, any other is shown as the server words it.
+  const named = /^requested_items\[(\d+)\]\.\w+ (.*)$/.exec(String(body?.message));
+  if (named === null) {
     return null;
   }
-  const [, position, field, reason] = named;
-  const quantityRefusal = field === 'requested_quantity' ? QUANTITY_REFUSALS.find(([start]) => reason.startsWith(start)) : undefined;
-  return <span data-testid="material-request-refused-item">{`${requestedItemAt(Number(position))}: ${quantityRefusal ? quantityRefusal[1] : body.message}`}</span>;
+  const [, position, reason] = named;
+  const quantityRefusal = QUANTITY_REFUSALS.find(([start]) => reason.startsWith(start));
+  return <span data-testid="material-request-refused-item">{`${requestedItemAt(Number(position))}: ${quantityRefusal ? quantityRefusal[1] : reason}`}</span>;
 };
 
 const cellStyle: React.CSSProperties = { padding: '0.5rem 0.75rem', fontSize: '0.875rem', color: '#111827', verticalAlign: 'top' };
@@ -88,7 +92,7 @@ const MaterialRequestCreateContent: React.FC = () => {
     enabled: grant.isSuccess,
   });
   // A failed read of the grant hides the form: a lost grant fails closed.
-  const mayAsk = grant.isSuccess && !grant.isError;
+  const mayAsk = grant.isSuccess;
   const session = useCsrfToken(mayAsk);
   // The form waits for the token: a request sent without it is refused as if the grant were gone (#135).
   const csrfToken = session.data ?? null;
@@ -132,9 +136,9 @@ const MaterialRequestCreateContent: React.FC = () => {
             กำลังโหลด...
           </div>
         )}
-        {grant.isError && !isSignedOut && (
+        {grant.isError && (
           <div role="alert" id="material-request-create-forbidden" style={{ padding: '0.75rem 1rem', borderRadius: '6px', backgroundColor: '#fee2e2', color: '#991b1b', fontSize: '0.875rem' }}>
-            {grant.error.status && grant.error.status !== 403 ? `เกิดข้อผิดพลาดในการโหลดรายการ${REQUESTABLE_MATERIAL_LABEL}` : `คุณไม่มีสิทธิ์${CREATE_MATERIAL_REQUEST_LABEL}`}
+            {grant.error.status === 403 ? `คุณไม่มีสิทธิ์${CREATE_MATERIAL_REQUEST_LABEL}` : `เกิดข้อผิดพลาดในการโหลดรายการ${REQUESTABLE_MATERIAL_LABEL}`}
           </div>
         )}
 
@@ -153,13 +157,8 @@ const MaterialRequestCreateContent: React.FC = () => {
               navigate(`/material-requests/${body.material_request_id}`);
             }}
             onCancel={() => navigate('/my-material-requests')}
-            onPermissionRevoked={(status) => {
-              if (status === 401) {
-                navigate('/login', { replace: true });
-                return;
-              }
-              void grant.refetch();
-            }}
+            // The grant read again answers 401 when the session ended, which signs the Requester out, or 403.
+            onPermissionRevoked={() => void grant.refetch()}
           >
             {(isLocked) => (
               <fieldset disabled={isLocked} style={{ border: 'none', padding: 0, margin: '0 0 1rem 0', minWidth: 0 }}>

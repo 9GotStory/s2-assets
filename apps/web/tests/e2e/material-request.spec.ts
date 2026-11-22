@@ -11,6 +11,7 @@ import { UserService } from '../../../api/src/services/user.service.ts';
 import { SessionService } from '../../../api/src/services/session.service.ts';
 import { CatalogListService } from '../../../api/src/services/catalog-list.service.ts';
 import { RequestableMaterialService } from '../../../api/src/services/requestable-material.service.ts';
+import { MaterialRequestService } from '../../../api/src/services/material-request.service.ts';
 import { StockMaterialService } from '../../../api/src/services/stock-material.service.ts';
 import { repositoryProxyConfig } from '../../vite.config.ts';
 
@@ -423,7 +424,7 @@ test.describe.serial('Material Request journeys: Real SPA -> Composed API -> Pos
     const requestables = new RequestableMaterialService({ db: pool });
     const { requestable_material_id: envelopeId } = await requestables.create(
       officerUserId,
-      { name: 'ซองจดหมายขอเบิก', request_unit_id: reamId, whole_number_only: false },
+      { name: 'ซองจดหมายขอเบิก', request_unit_id: reamId, whole_number_only: false, description: 'ซองสีน้ำตาลขนาด A4' },
       { retryToken: crypto.randomUUID() }
     );
     const { stock_material_id: envelopeStockId } = await new StockMaterialService({ db: pool }).create(
@@ -435,8 +436,17 @@ test.describe.serial('Material Request journeys: Real SPA -> Composed API -> Pos
     const requester = await pool.query(`INSERT INTO users (username, password_hash, is_active) VALUES ('requester_request', $1, true) RETURNING id`, [await UserService.hashPassword('Password123!')]);
     await pool.query(`INSERT INTO user_roles (user_id, role_id) VALUES ($1, 'REQUESTER')`, [requester.rows[0].id]);
 
-    // The Dashboard shows "ขอเบิกวัสดุ" and, once it has asked, no "วัสดุ" menu, which the Supply Officer sees in
-    // Journey F009-T1.1 (#202 Q18, P9).
+    // The Supply Officer holds no material-request:create: once the Dashboard has asked, it shows no "ขอเบิกวัสดุ" (P9).
+    await loginAs(context, officerUserId);
+    const probedOfficer = page.waitForResponse((res: any) => res.url().includes('/my-material-requests?limit=1'));
+    await openDashboard(page);
+    await probedOfficer;
+    await expect(page.locator('#nav-material-section')).toBeVisible();
+    await expect(page.locator('#nav-material-request-section')).toHaveCount(0);
+
+    // The Requester's Dashboard shows "ขอเบิกวัสดุ" and, once it has asked, no "วัสดุ" menu, which the Supply Officer
+    // sees (#202 Q18, P9).
+    await context.clearCookies();
     await loginAs(context, requester.rows[0].id);
     const probedRequests = page.waitForResponse((res: any) => res.url().includes('/my-material-requests?limit=1'));
     await openDashboard(page);
@@ -448,6 +458,7 @@ test.describe.serial('Material Request journeys: Real SPA -> Composed API -> Pos
     await expect(page).toHaveURL(/\/my-material-requests$/);
     await expect(page.getByRole('heading', { level: 1, name: 'คำขอของฉัน' })).toBeVisible();
     await expect(page.locator('#material-request-list-empty')).toHaveText('ยังไม่มีคำขอเบิก');
+    await expect(page.locator('#material-request-list-count')).toHaveCount(0);
 
     // The form waits for the CSRF token (#135).
     await delaySessionCheck(page);
@@ -457,16 +468,24 @@ test.describe.serial('Material Request journeys: Real SPA -> Composed API -> Pos
     await expect(page.locator('#material-request-form')).toHaveCount(0);
     await expect(page.locator('#material-request-form')).toBeVisible();
 
-    // Only the offered Requestable Materials are listed, each with its Request Unit; a search narrows them.
+    // Nothing is chosen for the Requester.
+    await expect(page.locator('#material-request-rows-empty')).toHaveText('ยังไม่ได้เลือกวัสดุสำหรับขอเบิก');
+    await page.locator('#material-request-submit').click();
+    await expect(page.locator('[data-testid="material-request-form-error"]')).toContainText('กรุณาเลือกวัสดุสำหรับขอเบิกอย่างน้อย 1 รายการ');
+
+    // Only the offered Requestable Materials are listed, each with its Request Unit and description; a search narrows
+    // them.
     const choices = page.locator('#material-request-choices li');
     await expect(choices).toHaveCount(2);
     await expect(choices.nth(0)).toContainText('กระดาษ A4 (รีม)');
-    await expect(choices.nth(1)).toContainText('ซองจดหมายขอเบิก (รีม)');
+    await expect(choices.nth(1)).toContainText('ซองจดหมายขอเบิก (รีม)ซองสีน้ำตาลขนาด A4');
+    await expect(page.locator('#material-request-choices-empty')).toHaveCount(0);
     await page.locator('#material-request-search').fill('กระดาษ');
     await page.locator('#material-request-search').press('Enter');
     await expect(choices).toHaveCount(1);
     await page.getByRole('button', { name: 'เลือก กระดาษ A4' }).click();
     await expect(page.getByRole('button', { name: 'เลือก กระดาษ A4' })).toBeDisabled();
+    await expect(page.getByRole('button', { name: 'เลือก กระดาษ A4' })).toHaveText('เลือกแล้ว');
     await page.locator('#material-request-search').fill('ซอง');
     await page.locator('#material-request-search-submit').click();
     await expect(choices).toHaveCount(1);
@@ -476,6 +495,9 @@ test.describe.serial('Material Request journeys: Real SPA -> Composed API -> Pos
     await expect(page.locator('[data-testid="material-request-row-0"]')).toContainText('กระดาษ A4');
     await expect(page.locator('[data-testid="material-request-row-0"]')).toContainText('รีม');
     await page.getByRole('textbox', { name: 'จำนวนที่ขอ กระดาษ A4' }).fill('1.5');
+    // Each Requested Item needs its Requested Quantity.
+    await page.locator('#material-request-submit').click();
+    await expect(page.locator('[data-testid="material-request-form-error"]')).toContainText('รายการที่ขอที่ 2: กรุณากรอกจำนวนที่ขอ');
     await page.getByRole('textbox', { name: 'จำนวนที่ขอ ซองจดหมายขอเบิก' }).fill('0.5');
     await page.getByRole('textbox', { name: 'หมายเหตุ กระดาษ A4' }).fill('สีขาว');
     await page.locator('#material-request-note').fill('ใช้ในงานประชุม');
@@ -524,5 +546,200 @@ test.describe.serial('Material Request journeys: Real SPA -> Composed API -> Pos
     await listed.getByRole('link', { name: requestNumber }).click();
     await expect(page).toHaveURL(/\/material-requests\/[0-9a-f-]{36}$/);
     await expect(page.locator('#material-request-number')).toHaveText(requestNumber);
+  });
+
+  test('Journey F009-T4.2: the Requester\'s pages say when they are loading, fail closed when a read fails and offer it again, say what is refused, page "คำขอของฉัน", answer another person\'s Material Request as not found, refuse the Supply Officer, and sign out when the session ends', async ({ page, context }) => {
+    const requesterId = (await pool.query(`SELECT id FROM users WHERE username = 'requester_request'`)).rows[0].id;
+    const paperId = (await pool.query(`SELECT id FROM requestable_materials WHERE name = 'กระดาษ A4'`)).rows[0].id;
+    const envelopeId = (await pool.query(`SELECT id FROM requestable_materials WHERE name = 'ซองจดหมายขอเบิก'`)).rows[0].id;
+    const firstId = (await pool.query('SELECT id FROM material_requests WHERE requested_by = $1', [requesterId])).rows[0].id;
+    const firstNumber = (await pool.query('SELECT request_number::text FROM material_requests WHERE id = $1', [firstId])).rows[0].request_number;
+    // 25 more, so that "คำขอของฉัน" takes two pages; and another Requester's, which this one cannot read (#202 P5).
+    const materialRequests = new MaterialRequestService({ db: pool });
+    for (let n = 1; n <= 25; n++) {
+      await materialRequests.create(requesterId, { requested_items: [{ requestable_material_id: paperId, requested_quantity: String(n) }] }, { retryToken: crypto.randomUUID() });
+    }
+    const other = await pool.query(`INSERT INTO users (username, password_hash, is_active) VALUES ('requester_other', $1, true) RETURNING id`, [await UserService.hashPassword('Password123!')]);
+    await pool.query(`INSERT INTO user_roles (user_id, role_id) VALUES ($1, 'REQUESTER')`, [other.rows[0].id]);
+    const { material_request_id: otherId } = await materialRequests.create(
+      other.rows[0].id,
+      { requested_items: [{ requestable_material_id: paperId, requested_quantity: '1' }] },
+      { retryToken: crypto.randomUUID() }
+    );
+    // React Query reads again on the window's visibilitychange, which a page coming back to view sends.
+    const readAgain = () => page.evaluate(() => window.dispatchEvent(new Event('visibilitychange')));
+
+    await loginAs(context, requesterId);
+    // "คำขอของฉัน" says it is loading, newest first, 25 to a page.
+    const listUrl = /\/my-material-requests\?/;
+    let releaseList = () => {};
+    const listHeld = new Promise<void>((resolve) => (releaseList = resolve));
+    await page.route(listUrl, async (route: any) => {
+      await listHeld;
+      await route.continue();
+    });
+    await page.goto(`${targetBaseUrl}/my-material-requests`);
+    await expect(page.getByText('กำลังโหลดคำขอของฉัน...')).toBeVisible();
+    releaseList();
+    const listed = page.locator('#material-request-list-table tbody tr');
+    await expect(listed).toHaveCount(25);
+    await page.unroute(listUrl);
+    await expect(page.locator('#material-request-list-count')).toHaveText('รายการที่ 1–25 จาก 26');
+    await expect(listed.first()).toContainText(String(Number(firstNumber) + 25));
+    await expect(page.locator('#material-request-list-previous')).toBeDisabled();
+    await page.locator('#material-request-list-next').click();
+    await expect(page).toHaveURL(/\/my-material-requests\?offset=25$/);
+    await expect(page.locator('#material-request-list-count')).toHaveText('รายการที่ 26–26 จาก 26');
+    await expect(listed).toHaveCount(1);
+    await expect(listed).toContainText(firstNumber);
+    await expect(page.locator('#material-request-list-next')).toBeDisabled();
+    await page.locator('#material-request-list-previous').click();
+    await expect(page).toHaveURL(/\/my-material-requests$/);
+    await expect(listed).toHaveCount(25);
+    // A new state starts at the first page.
+    await page.locator('#material-request-list-next').click();
+    await expect(page).toHaveURL(/\?offset=25$/);
+    await page.locator('#material-request-state-filter').selectOption('pending');
+    await expect(page).toHaveURL(/\/my-material-requests\?state=pending$/);
+    await expect(page.locator('#material-request-list-count')).toHaveText('รายการที่ 1–25 จาก 26');
+    // The next page keeps the state.
+    await page.locator('#material-request-list-next').click();
+    await expect(page).toHaveURL(/\/my-material-requests\?state=pending&offset=25$/);
+    // An offset typed into the URL that is no page starts at the first.
+    for (const offset of ['abc', '-25']) {
+      await page.goto(`${targetBaseUrl}/my-material-requests?offset=${offset}`);
+      await expect(page.locator('#material-request-list-count')).toHaveText('รายการที่ 1–25 จาก 26');
+    }
+
+    // A read that fails hides what the last one showed and offers it again.
+    await page.route(listUrl, (route: any) => route.fulfill({ status: 500, body: '{}' }));
+    await readAgain();
+    await expect(page.locator('#material-request-list-error')).toContainText('เกิดข้อผิดพลาดในการโหลดคำขอของฉัน');
+    await expect(page.locator('#material-request-list-table')).toHaveCount(0);
+    await page.unroute(listUrl);
+    await page.locator('#material-request-list-retry').click();
+    await expect(listed).toHaveCount(25);
+
+    // A Material Request's page says it is loading, fails closed and offers the read again.
+    const detailUrl = new RegExp(`/material-requests/${firstId}$`);
+    let releaseDetail = () => {};
+    const detailHeld = new Promise<void>((resolve) => (releaseDetail = resolve));
+    await page.route(detailUrl, async (route: any) => {
+      if (route.request().resourceType() !== 'fetch') return route.continue();
+      await detailHeld;
+      await route.continue();
+    });
+    await page.goto(`${targetBaseUrl}/material-requests/${firstId}`);
+    await expect(page.getByText('กำลังโหลดข้อมูลคำขอเบิก...')).toBeVisible();
+    releaseDetail();
+    await expect(page.locator('#material-request-number')).toHaveText(firstNumber);
+    await page.unroute(detailUrl);
+    await page.route(detailUrl, (route: any) => (route.request().resourceType() === 'fetch' ? route.fulfill({ status: 500, body: '{}' }) : route.continue()));
+    await readAgain();
+    await expect(page.locator('#material-request-error')).toContainText('เกิดข้อผิดพลาดในการโหลดข้อมูลคำขอเบิก');
+    await expect(page.locator('#material-request-number')).toHaveCount(0);
+    await page.unroute(detailUrl);
+    await page.locator('#material-request-retry').click();
+    await expect(page.locator('#material-request-number')).toHaveText(firstNumber);
+    // Another person's Material Request is not found, as one that does not exist; neither is offered again (#202 P5).
+    await page.goto(`${targetBaseUrl}/material-requests/${otherId}`);
+    await expect(page.locator('#material-request-error')).toContainText('ไม่พบคำขอเบิกที่ระบุ (404 Not Found)');
+    await expect(page.locator('#material-request-retry')).toHaveCount(0);
+    await page.goto(`${targetBaseUrl}/material-requests/not-a-material-request`);
+    await expect(page.locator('#material-request-error')).toHaveText('ไม่พบคำขอเบิกที่ระบุ');
+    await expect(page.locator('#material-request-retry')).toHaveCount(0);
+
+    // "สร้างคำขอเบิก" says it is loading, and a failed read of the offered list says so.
+    const grantUrl = /\/offered-requestable-materials\?limit=1$/;
+    let releaseGrant = () => {};
+    const grantHeld = new Promise<void>((resolve) => (releaseGrant = resolve));
+    await page.route(grantUrl, async (route: any) => {
+      await grantHeld;
+      await route.continue();
+    });
+    await page.goto(`${targetBaseUrl}/my-material-requests/new`);
+    await expect(page.getByText('กำลังโหลด...', { exact: true })).toBeVisible();
+    releaseGrant();
+    await expect(page.locator('#material-request-form')).toBeVisible();
+    await page.unroute(grantUrl);
+    await page.route(grantUrl, (route: any) => route.fulfill({ status: 500, body: '{}' }));
+    await page.reload();
+    await expect(page.locator('#material-request-create-forbidden')).toHaveText('เกิดข้อผิดพลาดในการโหลดรายการวัสดุสำหรับขอเบิก');
+    await expect(page.locator('#material-request-form')).toHaveCount(0);
+    await page.unroute(grantUrl);
+    await page.reload();
+
+    // A search that finds nothing, or fails, says so.
+    const choicesUrl = /\/offered-requestable-materials\?limit=10/;
+    await page.locator('#material-request-search').fill('ไม่มีวัสดุนี้');
+    await page.locator('#material-request-search-submit').click();
+    await expect(page.locator('#material-request-choices-empty')).toHaveText('ไม่พบวัสดุสำหรับขอเบิกที่เปิดให้ขอเบิก');
+    await page.route(choicesUrl, (route: any) => route.fulfill({ status: 500, body: '{}' }));
+    await page.locator('#material-request-search').fill('ซอง');
+    await page.locator('#material-request-search-submit').click();
+    await expect(page.locator('#material-request-choices-error')).toContainText('ค้นหาวัสดุสำหรับขอเบิกไม่สำเร็จ');
+    await page.unroute(choicesUrl);
+    await page.locator('#material-request-search').fill('');
+    await page.locator('#material-request-search-submit').click();
+    await page.getByRole('button', { name: 'เลือก กระดาษ A4' }).click();
+    await page.getByRole('button', { name: 'เลือก ซองจดหมายขอเบิก' }).click();
+    await page.getByRole('textbox', { name: 'จำนวนที่ขอ กระดาษ A4' }).fill('3');
+    await page.getByRole('textbox', { name: 'จำนวนที่ขอ ซองจดหมายขอเบิก' }).fill('1');
+
+    // A refusal of a Requested Item's other field names it in the server's words; one that names none says what it is.
+    const saveUrl = /\/material-requests$/;
+    await page.route(saveUrl, (route: any) =>
+      route.request().method() === 'POST'
+        ? route.fulfill({ status: 400, contentType: 'application/json', body: JSON.stringify({ code: 'VALIDATION_FAILED', message: 'requested_items[1].note must not contain control characters' }) })
+        : route.continue()
+    );
+    await page.locator('#material-request-submit').click();
+    await expect(page.locator('[data-testid="material-request-refused-item"]')).toHaveText('รายการที่ขอที่ 2: must not contain control characters');
+    await page.unroute(saveUrl);
+    await page.route(saveUrl, (route: any) =>
+      route.request().method() === 'POST'
+        ? route.fulfill({ status: 400, contentType: 'application/json', body: JSON.stringify({ code: 'VALIDATION_FAILED', message: 'note must be at most 2000 characters' }) })
+        : route.continue()
+    );
+    await page.locator('#material-request-submit').click();
+    await expect(page.locator('[data-testid="material-request-form-error"]')).toContainText('note must be at most 2000 characters');
+    await expect(page.locator('[data-testid="material-request-refused-item"]')).toHaveCount(0);
+    await page.unroute(saveUrl);
+
+    // A Requestable Material no longer offered when the Requester saves is refused, naming its Requested Item (#202 Q9).
+    const { version: envelopeVersion } = (await pool.query('SELECT version FROM requestable_materials WHERE id = $1', [envelopeId])).rows[0];
+    const envelopeStockId = (await pool.query('SELECT stock_material_id FROM compatible_stock_materials WHERE requestable_material_id = $1 AND is_current', [envelopeId])).rows[0].stock_material_id;
+    await new RequestableMaterialService({ db: pool }).endCompatibleStockMaterial(officerUserId, envelopeId, envelopeStockId, { expected_version: envelopeVersion }, { retryToken: crypto.randomUUID() });
+    await page.locator('#material-request-submit').click();
+    await expect(page.locator('[data-testid="material-request-refused-item"]')).toHaveText('รายการที่ขอที่ 2: วัสดุสำหรับขอเบิกนี้ไม่เปิดให้ขอเบิกแล้ว');
+
+    // A save after the session ended signs the Requester out; so does a search, and opening the form.
+    await context.clearCookies();
+    await page.locator('#material-request-submit').click();
+    await expect(page).toHaveURL(/\/login$/);
+    await loginAs(context, requesterId);
+    await page.goto(`${targetBaseUrl}/my-material-requests/new`);
+    await expect(page.locator('#material-request-form')).toBeVisible();
+    await context.clearCookies();
+    // A new search, so that it is read and not taken from the last.
+    await page.locator('#material-request-search').fill('กระดาษ');
+    await page.locator('#material-request-search-submit').click();
+    await expect(page).toHaveURL(/\/login$/);
+    for (const url of ['/my-material-requests/new', '/my-material-requests', `/material-requests/${firstId}`]) {
+      await page.goto(`${targetBaseUrl}${url}`);
+      await expect(page).toHaveURL(/\/login$/);
+    }
+
+    // The Supply Officer holds no material-request:create: each page refuses them, offering nothing again (P9).
+    await loginAs(context, officerUserId);
+    await page.goto(`${targetBaseUrl}/my-material-requests`);
+    await expect(page.locator('#material-request-list-error')).toHaveText('คุณไม่มีสิทธิ์เข้าถึงคำขอของฉัน (403 Forbidden) ');
+    await expect(page.locator('#material-request-list-retry')).toHaveCount(0);
+    await page.goto(`${targetBaseUrl}/my-material-requests/new`);
+    await expect(page.locator('#material-request-create-forbidden')).toHaveText('คุณไม่มีสิทธิ์สร้างคำขอเบิก');
+    await expect(page.locator('#material-request-form')).toHaveCount(0);
+    await page.goto(`${targetBaseUrl}/material-requests/${firstId}`);
+    await expect(page.locator('#material-request-error')).toContainText('คุณไม่มีสิทธิ์เข้าถึงข้อมูลคำขอเบิก (403 Forbidden)');
+    await expect(page.locator('#material-request-retry')).toHaveCount(0);
   });
 });
