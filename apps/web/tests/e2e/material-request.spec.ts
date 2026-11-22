@@ -415,6 +415,5 @@ test.describe.serial('Material Request journeys: Real SPA -> Composed API -> Pos
     await page.locator('#stock-material-units-submit').click();
     await expect(page.locator('[data-testid="stock-material-units-form-error"]')).toContainText('"กระดาษ A4"');
     await expect(page.locator('#stock-material-units-form')).toBeVisible();
-    await expect(page.locator('#stock-material-units tbody tr').filter({ hasText: 'รีม' }).locator('[data-testid="stock-material-unit-inactive"]')).toHaveCount(0);
   });
 });

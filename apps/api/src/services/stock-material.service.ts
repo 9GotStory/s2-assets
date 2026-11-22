@@ -490,11 +490,11 @@ export class StockMaterialService {
         stockMaterialId,
         units.filter((unit) => !unit.is_active).map(({ unit_id }) => unit_id)
       );
-      const keptActive = units.findIndex((unit) => askedIn.has(unit.unit_id));
-      if (keptActive !== -1) {
-        const names = askedIn.get(units[keptActive].unit_id)!.map((name) => JSON.stringify(name)).join(', ');
+      const keptActiveIndex = units.findIndex((unit) => askedIn.has(unit.unit_id));
+      if (keptActiveIndex !== -1) {
+        const names = askedIn.get(units[keptActiveIndex].unit_id)!.map((name) => JSON.stringify(name)).join(', ');
         throw new ValidationError(
-          `${unitFieldOf(keptActive)}.is_active must stay true: the Unit is the Request Unit of the Requestable Materials ${names}, for which this Stock Material is a current Compatible Stock Material; end that compatibility first`
+          `${unitFieldOf(keptActiveIndex)}.is_active must stay true: the Unit is the Request Unit of the Requestable Materials ${names}, for which this Stock Material is a current Compatible Stock Material; end that compatibility first`
         );
       }
       // A Unit new to the Stock Material, a new Base Unit and a reactivated Alternate Unit are new choices; a Unit kept
