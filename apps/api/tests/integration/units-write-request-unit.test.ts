@@ -3,6 +3,7 @@ import { describe, it, expect, beforeAll, afterAll } from 'vitest';
 import { startApiHarness, type Actor, type ApiHarness } from './support/api-harness.ts';
 import { lockHelpers } from './support/lock-helpers.ts';
 import { materialHelpers } from './support/material-helpers.ts';
+import { requestableMaterialHelpers } from './support/requestable-material-helpers.ts';
 
 // F009-T3 (#205): Feature 008's Units write keeps the Request Unit of each current Compatible Stock Material (#202 Q15,
 // ADR 0002; start decisions, #205 comment 7079575589).
@@ -14,40 +15,9 @@ describe('Units write and the Request Unit (Seam A - F009-T3)', () => {
   let ream: string;
 
   const helpers = materialHelpers(() => ({ api, officer, reader: readonly }));
-  const { unitNamed, materialOf, replaceUnits, unitsAsRead } = helpers;
+  const { unitNamed, materialOf, replaceUnits, unitsAsRead, inOrder } = helpers;
   const { whileWriting, untilWaiting } = lockHelpers(() => ({ api }));
-
-  // A Requestable Material asked for in `requestUnit`, and its id.
-  const requestableIn = async (requestUnit: string = ream, name = `วัสดุขอเบิก ${crypto.randomUUID().slice(0, 8)}`): Promise<string> => {
-    const res = await api.post(officer, '/requestable-materials', { name, request_unit_id: requestUnit }, { 'x-retry-token': crypto.randomUUID() });
-    expect(res.statusCode).toBe(201);
-    return res.json().requestable_material_id;
-  };
-
-  // The Requestable Material page as the Read-only User reads it.
-  const requestableOf = async (id: string) => {
-    const res = await api.get(readonly, `/requestable-materials/${id}`);
-    expect(res.statusCode).toBe(200);
-    return res.json();
-  };
-
-  // Adds the Stock Material `stockMaterialId` as a Compatible Stock Material of `requestableId` (F009-T2).
-  const add = async (requestableId: string, stockMaterialId: string) =>
-    api.post(
-      officer,
-      `/requestable-materials/${requestableId}/compatible-stock-materials`,
-      { stock_material_id: stockMaterialId, expected_version: (await requestableOf(requestableId)).version },
-      { 'x-retry-token': crypto.randomUUID() }
-    );
-
-  // Ends the Compatible Stock Material `stockMaterialId` of `requestableId` (F009-T2).
-  const end = async (requestableId: string, stockMaterialId: string) =>
-    api.post(
-      officer,
-      `/requestable-materials/${requestableId}/compatible-stock-materials/${stockMaterialId}/end`,
-      { expected_version: (await requestableOf(requestableId)).version },
-      { 'x-retry-token': crypto.randomUUID() }
-    );
+  const { requestableIn, requestableOf, add, end } = requestableMaterialHelpers(() => ({ api, officer, reader: readonly }));
 
   const expectAdded = async (requestableId: string, stockMaterialId: string) => expect((await add(requestableId, stockMaterialId)).statusCode).toBe(200);
 
@@ -69,13 +39,6 @@ describe('Units write and the Request Unit (Seam A - F009-T3)', () => {
     const write = unitsAsRead(await materialOf(id));
     return { ...write, alternate_units: write.alternate_units.map((unit) => (unit.unit_id === unitId ? { ...unit, is_active: false } : unit)) };
   };
-
-  // The Units write `write` with its Alternate Units in the order `settings` names them, each active or not as told:
-  // the page lists them by name, and a refusal names a Unit by its place in the request.
-  const inOrder = (write: ReturnType<typeof unitsAsRead>, ...settings: [string, boolean][]) => ({
-    ...write,
-    alternate_units: settings.map(([unitId, isActive]) => ({ ...write.alternate_units.find((unit) => unit.unit_id === unitId)!, is_active: isActive })),
-  });
 
   // A refused Units write: 400 with Feature 002's validation shape, its message holding each of `parts`, and the Stock
   // Material left as it was.
@@ -147,21 +110,21 @@ describe('Units write and the Request Unit (Seam A - F009-T3)', () => {
     it('lets another Alternate Unit go Inactive while the Request Unit stays active', async () => {
       const box = await unitNamed();
       const paper = await stockMaterialWith(ream, box);
-      await expectAdded(await requestableIn(), paper);
+      await expectAdded(await requestableIn(ream), paper);
 
       expect((await replaceUnits(paper, await makingInactive(paper, box))).statusCode).toBe(200);
     });
 
     it('lets a Stock Material that is no Compatible Stock Material make the Unit Inactive, while another one is', async () => {
       const [paper, other] = [await stockMaterialWith(ream), await stockMaterialWith(ream)];
-      await expectAdded(await requestableIn(), other);
+      await expectAdded(await requestableIn(ream), other);
 
       expect((await replaceUnits(paper, await makingInactive(paper, ream))).statusCode).toBe(200);
     });
 
     it('lets an ended Compatible Stock Material make its Request Unit Inactive', async () => {
       const paper = await stockMaterialWith(ream);
-      const requestable = await requestableIn();
+      const requestable = await requestableIn(ream);
       await expectAdded(requestable, paper);
       expect((await end(requestable, paper)).statusCode).toBe(200);
 
@@ -181,7 +144,7 @@ describe('Units write and the Request Unit (Seam A - F009-T3)', () => {
     it('takes the Request Unit from the Base Unit to an active Alternate Unit, and the compatibility stays offered', async () => {
       const paper = await helpers.created({ base_unit: { unit_id: ream } });
       const sheet = await unitNamed();
-      const requestable = await requestableIn();
+      const requestable = await requestableIn(ream);
       await expectAdded(requestable, paper);
       const { expected_version } = unitsAsRead(await materialOf(paper));
 
@@ -204,7 +167,7 @@ describe('Units write and the Request Unit (Seam A - F009-T3)', () => {
 
     it('takes the Request Unit from an Alternate Unit to the Base Unit, and the compatibility stays offered', async () => {
       const paper = await stockMaterialWith(ream);
-      const requestable = await requestableIn();
+      const requestable = await requestableIn(ream);
       await expectAdded(requestable, paper);
       const write = unitsAsRead(await materialOf(paper));
 
@@ -279,7 +242,7 @@ describe('Units write and the Request Unit (Seam A - F009-T3)', () => {
 
     it('a Units write waits for an end of the Compatible Stock Material and then makes its Request Unit Inactive', async () => {
       const paper = await stockMaterialWith(ream);
-      const requestable = await requestableIn();
+      const requestable = await requestableIn(ream);
       await expectAdded(requestable, paper);
       const write = await makingInactive(paper, ream);
 

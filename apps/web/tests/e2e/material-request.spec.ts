@@ -416,4 +416,113 @@ test.describe.serial('Material Request journeys: Real SPA -> Composed API -> Pos
     await expect(page.locator('[data-testid="stock-material-units-form-error"]')).toContainText('"กระดาษ A4"');
     await expect(page.locator('#stock-material-units-form')).toBeVisible();
   });
+
+  test('Journey F009-T4.1: a Requester opens "ขอเบิกวัสดุ" with no "วัสดุ" menu, finds only offered Requestable Materials, is refused a Requested Quantity that is not whole, naming its Requested Item, saves a Material Request of two Requested Items, sees its Request Number and "รอพิจารณา", and finds it in "คำขอของฉัน"', async ({ page, context }) => {
+    // A second offered Requestable Material, counted in fractions; "ปากกาน้ำเงิน" has no Compatible Stock Material and
+    // "หมึกพิมพ์เลิกขอ" is Inactive, so neither is offered (#202 Q9).
+    const requestables = new RequestableMaterialService({ db: pool });
+    const { requestable_material_id: envelopeId } = await requestables.create(
+      officerUserId,
+      { name: 'ซองจดหมายขอเบิก', request_unit_id: reamId, whole_number_only: false },
+      { retryToken: crypto.randomUUID() }
+    );
+    const { stock_material_id: envelopeStockId } = await new StockMaterialService({ db: pool }).create(
+      officerUserId,
+      { name: 'ซองจดหมายสีน้ำตาล', base_unit: { unit_id: reamId }, explicit_continuation: true },
+      { retryToken: crypto.randomUUID() }
+    );
+    await requestables.addCompatibleStockMaterial(officerUserId, envelopeId, { stock_material_id: envelopeStockId, expected_version: 1 }, { retryToken: crypto.randomUUID() });
+    const requester = await pool.query(`INSERT INTO users (username, password_hash, is_active) VALUES ('requester_request', $1, true) RETURNING id`, [await UserService.hashPassword('Password123!')]);
+    await pool.query(`INSERT INTO user_roles (user_id, role_id) VALUES ($1, 'REQUESTER')`, [requester.rows[0].id]);
+
+    // The Dashboard shows "ขอเบิกวัสดุ" and, once it has asked, no "วัสดุ" menu, which the Supply Officer sees in
+    // Journey F009-T1.1 (#202 Q18, P9).
+    await loginAs(context, requester.rows[0].id);
+    const probedRequests = page.waitForResponse((res: any) => res.url().includes('/my-material-requests?limit=1'));
+    await openDashboard(page);
+    await probedRequests;
+    await expect(page.locator('#nav-material-request-section')).toContainText('ขอเบิกวัสดุ');
+    await expect(page.locator('#nav-material-section')).toHaveCount(0);
+
+    await page.locator('#nav-my-material-request-list').click();
+    await expect(page).toHaveURL(/\/my-material-requests$/);
+    await expect(page.getByRole('heading', { level: 1, name: 'คำขอของฉัน' })).toBeVisible();
+    await expect(page.locator('#material-request-list-empty')).toHaveText('ยังไม่มีคำขอเบิก');
+
+    // The form waits for the CSRF token (#135).
+    await delaySessionCheck(page);
+    await page.locator('#material-request-create-action').click();
+    await expect(page).toHaveURL(/\/my-material-requests\/new$/);
+    await expect(page.getByRole('heading', { level: 1, name: 'สร้างคำขอเบิก' })).toBeVisible();
+    await expect(page.locator('#material-request-form')).toHaveCount(0);
+    await expect(page.locator('#material-request-form')).toBeVisible();
+
+    // Only the offered Requestable Materials are listed, each with its Request Unit; a search narrows them.
+    const choices = page.locator('#material-request-choices li');
+    await expect(choices).toHaveCount(2);
+    await expect(choices.nth(0)).toContainText('กระดาษ A4 (รีม)');
+    await expect(choices.nth(1)).toContainText('ซองจดหมายขอเบิก (รีม)');
+    await page.locator('#material-request-search').fill('กระดาษ');
+    await page.locator('#material-request-search').press('Enter');
+    await expect(choices).toHaveCount(1);
+    await page.getByRole('button', { name: 'เลือก กระดาษ A4' }).click();
+    await expect(page.getByRole('button', { name: 'เลือก กระดาษ A4' })).toBeDisabled();
+    await page.locator('#material-request-search').fill('ซอง');
+    await page.locator('#material-request-search-submit').click();
+    await expect(choices).toHaveCount(1);
+    await page.getByRole('button', { name: 'เลือก ซองจดหมายขอเบิก' }).click();
+
+    // Each Requested Quantity is entered in the Request Unit shown beside it (MRQ-28).
+    await expect(page.locator('[data-testid="material-request-row-0"]')).toContainText('กระดาษ A4');
+    await expect(page.locator('[data-testid="material-request-row-0"]')).toContainText('รีม');
+    await page.getByRole('textbox', { name: 'จำนวนที่ขอ กระดาษ A4' }).fill('1.5');
+    await page.getByRole('textbox', { name: 'จำนวนที่ขอ ซองจดหมายขอเบิก' }).fill('0.5');
+    await page.getByRole('textbox', { name: 'หมายเหตุ กระดาษ A4' }).fill('สีขาว');
+    await page.locator('#material-request-note').fill('ใช้ในงานประชุม');
+
+    // "กระดาษ A4" counts in whole numbers: the save is refused, naming its Requested Item, and keeps the form (Q10).
+    await page.locator('#material-request-submit').click();
+    await expect(page.locator('[data-testid="material-request-refused-item"]')).toHaveText('รายการที่ขอที่ 1: จำนวนที่ขอต้องเป็นจำนวนเต็ม');
+    await expect(page).toHaveURL(/\/my-material-requests\/new$/);
+
+    await page.getByRole('textbox', { name: 'จำนวนที่ขอ กระดาษ A4' }).fill('2');
+    await page.locator('#material-request-submit').click();
+
+    // The Material Request's page: its Request Number, note, each Requested Item Pending in its Request Unit, and the
+    // history (MRQ-04, Q13, Q14).
+    await expect(page).toHaveURL(/\/material-requests\/[0-9a-f-]{36}$/);
+    const requestNumber = (await page.locator('#material-request-number').textContent())!.trim();
+    expect(requestNumber).toMatch(/^[1-9]\d*$/);
+    await expect(page.getByRole('heading', { level: 1, name: `คำขอเบิก เลขที่คำขอ ${requestNumber}`, exact: true })).toBeVisible();
+    await expect(page.locator('#material-request-state')).toHaveText('รอพิจารณา');
+    await expect(page.locator('#material-request-note')).toHaveText('ใช้ในงานประชุม');
+    const first = page.locator('[data-testid="requested-item-0"]');
+    await expect(first).toContainText('กระดาษ A4');
+    await expect(first).toContainText('2 รีม');
+    await expect(first).toContainText('สีขาว');
+    await expect(first).toContainText('รอพิจารณา');
+    const second = page.locator('[data-testid="requested-item-1"]');
+    await expect(second).toContainText('ซองจดหมายขอเบิก');
+    await expect(second).toContainText('0.5 รีม');
+    await expect(second).toContainText('รอพิจารณา');
+    await expect(page.locator('[data-testid="material-request-history-1"]')).toContainText('requester_request');
+
+    // "คำขอของฉัน" lists it with its Request Number, state and Requested Item count; the state filter narrows it.
+    await page.locator('#back-material-request-list-link').click();
+    await expect(page).toHaveURL(/\/my-material-requests$/);
+    const listed = page.locator('#material-request-list-table tbody tr');
+    await expect(listed).toHaveCount(1);
+    await expect(listed).toContainText(requestNumber);
+    await expect(listed).toContainText('รอพิจารณา');
+    await expect(listed).toContainText('2 รายการ');
+    await page.locator('#material-request-state-filter').selectOption('cancelled');
+    await expect(page).toHaveURL(/\/my-material-requests\?state=cancelled$/);
+    await expect(page.locator('#material-request-list-empty')).toHaveText('ไม่มีคำขอเบิกในสถานะนี้');
+    await page.locator('#material-request-state-filter').selectOption('pending');
+    await expect(page).toHaveURL(/\/my-material-requests\?state=pending$/);
+    await expect(listed).toHaveCount(1);
+    await listed.getByRole('link', { name: requestNumber }).click();
+    await expect(page).toHaveURL(/\/material-requests\/[0-9a-f-]{36}$/);
+    await expect(page.locator('#material-request-number')).toHaveText(requestNumber);
+  });
 });

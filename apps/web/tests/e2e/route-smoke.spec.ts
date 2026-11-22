@@ -16,6 +16,7 @@ import { RepairService } from '../../../api/src/services/repair.service.ts';
 import { VerificationService } from '../../../api/src/services/verification.service.ts';
 import { CatalogListService } from '../../../api/src/services/catalog-list.service.ts';
 import { RequestableMaterialService } from '../../../api/src/services/requestable-material.service.ts';
+import { MaterialRequestService } from '../../../api/src/services/material-request.service.ts';
 import { StockMaterialService } from '../../../api/src/services/stock-material.service.ts';
 import { repositoryProxyConfig } from '../../vite.config.ts';
 
@@ -38,9 +39,13 @@ interface Fixtures {
   stockMaterialName: string;
   requestableMaterialId: string;
   requestableMaterialName: string;
+  materialRequestId: string;
+  requestNumber: string;
 }
 
-// Each route of router.tsx: the page a Read-only User opens and its heading, or why it is not opened.
+// Each route of router.tsx: the page a Read-only User who is also a Requester opens and its heading, or why it is not
+// opened. F009-T4 (#206): the Requester role lets the visits reach the Requester's pages, and the Dashboard's
+// "ขอเบิกวัสดุ" probe answer 200; it grants nothing else (#202 Q1).
 // A page that adds a route adds its row here; the first test fails until it does (F005-T3 retrospective, #101).
 const SMOKE: Record<string, { url: (f: Fixtures) => string; heading: (f: Fixtures) => string } | { skip: string }> = {
   '/': { url: () => '/', heading: () => 'เข้าสู่ระบบ' },
@@ -70,6 +75,10 @@ const SMOKE: Record<string, { url: (f: Fixtures) => string; heading: (f: Fixture
   '/requestable-materials': { url: () => '/requestable-materials', heading: () => 'วัสดุสำหรับขอเบิก' },
   '/requestable-materials/new': { skip: 'a write: material:manage' },
   '/requestable-materials/:id': { url: (f) => `/requestable-materials/${f.requestableMaterialId}`, heading: (f) => f.requestableMaterialName },
+  // F009-T4 (#206): the Requester's own Material Requests, the form and a Material Request's page.
+  '/my-material-requests': { url: () => '/my-material-requests', heading: () => 'คำขอของฉัน' },
+  '/my-material-requests/new': { url: () => '/my-material-requests/new', heading: () => 'สร้างคำขอเบิก' },
+  '/material-requests/:id': { url: (f) => `/material-requests/${f.materialRequestId}`, heading: (f) => `คำขอเบิก เลขที่คำขอ ${f.requestNumber}` },
 };
 
 // The paths router.tsx declares, read from its text: importing it builds a browser router, which needs a window.
@@ -81,7 +90,8 @@ const routerPaths = (): string[] => {
   return paths;
 };
 
-// Every page a Read-only User can read renders its heading with no error, through the real SPA and API.
+// Every page a Read-only User who is also a Requester can read renders its heading with no error, through the real SPA
+// and API.
 test.describe.serial('Route smoke: Real SPA -> Composed API -> PostgreSQL (Seam B)', () => {
   let container: StartedPostgreSqlContainer;
   let pool: pg.Pool;
@@ -134,6 +144,7 @@ test.describe.serial('Route smoke: Real SPA -> Composed API -> PostgreSQL (Seam 
     const custodianUserId = await createUser('custodian_smoke', 'ASSET_CUSTODIAN');
     const officerUserId = await createUser('officer_smoke', 'SUPPLY_OFFICER');
     readonlyUserId = await createUser('readonly_smoke', 'READ_ONLY');
+    await pool.query(`INSERT INTO user_roles (user_id, role_id) VALUES ($1, 'REQUESTER')`, [readonlyUserId]);
 
     const assetService = new AssetService({ db: pool });
     const today = new Intl.DateTimeFormat('en-CA', { timeZone: 'Asia/Bangkok', year: 'numeric', month: '2-digit', day: '2-digit' }).format(new Date());
@@ -169,7 +180,31 @@ test.describe.serial('Route smoke: Real SPA -> Composed API -> PostgreSQL (Seam 
       { name: requestableMaterialName, request_unit_id: unit.id },
       { retryToken: crypto.randomUUID() }
     );
-    fixtures = { assetId: asset.id, assetName, acquisitionId: acquisition.id, loanId, repairRecordId, verificationRoundId, stockMaterialId, stockMaterialName, requestableMaterialId, requestableMaterialName };
+    await new RequestableMaterialService({ db: pool }).addCompatibleStockMaterial(
+      officerUserId,
+      requestableMaterialId,
+      { stock_material_id: stockMaterialId, expected_version: 1 },
+      { retryToken: crypto.randomUUID() }
+    );
+    const { material_request_id: materialRequestId, request_number: requestNumber } = await new MaterialRequestService({ db: pool }).create(
+      readonlyUserId,
+      { requested_items: [{ requestable_material_id: requestableMaterialId, requested_quantity: '2' }] },
+      { retryToken: crypto.randomUUID() }
+    );
+    fixtures = {
+      assetId: asset.id,
+      assetName,
+      acquisitionId: acquisition.id,
+      loanId,
+      repairRecordId,
+      verificationRoundId,
+      stockMaterialId,
+      stockMaterialName,
+      requestableMaterialId,
+      requestableMaterialName,
+      materialRequestId,
+      requestNumber,
+    };
 
     const testProxy: Record<string, any> = {};
     for (const [route, opts] of Object.entries(repositoryProxyConfig)) {
@@ -202,7 +237,7 @@ test.describe.serial('Route smoke: Real SPA -> Composed API -> PostgreSQL (Seam 
     if ('skip' in row) {
       continue;
     }
-    test(`Route smoke: a Read-only User opens ${routePath} and sees its heading with no error`, async ({ page, context }) => {
+    test(`Route smoke: a Read-only User who is also a Requester opens ${routePath} and sees its heading with no error`, async ({ page, context }) => {
       const session = await sessionService.createSession(readonlyUserId);
       await context.addCookies([{ name: 'session', value: session.token, url: targetBaseUrl }]);
       // Every read the page makes, and the status each answered with once it has. A read is matched by its request,

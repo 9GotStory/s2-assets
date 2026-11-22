@@ -92,6 +92,32 @@ export const repositoryProxyConfig: Record<string, ProxyOptions> = {
       }
     },
   },
+  // F009-T4 (#206): the Requester's Material Requests; "คำขอของฉัน", "สร้างคำขอเบิก" and a Material Request's page are
+  // the SPA routes /my-material-requests, /my-material-requests/new and /material-requests/:id.
+  '/my-material-requests': {
+    target: 'http://api:3000',
+    changeOrigin: true,
+    bypass: (req) => {
+      if (req.headers.accept?.includes('text/html')) {
+        return '/index.html';
+      }
+    },
+  },
+  '/material-requests': {
+    target: 'http://api:3000',
+    changeOrigin: true,
+    bypass: (req) => {
+      if (req.headers.accept?.includes('text/html')) {
+        return '/index.html';
+      }
+    },
+  },
+  // F009-T4 (#206): the offered Requestable Materials a Requester asks for; no SPA route starts with
+  // /offered-requestable-materials.
+  '/offered-requestable-materials': {
+    target: 'http://api:3000',
+    changeOrigin: true,
+  },
   // F008-T1 (#176): the Unit list of the Stock Material catalog; no SPA route starts with /units.
   '/units': {
     target: 'http://api:3000',

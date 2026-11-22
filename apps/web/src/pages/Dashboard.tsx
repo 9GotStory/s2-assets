@@ -4,6 +4,7 @@ import { REPAIR_LIST_LABEL, REPAIR_SECTION_LABEL } from '../components/repairFac
 import { VERIFICATION_ROUND_LABEL } from '../components/verificationFacts';
 import { CATALOG_LISTS_LABEL, STOCK_MATERIAL_LABEL } from '../components/materialFacts';
 import { REQUESTABLE_MATERIAL_LABEL } from '../components/requestableMaterialFacts';
+import { CREATE_MATERIAL_REQUEST_LABEL, MY_MATERIAL_REQUESTS_LABEL, REQUEST_MATERIALS_LABEL } from '../components/materialRequestFacts';
 
 export interface SafeUser {
   id: string;
@@ -27,6 +28,9 @@ export const Dashboard: React.FC = () => {
   // F008-T1 (#175 P9): the "วัสดุ" menu shows only to holders of material:view, which the server answers by
   // reading the Stock Material list; anything but a 200 hides it.
   const [canViewMaterials, setCanViewMaterials] = useState(false);
+  // F009-T4 (#202 P9): the "ขอเบิกวัสดุ" menu shows only to holders of material-request:create, which the server
+  // answers by reading "คำขอของฉัน"; anything but a 200 hides it.
+  const [canRequestMaterials, setCanRequestMaterials] = useState(false);
 
   const navigate = useNavigate();
 
@@ -80,6 +84,19 @@ export const Dashboard: React.FC = () => {
     };
 
     probeMaterials();
+
+    const probeMaterialRequests = async () => {
+      try {
+        const response = await fetch('/my-material-requests?limit=1', { method: 'GET', credentials: 'include', signal: controller.signal });
+        // The answer is read to its end, so the request finishes instead of staying open with the page.
+        await response.text();
+        setCanRequestMaterials(response.ok);
+      } catch {
+        // An aborted or failed read leaves the menu hidden.
+      }
+    };
+
+    probeMaterialRequests();
 
     return () => {
       controller.abort();
@@ -642,6 +659,69 @@ export const Dashboard: React.FC = () => {
                 }}
               >
                 {REQUESTABLE_MATERIAL_LABEL}
+              </Link>
+            </div>
+          </section>
+        )}
+
+        {canRequestMaterials && (
+          <section
+            aria-labelledby="material-request-heading"
+            id="nav-material-request-section"
+            style={{
+              backgroundColor: '#f9fafb',
+              borderRadius: '6px',
+              padding: '1.25rem',
+              marginBottom: '1.5rem',
+            }}
+          >
+            <h2
+              id="material-request-heading"
+              style={{
+                fontSize: '1.125rem',
+                fontWeight: 600,
+                marginTop: 0,
+                marginBottom: '0.5rem',
+                color: '#374151',
+              }}
+            >
+              {REQUEST_MATERIALS_LABEL}
+            </h2>
+            <p style={{ margin: '0 0 1rem 0', fontSize: '0.875rem', color: '#4b5563' }}>
+              ขอเบิกวัสดุสำหรับขอเบิกที่ต้องใช้ และติดตามคำขอเบิกของตนเอง
+            </p>
+            <div style={{ display: 'flex', gap: '0.75rem', flexWrap: 'wrap' }}>
+              <Link
+                to="/my-material-requests"
+                id="nav-my-material-request-list"
+                style={{
+                  display: 'inline-block',
+                  padding: '0.5rem 1rem',
+                  backgroundColor: '#4b5563',
+                  color: '#ffffff',
+                  textDecoration: 'none',
+                  borderRadius: '4px',
+                  fontSize: '0.875rem',
+                  fontWeight: 500,
+                }}
+              >
+                {MY_MATERIAL_REQUESTS_LABEL}
+              </Link>
+              <Link
+                to="/my-material-requests/new"
+                id="nav-material-request-create"
+                style={{
+                  display: 'inline-block',
+                  padding: '0.5rem 1rem',
+                  backgroundColor: '#4b5563',
+                  color: '#ffffff',
+                  textDecoration: 'none',
+                  borderRadius: '4px',
+                  fontSize: '0.875rem',
+                  fontWeight: 500,
+                }}
+              >
+                {CREATE_MATERIAL_REQUEST_LABEL}
               </Link>
             </div>
           </section>

@@ -47,7 +47,9 @@ export function materialHelpers(context: () => { api: ApiHarness; officer: Actor
   const replaceUnits = (id: string, payload: Record<string, unknown>, token: string = crypto.randomUUID(), actor: Actor = context().officer) =>
     context().api.put(actor, `/stock-materials/${id}/units`, payload, { 'x-retry-token': token });
 
-  // The Units write that keeps a Stock Material's page as it is, at its version, for a test to change.
+  // The Units write that keeps a Stock Material's page as it is, at its version, for a test to change. Its Alternate
+  // Units come in the page's order, which lists the Base Unit first and then the Alternate Units by name, so a test
+  // that needs a refusal's `alternate_units[i]` to name a given Unit sets the order with `inOrder` (#205 retro item 3).
   const unitsAsRead = (page: { version: number; units: { unit_id: string; is_base: boolean; conversion_factor: string | null; whole_number_only: boolean; is_active: boolean }[] }) => {
     const base = page.units.find((unit) => unit.is_base)!;
     return {
@@ -58,6 +60,13 @@ export function materialHelpers(context: () => { api: ApiHarness; officer: Actor
         .map(({ unit_id, conversion_factor, whole_number_only, is_active }) => ({ unit_id, conversion_factor, whole_number_only, is_active })),
     };
   };
+
+  // The Units write `write` with its Alternate Units in the order `settings` names them, each active or not as told:
+  // the page lists them by name, and a refusal names a Unit by its place in the request.
+  const inOrder = (write: ReturnType<typeof unitsAsRead>, ...settings: [string, boolean][]) => ({
+    ...write,
+    alternate_units: settings.map(([unitId, isActive]) => ({ ...write.alternate_units.find((unit) => unit.unit_id === unitId)!, is_active: isActive })),
+  });
 
   // Adds an entry to the Brand or the Material Category list (F008-T4).
   const addBrand = (name: string, token: string = crypto.randomUUID(), actor: Actor = context().officer) =>
@@ -101,5 +110,5 @@ export function materialHelpers(context: () => { api: ApiHarness; officer: Actor
     return res.json().total_count;
   };
 
-  return { addUnit, unitNamed, unitsOf, createMaterial, created, materialOf, replaceUnits, unitsAsRead, addBrand, addMaterialCategory, brandNamed, materialCategoryNamed, changeDetails, duplicateCandidatesOf, correct, inactivate, reactivate, materialCount };
+  return { addUnit, unitNamed, unitsOf, createMaterial, created, materialOf, replaceUnits, unitsAsRead, inOrder, addBrand, addMaterialCategory, brandNamed, materialCategoryNamed, changeDetails, duplicateCandidatesOf, correct, inactivate, reactivate, materialCount };
 }

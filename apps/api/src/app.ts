@@ -26,6 +26,7 @@ import { referenceRoutes } from './routes/reference.routes.ts';
 import { stockMaterialRoutes } from './routes/stock-material.routes.ts';
 import { catalogListRoutes } from './routes/catalog-list.routes.ts';
 import { requestableMaterialRoutes } from './routes/requestable-material.routes.ts';
+import { materialRequestRoutes } from './routes/material-request.routes.ts';
 import { UserService, type DatabaseClient } from './services/user.service.ts';
 import { SessionService } from './services/session.service.ts';
 import { CapabilityService } from './services/capability.service.ts';
@@ -54,6 +55,8 @@ import { StockMaterialReadService } from './services/stock-material-read.service
 import { CatalogListService } from './services/catalog-list.service.ts';
 import { RequestableMaterialService } from './services/requestable-material.service.ts';
 import { RequestableMaterialReadService } from './services/requestable-material-read.service.ts';
+import { MaterialRequestService } from './services/material-request.service.ts';
+import { MaterialRequestReadService } from './services/material-request-read.service.ts';
 
 export interface AppOptions {
   config?: Partial<Config>;
@@ -338,6 +341,12 @@ export async function buildApp(options: AppOptions = {}): Promise<FastifyInstanc
       requestableMaterialService: new RequestableMaterialService({ db: dbClient }),
       requestableMaterialReadService: new RequestableMaterialReadService({ db: dbClient }),
       capabilityService,
+    });
+    // F009-T4 (#206): the Requester's Material Requests
+    await app.register(materialRequestRoutes, {
+      materialRequestService: new MaterialRequestService({ db: dbClient }),
+      materialRequestReadService: new MaterialRequestReadService({ db: dbClient }),
+      requestableMaterialReadService: new RequestableMaterialReadService({ db: dbClient }),
     });
 
     // Acquisition routes mounted under /acquisitions

@@ -16,6 +16,7 @@ export const KNOWN_ROLES = [
   'ASSET_CUSTODIAN',
   'VERIFICATION_STAFF',
   'SUPPLY_OFFICER',
+  'REQUESTER',
 ] as const;
 
 export type Role = (typeof KNOWN_ROLES)[number];
@@ -47,6 +48,7 @@ export const KNOWN_CAPABILITIES = [
   'retirement:correct',
   'material:view',
   'material:manage',
+  'material-request:create',
 ] as const;
 
 export type Capability = (typeof KNOWN_CAPABILITIES)[number];
@@ -60,6 +62,7 @@ export type Capability = (typeof KNOWN_CAPABILITIES)[number];
  * - ASSET_CUSTODIAN: grants 'asset:view', 'asset:duplicate-check', 'asset:register', 'asset:bulk-register', 'asset:correct', 'asset:search', 'acquisition:create', 'acquisition:view', 'evidence:view', 'evidence:create', 'evidence:correct', 'assignment:reassign', 'assignment:correct' (#50 Q3: Initial Assignment, Reassignment and Assignment Correction), 'loan:record' (#74 Q12: starting a Loan), 'loan:correct' (#74 Q12: Loan Correction), 'repair:record' (#98 Q2: a Repair Start and its Repair Outcome), 'repair:correct' (#98 Q2: Repair Correction), 'verification:record' (#125 Q1: an Asset Verification and a Re-verification), 'verification:manage' (#125 Q1: opening, editing and closing a Verification Round, and a Late Addition), 'verification:correct' (#125 Q1: Verification Correction, Reopen and voiding a Verification Round), 'retirement:record' (#154 Q6: recording a Retirement), 'retirement:correct' (#154 Q6: Retirement Correction)
  * - VERIFICATION_STAFF: grants 'asset:view', 'asset:search', 'verification:record' (#125 Q1: Verification Staff)
  * - SUPPLY_OFFICER: grants 'material:view', 'material:manage' (#175 Q1: keeping the Stock Material catalog, its Units, Brands and Material Categories)
+ * - REQUESTER: grants 'material-request:create' (#202 Q1: searching the offered Requestable Materials, creating Material Requests, and listing and viewing their own)
  * - Unknown roles: empty / unmapped
  */
 export const ROLE_CAPABILITY_MAP: Readonly<Record<string, readonly string[]>> = Object.freeze({
@@ -113,6 +116,7 @@ export const ROLE_CAPABILITY_MAP: Readonly<Record<string, readonly string[]>> = 
   ] as const),
   VERIFICATION_STAFF: Object.freeze(['asset:view', 'asset:search', 'verification:record'] as const),
   SUPPLY_OFFICER: Object.freeze(['material:view', 'material:manage'] as const),
+  REQUESTER: Object.freeze(['material-request:create'] as const),
 });
 
 /**

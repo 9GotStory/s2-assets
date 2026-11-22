@@ -4,6 +4,7 @@ import { startApiHarness, type Actor, type ApiHarness } from './support/api-harn
 import { withCapabilityAnswer } from './support/capability-helpers.ts';
 import { lockHelpers } from './support/lock-helpers.ts';
 import { materialHelpers } from './support/material-helpers.ts';
+import { requestableMaterialHelpers } from './support/requestable-material-helpers.ts';
 
 // F009-T2 (#204): the Compatible Stock Materials (วัสดุที่ใช้จ่ายได้) a Supply Officer confirms for a Requestable
 // Material, and whether it is offered to Requesters (#202 MRQ-15, MRQ-26, MRQ-27, MRQ-28, MRQ-30, MC-14, Q7, Q8, Q9,
@@ -22,42 +23,10 @@ describe('Compatible Stock Material (Seam A - F009-T2)', () => {
   const helpers = materialHelpers(() => ({ api, officer, reader: readonly }));
   const { unitNamed } = helpers;
   const { whileWriting, untilWaiting } = lockHelpers(() => ({ api }));
-
-  // A Requestable Material asked for in `requestUnit`, and its id.
-  const requestableIn = async (requestUnit: string = ream, name = `วัสดุขอเบิก ${crypto.randomUUID().slice(0, 8)}`): Promise<string> => {
-    const res = await api.post(officer, '/requestable-materials', { name, request_unit_id: requestUnit }, { 'x-retry-token': crypto.randomUUID() });
-    expect(res.statusCode).toBe(201);
-    return res.json().requestable_material_id;
-  };
+  const { requestableIn, requestableOf, add, end } = requestableMaterialHelpers(() => ({ api, officer, reader: readonly }));
 
   // A Stock Material whose Base Unit is `baseUnit`, named `name` or uniquely, and its id.
   const stockMaterialIn = (baseUnit: string, overrides: Record<string, unknown> = {}) => helpers.created({ base_unit: { unit_id: baseUnit }, ...overrides });
-
-  // The Requestable Material page as `actor` reads it.
-  const requestableOf = async (id: string, actor: Actor = readonly) => {
-    const res = await api.get(actor, `/requestable-materials/${id}`);
-    expect(res.statusCode).toBe(200);
-    return res.json();
-  };
-
-  // Adds the Stock Material `stockMaterialId` as a Compatible Stock Material of `requestableId`, at `version` or the
-  // version the page has now.
-  const add = async (requestableId: string, stockMaterialId: string, { version, token = crypto.randomUUID(), actor = officer }: { version?: number; token?: string; actor?: Actor } = {}) =>
-    api.post(
-      actor,
-      `/requestable-materials/${requestableId}/compatible-stock-materials`,
-      { stock_material_id: stockMaterialId, expected_version: version ?? (await requestableOf(requestableId)).version },
-      { 'x-retry-token': token }
-    );
-
-  // Ends the Compatible Stock Material `stockMaterialId` of `requestableId`, at `version` or the version the page has now.
-  const end = async (requestableId: string, stockMaterialId: string, { version, token = crypto.randomUUID(), actor = officer }: { version?: number; token?: string; actor?: Actor } = {}) =>
-    api.post(
-      actor,
-      `/requestable-materials/${requestableId}/compatible-stock-materials/${stockMaterialId}/end`,
-      { expected_version: version ?? (await requestableOf(requestableId)).version },
-      { 'x-retry-token': token }
-    );
 
   // The Stock Materials of the page's Compatible Stock Materials, in its order, each with whether it is current.
   const pairsOf = async (id: string) => (await requestableOf(id)).compatible_stock_materials.map(({ stock_material_id, is_current }: any) => ({ stock_material_id, is_current }));
@@ -103,7 +72,7 @@ describe('Compatible Stock Material (Seam A - F009-T2)', () => {
 
   describe('adding', () => {
     it('adds a Stock Material whose Base Unit is the Request Unit, and the page lists it current with its name, status and Units', async () => {
-      const requestable = await requestableIn();
+      const requestable = await requestableIn(ream);
       const paper = await stockMaterialIn(ream, { name: 'กระดาษถ่ายเอกสาร A4 80 แกรม' });
 
       const res = await add(requestable, paper, { version: 1 });
@@ -124,7 +93,7 @@ describe('Compatible Stock Material (Seam A - F009-T2)', () => {
     });
 
     it('records the add in the history with the Stock Material under its name then, by whom and when', async () => {
-      const requestable = await requestableIn();
+      const requestable = await requestableIn(ream);
       const paper = await stockMaterialIn(ream, { name: 'กระดาษสำหรับประวัติ' });
 
       expect((await add(requestable, paper)).statusCode).toBe(200);
@@ -141,7 +110,7 @@ describe('Compatible Stock Material (Seam A - F009-T2)', () => {
     });
 
     it('keeps the name each history entry recorded after the Stock Material is renamed (#202 Model)', async () => {
-      const requestable = await requestableIn();
+      const requestable = await requestableIn(ream);
       const paper = await stockMaterialIn(ream, { name: 'กระดาษชื่อตอนเพิ่ม' });
       expect((await add(requestable, paper)).statusCode).toBe(200);
       // What a Material Correction of the name writes (F008-T5).
@@ -158,7 +127,7 @@ describe('Compatible Stock Material (Seam A - F009-T2)', () => {
     });
 
     it('adds a Stock Material whose active Alternate Unit is the Request Unit (ADR 0002)', async () => {
-      const requestable = await requestableIn();
+      const requestable = await requestableIn(ream);
       const paper = await stockMaterialWithAlternate(await unitNamed(), ream);
 
       expect((await add(requestable, paper)).statusCode).toBe(200);
@@ -166,17 +135,17 @@ describe('Compatible Stock Material (Seam A - F009-T2)', () => {
     });
 
     it('refuses a Stock Material that lacks the Request Unit, naming the reason (MRQ-28, Q7)', async () => {
-      const requestable = await requestableIn();
+      const requestable = await requestableIn(ream);
       await expectAddRefused(requestable, await stockMaterialIn(await unitNamed()), 'do not include the Request Unit');
     });
 
     it('refuses a Stock Material whose Alternate Unit that is the Request Unit is Inactive', async () => {
-      const requestable = await requestableIn();
+      const requestable = await requestableIn(ream);
       await expectAddRefused(requestable, await stockMaterialWithAlternate(await unitNamed(), ream, { isActive: false }), 'do not include the Request Unit');
     });
 
     it('refuses an Inactive Stock Material, naming the reason (Q8, MC-14)', async () => {
-      const requestable = await requestableIn();
+      const requestable = await requestableIn(ream);
       const paper = await stockMaterialIn(ream);
       expect((await helpers.inactivate(paper, { expected_version: (await helpers.materialOf(paper)).version })).statusCode).toBe(200);
 
@@ -184,13 +153,13 @@ describe('Compatible Stock Material (Seam A - F009-T2)', () => {
     });
 
     it('refuses a Stock Material that does not exist, and an id that is not one', async () => {
-      const requestable = await requestableIn();
+      const requestable = await requestableIn(ream);
       await expectAddRefused(requestable, crypto.randomUUID(), 'stock_material_id must name a Stock Material');
       await expectAddRefused(requestable, 'not-a-uuid', 'stock_material_id must be a valid UUID');
     });
 
     it('refuses a pair already current, naming the reason', async () => {
-      const requestable = await requestableIn();
+      const requestable = await requestableIn(ream);
       const paper = await stockMaterialIn(ream);
       expect((await add(requestable, paper)).statusCode).toBe(200);
 
@@ -206,7 +175,7 @@ describe('Compatible Stock Material (Seam A - F009-T2)', () => {
     });
 
     it('takes no field it does not know, and needs the expected version', async () => {
-      const requestable = await requestableIn();
+      const requestable = await requestableIn(ream);
       const paper = await stockMaterialIn(ream);
       const post = (payload: Record<string, unknown>) =>
         api.post(officer, `/requestable-materials/${requestable}/compatible-stock-materials`, payload, { 'x-retry-token': crypto.randomUUID() });
@@ -219,7 +188,7 @@ describe('Compatible Stock Material (Seam A - F009-T2)', () => {
 
   describe('ending and adding again (P1)', () => {
     it('ends a current one, which stays listed as ended, and records the end with the Stock Material under its name then', async () => {
-      const requestable = await requestableIn();
+      const requestable = await requestableIn(ream);
       const paper = await stockMaterialIn(ream, { name: 'กระดาษที่เลิก' });
       expect((await add(requestable, paper)).statusCode).toBe(200);
 
@@ -238,7 +207,7 @@ describe('Compatible Stock Material (Seam A - F009-T2)', () => {
     });
 
     it('adds an ended one again as the same pair, current again, with each change in the history', async () => {
-      const requestable = await requestableIn();
+      const requestable = await requestableIn(ream);
       const paper = await stockMaterialIn(ream);
       expect((await add(requestable, paper)).statusCode).toBe(200);
       expect((await end(requestable, paper)).statusCode).toBe(200);
@@ -251,7 +220,7 @@ describe('Compatible Stock Material (Seam A - F009-T2)', () => {
     });
 
     it('lists the current ones first, each part by name', async () => {
-      const requestable = await requestableIn();
+      const requestable = await requestableIn(ream);
       const [b, a, d, c] = await Promise.all(['ข กระดาษ', 'ก กระดาษ', 'ง กระดาษ', 'ค กระดาษ'].map((name) => stockMaterialIn(ream, { name: `${name} ${crypto.randomUUID().slice(0, 4)}` })));
       for (const paper of [b, a, d, c]) {
         expect((await add(requestable, paper)).statusCode).toBe(200);
@@ -269,7 +238,7 @@ describe('Compatible Stock Material (Seam A - F009-T2)', () => {
     });
 
     it('refuses to end one already ended, writing nothing (#204 start decision 1)', async () => {
-      const requestable = await requestableIn();
+      const requestable = await requestableIn(ream);
       const paper = await stockMaterialIn(ream);
       expect((await add(requestable, paper)).statusCode).toBe(200);
       expect((await end(requestable, paper)).statusCode).toBe(200);
@@ -283,7 +252,7 @@ describe('Compatible Stock Material (Seam A - F009-T2)', () => {
     });
 
     it('answers 404 for a pair never added and for a Requestable Material that does not exist, and 400 for an id that is not one', async () => {
-      const requestable = await requestableIn();
+      const requestable = await requestableIn(ream);
       const paper = await stockMaterialIn(ream);
 
       const neverAdded = await end(requestable, paper);
@@ -298,7 +267,7 @@ describe('Compatible Stock Material (Seam A - F009-T2)', () => {
     });
 
     it('ends one whose Stock Material went Inactive', async () => {
-      const requestable = await requestableIn();
+      const requestable = await requestableIn(ream);
       const paper = await stockMaterialIn(ream);
       expect((await add(requestable, paper)).statusCode).toBe(200);
       expect((await helpers.inactivate(paper, { expected_version: (await helpers.materialOf(paper)).version })).statusCode).toBe(200);
@@ -310,7 +279,7 @@ describe('Compatible Stock Material (Seam A - F009-T2)', () => {
 
   describe('many-to-many (MRQ-27) and Inactive (MC-14)', () => {
     it('lets one Stock Material fulfil several Requestable Materials and one Requestable Material have several Stock Materials', async () => {
-      const [first, second] = [await requestableIn(), await requestableIn()];
+      const [first, second] = [await requestableIn(ream), await requestableIn(ream)];
       const [paper, otherPaper] = [await stockMaterialIn(ream, { name: 'ก กระดาษร่วม' }), await stockMaterialIn(ream, { name: 'ข กระดาษร่วม' })];
 
       for (const [requestable, stockMaterial] of [[first, paper], [first, otherPaper], [second, paper]]) {
@@ -326,7 +295,7 @@ describe('Compatible Stock Material (Seam A - F009-T2)', () => {
     });
 
     it('keeps a Stock Material compatible when it goes Inactive, showing that it is', async () => {
-      const requestable = await requestableIn();
+      const requestable = await requestableIn(ream);
       const paper = await stockMaterialIn(ream);
       expect((await add(requestable, paper)).statusCode).toBe(200);
       const versionBefore = (await requestableOf(requestable)).version;
@@ -341,7 +310,7 @@ describe('Compatible Stock Material (Seam A - F009-T2)', () => {
 
   describe('stale version (Q17)', () => {
     it('refuses an add or an end based on an older version with the current one, writing nothing', async () => {
-      const requestable = await requestableIn();
+      const requestable = await requestableIn(ream);
       const [paper, otherPaper] = [await stockMaterialIn(ream), await stockMaterialIn(ream)];
       expect((await add(requestable, paper)).statusCode).toBe(200);
       const before = await requestableOf(requestable);
@@ -366,7 +335,7 @@ describe('Compatible Stock Material (Seam A - F009-T2)', () => {
     };
 
     it('is not offered with No Compatible Stock Material, is once one is added, and is not once the last is ended', async () => {
-      const requestable = await requestableIn();
+      const requestable = await requestableIn(ream);
       const [paper, otherPaper] = [await stockMaterialIn(ream), await stockMaterialIn(ream)];
       expect(await offeredOf(requestable)).toBe(false);
 
@@ -380,7 +349,7 @@ describe('Compatible Stock Material (Seam A - F009-T2)', () => {
     });
 
     it('stays offered while its only Compatible Stock Material is Inactive', async () => {
-      const requestable = await requestableIn();
+      const requestable = await requestableIn(ream);
       const paper = await stockMaterialIn(ream);
       expect((await add(requestable, paper)).statusCode).toBe(200);
       expect((await helpers.inactivate(paper, { expected_version: (await helpers.materialOf(paper)).version })).statusCode).toBe(200);
@@ -389,7 +358,7 @@ describe('Compatible Stock Material (Seam A - F009-T2)', () => {
     });
 
     it('is not offered while Inactive, even with a current Compatible Stock Material', async () => {
-      const requestable = await requestableIn();
+      const requestable = await requestableIn(ream);
       expect((await add(requestable, await stockMaterialIn(ream))).statusCode).toBe(200);
       // What making a Requestable Material Inactive will write (F009-T7).
       await api.pool.query('UPDATE requestable_materials SET is_active = false, version = version + 1 WHERE id = $1', [requestable]);
@@ -404,7 +373,7 @@ describe('Compatible Stock Material (Seam A - F009-T2)', () => {
 
     it('lists the active Stock Materials matching a search by name, each saying whether its active Units include the Request Unit', async () => {
       const tag = `เลือก${crypto.randomUUID().slice(0, 6)}`;
-      const requestable = await requestableIn();
+      const requestable = await requestableIn(ream);
       const other = await unitNamed();
       const base = await stockMaterialIn(ream, { name: `ก ${tag} หน่วยหลัก` });
       const alternate = await stockMaterialWithAlternate(other, ream);
@@ -443,7 +412,7 @@ describe('Compatible Stock Material (Seam A - F009-T2)', () => {
 
     it('pages the choices by name', async () => {
       const tag = `หน้า${crypto.randomUUID().slice(0, 6)}`;
-      const requestable = await requestableIn();
+      const requestable = await requestableIn(ream);
       const ids = [];
       for (const name of ['ก', 'ข', 'ค']) {
         ids.push(await stockMaterialIn(ream, { name: `${name} ${tag}` }));
@@ -456,7 +425,7 @@ describe('Compatible Stock Material (Seam A - F009-T2)', () => {
     });
 
     it('answers 404 for a Requestable Material that does not exist, 400 for an id that is not one, and refuses a query it does not take', async () => {
-      const requestable = await requestableIn();
+      const requestable = await requestableIn(ream);
       expect((await choicesOf(crypto.randomUUID(), '')).statusCode).toBe(404);
       expect((await choicesOf('not-a-uuid', '')).json().code).toBe('INVALID_ID');
       for (const [query, rule] of [
@@ -473,7 +442,7 @@ describe('Compatible Stock Material (Seam A - F009-T2)', () => {
 
   describe('retry token', () => {
     it('needs a token to add or end', async () => {
-      const requestable = await requestableIn();
+      const requestable = await requestableIn(ream);
       const paper = await stockMaterialIn(ream);
       const url = `/requestable-materials/${requestable}/compatible-stock-materials`;
 
@@ -488,7 +457,7 @@ describe('Compatible Stock Material (Seam A - F009-T2)', () => {
     });
 
     it('answers an identical replay of an add or an end with the committed result and writes nothing', async () => {
-      const requestable = await requestableIn();
+      const requestable = await requestableIn(ream);
       const paper = await stockMaterialIn(ream);
       for (const write of [add, end]) {
         const token = crypto.randomUUID();
@@ -506,7 +475,7 @@ describe('Compatible Stock Material (Seam A - F009-T2)', () => {
     });
 
     it('refuses the same token with a changed payload, and writes nothing', async () => {
-      const [requestable, otherRequestable] = [await requestableIn(), await requestableIn()];
+      const [requestable, otherRequestable] = [await requestableIn(ream), await requestableIn(ream)];
       const [paper, otherPaper] = [await stockMaterialIn(ream), await stockMaterialIn(ream)];
       const addToken = crypto.randomUUID();
       expect((await add(requestable, paper, { version: 1, token: addToken })).statusCode).toBe(200);
@@ -530,7 +499,7 @@ describe('Compatible Stock Material (Seam A - F009-T2)', () => {
     });
 
     it('scopes a token to its operation: an add\'s token carries an end anew', async () => {
-      const requestable = await requestableIn();
+      const requestable = await requestableIn(ream);
       const paper = await stockMaterialIn(ream);
       const token = crypto.randomUUID();
       expect((await add(requestable, paper, { version: 1, token })).statusCode).toBe(200);
@@ -542,7 +511,7 @@ describe('Compatible Stock Material (Seam A - F009-T2)', () => {
 
     it('scopes a token to its actor', async () => {
       const otherOfficer = await api.actor('officer_compatible_two', 'SUPPLY_OFFICER');
-      const [requestable, paper, otherPaper] = [await requestableIn(), await stockMaterialIn(ream), await stockMaterialIn(ream)];
+      const [requestable, paper, otherPaper] = [await requestableIn(ream), await stockMaterialIn(ream), await stockMaterialIn(ream)];
       const token = crypto.randomUUID();
       expect((await add(requestable, paper, { version: 1, token })).statusCode).toBe(200);
 
@@ -552,7 +521,7 @@ describe('Compatible Stock Material (Seam A - F009-T2)', () => {
     });
 
     it('stores no receipt for a refusal, so the same token can carry the request once it can be saved', async () => {
-      const requestable = await requestableIn();
+      const requestable = await requestableIn(ream);
       const paper = await stockMaterialWithAlternate(await unitNamed(), ream, { isActive: false });
       const token = crypto.randomUUID();
       expect((await add(requestable, paper, { version: 1, token })).statusCode).toBe(400);
@@ -564,7 +533,7 @@ describe('Compatible Stock Material (Seam A - F009-T2)', () => {
 
   describe('permissions (Q18, P9)', () => {
     it('lets the Supply Officer, the Administrator and the Read-only User read the Compatible Stock Materials, and no one else', async () => {
-      const requestable = await requestableIn();
+      const requestable = await requestableIn(ream);
       const paper = await stockMaterialIn(ream, { name: 'กระดาษที่ทุกคนไม่ควรเห็น' });
       expect((await add(requestable, paper)).statusCode).toBe(200);
       const url = `/requestable-materials/${requestable}`;
@@ -582,7 +551,7 @@ describe('Compatible Stock Material (Seam A - F009-T2)', () => {
     });
 
     it('lets only the Supply Officer choose, add and end, writing nothing for anyone else', async () => {
-      const requestable = await requestableIn();
+      const requestable = await requestableIn(ream);
       const [paper, otherPaper] = [await stockMaterialIn(ream, { name: 'กระดาษเฉพาะเจ้าหน้าที่' }), await stockMaterialIn(ream)];
       expect((await add(requestable, paper)).statusCode).toBe(200);
       const before = await requestableOf(requestable);
@@ -601,7 +570,7 @@ describe('Compatible Stock Material (Seam A - F009-T2)', () => {
 
     // The Supply Officer holds material:view too, so a gate on it would let them through.
     it('needs material:manage itself to choose, add and end, and fails closed when the lookup fails, writing nothing', async () => {
-      const requestable = await requestableIn();
+      const requestable = await requestableIn(ream);
       const [paper, otherPaper] = [await stockMaterialIn(ream, { name: 'กระดาษที่ต้องจัดการได้' }), await stockMaterialIn(ream)];
       expect((await add(requestable, paper)).statusCode).toBe(200);
       const before = await requestableOf(requestable);
@@ -623,7 +592,7 @@ describe('Compatible Stock Material (Seam A - F009-T2)', () => {
     });
 
     it('needs a session and the CSRF token to add or end, and an inactive user is refused', async () => {
-      const requestable = await requestableIn();
+      const requestable = await requestableIn(ream);
       const [paper, otherPaper] = [await stockMaterialIn(ream), await stockMaterialIn(ream)];
       expect((await add(requestable, paper)).statusCode).toBe(200);
       const before = await requestableOf(requestable);
@@ -659,7 +628,7 @@ describe('Compatible Stock Material (Seam A - F009-T2)', () => {
     const pairWrite = (change: string) => `WITH bumped AS (UPDATE requestable_materials SET version = version + 1 WHERE id = $1 RETURNING id) ${change}`;
 
     it('an add waits for its Stock Material being made Inactive and then refuses it', async () => {
-      const [requestable, paper] = [await requestableIn(), await stockMaterialIn(ream)];
+      const [requestable, paper] = [await requestableIn(ream), await stockMaterialIn(ream)];
 
       const [res] = await whileWriting(
         // What making a Stock Material Inactive writes (F008-T7), held uncommitted.
@@ -674,7 +643,7 @@ describe('Compatible Stock Material (Seam A - F009-T2)', () => {
     });
 
     it('an add waits for its Stock Material being reactivated and then takes it', async () => {
-      const [requestable, paper] = [await requestableIn(), await stockMaterialIn(ream)];
+      const [requestable, paper] = [await requestableIn(ream), await stockMaterialIn(ream)];
       await api.pool.query('UPDATE stock_materials SET is_active = false, version = version + 1 WHERE id = $1', [paper]);
 
       const [res] = await whileWriting(
@@ -689,7 +658,7 @@ describe('Compatible Stock Material (Seam A - F009-T2)', () => {
     });
 
     it('an add waits for a Units write making the Alternate Unit that is the Request Unit Inactive, and then refuses it', async () => {
-      const requestable = await requestableIn();
+      const requestable = await requestableIn(ream);
       const paper = await stockMaterialWithAlternate(await unitNamed(), ream);
 
       const [res] = await whileWriting(
@@ -704,7 +673,7 @@ describe('Compatible Stock Material (Seam A - F009-T2)', () => {
     });
 
     it('an add waits for a Units write adding the Request Unit, and then takes the Stock Material', async () => {
-      const requestable = await requestableIn();
+      const requestable = await requestableIn(ream);
       const paper = await stockMaterialIn(await unitNamed());
 
       const [res] = await whileWriting(
@@ -726,7 +695,7 @@ describe('Compatible Stock Material (Seam A - F009-T2)', () => {
       ['an end', async (requestable: string, paper: string) => expect((await add(requestable, paper, { version: 1 })).statusCode).toBe(200)],
     ] as const) {
       it(`${write} waits for its Stock Material's Material Correction and records the new name in the history (#175 P6)`, async () => {
-        const [requestable, paper] = [await requestableIn(), await stockMaterialIn(ream, { name: 'กระดาษชื่อเดิม' })];
+        const [requestable, paper] = [await requestableIn(ream), await stockMaterialIn(ream, { name: 'กระดาษชื่อเดิม' })];
         await setUp(requestable, paper);
         const version = (await requestableOf(requestable)).version;
 
@@ -744,7 +713,7 @@ describe('Compatible Stock Material (Seam A - F009-T2)', () => {
     }
 
     it('an add waits for another add of the pair and then refuses it as already current', async () => {
-      const [requestable, paper] = [await requestableIn(), await stockMaterialIn(ream)];
+      const [requestable, paper] = [await requestableIn(ream), await stockMaterialIn(ream)];
 
       const [res] = await whileWriting(
         { sql: pairWrite('INSERT INTO compatible_stock_materials (requestable_material_id, stock_material_id) SELECT id, $2 FROM bumped'), params: [requestable, paper] },
@@ -757,7 +726,7 @@ describe('Compatible Stock Material (Seam A - F009-T2)', () => {
     });
 
     it('an add waits for an end of the pair and then makes it current again', async () => {
-      const [requestable, paper] = [await requestableIn(), await stockMaterialIn(ream)];
+      const [requestable, paper] = [await requestableIn(ream), await stockMaterialIn(ream)];
       expect((await add(requestable, paper, { version: 1 })).statusCode).toBe(200);
 
       const [res] = await whileWriting(
@@ -774,7 +743,7 @@ describe('Compatible Stock Material (Seam A - F009-T2)', () => {
     });
 
     it('an end waits for another end of the pair and then refuses it as not current', async () => {
-      const [requestable, paper] = [await requestableIn(), await stockMaterialIn(ream)];
+      const [requestable, paper] = [await requestableIn(ream), await stockMaterialIn(ream)];
       expect((await add(requestable, paper, { version: 1 })).statusCode).toBe(200);
 
       const [res] = await whileWriting(
@@ -791,7 +760,7 @@ describe('Compatible Stock Material (Seam A - F009-T2)', () => {
     });
 
     it('an end waits for an add of the pair and then ends it', async () => {
-      const [requestable, paper] = [await requestableIn(), await stockMaterialIn(ream)];
+      const [requestable, paper] = [await requestableIn(ream), await stockMaterialIn(ream)];
       expect((await add(requestable, paper, { version: 1 })).statusCode).toBe(200);
       expect((await end(requestable, paper, { version: 2 })).statusCode).toBe(200);
 
