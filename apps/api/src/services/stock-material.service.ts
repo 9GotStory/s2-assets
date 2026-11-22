@@ -3,6 +3,7 @@ import { REMARK_MAX_LENGTH, normalizeLine, normalizeText } from './assignment.se
 import { isValidUuid } from './capability.service.ts';
 import { CATALOG_LISTS, type CatalogListKind, type NamedListEntry } from './catalog-list-entries.ts';
 import { catalogListEntryOf, selectableCatalogListEntry, unselectableUnitsAmong } from './catalog-list.service.ts';
+import { requestableMaterialsAskedIn } from './requestable-material-request-units.ts';
 import { commitOnce } from './retryable-write.ts';
 import { NotFoundError, StaleBeforeConflictError } from './service-errors.ts';
 import { duplicateCandidatesOf, stockMaterialUnitsOf, type DuplicateCandidates, type StockMaterialHistoryChange, type StockMaterialHistoryKind, type StockMaterialUnit } from './stock-material-read.service.ts';
@@ -480,6 +481,21 @@ export class StockMaterialService {
         if (blanked !== -1) {
           throw new ValidationError(`${unitFieldOf(blanked)}.conversion_factor must stay known: only a Base Unit change leaves a factor unknown`);
         }
+      }
+      // F009-T3 (#205): an Alternate Unit that a current Compatible Stock Material is asked for in stays active, so one
+      // Request Unit stays one of that Unit of the Stock Material; the Supply Officer ends the compatibility first (#202
+      // Q15, ADR 0002). Read after the lock above, which adding or ending one waits for.
+      const askedIn = await requestableMaterialsAskedIn(
+        client,
+        stockMaterialId,
+        units.filter((unit) => !unit.is_active).map(({ unit_id }) => unit_id)
+      );
+      const keptActive = units.findIndex((unit) => askedIn.has(unit.unit_id));
+      if (keptActive !== -1) {
+        const names = askedIn.get(units[keptActive].unit_id)!.map((name) => JSON.stringify(name)).join(', ');
+        throw new ValidationError(
+          `${unitFieldOf(keptActive)}.is_active must stay true: the Unit is the Request Unit of the Requestable Materials ${names}, for which this Stock Material is a current Compatible Stock Material; end that compatibility first`
+        );
       }
       // A Unit new to the Stock Material, a new Base Unit and a reactivated Alternate Unit are new choices; a Unit kept
       // as it was may keep an Inactive list entry (#175 Q21).

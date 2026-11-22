@@ -212,7 +212,7 @@ test.describe.serial('Material Request journeys: Real SPA -> Composed API -> Pos
     await expect(page).toHaveURL(pageUrl);
   });
 
-  test('Journey F009-T2.1: a Supply Officer sees "ยังไม่มีวัสดุที่ใช้จ่าย" on "กระดาษ A4", finds the Stock Material without รีม greyed with its reason, adds a Compatible Stock Material, which removes the badge, ends it and adds it again', async ({ page, context }) => {
+  test('Journey F009-T2.1: a Supply Officer sees "ยังไม่มีวัสดุที่ใช้จ่าย" on "กระดาษ A4", finds the Stock Material without รีม greyed with its reason, adds a Compatible Stock Material, which removes the badge, ends it and adds it again, and the Units form refuses making รีม Inactive on a Stock Material it is asked for in', async ({ page, context }) => {
     // A Stock Material counted in รีม, with กล่อง as an Inactive Alternate Unit; one with no รีม among its Units; and
     // 25 others, more than the picker shows at once.
     const box = await new CatalogListService({ db: pool }).add(officerUserId, 'unit', 'กล่อง', { retryToken: crypto.randomUUID() });
@@ -388,5 +388,33 @@ test.describe.serial('Material Request journeys: Real SPA -> Composed API -> Pos
     await expect(page.locator('#compatible-stock-material-table thead th')).toHaveText(['วัสดุ', 'สถานะวัสดุ', 'หน่วยนับ', 'การใช้จ่าย']);
     await expect(page.locator('#compatible-stock-material-add-action')).toHaveCount(0);
     await expect(page.locator(`[data-testid="compatible-stock-material-end-${copyPaperId}"]`)).toHaveCount(0);
+
+    // F009-T3 (#205 start decision 1): the Units form refuses making รีม Inactive on a Stock Material that "กระดาษ A4"
+    // is asked for in through it, naming "กระดาษ A4", and keeps the form open (#202 Q15, ADR 0002).
+    const leaf = await new CatalogListService({ db: pool }).add(officerUserId, 'unit', 'แผ่นกระดาษ', { retryToken: crypto.randomUUID() });
+    const loosePaperId = (
+      await stockMaterials.create(
+        officerUserId,
+        { name: 'กระดาษ A4 แบบแผ่น', base_unit: { unit_id: leaf.id }, alternate_units: [{ unit_id: reamId, conversion_factor: '500' }], explicit_continuation: true },
+        { retryToken: crypto.randomUUID() }
+      )
+    ).stock_material_id;
+    const paperRequestableId = pageUrl.split('/').at(-1)!;
+    const { version: paperVersion } = (await pool.query('SELECT version FROM requestable_materials WHERE id = $1', [paperRequestableId])).rows[0];
+    await new RequestableMaterialService({ db: pool }).addCompatibleStockMaterial(
+      officerUserId,
+      paperRequestableId,
+      { stock_material_id: loosePaperId, expected_version: paperVersion },
+      { retryToken: crypto.randomUUID() }
+    );
+    await loginAs(context, officerUserId);
+    await page.goto(`${targetBaseUrl}/stock-materials/${loosePaperId}`);
+    await page.locator('#stock-material-edit-units').click();
+    await expect(page.locator('#stock-material-units-alternate-0-unit')).toHaveText('รีม');
+    await page.locator('#stock-material-units-alternate-0-inactive').check();
+    await page.locator('#stock-material-units-submit').click();
+    await expect(page.locator('[data-testid="stock-material-units-form-error"]')).toContainText('"กระดาษ A4"');
+    await expect(page.locator('#stock-material-units-form')).toBeVisible();
+    await expect(page.locator('#stock-material-units tbody tr').filter({ hasText: 'รีม' }).locator('[data-testid="stock-material-unit-inactive"]')).toHaveCount(0);
   });
 });
