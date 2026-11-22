@@ -9,11 +9,14 @@ import type { RequestableMaterialReadService } from '../services/requestable-mat
 import {
   REQUESTABLE_MATERIAL_NAME_MAX_LENGTH,
   RequestableMaterialNameTakenError,
+  type AddCompatibleStockMaterialInput,
   type CreateRequestableMaterialInput,
+  type EndCompatibleStockMaterialInput,
   type RequestableMaterialService,
 } from '../services/requestable-material.service.ts';
-import { RetryTokenConflictError } from '../services/service-errors.ts';
+import { NotFoundError, RetryTokenConflictError, StaleBeforeConflictError } from '../services/service-errors.ts';
 import { ValidationError } from '../services/validation-error.ts';
+import { stockMaterialSearchField } from './stock-material.routes.ts';
 
 export interface RequestableMaterialRoutesOptions {
   requestableMaterialService: RequestableMaterialService;
@@ -28,6 +31,23 @@ const CreateRequestableMaterialSchema = z
     request_unit_id: z.string(),
     whole_number_only: z.boolean().optional(),
     description: z.string().nullable().optional(),
+    retry_token: z.string().optional(),
+  })
+  .strict();
+
+// F009-T2 (#204): adding a Compatible Stock Material, at the version of the Requestable Material the request read.
+const AddCompatibleStockMaterialSchema = z
+  .object({
+    stock_material_id: z.string(),
+    expected_version: z.number().int().positive(),
+    retry_token: z.string().optional(),
+  })
+  .strict();
+
+// F009-T2 (#204): ending a Compatible Stock Material, at the version of the Requestable Material the request read.
+const EndCompatibleStockMaterialSchema = z
+  .object({
+    expected_version: z.number().int().positive(),
     retry_token: z.string().optional(),
   })
   .strict();
@@ -47,12 +67,23 @@ const RequestableMaterialListQuerySchema = z
   })
   .strict();
 
+// F009-T2 (#204): the Stock Materials to choose from, found as the Stock Material list finds them.
+const StockMaterialChoicesQuerySchema = z
+  .object({
+    search: stockMaterialSearchField,
+    ...pageQueryFields,
+  })
+  .strict();
+
 // The answer to a refused write, or null for an error that is not a refusal.
 const refusalOf = (err: unknown) => {
   if (err instanceof RequestableMaterialNameTakenError) {
     return { ...errorBody(err.statusCode, err.code, err.message), entry: err.entry };
   }
-  if (err instanceof RetryTokenConflictError || err instanceof ValidationError) {
+  if (err instanceof StaleBeforeConflictError) {
+    return { ...errorBody(err.statusCode, err.code, err.message), current_values: err.current_values, expected_values: err.expected_values };
+  }
+  if (err instanceof RetryTokenConflictError || err instanceof NotFoundError || err instanceof ValidationError) {
     return errorBody(err.statusCode, err.code, err.message);
   }
   return null;
@@ -100,6 +131,30 @@ export const requestableMaterialRoutes: FastifyPluginAsync<RequestableMaterialRo
   });
 
   /**
+   * GET /requestable-materials/:id/stock-material-choices
+   * The active Stock Materials a Supply Officer may add as Compatible Stock Materials, found by text as in the Stock
+   * Material list, a page at a time, each saying whether its active Units include the Request Unit (F009-T2, #202 Q19).
+   * Protected: requires 'material:manage' capability (Supply Officer)
+   */
+  fastify.get('/requestable-materials/:id/stock-material-choices', { preHandler: [requireCapability('material:manage')] }, async (request, reply) => {
+    reply.header('Cache-Control', 'no-store');
+    const { id } = request.params as { id: string };
+    if (!isValidUuid(id)) {
+      return reply.status(400).send(errorBody(400, 'INVALID_ID', 'Requestable Material ID must be a valid UUID string'));
+    }
+    const parsed = StockMaterialChoicesQuerySchema.safeParse(request.query ?? {});
+    if (!parsed.success) {
+      return reply.status(400).send(invalidQueryBody(parsed.error));
+    }
+    const { limit = 25, offset = 0, search } = parsed.data;
+    const choices = await requestableMaterialReadService.stockMaterialChoices(id.trim().toLowerCase(), { search, limit, offset });
+    if (!choices) {
+      return reply.status(404).send(errorBody(404, 'NOT_FOUND', 'Requestable Material not found'));
+    }
+    return reply.status(200).send(choices);
+  });
+
+  /**
    * POST /requestable-materials
    * Creates a Requestable Material with its Request Unit ("เพิ่มวัสดุสำหรับขอเบิก", F009-T1).
    * Protected: requires 'material:manage' capability (Supply Officer)
@@ -112,6 +167,71 @@ export const requestableMaterialRoutes: FastifyPluginAsync<RequestableMaterialRo
     try {
       const { retry_token: _retryToken, ...input } = write.data;
       return reply.status(201).send(await requestableMaterialService.create(request.user!.id, input as CreateRequestableMaterialInput, { retryToken: write.retryToken }));
+    } catch (err) {
+      const refusal = refusalOf(err);
+      if (!refusal) {
+        throw err;
+      }
+      return reply.status(refusal.statusCode).send(refusal);
+    }
+  });
+
+  /**
+   * POST /requestable-materials/:id/compatible-stock-materials
+   * Adds a Compatible Stock Material ("วัสดุที่ใช้จ่ายได้", F009-T2) at the version the request read.
+   * Protected: requires 'material:manage' capability (Supply Officer)
+   */
+  fastify.post('/requestable-materials/:id/compatible-stock-materials', { preHandler: [requireCapability('material:manage')] }, async (request, reply) => {
+    const { id } = request.params as { id: string };
+    if (!isValidUuid(id)) {
+      return reply.status(400).send(errorBody(400, 'INVALID_ID', 'Requestable Material ID must be a valid UUID string'));
+    }
+    const write = parseWrite(AddCompatibleStockMaterialSchema, request);
+    if ('refusal' in write) {
+      return reply.status(400).send(write.refusal);
+    }
+    try {
+      const { retry_token: _retryToken, ...input } = write.data;
+      const recorded = await requestableMaterialService.addCompatibleStockMaterial(request.user!.id, id.trim().toLowerCase(), input as AddCompatibleStockMaterialInput, {
+        retryToken: write.retryToken,
+      });
+      return reply.status(200).send(recorded);
+    } catch (err) {
+      const refusal = refusalOf(err);
+      if (!refusal) {
+        throw err;
+      }
+      return reply.status(refusal.statusCode).send(refusal);
+    }
+  });
+
+  /**
+   * POST /requestable-materials/:id/compatible-stock-materials/:stockMaterialId/end
+   * Ends a current Compatible Stock Material ("เลิก", F009-T2) at the version the request read; it can be added again.
+   * Protected: requires 'material:manage' capability (Supply Officer)
+   */
+  fastify.post('/requestable-materials/:id/compatible-stock-materials/:stockMaterialId/end', { preHandler: [requireCapability('material:manage')] }, async (request, reply) => {
+    const { id, stockMaterialId } = request.params as { id: string; stockMaterialId: string };
+    if (!isValidUuid(id)) {
+      return reply.status(400).send(errorBody(400, 'INVALID_ID', 'Requestable Material ID must be a valid UUID string'));
+    }
+    if (!isValidUuid(stockMaterialId)) {
+      return reply.status(400).send(errorBody(400, 'INVALID_ID', 'Stock Material ID must be a valid UUID string'));
+    }
+    const write = parseWrite(EndCompatibleStockMaterialSchema, request);
+    if ('refusal' in write) {
+      return reply.status(400).send(write.refusal);
+    }
+    try {
+      const { retry_token: _retryToken, ...input } = write.data;
+      const recorded = await requestableMaterialService.endCompatibleStockMaterial(
+        request.user!.id,
+        id.trim().toLowerCase(),
+        stockMaterialId.trim().toLowerCase(),
+        input as EndCompatibleStockMaterialInput,
+        { retryToken: write.retryToken }
+      );
+      return reply.status(200).send(recorded);
     } catch (err) {
       const refusal = refusalOf(err);
       if (!refusal) {

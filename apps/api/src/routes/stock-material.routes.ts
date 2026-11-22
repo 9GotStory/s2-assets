@@ -129,17 +129,20 @@ const ReactivateStockMaterialSchema = z
   })
   .strict();
 
+// A search of the Stock Material list. It searches the Specification, which is free text, so it keeps tab and line
+// breaks inside it as that field does and refuses the rest (CODING_STANDARDS.md). F009-T2 (#204): the Stock
+// Materials a Requestable Material may choose from are found the same way.
+export const stockMaterialSearchField = z
+  .string()
+  .refine((text) => !hasDisallowedControlChars(text), 'must not contain control characters')
+  .refine((text) => Buffer.byteLength(text, 'utf8') <= 4096, 'must be at most 4096 bytes')
+  .transform((text) => text.trim())
+  .refine((text) => text.length > 0, 'must not be blank')
+  .optional();
+
 const StockMaterialListQuerySchema = z
   .object({
-    // It searches the Specification, which is free text, so it keeps tab and line breaks inside it as that field
-    // does and refuses the rest (CODING_STANDARDS.md).
-    search: z
-      .string()
-      .refine((text) => !hasDisallowedControlChars(text), 'must not contain control characters')
-      .refine((text) => Buffer.byteLength(text, 'utf8') <= 4096, 'must be at most 4096 bytes')
-      .transform((text) => text.trim())
-      .refine((text) => text.length > 0, 'must not be blank')
-      .optional(),
+    search: stockMaterialSearchField,
     // F008-T4 (#179): a Material Category, or "none" for the Stock Materials with none (#175 Q3).
     material_category_id: z
       .string()

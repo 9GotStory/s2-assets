@@ -4,6 +4,8 @@ import { isValidUuid } from './capability.service.ts';
 import { selectableCatalogListEntry } from './catalog-list.service.ts';
 import { comparedName } from './compared-name.ts';
 import { commitOnce } from './retryable-write.ts';
+import { NotFoundError, StaleBeforeConflictError } from './service-errors.ts';
+import { stockMaterialForCompatibility } from './stock-material-read.service.ts';
 import { ValidationError } from './validation-error.ts';
 
 // #202 P7: the longest name and description of a Requestable Material.
@@ -23,6 +25,18 @@ export interface CreateRequestableMaterialInput {
 export interface RequestableMaterialVersion {
   requestable_material_id: string;
   version: number;
+}
+
+// F009-T2 (#204): adding a Compatible Stock Material (วัสดุที่ใช้จ่ายได้) at the version of the Requestable Material the
+// request read (#202 Q17).
+export interface AddCompatibleStockMaterialInput {
+  stock_material_id: string;
+  expected_version: number;
+}
+
+// F009-T2 (#204): ending a Compatible Stock Material at the version of the Requestable Material the request read.
+export interface EndCompatibleStockMaterialInput {
+  expected_version: number;
 }
 
 // A Requestable Material as the refusal of a name already used names it.
@@ -66,6 +80,46 @@ const normalizeFacts = (input: CreateRequestableMaterialInput) => {
     // Free text, keeping tab and line breaks inside it.
     description: normalizeText(input.description, 'description', REQUESTABLE_MATERIAL_DESCRIPTION_MAX_LENGTH, ''),
   };
+};
+
+// F009-T2 (#204): the Stock Material a Compatible Stock Material write names.
+const stockMaterialIdOf = (value: unknown): string => {
+  if (!isValidUuid(value)) {
+    throw new ValidationError('stock_material_id must be a valid UUID');
+  }
+  return (value as string).trim().toLowerCase();
+};
+
+// Locks the Requestable Material `id` FOR UPDATE, so writes on it take turns, and checks that it is at the version the
+// request read (#202 Q17): its Request Unit, or the refusal.
+const lockedAtVersion = async (client: pg.PoolClient, id: string, expectedVersion: number): Promise<{ request_unit_id: string }> => {
+  const res = await client.query('SELECT version, request_unit_id FROM requestable_materials WHERE id = $1 FOR UPDATE', [id]);
+  if (res.rows.length === 0) {
+    throw new NotFoundError('Requestable Material not found');
+  }
+  const stored = res.rows[0];
+  if (stored.version !== expectedVersion) {
+    throw new StaleBeforeConflictError('The Requestable Material changed since it was read', { version: stored.version }, { version: expectedVersion });
+  }
+  return stored;
+};
+
+// Moves the Requestable Material `id` to its next version with a history entry of `kind` listing `changes`, and
+// answers that version.
+const recordChange = async (
+  client: pg.PoolClient,
+  actorId: string,
+  id: string,
+  kind: string,
+  changes: { field: string; before: unknown; after: unknown }[]
+): Promise<RequestableMaterialVersion> => {
+  const updated = await client.query('UPDATE requestable_materials SET version = version + 1 WHERE id = $1 RETURNING version', [id]);
+  const { version } = updated.rows[0];
+  await client.query(
+    'INSERT INTO requestable_material_history (requestable_material_id, version, kind, changes, recorded_by) VALUES ($1, $2, $3, $4::jsonb, $5)',
+    [id, version, kind, JSON.stringify(changes), actorId]
+  );
+  return { requestable_material_id: id, version };
 };
 
 /**
@@ -112,6 +166,86 @@ export class RequestableMaterialService {
     } catch (err) {
       throw await this.nameTakenOr(err, facts.name);
     }
+  }
+
+  /**
+   * F009-T2 (#204): confirms the Stock Material `input.stock_material_id` as a Compatible Stock Material of the
+   * Requestable Material `requestableMaterialId` (#202 MRQ-15, MRQ-26): an active Stock Material whose active Units
+   * include the Request Unit (Q7, Q8, ADR 0002), not already current. A pair ended before becomes current again in its
+   * own row (P1). The history records the Stock Material under its name now (#175 P6).
+   */
+  async addCompatibleStockMaterial(
+    actorId: string,
+    requestableMaterialId: string,
+    input: AddCompatibleStockMaterialInput,
+    { retryToken }: { retryToken: string }
+  ): Promise<RequestableMaterialVersion> {
+    const stockMaterialId = stockMaterialIdOf(input.stock_material_id);
+    const payload = { requestable_material_id: requestableMaterialId, stock_material_id: stockMaterialId, expected_version: input.expected_version };
+    return commitOnce(this.db, { actorId, operation: 'compatible-stock-material:add', retryToken, payload, explicitContinuation: false }, async (client) => {
+      const { request_unit_id: requestUnitId } = await lockedAtVersion(client, requestableMaterialId, input.expected_version);
+      const stockMaterial = await stockMaterialForCompatibility(client, stockMaterialId, requestUnitId);
+      if (stockMaterial === null) {
+        throw new ValidationError('stock_material_id must name a Stock Material');
+      }
+      if (!stockMaterial.is_active) {
+        throw new ValidationError('stock_material_id names an Inactive Stock Material, which cannot become a Compatible Stock Material');
+      }
+      if (!stockMaterial.handles_request_unit) {
+        throw new ValidationError('stock_material_id names a Stock Material whose active Units do not include the Request Unit');
+      }
+      const pair = await client.query('SELECT is_current FROM compatible_stock_materials WHERE requestable_material_id = $1 AND stock_material_id = $2', [
+        requestableMaterialId,
+        stockMaterialId,
+      ]);
+      if (pair.rows[0]?.is_current) {
+        throw new ValidationError('stock_material_id is already a current Compatible Stock Material');
+      }
+      await client.query(
+        `INSERT INTO compatible_stock_materials (requestable_material_id, stock_material_id) VALUES ($1, $2)
+         ON CONFLICT (requestable_material_id, stock_material_id) DO UPDATE SET is_current = true`,
+        [requestableMaterialId, stockMaterialId]
+      );
+      const after = { id: stockMaterialId, name: stockMaterial.name };
+      return recordChange(client, actorId, requestableMaterialId, 'COMPATIBLE_STOCK_MATERIAL_ADDED', [{ field: 'compatible_stock_material', before: null, after }]);
+    });
+  }
+
+  /**
+   * F009-T2 (#204): ends the current Compatible Stock Material `stockMaterialId` of the Requestable Material
+   * `requestableMaterialId`, whatever the Stock Material's status: its row stays, not current, and can be added again
+   * (#202 MRQ-30, Q8, P1). One already ended is refused (#204 start decision 1). The history records the Stock Material
+   * under its name now (#175 P6).
+   */
+  async endCompatibleStockMaterial(
+    actorId: string,
+    requestableMaterialId: string,
+    stockMaterialId: string,
+    input: EndCompatibleStockMaterialInput,
+    { retryToken }: { retryToken: string }
+  ): Promise<RequestableMaterialVersion> {
+    const payload = { requestable_material_id: requestableMaterialId, stock_material_id: stockMaterialId, expected_version: input.expected_version };
+    return commitOnce(this.db, { actorId, operation: 'compatible-stock-material:end', retryToken, payload, explicitContinuation: false }, async (client) => {
+      const { request_unit_id: requestUnitId } = await lockedAtVersion(client, requestableMaterialId, input.expected_version);
+      const pair = await client.query('SELECT is_current FROM compatible_stock_materials WHERE requestable_material_id = $1 AND stock_material_id = $2', [
+        requestableMaterialId,
+        stockMaterialId,
+      ]);
+      if (pair.rows.length === 0) {
+        throw new NotFoundError('Compatible Stock Material not found');
+      }
+      if (!pair.rows[0].is_current) {
+        throw new ValidationError('The Stock Material is not a current Compatible Stock Material');
+      }
+      // The pair's foreign key keeps the Stock Material.
+      const stockMaterial = (await stockMaterialForCompatibility(client, stockMaterialId, requestUnitId))!;
+      await client.query('UPDATE compatible_stock_materials SET is_current = false WHERE requestable_material_id = $1 AND stock_material_id = $2', [
+        requestableMaterialId,
+        stockMaterialId,
+      ]);
+      const before = { id: stockMaterialId, name: stockMaterial.name };
+      return recordChange(client, actorId, requestableMaterialId, 'COMPATIBLE_STOCK_MATERIAL_ENDED', [{ field: 'compatible_stock_material', before, after: null }]);
+    });
   }
 
   // The answer to a write the unique index refused, naming the Requestable Material that holds the name (Q6), or `err`.

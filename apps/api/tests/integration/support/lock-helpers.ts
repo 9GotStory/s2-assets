@@ -5,7 +5,7 @@ import type { ApiHarness } from './api-harness.ts';
 const QUEUED_TIMEOUT_MS = 15_000;
 
 // The tables whose rows the services lock for a write.
-type LockedTable = 'loans' | 'assets' | 'repair_records' | 'verification_rounds' | 'verification_scope_entries' | 'verification_revisions' | 'units' | 'stock_materials' | 'brands' | 'material_categories';
+type LockedTable = 'loans' | 'assets' | 'repair_records' | 'verification_rounds' | 'verification_scope_entries' | 'verification_revisions' | 'units' | 'stock_materials' | 'brands' | 'material_categories' | 'requestable_materials';
 
 // How a service locks a row: `FOR UPDATE` to change it, `FOR SHARE` to cite it (CODING_STANDARDS, the foreign key
 // paragraph). A share lock is taken in a join, so its wait is matched without `WHERE id`.

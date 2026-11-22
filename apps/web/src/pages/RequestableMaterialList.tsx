@@ -8,6 +8,9 @@ import {
   REQUEST_UNIT_LABEL,
   REQUESTABLE_MATERIAL_LABEL,
   type RequestableMaterialList as RequestableList,
+  NO_COMPATIBLE_STOCK_MATERIAL_LABEL,
+  lacksCompatibleStockMaterial,
+  noCompatibleBadgeStyle,
 } from '../components/requestableMaterialFacts';
 
 const PAGE_SIZE = 25;
@@ -156,6 +159,11 @@ const RequestableMaterialListContent: React.FC = () => {
                             <Link to={`/requestable-materials/${requestable.id}`} style={{ color: '#2563eb', textDecoration: 'underline' }}>
                               {requestable.name}
                             </Link>
+                            {lacksCompatibleStockMaterial(requestable) && (
+                              <span data-testid={`requestable-material-no-compatible-badge-${requestable.id}`} style={noCompatibleBadgeStyle}>
+                                {NO_COMPATIBLE_STOCK_MATERIAL_LABEL}
+                              </span>
+                            )}
                           </td>
                           <td style={cellStyle}>{requestable.request_unit.name}</td>
                           <td style={cellStyle}>{wholeNumberLine(requestable.whole_number_only)}</td>
