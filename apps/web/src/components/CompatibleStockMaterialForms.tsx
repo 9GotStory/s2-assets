@@ -1,7 +1,7 @@
 import React, { useState } from 'react';
 import { useQuery } from '@tanstack/react-query';
 import { LoanSaveForm } from './LoanSaveForm';
-import { PendingCountNotice } from './RequestableMaterialStatusForm';
+import { PendingCountNotice } from './PendingCountNotice';
 import { fieldInputStyle, fieldLabelStyle } from './ReferenceContextFields';
 import { STOCK_MATERIAL_LABEL } from './materialFacts';
 import {

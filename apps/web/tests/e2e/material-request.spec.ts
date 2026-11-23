@@ -134,8 +134,12 @@ test.describe.serial('Material Request journeys: Real SPA -> Composed API -> Pos
     await expect(page.getByRole('heading', { level: 1, name: 'วัสดุสำหรับขอเบิก' })).toBeVisible();
     await expect(page.locator('#requestable-material-list-empty')).toContainText('ยังไม่มีวัสดุสำหรับขอเบิก');
     // F009-T7: a status filter that finds nothing says so as a search does, and "ใช้งานอยู่" again leaves the URL bare.
+    // The filter applies the search shown in the URL, not text typed and not sent.
+    await page.locator('#requestable-material-search').fill('ยังไม่ค้นหา');
     await page.locator('#requestable-material-status-filter').selectOption('inactive');
+    await expect(page).toHaveURL(/\/requestable-materials\?status=inactive$/);
     await expect(page.locator('#requestable-material-list-empty')).toHaveText('ไม่พบวัสดุสำหรับขอเบิกที่ค้นหา');
+    await page.locator('#requestable-material-search').fill('');
     await page.locator('#requestable-material-status-filter').selectOption('');
     await expect(page).toHaveURL(/\/requestable-materials$/);
     await expect(page.locator('#requestable-material-list-empty')).toContainText('ยังไม่มีวัสดุสำหรับขอเบิก');
@@ -1066,8 +1070,10 @@ test.describe.serial('Material Request journeys: Real SPA -> Composed API -> Pos
 
     // The list hides it by default and shows it with its "หยุดใช้" badge under the Inactive filter, and under all.
     await page.locator('#back-requestable-material-list-link').click();
+    await expect(page).toHaveURL(/\/requestable-materials$/);
     await page.locator('#requestable-material-search').fill('กระดาษ A4');
     await page.locator('#requestable-material-search-submit').click();
+    await expect(page).toHaveURL(/\?search=/);
     await expect(page.locator('#requestable-material-list-empty')).toHaveText('ไม่พบวัสดุสำหรับขอเบิกที่ค้นหา');
     await page.locator('#requestable-material-status-filter').selectOption('inactive');
     await expect(page).toHaveURL(/status=inactive/);
@@ -1075,8 +1081,10 @@ test.describe.serial('Material Request journeys: Real SPA -> Composed API -> Pos
     await expect(page.locator(`[data-testid="requestable-material-inactive-badge-${paperId}"]`)).toHaveText('หยุดใช้');
     await expect(paperRow).not.toContainText('ยังไม่มีวัสดุที่ใช้จ่าย');
     await page.locator('#requestable-material-status-filter').selectOption('all');
+    await expect(page).toHaveURL(/status=all/);
     await expect(page.locator(`[data-testid="requestable-material-inactive-badge-${paperId}"]`)).toBeVisible();
     await page.locator('#requestable-material-status-filter').selectOption('');
+    await expect(page).not.toHaveURL(/status=/);
     await expect(page.locator('#requestable-material-list-empty')).toBeVisible();
 
     // A create of its name, in another case, is refused naming it and offers "เปิดใช้อีกครั้ง", which opens its page
@@ -1097,5 +1105,9 @@ test.describe.serial('Material Request journeys: Real SPA -> Composed API -> Pos
     await expect(historyEntries.last()).toContainText('เปิดใช้อีกครั้ง');
     await expect(historyEntries.last()).toContainText('สถานะใช้งานอยู่');
     await expect(page.locator('[data-testid="requestable-material-no-compatible-badge"]')).toHaveCount(0);
+    // The offer opened the confirmation once: a reload opens no form (#209 review).
+    await page.reload();
+    await expect(page.locator('#requestable-material-status-action')).toHaveText('หยุดใช้');
+    await expect(page.locator('#requestable-material-status-form')).toHaveCount(0);
   });
 });

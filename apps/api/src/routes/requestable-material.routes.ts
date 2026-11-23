@@ -247,8 +247,13 @@ export const requestableMaterialRoutes: FastifyPluginAsync<RequestableMaterialRo
    * the request read.
    * Protected: requires 'material:manage' capability (Supply Officer)
    */
-  for (const action of ['inactivate', 'reactivate'] as const) {
-    fastify.post(`/requestable-materials/:id/${action}`, { preHandler: [requireCapability('material:manage')] }, async (request, reply) => {
+  // Each path is written out, so a search for it finds this file (CLAUDE.md, Checks).
+  const statusRoutes = [
+    ['/requestable-materials/:id/inactivate', 'inactivate'],
+    ['/requestable-materials/:id/reactivate', 'reactivate'],
+  ] as const;
+  for (const [path, action] of statusRoutes) {
+    fastify.post(path, { preHandler: [requireCapability('material:manage')] }, async (request, reply) => {
       const { id } = request.params as { id: string };
       if (!isValidUuid(id)) {
         return reply.status(400).send(errorBody(400, 'INVALID_ID', 'Requestable Material ID must be a valid UUID string'));

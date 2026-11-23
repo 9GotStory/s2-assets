@@ -147,7 +147,7 @@ const RequestableMaterialListContent: React.FC = () => {
               <select
                 id="requestable-material-status-filter"
                 value={status}
-                onChange={(e) => goTo({ search: searchInput, status: e.target.value, offset: 0 })}
+                onChange={(e) => goTo({ status: e.target.value, offset: 0 })}
                 style={{ ...fieldInputStyle, width: 'auto', flex: '0 1 10rem' }}
               >
                 <option value="">{ACTIVE_LABEL}</option>
