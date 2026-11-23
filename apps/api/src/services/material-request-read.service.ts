@@ -145,15 +145,15 @@ export class MaterialRequestReadService {
 
   /**
    * A Material Request with its Requested Items and history, or null when there is none. Its reads share one snapshot,
-   * so a Cancel committed meanwhile shows on all of them or none (#206 review decision 1, F009-T5). `cancelledBy` is
+   * so a Cancel committed meanwhile shows on all of them or none (#206 review decision 1, F009-T5). `mayCancelAs` is
    * the user who may Cancel, if they created it: the caller when they hold material-request:create, otherwise null
    * (#207 start decision 2, #208).
    */
-  async read(id: string, cancelledBy: string | null): Promise<MaterialRequestDetail | null> {
+  async read(id: string, mayCancelAs: string | null): Promise<MaterialRequestDetail | null> {
     const client: pg.PoolClient = await this.db.connect();
     try {
       await client.query('BEGIN TRANSACTION ISOLATION LEVEL REPEATABLE READ READ ONLY');
-      const detail = await readIn(client, id, cancelledBy);
+      const detail = await readIn(client, id, mayCancelAs);
       await client.query('COMMIT');
       return detail;
     } catch (err) {
@@ -165,8 +165,8 @@ export class MaterialRequestReadService {
   }
 }
 
-// The Material Request page as `client` reads it for `cancelledBy` (see `read`), or null when there is none.
-const readIn = async (client: pg.PoolClient, id: string, cancelledBy: string | null): Promise<MaterialRequestDetail | null> => {
+// The Material Request page as `client` reads it for `mayCancelAs` (see `read`), or null when there is none.
+const readIn = async (client: pg.PoolClient, id: string, mayCancelAs: string | null): Promise<MaterialRequestDetail | null> => {
   const res = await client.query(
     `SELECT m.id, m.request_number::text, m.requested_by, u.username AS requested_by_username, m.recorded_at, m.note, m.version,
             ${materialRequestState('m')} AS state
@@ -199,7 +199,7 @@ const readIn = async (client: pg.PoolClient, id: string, cancelledBy: string | n
     [id]
   );
   // Only its Requester holding material-request:create is offered a Cancel (P9).
-  const mayCancel = row.requested_by === cancelledBy;
+  const mayCancel = row.requested_by === mayCancelAs;
   return {
     ...row,
     recorded_at: new Date(row.recorded_at).toISOString(),

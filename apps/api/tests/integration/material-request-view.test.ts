@@ -30,6 +30,9 @@ describe('Material Request view (Seam A - F009-T6)', () => {
     return res.json();
   };
 
+  // Feature 002's refusal of a caller without the capability.
+  const FORBIDDEN = { error: { code: 'FORBIDDEN', message: 'Permission denied' } };
+
   // "คำขอของฉัน" as `actor` reads it.
   const mine = async (actor: Actor) => {
     const res = await api.get(actor, '/my-material-requests');
@@ -71,7 +74,7 @@ describe('Material Request view (Seam A - F009-T6)', () => {
       expect(list.items[0].recorded_at).toBe((await requestOf(newer.material_request_id, otherRequester)).recorded_at);
     });
 
-    // The unique constraint on request_number makes the sort key unique, so Request Numbers cannot tie and need no
+    // The unique constraint material_requests_request_number_key makes the sort key unique, so Request Numbers cannot tie and need no
     // tiebreak (CODING_STANDARDS, "An order test of a paged list splits a tie across a page break").
     it('pages every Material Request by Request Number, newest first, whoever created it', async () => {
       const paper = await offered();
@@ -162,6 +165,7 @@ describe('Material Request view (Seam A - F009-T6)', () => {
       // The Cancel writes refuse what the page does not offer: another person's answers as if it did not exist.
       const res = await cancelItem(others, seen.requested_items[0].id, { version: seen.version, actor: both });
       expect(res.statusCode).toBe(404);
+      expect(res.json()).toMatchObject({ code: 'NOT_FOUND', message: 'Material Request not found' });
       expect((await requestOf(others, otherRequester)).state).toBe('PENDING');
     });
   });
@@ -200,6 +204,7 @@ describe('Material Request view (Seam A - F009-T6)', () => {
         expect((await requestOf(id)).note).toBe('คำขอของผู้ขอเบิกอีกคน');
         const denied = await withCapabilityAnswer(api.app, 'material-request:view', async () => false, () => api.get(requester, `/material-requests/${id}`));
         expect(denied.statusCode).toBe(404);
+        expect(denied.json()).toMatchObject({ code: 'NOT_FOUND', message: 'Material Request not found' });
         expect(denied.body).not.toContain('คำขอของผู้ขอเบิกอีกคน');
       } finally {
         await api.pool.query(`DELETE FROM user_roles WHERE user_id = $1 AND role_id = 'SUPPLY_OFFICER'`, [requester.id]);
@@ -238,15 +243,17 @@ describe('Material Request view (Seam A - F009-T6)', () => {
 
       const listed = await api.get(requester, '/material-requests');
       expect(listed.statusCode).toBe(403);
-      expect(listed.json().error.code).toBe('FORBIDDEN');
+      expect(listed.json()).toMatchObject(FORBIDDEN);
       expect((await api.get(requester, pages[0])).statusCode).toBe(200);
-      expect((await api.get(requester, pages[1])).statusCode).toBe(404);
+      const hidden = await api.get(requester, pages[1]);
+      expect(hidden.statusCode).toBe(404);
+      expect(hidden.json()).toMatchObject({ code: 'NOT_FOUND', message: 'Material Request not found' });
 
       for (const other of [readonly, custodian, staff, maintainer]) {
         for (const url of ['/material-requests', ...pages]) {
           const res = await api.get(other, url);
           expect(res.statusCode).toBe(403);
-          expect(res.json().error.code).toBe('FORBIDDEN');
+          expect(res.json()).toMatchObject(FORBIDDEN);
           expect(res.body).not.toContain(tag);
           expect(res.body).not.toContain(own);
         }
@@ -277,12 +284,14 @@ describe('Material Request view (Seam A - F009-T6)', () => {
       expect(deniedList.body).not.toContain(others);
 
       // Without material-request:view the Requester reads only their own; with neither capability nothing reads.
-      expect((await noView(() => api.get(everyone, `/material-requests/${others}`))).statusCode).toBe(404);
+      const hidden = await noView(() => api.get(everyone, `/material-requests/${others}`));
+      expect(hidden.statusCode).toBe(404);
+      expect(hidden.json()).toMatchObject({ code: 'NOT_FOUND', message: 'Material Request not found' });
       expect((await noView(() => api.get(everyone, `/material-requests/${own}`))).statusCode).toBe(200);
       for (const url of [`/material-requests/${others}`, `/material-requests/${own}`]) {
         const denied = await neither(() => api.get(everyone, url));
         expect(denied.statusCode).toBe(403);
-        expect(denied.json().error.code).toBe('FORBIDDEN');
+        expect(denied.json()).toMatchObject(FORBIDDEN);
         expect(denied.body).not.toContain(tag);
       }
 
@@ -297,7 +306,7 @@ describe('Material Request view (Seam A - F009-T6)', () => {
       for (const [capability, url] of lookups) {
         const failed = await withCapabilityAnswer(api.app, capability, async () => { throw new Error('lookup failed'); }, () => api.get(everyone, url));
         expect(failed.statusCode, `${capability} ${url}`).toBe(500);
-        expect(failed.json().error.code).toBe('INTERNAL_SERVER_ERROR');
+        expect(failed.json()).toMatchObject({ error: { code: 'INTERNAL_SERVER_ERROR', message: 'An unexpected internal server error occurred.' } });
         expect(failed.body).not.toContain(tag);
       }
     });

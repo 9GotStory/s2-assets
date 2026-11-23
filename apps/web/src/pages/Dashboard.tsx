@@ -75,44 +75,21 @@ export const Dashboard: React.FC = () => {
 
     verifySession();
 
-    const probeMaterials = async () => {
+    // Shows a menu when reading `url` answers 200; anything else, or a failed read, leaves it hidden.
+    const probe = async (url: string, setShown: (shown: boolean) => void) => {
       try {
-        const response = await fetch('/stock-materials?limit=1', { method: 'GET', credentials: 'include', signal: controller.signal });
+        const response = await fetch(url, { method: 'GET', credentials: 'include', signal: controller.signal });
         // The answer is read to its end, so the request finishes instead of staying open with the page.
         await response.text();
-        setCanViewMaterials(response.ok);
+        setShown(response.ok);
       } catch {
         // An aborted or failed read leaves the menu hidden.
       }
     };
 
-    probeMaterials();
-
-    const probeMaterialRequests = async () => {
-      try {
-        const response = await fetch('/my-material-requests?limit=1', { method: 'GET', credentials: 'include', signal: controller.signal });
-        // The answer is read to its end, so the request finishes instead of staying open with the page.
-        await response.text();
-        setCanRequestMaterials(response.ok);
-      } catch {
-        // An aborted or failed read leaves the menu hidden.
-      }
-    };
-
-    probeMaterialRequests();
-
-    const probeAllMaterialRequests = async () => {
-      try {
-        const response = await fetch('/material-requests?limit=1', { method: 'GET', credentials: 'include', signal: controller.signal });
-        // The answer is read to its end, so the request finishes instead of staying open with the page.
-        await response.text();
-        setCanViewMaterialRequests(response.ok);
-      } catch {
-        // An aborted or failed read leaves the menu hidden.
-      }
-    };
-
-    probeAllMaterialRequests();
+    probe('/stock-materials?limit=1', setCanViewMaterials);
+    probe('/my-material-requests?limit=1', setCanRequestMaterials);
+    probe('/material-requests?limit=1', setCanViewMaterialRequests);
 
     return () => {
       controller.abort();
