@@ -14,13 +14,16 @@ fi
 
 note() { echo "${0##*/}: $*"; }
 
-# A job's results are evidence for one commit only, so its log names that commit first.
+# A job's results are evidence for one commit only, so its log names that commit first, and the
+# integration and e2e jobs name it again in their last line (#207 retro: a pre-run counts for the HEAD
+# its last line names, clean).
 commit_under_test() {
   local changes
   changes=$(git status --porcelain) || { echo 'an unknown commit'; return; }
   echo "$(git rev-parse --short HEAD), tree $([[ -z $changes ]] && echo clean || echo dirty)"
 }
-note "testing $(commit_under_test)"
+tested_commit=$(commit_under_test)
+note "testing $tested_commit"
 
 # Sets `socket` to the rootless Podman socket that DOCKER_HOST names. When it names no unix socket,
 # starts a private Podman service for this job and stops it when the job exits.

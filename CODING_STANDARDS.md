@@ -48,6 +48,11 @@ route's own answer goes. In F009-T2 (#204), `refusalOf` without its NotFoundErro
 message asserted alone in an integration file (`REFUSAL_BODY_HALF` in `eslint.config.mjs`, #206); the files
 from before it are listed in `REFUSAL_BODY_HALF_EXEMPT` until a ticket touches one.
 
+A retry-token mismatch case replays the token with one field of the payload changed, one case per field
+the fingerprint covers, so each case goes red when that field leaves the fingerprint. In F009-T5 (#207),
+two cases each changed the Requested Item and the version together, and a break that dropped either field
+from the payload stayed green.
+
 ## A relaxed constraint has a test of each path that must not reach it
 
 When a migration relaxes a constraint, such as dropping `NOT NULL` or widening a `CHECK`, so that a
