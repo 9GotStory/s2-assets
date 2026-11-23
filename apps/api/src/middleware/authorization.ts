@@ -94,6 +94,31 @@ export function requireCapability(
   requiredCapability: string,
   options?: AuthorizationMiddlewareOptions
 ): (request: FastifyRequest, reply: FastifyReply) => Promise<void> {
+  return requireAnyCapability([requiredCapability], options);
+}
+
+/**
+ * Whether the preHandlers of `request` granted it `capability`: a handler behind `requireAnyCapability` reads which of
+ * its capabilities the caller holds (F009-T6, #208 start decision 1).
+ */
+export function isGranted(request: FastifyRequest, capability: string): boolean {
+  const authorizedCaps = (request as any)[AUTHORIZED_CAPABILITIES] as Set<string> | undefined;
+  return authorizedCaps?.has(capability) === true;
+}
+
+/**
+ * Fastify preHandler authorization middleware factory for a route open to holders of any of `requiredCapabilities`
+ * (F009-T6, #208 start decision 1). Each one is looked up, so that `isGranted` tells the handler which the caller
+ * holds; a failed lookup of any fails closed with HTTP 500, and holding none answers HTTP 403.
+ *
+ * @param requiredCapabilities The capabilities any one of which grants access to the route
+ * @param options Optional configuration including explicit CapabilityService instance
+ * @returns Fastify preHandler hook function
+ */
+export function requireAnyCapability(
+  requiredCapabilities: readonly string[],
+  options?: AuthorizationMiddlewareOptions
+): (request: FastifyRequest, reply: FastifyReply) => Promise<void> {
   return async function capabilityPreHandler(
     request: FastifyRequest,
     _reply: FastifyReply
@@ -160,38 +185,48 @@ export function requireCapability(
       (request as any)[AUTHORIZED_CAPABILITIES] = authorizedCaps;
     }
 
-    if (authorizedCaps.has(requiredCapability)) {
-      return;
-    }
-
-    // 4. Unknown Capabilities Fail Closed Immediately
-    if (!isKnownCapability(requiredCapability)) {
-      throw new AuthorizationError(403, 'FORBIDDEN', 'Permission denied');
-    }
-
-    // 5. Authoritative Server-Side PostgreSQL Capability Evaluation
     const userId = session.user_id;
-    let hasCap: unknown = false;
+    let granted = false;
 
-    try {
-      hasCap = await capabilityService.hasCapability(userId, requiredCapability);
-    } catch {
-      // Any database or service failure must fail closed
-      throw new AuthorizationError(
-        500,
-        'INTERNAL_SERVER_ERROR',
-        'An unexpected internal server error occurred.'
-      );
+    // Every capability is evaluated, so that `isGranted` answers for each (F009-T6, #208 start decision 1).
+    for (const requiredCapability of requiredCapabilities) {
+      if (authorizedCaps.has(requiredCapability)) {
+        granted = true;
+        continue;
+      }
+
+      // 4. Unknown Capabilities Never Grant
+      if (!isKnownCapability(requiredCapability)) {
+        continue;
+      }
+
+      // 5. Authoritative Server-Side PostgreSQL Capability Evaluation
+      let hasCap: unknown = false;
+
+      try {
+        hasCap = await capabilityService.hasCapability(userId, requiredCapability);
+      } catch {
+        // Any database or service failure must fail closed
+        throw new AuthorizationError(
+          500,
+          'INTERNAL_SERVER_ERROR',
+          'An unexpected internal server error occurred.'
+        );
+      }
+
+      // Require hasCap === true as the only authorization success condition (REWORK 1); every other result
+      // (false, undefined, null, strings, numbers, objects) grants nothing. Record the verified capability for this
+      // request instance only (no cross-request caching).
+      if (hasCap === true) {
+        authorizedCaps.add(requiredCapability);
+        granted = true;
+      }
     }
 
-    // Require hasCap === true as the only authorization success condition (REWORK 1).
-    // Deny all other results (false, undefined, null, strings, numbers, objects) with HTTP 403.
-    if (hasCap !== true) {
+    // Holding none of the capabilities is denied with HTTP 403.
+    if (!granted) {
       throw new AuthorizationError(403, 'FORBIDDEN', 'Permission denied');
     }
-
-    // Record verified capability for this request instance only when strictly true (no cross-request caching)
-    authorizedCaps.add(requiredCapability);
   };
 }
 

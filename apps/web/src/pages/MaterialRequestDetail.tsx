@@ -1,5 +1,5 @@
 import React, { useEffect, useState } from 'react';
-import { Link, useNavigate, useParams } from 'react-router';
+import { Link, useNavigate, useParams, useSearchParams } from 'react-router';
 import { QueryClient, QueryClientProvider, useQuery } from '@tanstack/react-query';
 import { useCsrfToken } from '../components/materialQueries';
 import { MaterialRequestCancelForm, RequestedItemCancelForm } from '../components/MaterialRequestCancelForms';
@@ -59,6 +59,9 @@ const HistoryEntry: React.FC<{ entry: MaterialRequestHistoryEntry; detail: Reque
 
 const MaterialRequestDetailContent: React.FC<{ id: string }> = ({ id }) => {
   const navigate = useNavigate();
+  // Opened from "คำขอเบิก", the page leads back to it; otherwise to "คำขอของฉัน" (#208 start decision 2).
+  const [params] = useSearchParams();
+  const back = params.get('from') === 'all' ? { to: '/material-requests', label: MATERIAL_REQUEST_LABEL } : { to: '/my-material-requests', label: MY_MATERIAL_REQUESTS_LABEL };
   const [cancelAction, setCancelAction] = useState<CancelAction | null>(null);
 
   const request = useQuery<RequestDetail, Error & { status?: number }>({
@@ -106,8 +109,8 @@ const MaterialRequestDetailContent: React.FC<{ id: string }> = ({ id }) => {
   return (
     <main style={{ minHeight: '100vh', backgroundColor: '#f3f4f6', padding: '1rem', fontFamily: 'system-ui, -apple-system, sans-serif', boxSizing: 'border-box' }}>
       <div style={{ maxWidth: '1000px', margin: '0 auto', backgroundColor: '#ffffff', borderRadius: '8px', boxShadow: '0 1px 3px 0 rgba(0, 0, 0, 0.1)', padding: '1.25rem', boxSizing: 'border-box' }}>
-        <Link to="/my-material-requests" id="back-material-request-list-link" style={{ color: '#4b5563', textDecoration: 'none', fontSize: '0.875rem', fontWeight: 500 }}>
-          ← กลับสู่{MY_MATERIAL_REQUESTS_LABEL}
+        <Link to={back.to} id="back-material-request-list-link" style={{ color: '#4b5563', textDecoration: 'none', fontSize: '0.875rem', fontWeight: 500 }}>
+          ← กลับสู่{back.label}
         </Link>
 
         {request.isError && (

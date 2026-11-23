@@ -4,16 +4,20 @@ import { materialRequestState, requestedItemState, type MaterialRequestState } f
 import { requestableMaterialNamesOf } from './requestable-material-read.service.ts';
 import { rollbackQuietly } from './retryable-write.ts';
 
-// One row of "คำขอของฉัน" (#202 Q19).
+// One row of "คำขอของฉัน" and of "คำขอเบิก" (#202 Q19; #208 start decision 3).
 export interface MaterialRequestRow {
   id: string;
   request_number: string;
+  requested_by: string;
+  requested_by_username: string;
   recorded_at: string;
   state: MaterialRequestState;
   requested_item_count: number;
 }
 
 export interface MaterialRequestListFilters {
+  // Only the Material Requests this user created ("คำขอของฉัน"); every person's when left out ("คำขอเบิก", Q4).
+  requestedBy?: string;
   // Only Material Requests in this state; every state when left out (Q19).
   state?: MaterialRequestState;
   limit: number;
@@ -43,7 +47,8 @@ export interface RequestedItem {
   cancelled_by_username: string | null;
   cancelled_at: string | null;
   cancel_note: string | null;
-  // Whether the page offers its Cancel (P9): while it is Pending (#207 start decision 2).
+  // Whether the page offers its Cancel (P9): while it is Pending, to its Requester holding material-request:create
+  // (#207 start decision 2, #208).
   can_cancel: boolean;
 }
 
@@ -67,8 +72,8 @@ export interface MaterialRequestDetail {
   note: string | null;
   version: number;
   state: MaterialRequestState;
-  // Whether the page offers Cancelling every Pending Requested Item (P9): while any is (#207 start decision 2). Only the
-  // Requester who created it reads the page until F009-T6 (#208) widens it and adds who may.
+  // Whether the page offers Cancelling every Pending Requested Item (P9): while any is, to its Requester holding
+  // material-request:create (#207 start decision 2, #208).
   can_cancel: boolean;
   // In the order asked.
   requested_items: RequestedItem[];
@@ -87,12 +92,16 @@ export class MaterialRequestReadService {
   }
 
   /**
-   * A page of the Material Requests `requestedBy` created, newest first, with how many pass the filters. The sequence
-   * makes the Request Number unique, so the order needs no tiebreak.
+   * A page of the Material Requests that pass the filters, newest first, with how many do. The sequence makes the
+   * Request Number unique, so the order needs no tiebreak.
    */
-  async listOf(requestedBy: string, filters: MaterialRequestListFilters): Promise<MaterialRequestList> {
-    const params: unknown[] = [requestedBy];
-    const conditions = ['m.requested_by = $1'];
+  async list(filters: MaterialRequestListFilters): Promise<MaterialRequestList> {
+    const params: unknown[] = [];
+    const conditions = ['true'];
+    if (filters.requestedBy !== undefined) {
+      params.push(filters.requestedBy);
+      conditions.push(`m.requested_by = $${params.length}`);
+    }
     if (filters.state !== undefined) {
       params.push(filters.state);
       conditions.push(`${materialRequestState('m')} = $${params.length}`);
@@ -101,9 +110,10 @@ export class MaterialRequestReadService {
     // The count joins the page, so a page past the end still says how many Material Requests pass.
     const res = await this.db.query(
       `WITH filtered AS (
-         SELECT m.id, m.request_number, m.recorded_at, ${materialRequestState('m')} AS state,
+         SELECT m.id, m.request_number, m.requested_by, u.username AS requested_by_username, m.recorded_at, ${materialRequestState('m')} AS state,
                 (SELECT count(*)::int FROM requested_items i WHERE i.material_request_id = m.id) AS requested_item_count
          FROM material_requests m
+         JOIN users u ON u.id = m.requested_by
          WHERE ${conditions.join(' AND ')}
        ),
        counted AS (SELECT count(*)::int AS total_count FROM filtered),
@@ -112,7 +122,7 @@ export class MaterialRequestReadService {
          ORDER BY request_number DESC
          LIMIT $${values.length - 1} OFFSET $${values.length}
        )
-       SELECT p.id, p.request_number::text, p.recorded_at, p.state, p.requested_item_count, c.total_count
+       SELECT p.id, p.request_number::text, p.requested_by, p.requested_by_username, p.recorded_at, p.state, p.requested_item_count, c.total_count
        FROM counted c
        LEFT JOIN paged p ON true
        ORDER BY p.request_number DESC`,
@@ -124,6 +134,8 @@ export class MaterialRequestReadService {
       .map((row: any) => ({
         id: row.id,
         request_number: row.request_number,
+        requested_by: row.requested_by,
+        requested_by_username: row.requested_by_username,
         recorded_at: new Date(row.recorded_at).toISOString(),
         state: row.state,
         requested_item_count: row.requested_item_count,
@@ -133,13 +145,15 @@ export class MaterialRequestReadService {
 
   /**
    * A Material Request with its Requested Items and history, or null when there is none. Its reads share one snapshot,
-   * so a Cancel committed meanwhile shows on all of them or none (#206 review decision 1, F009-T5).
+   * so a Cancel committed meanwhile shows on all of them or none (#206 review decision 1, F009-T5). `mayCancelAs` is
+   * the user who may Cancel, if they created it: the caller when they hold material-request:create, otherwise null
+   * (#207 start decision 2, #208).
    */
-  async read(id: string): Promise<MaterialRequestDetail | null> {
+  async read(id: string, mayCancelAs: string | null): Promise<MaterialRequestDetail | null> {
     const client: pg.PoolClient = await this.db.connect();
     try {
       await client.query('BEGIN TRANSACTION ISOLATION LEVEL REPEATABLE READ READ ONLY');
-      const detail = await readIn(client, id);
+      const detail = await readIn(client, id, mayCancelAs);
       await client.query('COMMIT');
       return detail;
     } catch (err) {
@@ -151,8 +165,8 @@ export class MaterialRequestReadService {
   }
 }
 
-// The Material Request page as `client` reads it, or null when there is none.
-const readIn = async (client: pg.PoolClient, id: string): Promise<MaterialRequestDetail | null> => {
+// The Material Request page as `client` reads it for `mayCancelAs` (see `read`), or null when there is none.
+const readIn = async (client: pg.PoolClient, id: string, mayCancelAs: string | null): Promise<MaterialRequestDetail | null> => {
   const res = await client.query(
     `SELECT m.id, m.request_number::text, m.requested_by, u.username AS requested_by_username, m.recorded_at, m.note, m.version,
             ${materialRequestState('m')} AS state
@@ -184,10 +198,12 @@ const readIn = async (client: pg.PoolClient, id: string): Promise<MaterialReques
      ORDER BY h.version ASC`,
     [id]
   );
+  // Only its Requester holding material-request:create is offered a Cancel (P9).
+  const mayCancel = row.requested_by === mayCancelAs;
   return {
     ...row,
     recorded_at: new Date(row.recorded_at).toISOString(),
-    can_cancel: row.state === 'PENDING',
+    can_cancel: mayCancel && row.state === 'PENDING',
     requested_items: items.rows.map((item: any) => ({
       id: item.id,
       position: item.position,
@@ -201,7 +217,7 @@ const readIn = async (client: pg.PoolClient, id: string): Promise<MaterialReques
       cancelled_by_username: item.cancelled_by_username,
       cancelled_at: isoOrNull(item.cancelled_at),
       cancel_note: item.cancel_note,
-      can_cancel: item.state === 'PENDING',
+      can_cancel: mayCancel && item.state === 'PENDING',
     })),
     history: history.rows.map((entry: any) => ({ ...entry, recorded_at: new Date(entry.recorded_at).toISOString() })),
   };

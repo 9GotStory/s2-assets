@@ -9,6 +9,7 @@ import {
   MY_MATERIAL_REQUESTS_LABEL,
   REQUEST_NUMBER_LABEL,
   REQUESTED_ITEM_LABEL,
+  REQUESTER_LABEL,
   type MaterialRequestList as RequestList,
 } from '../components/materialRequestFacts';
 
@@ -16,9 +17,15 @@ const PAGE_SIZE = 25;
 
 const THAI_DATE_TIME = new Intl.DateTimeFormat('th-TH', { dateStyle: 'long', timeStyle: 'short', timeZone: 'Asia/Bangkok' });
 
-const LOAD_ERRORS: Record<number, string> = {
-  403: `คุณไม่มีสิทธิ์เข้าถึง${MY_MATERIAL_REQUESTS_LABEL} (403 Forbidden)`,
-};
+// Which Material Requests a list shows: the caller's own ("คำขอของฉัน", F009-T4) or every person's ("คำขอเบิก",
+// F009-T6), read from its endpoint. "คำขอเบิก" names each row's Requester, offers no create, and its rows open the
+// Material Request page with the way back to it (#202 Q4, Q19; #208 start decisions 2, 3).
+const SCOPES = {
+  mine: { endpoint: '/my-material-requests', heading: MY_MATERIAL_REQUESTS_LABEL, everyone: false, pageQuery: '' },
+  all: { endpoint: '/material-requests', heading: MATERIAL_REQUEST_LABEL, everyone: true, pageQuery: '?from=all' },
+} as const;
+
+export type MaterialRequestListScope = keyof typeof SCOPES;
 
 // The state filter, every state by default (#202 Q19).
 const STATE_FILTERS = [
@@ -31,7 +38,8 @@ const cellStyle: React.CSSProperties = { padding: '0.75rem 1rem', color: '#11182
 const headStyle: React.CSSProperties = { padding: '0.75rem 1rem', fontWeight: 600, color: '#374151', whiteSpace: 'nowrap' };
 const pageButtonStyle: React.CSSProperties = { padding: '0.375rem 0.875rem', backgroundColor: '#f3f4f6', color: '#374151', border: '1px solid #d1d5db', borderRadius: '6px', fontSize: '0.875rem' };
 
-const MaterialRequestListContent: React.FC = () => {
+const MaterialRequestListContent: React.FC<{ scope: MaterialRequestListScope }> = ({ scope }) => {
+  const { endpoint, heading, everyone, pageQuery } = SCOPES[scope];
   const navigate = useNavigate();
   // The state and the page live in the URL, so a reload or a link keeps them.
   const [params, setParams] = useSearchParams();
@@ -39,10 +47,10 @@ const MaterialRequestListContent: React.FC = () => {
   const offset = Math.max(0, Number(params.get('offset')) || 0);
 
   const requests = useQuery<RequestList, Error & { status?: number }>({
-    queryKey: ['my-material-requests', state, offset],
+    queryKey: [endpoint, state, offset],
     queryFn: async ({ signal }) => {
       const query = new URLSearchParams({ limit: String(PAGE_SIZE), offset: String(offset), state });
-      const res = await fetch(`/my-material-requests?${query}`, { credentials: 'include', signal });
+      const res = await fetch(`${endpoint}?${query}`, { credentials: 'include', signal });
       if (!res.ok) {
         const err = new Error(`HTTP ${res.status}`) as Error & { status?: number };
         err.status = res.status;
@@ -81,11 +89,11 @@ const MaterialRequestListContent: React.FC = () => {
         <Link to="/dashboard" id="back-dashboard-link" style={{ color: '#4b5563', textDecoration: 'none', fontSize: '0.875rem', fontWeight: 500 }}>
           ← กลับสู่แดชบอร์ด
         </Link>
-        <h1 style={{ fontSize: '1.5rem', fontWeight: 700, color: '#111827', margin: '1rem 0 1.5rem 0' }}>{MY_MATERIAL_REQUESTS_LABEL}</h1>
+        <h1 style={{ fontSize: '1.5rem', fontWeight: 700, color: '#111827', margin: '1rem 0 1.5rem 0' }}>{heading}</h1>
 
         {requests.isError && (
           <div role="alert" id="material-request-list-error" style={{ padding: '0.75rem 1rem', marginBottom: '1.5rem', borderRadius: '6px', backgroundColor: '#fee2e2', color: '#991b1b', fontSize: '0.875rem' }}>
-            {LOAD_ERRORS[Number(requests.error.status)] ?? `เกิดข้อผิดพลาดในการโหลด${MY_MATERIAL_REQUESTS_LABEL}`}{' '}
+            {isForbidden ? `คุณไม่มีสิทธิ์เข้าถึง${heading} (403 Forbidden)` : `เกิดข้อผิดพลาดในการโหลด${heading}`}{' '}
             {!isForbidden && (
               <button type="button" id="material-request-list-retry" onClick={() => requests.refetch()}>
                 ลองใหม่
@@ -96,19 +104,21 @@ const MaterialRequestListContent: React.FC = () => {
 
         {requests.isPending && (
           <div role="status" aria-busy="true" style={{ padding: '2rem', textAlign: 'center', color: '#6b7280', fontSize: '0.875rem' }}>
-            กำลังโหลด{MY_MATERIAL_REQUESTS_LABEL}...
+            กำลังโหลด{heading}...
           </div>
         )}
 
         {list && (
           <>
-            <Link
-              to="/my-material-requests/new"
-              id="material-request-create-action"
-              style={{ display: 'inline-block', padding: '0.5rem 1.25rem', marginBottom: '1.5rem', backgroundColor: '#2563eb', color: '#ffffff', borderRadius: '6px', fontSize: '0.875rem', fontWeight: 500, textDecoration: 'none' }}
-            >
-              {CREATE_MATERIAL_REQUEST_LABEL}
-            </Link>
+            {!everyone && (
+              <Link
+                to="/my-material-requests/new"
+                id="material-request-create-action"
+                style={{ display: 'inline-block', padding: '0.5rem 1.25rem', marginBottom: '1.5rem', backgroundColor: '#2563eb', color: '#ffffff', borderRadius: '6px', fontSize: '0.875rem', fontWeight: 500, textDecoration: 'none' }}
+              >
+                {CREATE_MATERIAL_REQUEST_LABEL}
+              </Link>
+            )}
 
             <div style={{ display: 'flex', alignItems: 'center', gap: '0.5rem', marginBottom: '1rem' }}>
               <label htmlFor="material-request-state-filter" style={{ fontSize: '0.875rem', color: '#374151' }}>
@@ -128,7 +138,7 @@ const MaterialRequestListContent: React.FC = () => {
               </select>
             </div>
 
-            <section aria-label={MY_MATERIAL_REQUESTS_LABEL} id="material-request-list-region">
+            <section aria-label={heading} id="material-request-list-region">
               {list.items.length === 0 ? (
                 <div
                   id="material-request-list-empty"
@@ -142,6 +152,7 @@ const MaterialRequestListContent: React.FC = () => {
                     <thead>
                       <tr style={{ backgroundColor: '#f9fafb', borderBottom: '2px solid #e5e7eb' }}>
                         <th style={headStyle}>{REQUEST_NUMBER_LABEL}</th>
+                        {everyone && <th style={headStyle}>{REQUESTER_LABEL}</th>}
                         <th style={headStyle}>วันที่</th>
                         <th style={headStyle}>สถานะ</th>
                         <th style={headStyle}>{REQUESTED_ITEM_LABEL}</th>
@@ -151,10 +162,11 @@ const MaterialRequestListContent: React.FC = () => {
                       {list.items.map((request) => (
                         <tr key={request.id} data-testid={`material-request-row-${request.id}`} style={{ borderBottom: '1px solid #e5e7eb' }}>
                           <td style={{ ...cellStyle, fontWeight: 500 }}>
-                            <Link to={`/material-requests/${request.id}`} style={{ color: '#2563eb', textDecoration: 'underline' }}>
+                            <Link to={`/material-requests/${request.id}${pageQuery}`} style={{ color: '#2563eb', textDecoration: 'underline' }}>
                               {request.request_number}
                             </Link>
                           </td>
+                          {everyone && <td style={cellStyle}>{request.requested_by_username}</td>}
                           <td style={cellStyle}>
                             <time dateTime={request.recorded_at}>{THAI_DATE_TIME.format(new Date(request.recorded_at))}</time>
                           </td>
@@ -189,16 +201,17 @@ const MaterialRequestListContent: React.FC = () => {
 
 /**
  * "คำขอของฉัน" (F009-T4): the Requester's own Material Requests, newest first, by state, each with its Request Number,
- * date, state and Requested Item count, and "สร้างคำขอเบิก" (#202 Q19).
+ * date, state and Requested Item count, and "สร้างคำขอเบิก" (#202 Q19). With `scope` "all", "คำขอเบิก" (F009-T6):
+ * every person's Material Requests, read-only, each row naming its Requester (#202 Q4).
  */
-export const MaterialRequestList: React.FC = () => {
+export const MaterialRequestList: React.FC<{ scope?: MaterialRequestListScope }> = ({ scope = 'mine' }) => {
   const [queryClient] = useState(() => new QueryClient({ defaultOptions: { queries: { retry: false, refetchOnWindowFocus: true } } }));
 
   useEffect(() => () => queryClient.clear(), [queryClient]);
 
   return (
     <QueryClientProvider client={queryClient}>
-      <MaterialRequestListContent />
+      <MaterialRequestListContent scope={scope} />
     </QueryClientProvider>
   );
 };
