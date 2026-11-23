@@ -65,5 +65,23 @@ export function requestableMaterialHelpers(context: () => { api: ApiHarness; off
   const inactivate = changeStatus('inactivate');
   const reactivate = changeStatus('reactivate');
 
-  return { requestableIn, requestableOf, add, end, inactivate, reactivate };
+  // Renames the Requestable Material `id` to `name` ("เปลี่ยนชื่อ"), at `version` or the version the page has now
+  // (F009-T8).
+  const rename = async (id: string, name: string, { version, token = crypto.randomUUID(), actor = context().officer }: { version?: number; token?: string; actor?: Actor } = {}) =>
+    context().api.post(actor, `/requestable-materials/${id}/rename`, { expected_version: version ?? (await requestableOf(id)).version, name }, { 'x-retry-token': token });
+
+  // Changes the Other Details of the Requestable Material `id` ("แก้ไขข้อมูลอื่น"): its page's description,
+  // whole-number setting and Request Unit, with `changes` over them, at `version` or the version the page has now
+  // (F009-T8).
+  const changeDetails = async (
+    id: string,
+    changes: { description?: string | null; whole_number_only?: boolean; request_unit_id?: string },
+    { version, token = crypto.randomUUID(), actor = context().officer }: { version?: number; token?: string; actor?: Actor } = {}
+  ) => {
+    const page = await requestableOf(id);
+    const payload = { expected_version: version ?? page.version, description: page.description, whole_number_only: page.whole_number_only, request_unit_id: page.request_unit.unit_id, ...changes };
+    return context().api.put(actor, `/requestable-materials/${id}/details`, payload, { 'x-retry-token': token });
+  };
+
+  return { requestableIn, requestableOf, add, end, inactivate, reactivate, rename, changeDetails };
 }

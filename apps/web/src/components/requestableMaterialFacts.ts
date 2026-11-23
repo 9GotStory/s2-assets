@@ -2,7 +2,7 @@
 // their labels from GLOSSARY.md (#202, Web).
 
 import type React from 'react';
-import { HISTORY_KIND_LABELS, INACTIVE_LABEL, REACTIVATE_LABEL, type NamedListEntry, type StockMaterialRow, type StockMaterialUnit } from './materialFacts';
+import { EDIT_DETAILS_LABEL, HISTORY_KIND_LABELS, INACTIVE_LABEL, REACTIVATE_LABEL, RENAME_LABEL, type NamedListEntry, type StockMaterialRow, type StockMaterialUnit } from './materialFacts';
 
 // The Request Unit of a Requestable Material, under the name its list entry has now.
 export interface RequestUnit {
@@ -32,16 +32,25 @@ export interface RequestableMaterialList {
   can_manage: boolean;
 }
 
-// F009-T1 writes CREATED, T2 the add and the end of a Compatible Stock Material, T7 INACTIVATED and REACTIVATED; T8
-// adds RENAMED and DETAILS_CHANGED.
-export type RequestableMaterialHistoryKind = 'CREATED' | 'COMPATIBLE_STOCK_MATERIAL_ADDED' | 'COMPATIBLE_STOCK_MATERIAL_ENDED' | 'INACTIVATED' | 'REACTIVATED';
+// F009-T1 writes CREATED, T2 the add and the end of a Compatible Stock Material, T7 INACTIVATED and REACTIVATED, T8
+// RENAMED and DETAILS_CHANGED.
+export type RequestableMaterialHistoryKind =
+  | 'CREATED'
+  | 'RENAMED'
+  | 'DETAILS_CHANGED'
+  | 'COMPATIBLE_STOCK_MATERIAL_ADDED'
+  | 'COMPATIBLE_STOCK_MATERIAL_ENDED'
+  | 'INACTIVATED'
+  | 'REACTIVATED';
 
 // A value a creation records, none before it: the Request Unit under its name then (#202 Q17, #175 P6). F009-T2: the
-// Stock Material an add or an end names, under its name then, after an add and before an end.
+// Stock Material an add or an end names, under its name then, after an add and before an end. F009-T8: a Rename and an
+// Other Details change record the value before too, and a description cleared is none after.
 export type RequestableMaterialRecordedChange =
-  | { field: 'name' | 'description'; before: null; after: string }
-  | { field: 'request_unit'; before: null; after: NamedListEntry }
-  | { field: 'whole_number_only'; before: null; after: boolean }
+  | { field: 'name'; before: string | null; after: string }
+  | { field: 'description'; before: string | null; after: string | null }
+  | { field: 'request_unit'; before: NamedListEntry | null; after: NamedListEntry }
+  | { field: 'whole_number_only'; before: boolean | null; after: boolean }
   | { field: 'compatible_stock_material'; before: NamedListEntry | null; after: NamedListEntry | null }
   // F009-T7: made Inactive or reactivated.
   | { field: 'is_active'; before: boolean; after: boolean };
@@ -120,6 +129,8 @@ export const lacksRequestUnitLine = (unitName: string): string => `ไม่ม�
 // What the kind of each history entry is called on the Requestable Material page.
 export const REQUESTABLE_HISTORY_KIND_LABELS: Record<RequestableMaterialHistoryKind, string> = {
   CREATED: HISTORY_KIND_LABELS.CREATED,
+  RENAMED: RENAME_LABEL,
+  DETAILS_CHANGED: EDIT_DETAILS_LABEL,
   COMPATIBLE_STOCK_MATERIAL_ADDED: ADD_COMPATIBLE_STOCK_MATERIAL_LABEL,
   COMPATIBLE_STOCK_MATERIAL_ENDED: COMPATIBLE_STOCK_MATERIAL_ENDED_LABEL,
   INACTIVATED: INACTIVE_LABEL,

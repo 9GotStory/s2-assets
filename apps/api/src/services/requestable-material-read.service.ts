@@ -42,16 +42,23 @@ export interface RequestableMaterialList {
 }
 
 // The kinds of change a history entry records: F009-T1 writes CREATED, T2 the adds and ends of a Compatible Stock
-// Material, T7 INACTIVATED and REACTIVATED; T8 adds RENAMED and DETAILS_CHANGED, which 0029_requestable_materials
-// already takes.
-export type RequestableMaterialHistoryKind = 'CREATED' | 'COMPATIBLE_STOCK_MATERIAL_ADDED' | 'COMPATIBLE_STOCK_MATERIAL_ENDED' | 'INACTIVATED' | 'REACTIVATED';
+// Material, T7 INACTIVATED and REACTIVATED, T8 RENAMED and DETAILS_CHANGED.
+export type RequestableMaterialHistoryKind =
+  | 'CREATED'
+  | 'RENAMED'
+  | 'DETAILS_CHANGED'
+  | 'COMPATIBLE_STOCK_MATERIAL_ADDED'
+  | 'COMPATIBLE_STOCK_MATERIAL_ENDED'
+  | 'INACTIVATED'
+  | 'REACTIVATED';
 
 // One entry of a Requestable Material's history, with the values it recorded as they were then, the Request Unit as
 // { id, name } (#202 Q17, #175 P6).
 export interface RequestableMaterialHistoryEntry {
   version: number;
   kind: RequestableMaterialHistoryKind;
-  changes: { field: string; before: string | boolean | NamedListEntry | null; after: string | boolean | NamedListEntry }[];
+  // F009-T8: a description an Other Details change clears is none after it.
+  changes: { field: string; before: string | boolean | NamedListEntry | null; after: string | boolean | NamedListEntry | null }[];
   recorded_by: string;
   recorded_by_username: string;
   recorded_at: string;

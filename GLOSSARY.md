@@ -397,9 +397,10 @@ was wrong as recorded, which stays the same thing. It never rewrites history: a 
 new Stock Material.
 
 **Other Details** (ข้อมูลอื่น):
-A Stock Material's Material Category, Minimum Stock and note, which a Supply Officer changes
-(แก้ไขข้อมูลอื่น) without a reason, each change recorded in its history. A change that changes
-nothing is refused.
+A Stock Material's Material Category, Minimum Stock and note, or a Requestable Material's
+description, whole-number setting and Request Unit, which a Supply Officer changes (แก้ไขข้อมูลอื่น)
+without a reason, each change recorded in its history. A change that changes nothing is refused
+(#210).
 
 ## Material Requests
 

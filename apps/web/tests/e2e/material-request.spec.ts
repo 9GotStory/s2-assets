@@ -27,7 +27,8 @@ const migrationFolder = path.resolve(__dirname, '../../../../packages/db/src/mig
 // "กระดาษ A4" with Request Unit รีม and finds it in the list and on its page. F009-T2 (#204) completes it with its
 // Compatible Stock Materials and the "ยังไม่มีวัสดุที่ใช้จ่าย" badge. F009-T4 (#206): Journey J2 starts: a Requester saves a
 // Material Request of two Requested Items; F009-T5 (#207) completes it with their Cancels. F009-T7 (#209) grows J1 with
-// "หยุดใช้" and "เปิดใช้อีกครั้ง", last, once J2 and J3 have left Pending Requested Items.
+// "หยุดใช้" and "เปิดใช้อีกครั้ง", last, once J2 and J3 have left Pending Requested Items; F009-T8 (#210) after it with
+// "เปลี่ยนชื่อ" and "แก้ไขข้อมูลอื่น".
 test.describe.serial('Material Request journeys: Real SPA -> Composed API -> PostgreSQL (Seam B)', () => {
   let container: StartedPostgreSqlContainer;
   let pool: pg.Pool;
@@ -1110,5 +1111,61 @@ test.describe.serial('Material Request journeys: Real SPA -> Composed API -> Pos
     await page.reload();
     await expect(page.locator('#requestable-material-status-action')).toHaveText('หยุดใช้');
     await expect(page.locator('#requestable-material-status-form')).toHaveCount(0);
+  });
+
+  test('Journey F009-T8.1: a Supply Officer renames "กระดาษ A4" to "กระดาษถ่ายเอกสาร A4", reminded that a different meaning needs a new Requestable Material, finds the new name in the list and the old and new names in its history, changes its description with "แก้ไขข้อมูลอื่น", and is refused a new Request Unit while Requested Items use it', async ({ page, context }) => {
+    const paperId = (await pool.query(`SELECT id FROM requestable_materials WHERE name = 'กระดาษ A4'`)).rows[0].id;
+    // Another active Unit of the list to ask for it in.
+    const otherUnit: string = (await pool.query('SELECT name FROM units WHERE is_active AND id <> $1 ORDER BY name LIMIT 1', [reamId])).rows[0].name;
+
+    await loginAs(context, officerUserId);
+    await delaySessionCheck(page);
+    await page.goto(`${targetBaseUrl}/requestable-materials/${paperId}`);
+    await expect(page.getByRole('heading', { level: 1, name: 'กระดาษ A4' })).toBeVisible();
+
+    // "เปลี่ยนชื่อ" fixes the spelling; the very same name is refused before it is sent (#202 Q6, story 6).
+    await page.locator('#requestable-material-rename-action').click();
+    await expect(page.locator('#requestable-material-rename-form h3')).toHaveText('เปลี่ยนชื่อ');
+    await expect(page.locator('[data-testid="requestable-material-rename-notice"]')).toHaveText(
+      'เปลี่ยนชื่อเพื่อแก้การสะกดเท่านั้น ถ้าความหมายเปลี่ยนเป็นวัสดุอื่น ให้เพิ่มวัสดุสำหรับขอเบิกใหม่แทน ประวัติจะเก็บชื่อเดิมและชื่อใหม่ไว้'
+    );
+    await expect(page.locator('#requestable-material-rename-name')).toHaveValue('กระดาษ A4');
+    await page.locator('#requestable-material-rename-submit').click();
+    await expect(page.locator('[data-testid="requestable-material-rename-form-error"]')).toContainText('ชื่อใหม่ยังเหมือนชื่อเดิม');
+    await page.locator('#requestable-material-rename-name').fill('กระดาษถ่ายเอกสาร A4');
+    await page.locator('#requestable-material-rename-submit').click();
+    await expect(page.getByRole('heading', { level: 1, name: 'กระดาษถ่ายเอกสาร A4' })).toBeVisible();
+    await expect(page.locator('#requestable-material-rename-form')).toHaveCount(0);
+    const historyEntries = page.locator('#requestable-material-history > li');
+    await expect(historyEntries.last()).toContainText('เปลี่ยนชื่อ');
+    await expect(historyEntries.last()).toContainText('ชื่อกระดาษ A4 → กระดาษถ่ายเอกสาร A4');
+    await expect(historyEntries.last()).toContainText('officer_request');
+
+    // "แก้ไขข้อมูลอื่น" changes the description, recorded before and after (#210 start decision 1).
+    await page.locator('#requestable-material-details-action').click();
+    await expect(page.locator('#requestable-material-details-form h3')).toHaveText('แก้ไขข้อมูลอื่น');
+    await expect(page.locator('#requestable-material-details-request-unit')).toHaveValue(reamId);
+    await page.locator('#requestable-material-details-description').fill('กระดาษขาว 80 แกรม');
+    await page.locator('#requestable-material-details-submit').click();
+    await expect(page.locator('[data-testid="requestable-material-description"]')).toHaveText('กระดาษขาว 80 แกรม');
+    await expect(historyEntries.last()).toContainText('แก้ไขข้อมูลอื่น');
+    await expect(historyEntries.last()).toContainText('รายละเอียดกระดาษถ่ายเอกสารขนาด A4 → กระดาษขาว 80 แกรม');
+
+    // A new Request Unit is refused: Requested Items of J2 and J3 use it, each in รีม as recorded (P2).
+    await page.locator('#requestable-material-details-action').click();
+    await expect(page.locator('[data-testid="requestable-material-details-request-unit-notice"]')).toContainText('เปลี่ยนหน่วยที่ขอได้เฉพาะเมื่อยังไม่มีรายการที่ขอใช้วัสดุนี้');
+    await page.locator('#requestable-material-details-request-unit').selectOption({ label: otherUnit });
+    await page.locator('#requestable-material-details-submit').click();
+    await expect(page.locator('[data-testid="requestable-material-details-form-error"]')).toContainText('request_unit_id cannot change while Requested Items use this Requestable Material');
+    await page.locator('#requestable-material-details-cancel').click();
+    await expect(page.locator('[data-testid="requestable-material-request-unit"]')).toHaveText('รีม');
+
+    // The list shows the new name.
+    await page.locator('#back-requestable-material-list-link').click();
+    await expect(page).toHaveURL(/\/requestable-materials$/);
+    await page.locator('#requestable-material-search').fill('กระดาษถ่ายเอกสาร');
+    await page.locator('#requestable-material-search-submit').click();
+    await expect(page).toHaveURL(/\?search=/);
+    await expect(page.locator(`[data-testid="requestable-material-row-${paperId}"]`)).toContainText('กระดาษถ่ายเอกสาร A4');
   });
 });

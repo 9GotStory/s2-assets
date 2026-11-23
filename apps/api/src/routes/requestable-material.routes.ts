@@ -8,8 +8,10 @@ import type { RequestableMaterialReadService } from '../services/requestable-mat
 import {
   RequestableMaterialNameTakenError,
   type AddCompatibleStockMaterialInput,
+  type ChangeDetailsInput,
   type CreateRequestableMaterialInput,
   type EndCompatibleStockMaterialInput,
+  type RenameInput,
   type RequestableMaterialService,
   type StatusChangeInput,
 } from '../services/requestable-material.service.ts';
@@ -46,6 +48,26 @@ const AddCompatibleStockMaterialSchema = z
 const EndCompatibleStockMaterialSchema = z
   .object({
     expected_version: z.number().int().positive(),
+    retry_token: z.string().optional(),
+  })
+  .strict();
+
+// F009-T8 (#210): a Rename, at the version the request read; the service checks the name and names it when refused.
+const RenameSchema = z
+  .object({
+    expected_version: z.number().int().positive(),
+    name: z.string(),
+    retry_token: z.string().optional(),
+  })
+  .strict();
+
+// F009-T8 (#210): the Other Details, each stated, at the version the request read; the service checks each value.
+const ChangeDetailsSchema = z
+  .object({
+    expected_version: z.number().int().positive(),
+    description: z.string().nullable(),
+    whole_number_only: z.boolean(),
+    request_unit_id: z.string(),
     retry_token: z.string().optional(),
   })
   .strict();
@@ -231,6 +253,61 @@ export const requestableMaterialRoutes: FastifyPluginAsync<RequestableMaterialRo
         input as EndCompatibleStockMaterialInput,
         { retryToken: write.retryToken }
       );
+      return reply.status(200).send(recorded);
+    } catch (err) {
+      const refusal = refusalOf(err);
+      if (!refusal) {
+        throw err;
+      }
+      return reply.status(refusal.statusCode).send(refusal);
+    }
+  });
+
+  /**
+   * POST /requestable-materials/:id/rename
+   * Renames the Requestable Material ("เปลี่ยนชื่อ", F009-T8) to fix its spelling, at the version the request read.
+   * Protected: requires 'material:manage' capability (Supply Officer)
+   */
+  fastify.post('/requestable-materials/:id/rename', { preHandler: [requireCapability('material:manage')] }, async (request, reply) => {
+    const { id } = request.params as { id: string };
+    if (!isValidUuid(id)) {
+      return reply.status(400).send(errorBody(400, 'INVALID_ID', 'Requestable Material ID must be a valid UUID string'));
+    }
+    const write = parseWrite(RenameSchema, request);
+    if ('refusal' in write) {
+      return reply.status(400).send(write.refusal);
+    }
+    try {
+      const { retry_token: _retryToken, ...input } = write.data;
+      const recorded = await requestableMaterialService.rename(request.user!.id, id.trim().toLowerCase(), input as RenameInput, { retryToken: write.retryToken });
+      return reply.status(200).send(recorded);
+    } catch (err) {
+      const refusal = refusalOf(err);
+      if (!refusal) {
+        throw err;
+      }
+      return reply.status(refusal.statusCode).send(refusal);
+    }
+  });
+
+  /**
+   * PUT /requestable-materials/:id/details
+   * Changes the Other Details ("แก้ไขข้อมูลอื่น", F009-T8): the description, the whole-number setting and the Request
+   * Unit, at the version the request read.
+   * Protected: requires 'material:manage' capability (Supply Officer)
+   */
+  fastify.put('/requestable-materials/:id/details', { preHandler: [requireCapability('material:manage')] }, async (request, reply) => {
+    const { id } = request.params as { id: string };
+    if (!isValidUuid(id)) {
+      return reply.status(400).send(errorBody(400, 'INVALID_ID', 'Requestable Material ID must be a valid UUID string'));
+    }
+    const write = parseWrite(ChangeDetailsSchema, request);
+    if ('refusal' in write) {
+      return reply.status(400).send(write.refusal);
+    }
+    try {
+      const { retry_token: _retryToken, ...input } = write.data;
+      const recorded = await requestableMaterialService.changeDetails(request.user!.id, id.trim().toLowerCase(), input as ChangeDetailsInput, { retryToken: write.retryToken });
       return reply.status(200).send(recorded);
     } catch (err) {
       const refusal = refusalOf(err);
