@@ -39,6 +39,24 @@ export interface EndCompatibleStockMaterialInput {
   expected_version: number;
 }
 
+// F009-T7 (#209): making a Requestable Material Inactive or reactivating it, at the version the request read (#202 Q17).
+export interface StatusChangeInput {
+  expected_version: number;
+}
+
+interface StatusChange {
+  isActive: boolean;
+  operation: string;
+  kind: 'INACTIVATED' | 'REACTIVATED';
+  // The refusal of a Requestable Material already so.
+  alreadySo: string;
+}
+
+const STATUS_CHANGES = Object.freeze({
+  inactivate: { isActive: false, operation: 'requestable-material:inactivate', kind: 'INACTIVATED', alreadySo: 'The Requestable Material is already Inactive' },
+  reactivate: { isActive: true, operation: 'requestable-material:reactivate', kind: 'REACTIVATED', alreadySo: 'The Requestable Material is already active' },
+} as const);
+
 // A Requestable Material as the refusal of a name already used names it.
 export interface RequestableMaterialEntry {
   id: string;
@@ -91,9 +109,9 @@ const stockMaterialIdOf = (value: unknown): string => {
 };
 
 // Locks the Requestable Material `id` FOR UPDATE, so writes on it take turns, and checks that it is at the version the
-// request read (#202 Q17): its Request Unit, or the refusal.
-const lockedAtVersion = async (client: pg.PoolClient, id: string, expectedVersion: number): Promise<{ request_unit_id: string }> => {
-  const res = await client.query('SELECT version, request_unit_id FROM requestable_materials WHERE id = $1 FOR UPDATE', [id]);
+// request read (#202 Q17): its Request Unit and status, or the refusal.
+const lockedAtVersion = async (client: pg.PoolClient, id: string, expectedVersion: number): Promise<{ request_unit_id: string; is_active: boolean }> => {
+  const res = await client.query('SELECT version, request_unit_id, is_active FROM requestable_materials WHERE id = $1 FOR UPDATE', [id]);
   if (res.rows.length === 0) {
     throw new NotFoundError('Requestable Material not found');
   }
@@ -249,6 +267,40 @@ export class RequestableMaterialService {
       ]);
       const before = { id: stockMaterialId, name: stockMaterial.name };
       return recordChange(client, actorId, requestableMaterialId, 'COMPATIBLE_STOCK_MATERIAL_ENDED', [{ field: 'compatible_stock_material', before, after: null }]);
+    });
+  }
+
+  /**
+   * F009-T7 (#209): makes the Requestable Material Inactive (หยุดใช้), so Requesters are no longer offered it, even
+   * while Pending Requested Items use it; they stay Pending, and nothing else changes or is deleted (#202 MC-14, Q16).
+   */
+  async inactivate(actorId: string, requestableMaterialId: string, input: StatusChangeInput, { retryToken }: { retryToken: string }): Promise<RequestableMaterialVersion> {
+    return this.changeStatus(actorId, requestableMaterialId, STATUS_CHANGES.inactivate, input.expected_version, retryToken);
+  }
+
+  /** F009-T7 (#209): reactivates an Inactive Requestable Material (เปิดใช้อีกครั้ง) as the same record (#202 MC-14, Q6). */
+  async reactivate(actorId: string, requestableMaterialId: string, input: StatusChangeInput, { retryToken }: { retryToken: string }): Promise<RequestableMaterialVersion> {
+    return this.changeStatus(actorId, requestableMaterialId, STATUS_CHANGES.reactivate, input.expected_version, retryToken);
+  }
+
+  // Makes the Requestable Material active or Inactive at the version the request read, with a history entry of the
+  // change. One already so is refused (#209 acceptance criteria). It locks the row FOR UPDATE, so a Material Request
+  // that locks it FOR SHARE waits for it and then reads its status (#206 review decision 2, comment 7090131450).
+  private async changeStatus(
+    actorId: string,
+    requestableMaterialId: string,
+    { isActive, operation, kind, alreadySo }: StatusChange,
+    expectedVersion: number,
+    retryToken: string
+  ): Promise<RequestableMaterialVersion> {
+    const payload = { requestable_material_id: requestableMaterialId, expected_version: expectedVersion };
+    return commitOnce(this.db, { actorId, operation, retryToken, payload, explicitContinuation: false }, async (client) => {
+      const stored = await lockedAtVersion(client, requestableMaterialId, expectedVersion);
+      if (stored.is_active === isActive) {
+        throw new ValidationError(alreadySo);
+      }
+      await client.query('UPDATE requestable_materials SET is_active = $2 WHERE id = $1', [requestableMaterialId, isActive]);
+      return recordChange(client, actorId, requestableMaterialId, kind, [{ field: 'is_active', before: !isActive, after: isActive }]);
     });
   }
 

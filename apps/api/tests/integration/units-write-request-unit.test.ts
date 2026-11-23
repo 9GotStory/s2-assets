@@ -17,7 +17,7 @@ describe('Units write and the Request Unit (Seam A - F009-T3)', () => {
   const helpers = materialHelpers(() => ({ api, officer, reader: readonly }));
   const { unitNamed, materialOf, replaceUnits, unitsAsRead, inOrder } = helpers;
   const { whileWriting, untilWaiting } = lockHelpers(() => ({ api }));
-  const { requestableIn, requestableOf, add, end } = requestableMaterialHelpers(() => ({ api, officer, reader: readonly }));
+  const { requestableIn, requestableOf, add, end, inactivate } = requestableMaterialHelpers(() => ({ api, officer, reader: readonly }));
 
   const expectAdded = async (requestableId: string, stockMaterialId: string) => expect((await add(requestableId, stockMaterialId)).statusCode).toBe(200);
 
@@ -88,8 +88,7 @@ describe('Units write and the Request Unit (Seam A - F009-T3)', () => {
         await expectAdded(requestable, paper);
       }
       await expectAdded(elsewhere, other);
-      // What F009-T7's write leaves, written where it is stored.
-      await api.pool.query('UPDATE requestable_materials SET is_active = false, version = version + 1 WHERE id = $1', [first]);
+      expect((await inactivate(first)).statusCode).toBe(200);
 
       const message = await expectUnitsRefused(paper, inOrder(unitsAsRead(await materialOf(paper)), [box, true], [ream, false]), [
         'alternate_units[1].is_active',

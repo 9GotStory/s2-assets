@@ -1,6 +1,7 @@
 import pg from 'pg';
 import { joinUnitEntry, type NamedListEntry } from './catalog-list-entries.ts';
 import { comparedName } from './compared-name.ts';
+import { pendingRequestedItemCount } from './material-request-pending-count.ts';
 import { offered } from './requestable-material-offered.ts';
 import { stockMaterialChoicesOf, stockMaterialSummariesOf, type StockMaterialChoices, type StockMaterialSummary } from './stock-material-read.service.ts';
 
@@ -26,6 +27,8 @@ export interface RequestableMaterialRow {
 export interface RequestableMaterialListFilters {
   // Text found in the name, ignoring case and repeated spaces (#202 Q18).
   search?: string;
+  // F009-T7 (#209): ใช้งานอยู่, หยุดใช้ or ทั้งหมด (#202 Q19).
+  status: 'active' | 'inactive' | 'all';
   limit: number;
   offset: number;
 }
@@ -38,9 +41,10 @@ export interface RequestableMaterialList {
   has_more: boolean;
 }
 
-// The kinds of change a history entry records: F009-T1 writes CREATED; T7 adds INACTIVATED and REACTIVATED, T8 RENAMED
-// and DETAILS_CHANGED, which 0029_requestable_materials already takes.
-export type RequestableMaterialHistoryKind = 'CREATED';
+// The kinds of change a history entry records: F009-T1 writes CREATED, T2 the adds and ends of a Compatible Stock
+// Material, T7 INACTIVATED and REACTIVATED; T8 adds RENAMED and DETAILS_CHANGED, which 0029_requestable_materials
+// already takes.
+export type RequestableMaterialHistoryKind = 'CREATED' | 'COMPATIBLE_STOCK_MATERIAL_ADDED' | 'COMPATIBLE_STOCK_MATERIAL_ENDED' | 'INACTIVATED' | 'REACTIVATED';
 
 // One entry of a Requestable Material's history, with the values it recorded as they were then, the Request Unit as
 // { id, name } (#202 Q17, #175 P6).
@@ -69,6 +73,9 @@ export interface RequestableMaterialDetail extends RequestableMaterialRow {
   compatible_stock_materials: CompatibleStockMaterial[];
   // Oldest first.
   history: RequestableMaterialHistoryEntry[];
+  // F009-T7 (#209): how many Pending Requested Items ask for it, for the confirmation of making it Inactive or ending
+  // its last Compatible Stock Material (#202 Q16, P6).
+  pending_requested_item_count: number;
 }
 
 // F009-T4 (#206): one offered Requestable Material as a Requester finds it: its name, Request Unit, whole-number
@@ -117,10 +124,13 @@ export class RequestableMaterialReadService {
     this.db = options.db;
   }
 
-  /** A page of the Requestable Materials by name, Inactive ones included, with how many pass the filters. */
+  /** A page of the Requestable Materials by name, of the status asked for, with how many pass the filters. */
   async list(filters: RequestableMaterialListFilters): Promise<RequestableMaterialList> {
     const params: unknown[] = [];
     const conditions: string[] = [];
+    if (filters.status !== 'all') {
+      conditions.push(filters.status === 'active' ? 'r.is_active' : 'NOT r.is_active');
+    }
     if (filters.search !== undefined) {
       params.push(filters.search);
       conditions.push(`strpos(${comparedName('r.name')}, ${comparedName(`$${params.length}`)}) > 0`);
@@ -156,7 +166,7 @@ export class RequestableMaterialReadService {
    * F009-T4 (#206): a page of the Requestable Materials offered to Requesters, by name, found by text in the name
    * ignoring case and repeated spaces (#202 Q9, Q18). Offered comes from its one SQL source (P10).
    */
-  async offeredList(filters: RequestableMaterialListFilters): Promise<OfferedRequestableMaterialList> {
+  async offeredList(filters: Omit<RequestableMaterialListFilters, 'status'>): Promise<OfferedRequestableMaterialList> {
     const params: unknown[] = [];
     const conditions = [offered('r')];
     if (filters.search !== undefined) {
@@ -232,6 +242,7 @@ export class RequestableMaterialReadService {
       // The summaries come by name; a stable sort keeps that order within each part.
       compatible_stock_materials: [...compatible.filter((entry) => entry.is_current), ...compatible.filter((entry) => !entry.is_current)],
       history: history.rows.map((entry: any) => ({ ...entry, recorded_at: new Date(entry.recorded_at).toISOString() })),
+      pending_requested_item_count: await pendingRequestedItemCount(this.db, id),
     };
   }
 

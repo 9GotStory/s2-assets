@@ -56,5 +56,14 @@ export function requestableMaterialHelpers(context: () => { api: ApiHarness; off
       { 'x-retry-token': token }
     );
 
-  return { requestableIn, requestableOf, add, end };
+  // Makes the Requestable Material `id` Inactive ("หยุดใช้") or reactivates it ("เปิดใช้อีกครั้ง"), at `version` or the
+  // version the page has now (F009-T7).
+  const changeStatus =
+    (action: 'inactivate' | 'reactivate') =>
+    async (id: string, { version, token = crypto.randomUUID(), actor = context().officer }: { version?: number; token?: string; actor?: Actor } = {}) =>
+      context().api.post(actor, `/requestable-materials/${id}/${action}`, { expected_version: version ?? (await requestableOf(id)).version }, { 'x-retry-token': token });
+  const inactivate = changeStatus('inactivate');
+  const reactivate = changeStatus('reactivate');
+
+  return { requestableIn, requestableOf, add, end, inactivate, reactivate };
 }

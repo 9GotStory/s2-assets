@@ -3,6 +3,7 @@ import { describe, it, expect, beforeAll, afterAll } from 'vitest';
 import { startApiHarness, type Actor, type ApiHarness } from './support/api-harness.ts';
 import { withCapabilityAnswer } from './support/capability-helpers.ts';
 import { lockHelpers } from './support/lock-helpers.ts';
+import { requestableMaterialHelpers } from './support/requestable-material-helpers.ts';
 import { materialHelpers } from './support/material-helpers.ts';
 
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/;
@@ -25,6 +26,7 @@ describe('Requestable Material (Seam A - F009-T1)', () => {
 
   const { unitNamed } = materialHelpers(() => ({ api, officer, reader: readonly }));
   const { whileWriting, untilWaiting } = lockHelpers(() => ({ api }));
+  const { inactivate } = requestableMaterialHelpers(() => ({ api, officer, reader: readonly }));
 
   const createRequestable = (payload: Record<string, unknown>, token: string = crypto.randomUUID(), actor: Actor = officer) =>
     api.post(actor, '/requestable-materials', payload, { 'x-retry-token': token });
@@ -206,8 +208,7 @@ describe('Requestable Material (Seam A - F009-T1)', () => {
 
     it('refuses the name of an Inactive Requestable Material too, saying it is Inactive so it can be reactivated', async () => {
       const retired = await created({ name: 'ซองจดหมายเลิกใช้' });
-      // Making it Inactive (F009-T7), written where it is stored.
-      await api.pool.query('UPDATE requestable_materials SET is_active = false, version = version + 1 WHERE id = $1', [retired]);
+      expect((await inactivate(retired)).statusCode).toBe(200);
 
       const res = await createRequestable(base({ name: 'ซองจดหมายเลิกใช้' }));
 
