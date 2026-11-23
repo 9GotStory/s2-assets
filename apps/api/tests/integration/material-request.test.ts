@@ -4,6 +4,7 @@ import { startApiHarness, type Actor, type ApiHarness } from './support/api-harn
 import { withCapabilityAnswer } from './support/capability-helpers.ts';
 import { lockHelpers } from './support/lock-helpers.ts';
 import { materialHelpers } from './support/material-helpers.ts';
+import { materialRequestHelpers } from './support/material-request-helpers.ts';
 import { requestableMaterialHelpers } from './support/requestable-material-helpers.ts';
 
 // F009-T4 (#206): a Requester (ผู้ขอเบิก) searches the offered Requestable Materials, creates a Material Request
@@ -25,41 +26,8 @@ describe('Material Request (Seam A - F009-T4)', () => {
   const materials = materialHelpers(() => ({ api, officer, reader: readonly }));
   const { unitNamed, materialOf } = materials;
   const { requestableIn, requestableOf, add, end } = requestableMaterialHelpers(() => ({ api, officer, reader: readonly }));
+  const { offeredIn, offered, createRequest, item, created, requestOf, cancelItem } = materialRequestHelpers(() => ({ api, requester, officer, reader: readonly, requestUnit: ream }));
   const { whileWriting, untilWaiting } = lockHelpers(() => ({ api }));
-
-  // A Requestable Material asked for in `requestUnit`, offered through a Compatible Stock Material whose Base Unit is
-  // `requestUnit`: its id and the Stock Material's.
-  const offeredIn = async (
-    requestUnit: string = ream,
-    { name, wholeNumberOnly = true }: { name?: string; wholeNumberOnly?: boolean } = {}
-  ): Promise<{ requestable: string; stockMaterial: string }> => {
-    const requestable = await requestableIn(requestUnit, name, { wholeNumberOnly });
-    const stockMaterial = await materials.created({ base_unit: { unit_id: requestUnit } });
-    expect((await add(requestable, stockMaterial)).statusCode).toBe(200);
-    return { requestable, stockMaterial };
-  };
-
-  const offered = async (options: { name?: string; wholeNumberOnly?: boolean } = {}): Promise<string> => (await offeredIn(ream, options)).requestable;
-
-  const createRequest = (payload: Record<string, unknown>, token: string = crypto.randomUUID(), actor: Actor = requester) =>
-    api.post(actor, '/material-requests', payload, { 'x-retry-token': token });
-
-  // A Requested Item asking for `quantity` of the Requestable Material `requestable`.
-  const item = (requestable: string, quantity = '2', extra: Record<string, unknown> = {}) => ({ requestable_material_id: requestable, requested_quantity: quantity, ...extra });
-
-  // A Material Request of the Requested Items `items` created by `actor`: its id and Request Number.
-  const created = async (items: Record<string, unknown>[], extra: Record<string, unknown> = {}, actor: Actor = requester) => {
-    const res = await createRequest({ requested_items: items, ...extra }, crypto.randomUUID(), actor);
-    expect(res.statusCode).toBe(201);
-    return res.json() as { material_request_id: string; request_number: string; version: number };
-  };
-
-  // The Material Request page as `actor` reads it.
-  const requestOf = async (id: string, actor: Actor = requester) => {
-    const res = await api.get(actor, `/material-requests/${id}`);
-    expect(res.statusCode).toBe(200);
-    return res.json();
-  };
 
   // "คำขอของฉัน" as `actor` reads it for `query`.
   const mine = async (query = '', actor: Actor = requester) => {
@@ -106,9 +74,11 @@ describe('Material Request (Seam A - F009-T4)', () => {
     expect(res.json()).toMatchObject({ code: 'NOT_OFFERED', position, message: expect.stringContaining(`requested_items[${position}]`) });
   };
 
-  // What F009-T5's Cancel of the Requested Item `itemId` writes, standing in until T5 builds it (#206 start decisions).
-  const cancelledInPlace = (itemId: string, actor: Actor = requester) =>
-    api.pool.query('UPDATE requested_items SET cancelled_by = $2, cancelled_at = now() WHERE id = $1', [itemId, actor.id]);
+  // F009-T5's Cancel of the Requested Item at `position` of the Material Request `id`, by its Requester `actor`.
+  const cancelledAt = async (id: string, position: number, actor: Actor = requester) => {
+    const page = await requestOf(id, actor);
+    expect((await cancelItem(id, page.requested_items[position].id, { version: page.version, actor })).statusCode).toBe(200);
+  };
 
   beforeAll(async () => {
     api = await startApiHarness();
@@ -167,6 +137,7 @@ describe('Material Request (Seam A - F009-T4)', () => {
           cancelled_by_username: null,
           cancelled_at: null,
           cancel_note: null,
+          can_cancel: true,
         },
         {
           id: expect.any(String),
@@ -181,6 +152,7 @@ describe('Material Request (Seam A - F009-T4)', () => {
           cancelled_by_username: null,
           cancelled_at: null,
           cancel_note: null,
+          can_cancel: true,
         },
       ]);
       expect(page.history).toEqual([
@@ -549,8 +521,8 @@ describe('Material Request (Seam A - F009-T4)', () => {
       const pending = await created([item(paper), item(pens)], {}, lister);
       const partly = await created([item(paper), item(pens)], {}, lister);
       const cancelled = await created([item(paper)], {}, lister);
-      await cancelledInPlace((await requestOf(partly.material_request_id, lister)).requested_items[0].id, lister);
-      await cancelledInPlace((await requestOf(cancelled.material_request_id, lister)).requested_items[0].id, lister);
+      await cancelledAt(partly.material_request_id, 0, lister);
+      await cancelledAt(cancelled.material_request_id, 0, lister);
 
       const ids = async (query: string) => (await mine(query, lister)).items.map(({ id, state }: any) => [id, state]);
       expect(await ids('')).toEqual([
@@ -584,15 +556,13 @@ describe('Material Request (Seam A - F009-T4)', () => {
       const paper = await offered();
       const pens = await offered();
       const { material_request_id: id } = await created([item(paper), item(pens)]);
-      const [first, second] = (await requestOf(id)).requested_items;
-
-      await cancelledInPlace(first.id);
+      await cancelledAt(id, 0);
       const partly = await requestOf(id);
       expect(partly.state).toBe('PENDING');
       expect(partly.requested_items.map(({ state }: any) => state)).toEqual(['CANCELLED', 'PENDING']);
       expect(partly.requested_items[0]).toMatchObject({ cancelled_by: requester.id, cancelled_by_username: 'requester_request', cancelled_at: expect.any(String) });
 
-      await cancelledInPlace(second.id);
+      await cancelledAt(id, 1);
       expect((await requestOf(id)).state).toBe('CANCELLED');
     });
 

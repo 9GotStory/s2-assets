@@ -24,7 +24,8 @@ const migrationFolder = path.resolve(__dirname, '../../../../packages/db/src/mig
 
 // Feature 009 (#202, Seam B). F009-T1 (#203): Journey J1 starts: a Supply Officer creates the Requestable Material
 // "กระดาษ A4" with Request Unit รีม and finds it in the list and on its page. F009-T2 (#204) completes it with its
-// Compatible Stock Materials and the "ยังไม่มีวัสดุที่ใช้จ่าย" badge.
+// Compatible Stock Materials and the "ยังไม่มีวัสดุที่ใช้จ่าย" badge. F009-T4 (#206): Journey J2 starts: a Requester saves a
+// Material Request of two Requested Items; F009-T5 (#207) completes it with their Cancels.
 test.describe.serial('Material Request journeys: Real SPA -> Composed API -> PostgreSQL (Seam B)', () => {
   let container: StartedPostgreSqlContainer;
   let pool: pg.Pool;
@@ -336,6 +337,8 @@ test.describe.serial('Material Request journeys: Real SPA -> Composed API -> Pos
     await page.goto(pageUrl);
     await page.locator(`[data-testid="compatible-stock-material-end-${copyPaperId}"]`).click();
     await expect(page.locator('[data-testid="compatible-stock-material-end-notice"]')).toContainText('เพิ่มกลับได้ภายหลัง');
+    // Every form but a Cancel's keeps "ยกเลิก" for closing it (#207 start decision 3).
+    await expect(page.locator('#compatible-stock-material-end-cancel')).toHaveText('ยกเลิก');
     await expect(page.locator('#compatible-stock-material-add-action')).toHaveCount(0);
     await expect(page.locator(`[data-testid="compatible-stock-material-end-${copyPaperId}"]`)).toHaveCount(0);
     await page.locator('#compatible-stock-material-end-submit').click();
@@ -755,5 +758,158 @@ test.describe.serial('Material Request journeys: Real SPA -> Composed API -> Pos
     await page.goto(`${targetBaseUrl}/material-requests/${firstId}`);
     await expect(page.locator('#material-request-error')).toContainText('คุณไม่มีสิทธิ์เข้าถึงข้อมูลคำขอเบิก (403 Forbidden)');
     await expect(page.locator('#material-request-retry')).toHaveCount(0);
+  });
+
+  test('Journey F009-T5.1: a Requester Cancels one Requested Item of their Material Request with a note, then the whole Material Request, which shows "ยกเลิกแล้ว" with who Cancelled each and when, on its page, in its history and in "คำขอของฉัน"', async ({ page, context }) => {
+    // The Material Request Journey F009-T4.1 saved (J2).
+    const requesterId = (await pool.query(`SELECT id FROM users WHERE username = 'requester_request'`)).rows[0].id;
+    const saved = (await pool.query(`SELECT id, request_number::text FROM material_requests WHERE note = 'ใช้ในงานประชุม'`)).rows[0];
+    await loginAs(context, requesterId);
+
+    // The Cancels wait for the CSRF token (#135).
+    await delaySessionCheck(page);
+    await page.goto(`${targetBaseUrl}/material-requests/${saved.id}`);
+    await expect(page.locator('#material-request-state')).toHaveText('รอพิจารณา');
+    await expect(page.locator('[data-testid="requested-item-cancel-0"]')).toHaveCount(0);
+    await expect(page.locator('#material-request-cancel-action')).toHaveCount(0);
+    await expect(page.locator('[data-testid="requested-item-cancel-0"]')).toBeVisible();
+    await expect(page.locator('[data-testid="requested-item-cancel-1"]')).toHaveText('ยกเลิก');
+    await expect(page.locator('#material-request-cancel-action')).toHaveText('ยกเลิกคำขอเบิก');
+    await expect(page.locator('[data-testid="requested-item-cancelled-0"]')).toHaveCount(0);
+
+    // One Cancel form at a time: opening one hides every other Cancel, and "ปิด" closes it with nothing Cancelled.
+    await page.getByRole('button', { name: 'ยกเลิก กระดาษ A4' }).click();
+    await expect(page.getByRole('heading', { level: 3, name: 'ยกเลิกรายการที่ขอ กระดาษ A4' })).toBeVisible();
+    await expect(page.locator('[data-testid="requested-item-cancel-notice"]')).toHaveText('รายการที่ขอนี้จะยังแสดงพร้อมจำนวนที่ขอ ผู้ยกเลิก และเวลาที่ยกเลิก');
+    await expect(page.locator('[data-testid="requested-item-cancel-0"]')).toHaveCount(0);
+    await expect(page.locator('[data-testid="requested-item-cancel-1"]')).toHaveCount(0);
+    await expect(page.locator('#material-request-cancel-action')).toHaveCount(0);
+    await expect(page.locator('#requested-item-cancel-cancel')).toHaveText('ปิด');
+    await page.locator('#requested-item-cancel-cancel').click();
+    await expect(page.locator('#requested-item-cancel-form')).toHaveCount(0);
+    await expect(page.locator('[data-testid="requested-item-0"]')).toContainText('รอพิจารณา');
+    await expect(page.locator('#material-request-cancel-action')).toBeVisible();
+
+    // A Requested Item's Cancel with a note: it keeps its Requested Quantity and shows who Cancelled it, when and why;
+    // the Material Request stays Pending while another Requested Item is (#202 P4, Q13).
+    await page.getByRole('button', { name: 'ยกเลิก กระดาษ A4' }).click();
+    await page.getByLabel('หมายเหตุการยกเลิก (ไม่บังคับ)').fill('ใช้ไม่ทันแล้ว');
+    await expect(page.locator('#requested-item-cancel-submit')).toHaveText('ยืนยันการยกเลิก');
+    await page.locator('#requested-item-cancel-submit').click();
+    await expect(page.locator('#requested-item-cancel-form')).toHaveCount(0);
+    const first = page.locator('[data-testid="requested-item-0"]');
+    await expect(first).toContainText('ยกเลิกแล้ว');
+    await expect(first).toContainText('2 รีม');
+    await expect(page.locator('[data-testid="requested-item-cancelled-0"]')).toContainText('โดย requester_request เมื่อ');
+    await expect(page.locator('[data-testid="requested-item-cancelled-0"]')).toContainText('หมายเหตุ: ใช้ไม่ทันแล้ว');
+    await expect(page.locator('[data-testid="requested-item-cancel-0"]')).toHaveCount(0);
+    await expect(page.locator('[data-testid="requested-item-1"]')).toContainText('รอพิจารณา');
+    await expect(page.locator('[data-testid="requested-item-cancelled-1"]')).toHaveCount(0);
+    await expect(page.locator('#material-request-state')).toHaveText('รอพิจารณา');
+    const itemEntry = page.locator('[data-testid="material-request-history-2"]');
+    await expect(itemEntry).toContainText('ยกเลิกรายการที่ขอ');
+    await expect(itemEntry).toContainText('รายการที่ขอ: กระดาษ A4');
+    await expect(itemEntry).toContainText('หมายเหตุ: ใช้ไม่ทันแล้ว');
+    await expect(itemEntry).toContainText('โดย requester_request');
+    await expect(page.locator('[data-testid="material-request-history-1"]')).not.toContainText('รายการที่ขอ');
+    await expect(page.locator('[data-testid="material-request-history-1"]')).not.toContainText('หมายเหตุ');
+
+    // The whole Material Request's Cancel takes every Requested Item still Pending, and it is Cancelled (MRQ-19, Q12).
+    await page.locator('#material-request-cancel-action').click();
+    await expect(page.getByRole('heading', { level: 3, name: `ยกเลิกคำขอเบิก เลขที่คำขอ ${saved.request_number}` })).toBeVisible();
+    await expect(page.locator('[data-testid="material-request-cancel-notice"]')).toHaveText('รายการที่ขอที่รอพิจารณาทั้ง 1 รายการจะถูกยกเลิก');
+    await expect(page.locator('[data-testid="requested-item-cancel-1"]')).toHaveCount(0);
+    await expect(page.locator('#material-request-cancel-action')).toHaveCount(0);
+    await page.getByLabel('หมายเหตุการยกเลิก (ไม่บังคับ)').fill('ไม่ต้องใช้แล้ว');
+    await page.locator('#material-request-cancel-submit').click();
+    await expect(page.locator('#material-request-cancel-form')).toHaveCount(0);
+    await expect(page.locator('#material-request-state')).toHaveText('ยกเลิกแล้ว');
+    await expect(page.locator('[data-testid="requested-item-1"]')).toContainText('ยกเลิกแล้ว');
+    await expect(page.locator('[data-testid="requested-item-1"]')).toContainText('0.5 รีม');
+    await expect(page.locator('[data-testid="requested-item-cancelled-1"]')).toContainText('โดย requester_request เมื่อ');
+    await expect(page.locator('[data-testid="requested-item-cancelled-1"]')).toContainText('หมายเหตุ: ไม่ต้องใช้แล้ว');
+    await expect(page.locator('[data-testid="requested-item-cancelled-0"]')).toContainText('หมายเหตุ: ใช้ไม่ทันแล้ว');
+    await expect(page.locator('[data-testid="requested-item-cancel-1"]')).toHaveCount(0);
+    await expect(page.locator('#material-request-cancel-action')).toHaveCount(0);
+    const requestEntry = page.locator('[data-testid="material-request-history-3"]');
+    await expect(requestEntry).toContainText('ยกเลิกคำขอเบิก');
+    await expect(requestEntry).toContainText('รายการที่ขอ: ซองจดหมายขอเบิก');
+    await expect(requestEntry).toContainText('หมายเหตุ: ไม่ต้องใช้แล้ว');
+    await expect(requestEntry).toContainText('โดย requester_request');
+
+    // "คำขอของฉัน" shows it Cancelled, and its state filter finds it there alone.
+    await page.locator('#back-material-request-list-link').click();
+    await expect(page).toHaveURL(/\/my-material-requests$/);
+    await page.locator('#material-request-state-filter').selectOption('cancelled');
+    await expect(page).toHaveURL(/\/my-material-requests\?state=cancelled$/);
+    const listed = page.locator('#material-request-list-table tbody tr');
+    await expect(listed).toHaveCount(1);
+    await expect(listed).toContainText(saved.request_number);
+    await expect(listed).toContainText('ยกเลิกแล้ว');
+  });
+
+  test('Journey F009-T5.2: a Cancel sent after the Material Request changed is refused as stale and offers the latest, which closes a form left with nothing to Cancel and offers the other Cancels again, and a Cancel after the grant went fails closed', async ({ page, context }) => {
+    const requesterId = (await pool.query(`SELECT id FROM users WHERE username = 'requester_request'`)).rows[0].id;
+    const paperId = (await pool.query(`SELECT id FROM requestable_materials WHERE name = 'กระดาษ A4'`)).rows[0].id;
+    const folderId = (await pool.query(`SELECT id FROM requestable_materials WHERE name = 'หมวดขอเบิก 1'`)).rows[0].id;
+    const materialRequests = new MaterialRequestService({ db: pool });
+    // A Material Request of two Pending Requested Items, and the ids of its Requested Items.
+    const pendingRequest = async () => {
+      const { material_request_id: id } = await materialRequests.create(
+        requesterId,
+        { requested_items: [{ requestable_material_id: paperId, requested_quantity: '1' }, { requestable_material_id: folderId, requested_quantity: '2' }] },
+        { retryToken: crypto.randomUUID() }
+      );
+      const items = (await pool.query('SELECT id FROM requested_items WHERE material_request_id = $1 ORDER BY position', [id])).rows.map(({ id: itemId }: any) => itemId);
+      return { id, items };
+    };
+    await loginAs(context, requesterId);
+
+    // The whole Material Request is Cancelled in another tab while its form is open: the save is refused as stale, and
+    // the latest read closes the form, as nothing is left to Cancel.
+    const whole = await pendingRequest();
+    await page.goto(`${targetBaseUrl}/material-requests/${whole.id}`);
+    await page.locator('#material-request-cancel-action').click();
+    await expect(page.locator('#material-request-cancel-form')).toBeVisible();
+    await materialRequests.cancelMaterialRequest(requesterId, whole.id, { expected_version: 1 }, { retryToken: crypto.randomUUID() });
+    await page.locator('#material-request-cancel-submit').click();
+    await expect(page.locator('[data-testid="material-request-cancel-form-error"]')).toContainText('คำขอเบิกนี้เปลี่ยนไปหลังจากเปิดฟอร์ม กรุณาโหลดข้อมูลล่าสุดแล้วตรวจสอบอีกครั้ง');
+    await page.locator('#material-request-cancel-reload').click();
+    await expect(page.locator('#material-request-cancel-form')).toHaveCount(0);
+    await expect(page.locator('#material-request-state')).toHaveText('ยกเลิกแล้ว');
+    await expect(page.locator('#material-request-cancel-action')).toHaveCount(0);
+    // Cancelled with no note: who and when, and no note.
+    await expect(page.locator('[data-testid="requested-item-cancelled-0"]')).toContainText('โดย requester_request เมื่อ');
+    await expect(page.locator('[data-testid="requested-item-cancelled-0"]')).not.toContainText('หมายเหตุ');
+    await expect(page.locator('[data-testid="material-request-history-2"]')).toContainText('รายการที่ขอ: กระดาษ A4, หมวดขอเบิก 1');
+    await expect(page.locator('[data-testid="material-request-history-2"]')).not.toContainText('หมายเหตุ');
+
+    // A Requested Item is Cancelled in another tab while its form is open: the latest read closes the form and offers
+    // the Cancels still open.
+    const one = await pendingRequest();
+    await page.goto(`${targetBaseUrl}/material-requests/${one.id}`);
+    await page.getByRole('button', { name: 'ยกเลิก กระดาษ A4' }).click();
+    await expect(page.locator('#requested-item-cancel-form')).toBeVisible();
+    await materialRequests.cancelRequestedItem(requesterId, one.id, one.items[0], { expected_version: 1 }, { retryToken: crypto.randomUUID() });
+    await page.locator('#requested-item-cancel-submit').click();
+    await expect(page.locator('[data-testid="requested-item-cancel-form-error"]')).toContainText('คำขอเบิกนี้เปลี่ยนไปหลังจากเปิดฟอร์ม');
+    await page.locator('#requested-item-cancel-reload').click();
+    await expect(page.locator('#requested-item-cancel-form')).toHaveCount(0);
+    await expect(page.locator('[data-testid="requested-item-0"]')).toContainText('ยกเลิกแล้ว');
+    await expect(page.locator('[data-testid="requested-item-cancel-0"]')).toHaveCount(0);
+    await expect(page.locator('[data-testid="requested-item-cancel-1"]')).toBeVisible();
+    await expect(page.locator('#material-request-cancel-action')).toBeVisible();
+
+    // The grant goes while a form is open: the Cancel is refused, and the page, read again, fails closed (P9).
+    await page.getByRole('button', { name: 'ยกเลิก หมวดขอเบิก 1' }).click();
+    await pool.query(`DELETE FROM user_roles WHERE user_id = $1 AND role_id = 'REQUESTER'`, [requesterId]);
+    try {
+      await page.locator('#requested-item-cancel-submit').click();
+      await expect(page.locator('#material-request-error')).toContainText('คุณไม่มีสิทธิ์เข้าถึงข้อมูลคำขอเบิก (403 Forbidden)');
+      await expect(page.locator('#requested-item-cancel-form')).toHaveCount(0);
+    } finally {
+      await pool.query(`INSERT INTO user_roles (user_id, role_id) VALUES ($1, 'REQUESTER')`, [requesterId]);
+    }
+    expect((await pool.query('SELECT cancelled_at FROM requested_items WHERE id = $1', [one.items[1]])).rows[0].cancelled_at).toBeNull();
   });
 });
