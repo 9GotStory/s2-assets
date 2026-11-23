@@ -612,12 +612,12 @@ describe('Material Request (Seam A - F009-T4)', () => {
         for (const url of refused) {
           const res = await api.get(other, url);
           expect(res.statusCode).toBe(403);
-          expect(res.json().error.code).toBe('FORBIDDEN');
+          expect(res.json().error).toMatchObject({ code: 'FORBIDDEN', message: 'Permission denied' });
           expect(res.body).not.toContain(tag);
         }
         const write = await createRequest({ requested_items: [item(paper)] }, crypto.randomUUID(), other);
         expect(write.statusCode).toBe(403);
-        expect(write.json().error.code).toBe('FORBIDDEN');
+        expect(write.json().error).toMatchObject({ code: 'FORBIDDEN', message: 'Permission denied' });
       }
       for (const url of reads) {
         const anonymous = await api.app.inject({ method: 'GET', url });
@@ -654,7 +654,7 @@ describe('Material Request (Seam A - F009-T4)', () => {
       expect((await withCapabilityAnswer(api.app, 'material-request:create', async () => false, write)).statusCode).toBe(403);
       const failed = await withCapabilityAnswer(api.app, 'material-request:create', async () => { throw new Error('lookup failed'); }, write);
       expect(failed.statusCode).toBe(500);
-      expect(failed.json().error.code).toBe('INTERNAL_SERVER_ERROR');
+      expect(failed.json().error).toMatchObject({ code: 'INTERNAL_SERVER_ERROR', message: 'An unexpected internal server error occurred.' });
       expect(await requestCount()).toBe(before);
     });
 
