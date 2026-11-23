@@ -44,7 +44,9 @@ which the duplicate rule refused too; it now sends 101 distinct Units.
 A refusal test asserts the body's `code` and `message`, beside its status: the error handler answers a
 thrown service error with the same status in its own envelope, so a status alone stays green when the
 route's own answer goes. In F009-T2 (#204), `refusalOf` without its NotFoundError branch still answered
-404; the tests now assert the route's `{ code: 'NOT_FOUND', message }`.
+404; the tests now assert the route's `{ code: 'NOT_FOUND', message }`. ESLint flags a code or a
+message asserted alone in an integration file (`REFUSAL_BODY_HALF` in `eslint.config.mjs`, #206); the files
+from before it are listed in `REFUSAL_BODY_HALF_EXEMPT` until a ticket touches one.
 
 ## A relaxed constraint has a test of each path that must not reach it
 

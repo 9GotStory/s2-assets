@@ -3146,7 +3146,7 @@ test.describe.serial('Asset Registry Real SPA -> Composed API -> PostgreSQL Jour
       // Trigger focus and visibilitychange
       await page.evaluate(() => {
         window.dispatchEvent(new Event('focus'));
-        document.dispatchEvent(new Event('visibilitychange'));
+        window.dispatchEvent(new Event('visibilitychange'));
       });
 
       // While request is held in-flight, protected facts MUST be suppressed immediately!
@@ -3229,7 +3229,7 @@ test.describe.serial('Asset Registry Real SPA -> Composed API -> PostgreSQL Jour
     // Trigger focus and visibilitychange to start revalidation
     await page.evaluate(() => {
       window.dispatchEvent(new Event('focus'));
-      document.dispatchEvent(new Event('visibilitychange'));
+      window.dispatchEvent(new Event('visibilitychange'));
     });
 
     // 4. Verify form is gated while session verification is pending
