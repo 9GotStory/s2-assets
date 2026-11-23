@@ -445,20 +445,27 @@ describe('Material Request Cancel (Seam A - F009-T5)', () => {
       const requestToken = crypto.randomUUID();
       const other = await pendingRequest(1);
       expect((await cancelRequest(other.id, { version: other.version, note: 'เดิม', token: requestToken })).statusCode).toBe(200);
+      // At the version `other` was Cancelled at, so that only the Material Request differs.
+      const third = await pendingRequest(1);
       const before = await requestOf(id);
+      const thirdBefore = await requestOf(third.id);
 
       for (const changed of [
         () => cancelItem(id, items[0], { version, note: 'ใหม่', token }),
         () => cancelItem(id, items[0], { version: version + 1, note: 'เดิม', token }),
-        () => cancelItem(id, items[1], { version: version + 1, note: 'เดิม', token }),
+        () => cancelItem(id, items[1], { version, note: 'เดิม', token }),
         () => cancelRequest(other.id, { version: other.version, note: 'ใหม่', token: requestToken }),
+        () => cancelRequest(other.id, { version: other.version + 1, note: 'เดิม', token: requestToken }),
         () => cancelRequest(id, { version: version + 1, note: 'เดิม', token: requestToken }),
+        () => cancelRequest(third.id, { version: other.version, note: 'เดิม', token: requestToken }),
+        () => cancelItem(third.id, items[0], { version, note: 'เดิม', token }),
       ]) {
         const res = await changed();
         expect(res.statusCode).toBe(409);
         expect(res.json()).toMatchObject({ code: 'RETRY_TOKEN_PAYLOAD_MISMATCH', message: 'Retry token reused with different payload is rejected without writes' });
       }
       expect(await requestOf(id)).toEqual(before);
+      expect(await requestOf(third.id)).toEqual(thirdBefore);
     });
 
     it('scopes a token to its actor and to its kind of Cancel', async () => {

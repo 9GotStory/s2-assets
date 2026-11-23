@@ -95,9 +95,9 @@ const MaterialRequestDetailContent: React.FC<{ id: string }> = ({ id }) => {
   const offersCancel = csrfToken !== null && cancelling === undefined && !cancellingAll;
   const formHandlers = {
     onRefresh: async () => (await request.refetch()).isSuccess,
+    // The read after a Cancel closes its form: what it Cancelled is no longer Pending.
     onSaved: async () => {
       await request.refetch();
-      setCancelAction(null);
     },
     onCancel: () => setCancelAction(null),
     onPermissionRevoked: () => void request.refetch(),

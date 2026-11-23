@@ -337,6 +337,8 @@ test.describe.serial('Material Request journeys: Real SPA -> Composed API -> Pos
     await page.goto(pageUrl);
     await page.locator(`[data-testid="compatible-stock-material-end-${copyPaperId}"]`).click();
     await expect(page.locator('[data-testid="compatible-stock-material-end-notice"]')).toContainText('เพิ่มกลับได้ภายหลัง');
+    // Every form but a Cancel's keeps "ยกเลิก" for closing it (#207 start decision 3).
+    await expect(page.locator('#compatible-stock-material-end-cancel')).toHaveText('ยกเลิก');
     await expect(page.locator('#compatible-stock-material-add-action')).toHaveCount(0);
     await expect(page.locator(`[data-testid="compatible-stock-material-end-${copyPaperId}"]`)).toHaveCount(0);
     await page.locator('#compatible-stock-material-end-submit').click();
