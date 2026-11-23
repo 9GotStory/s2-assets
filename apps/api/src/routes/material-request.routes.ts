@@ -65,11 +65,8 @@ const refusalOf = (err: unknown) => {
   if (err instanceof RequestableMaterialNotOfferedError) {
     return { ...errorBody(err.statusCode, err.code, err.message), position: err.position };
   }
-  // A Cancel refused with the current state (Q20; #207 start decision 1).
-  if (err instanceof StaleBeforeConflictError) {
-    return { ...errorBody(err.statusCode, err.code, err.message), current_values: err.current_values, expected_values: err.expected_values };
-  }
-  if (err instanceof NotPendingError) {
+  // A Cancel refused with the current state and the version it expected (Q20; #207 start decision 1, review decision 1).
+  if (err instanceof StaleBeforeConflictError || err instanceof NotPendingError) {
     return { ...errorBody(err.statusCode, err.code, err.message), current_values: err.current_values, expected_values: err.expected_values };
   }
   if (err instanceof RetryTokenConflictError || err instanceof NotFoundError || err instanceof ValidationError) {
