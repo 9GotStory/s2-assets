@@ -1,4 +1,5 @@
 import { test, expect } from '@playwright/test';
+import { actorSwitch } from './support/actors.ts';
 import { createServer, type ViteDevServer } from 'vite';
 import * as crypto from 'node:crypto';
 import * as path from 'node:path';
@@ -113,15 +114,7 @@ test.describe.serial('Retirement journeys: Real SPA -> Composed API -> PostgreSQ
     if (container) await container.stop();
   });
 
-  const loginAs = async (context: any, userId: string) => {
-    const session = await sessionService.createSession(userId);
-    await context.addCookies([{ name: 'session', value: session.token, url: targetBaseUrl }]);
-  };
-
-  const switchActor = async (page: any, context: any, userId: string) => {
-    await page.goto('about:blank');
-    await loginAs(context, userId);
-  };
+  const { loginAs, switchActor } = actorSwitch(() => sessionService, () => targetBaseUrl);
 
   const daysAgo = (days: number) => {
     const today = new Intl.DateTimeFormat('en-CA', { timeZone: 'Asia/Bangkok', year: 'numeric', month: '2-digit', day: '2-digit' }).format(new Date());

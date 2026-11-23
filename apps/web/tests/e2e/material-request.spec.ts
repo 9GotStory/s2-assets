@@ -1,4 +1,5 @@
 import { test, expect } from '@playwright/test';
+import { actorSwitch } from './support/actors.ts';
 import { createServer, type ViteDevServer } from 'vite';
 import * as crypto from 'node:crypto';
 import * as path from 'node:path';
@@ -114,10 +115,7 @@ test.describe.serial('Material Request journeys: Real SPA -> Composed API -> Pos
       await route.continue();
     });
 
-  const loginAs = async (context: any, userId: string) => {
-    const session = await sessionService.createSession(userId);
-    await context.addCookies([{ name: 'session', value: session.token, url: targetBaseUrl }]);
-  };
+  const { loginAs, switchActor } = actorSwitch(() => sessionService, () => targetBaseUrl);
 
   // Opens the Dashboard and waits until it has asked whether the viewer may read the catalog.
   const openDashboard = async (page: any) => {
@@ -386,7 +384,7 @@ test.describe.serial('Material Request journeys: Real SPA -> Composed API -> Pos
     // A Read-only User sees the Compatible Stock Materials and no action on them (#202 Q18, P9).
     const reader = await pool.query(`INSERT INTO users (username, password_hash, is_active) VALUES ('reader_request', $1, true) RETURNING id`, [await UserService.hashPassword('Password123!')]);
     await pool.query(`INSERT INTO user_roles (user_id, role_id) VALUES ($1, 'READ_ONLY')`, [reader.rows[0].id]);
-    await loginAs(context, reader.rows[0].id);
+    await switchActor(page, context, reader.rows[0].id);
     await page.goto(pageUrl);
     await expect(row).toContainText('ใช้อยู่');
     await expect(page.locator('#compatible-stock-material-table thead th')).toHaveText(['วัสดุ', 'สถานะวัสดุ', 'หน่วยนับ', 'การใช้จ่าย']);
@@ -411,7 +409,7 @@ test.describe.serial('Material Request journeys: Real SPA -> Composed API -> Pos
       { stock_material_id: loosePaperId, expected_version: paperVersion },
       { retryToken: crypto.randomUUID() }
     );
-    await loginAs(context, officerUserId);
+    await switchActor(page, context, officerUserId);
     await page.goto(`${targetBaseUrl}/stock-materials/${loosePaperId}`);
     await page.locator('#stock-material-edit-units').click();
     await expect(page.locator('#stock-material-units-alternate-0-unit')).toHaveText('รีม');
@@ -440,7 +438,7 @@ test.describe.serial('Material Request journeys: Real SPA -> Composed API -> Pos
     await pool.query(`INSERT INTO user_roles (user_id, role_id) VALUES ($1, 'REQUESTER')`, [requester.rows[0].id]);
 
     // The Supply Officer holds no material-request:create: once the Dashboard has asked, it shows no "ขอเบิกวัสดุ" (P9).
-    await loginAs(context, officerUserId);
+    await switchActor(page, context, officerUserId);
     const probedOfficer = page.waitForResponse((res: any) => res.url().includes('/my-material-requests?limit=1'));
     await openDashboard(page);
     await probedOfficer;
@@ -449,8 +447,7 @@ test.describe.serial('Material Request journeys: Real SPA -> Composed API -> Pos
 
     // The Requester's Dashboard shows "ขอเบิกวัสดุ" and, once it has asked, no "วัสดุ" menu, which the Supply Officer
     // sees (#202 Q18, P9).
-    await context.clearCookies();
-    await loginAs(context, requester.rows[0].id);
+    await switchActor(page, context, requester.rows[0].id);
     const probedRequests = page.waitForResponse((res: any) => res.url().includes('/my-material-requests?limit=1'));
     await openDashboard(page);
     await probedRequests;
@@ -734,7 +731,7 @@ test.describe.serial('Material Request journeys: Real SPA -> Composed API -> Pos
     await context.clearCookies();
     await page.locator('#material-request-submit').click();
     await expect(page).toHaveURL(/\/login$/);
-    await loginAs(context, requesterId);
+    await switchActor(page, context, requesterId);
     await page.goto(`${targetBaseUrl}/my-material-requests/new`);
     await expect(page.locator('#material-request-form')).toBeVisible();
     await context.clearCookies();
@@ -749,7 +746,7 @@ test.describe.serial('Material Request journeys: Real SPA -> Composed API -> Pos
 
     // The Supply Officer holds no material-request:create: the Requester's pages refuse them, offering nothing again
     // (P9). The Material Request page opens to them through material-request:view (Journey F009-T6.1).
-    await loginAs(context, officerUserId);
+    await switchActor(page, context, officerUserId);
     await page.goto(`${targetBaseUrl}/my-material-requests`);
     await expect(page.locator('#material-request-list-error')).toHaveText('คุณไม่มีสิทธิ์เข้าถึงคำขอของฉัน (403 Forbidden) ');
     await expect(page.locator('#material-request-list-retry')).toHaveCount(0);
@@ -983,13 +980,10 @@ test.describe.serial('Material Request journeys: Real SPA -> Composed API -> Pos
     await page.locator('#back-material-request-list-link').click();
     await expect(page).toHaveURL(/\/material-requests$/);
     await expect(page.getByRole('heading', { level: 1, name: 'คำขอเบิก' })).toBeVisible();
-    // The list has answered, so no read still under way renews the Supply Officer's rolling session cookie after the
-    // switch below.
     await expect(pendingRow).toBeVisible();
 
     // The Requester's Dashboard shows "ขอเบิกวัสดุ" and, once it has asked, neither "คำขอเบิก" nor "วัสดุ" (Q4, Q18, P9).
-    await context.clearCookies();
-    await loginAs(context, requesterId);
+    await switchActor(page, context, requesterId);
     const probedRequester = Promise.all([page.waitForResponse(isAllMaterialRequests), page.waitForResponse((res: any) => res.url().includes('/my-material-requests?limit=1'))]);
     await openDashboard(page);
     await probedRequester;

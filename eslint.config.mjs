@@ -93,7 +93,8 @@ const AFTER_ALL_TIMEOUT = {
 // A toMatchObject of a code holds its message too. A code or message read off res.json() is let through when the
 // innermost function around it asserts the other field anywhere, as a helper that checks each part of a message does.
 const bodyWithout = (field) => `:function > BlockStatement:not(:has(Property[key.name='${field}'])):not(:has(MemberExpression[property.name='${field}']))`;
-const BODY_FIELD = (field) => `CallExpression[callee.name='expect'] > MemberExpression.arguments[property.name='${field}'] > CallExpression.object[callee.property.name='json']`;
+// #208 retro: the field may sit under the envelope, as res.json().error.code does for a 403 or a 500.
+const BODY_FIELD = (field) => `CallExpression[callee.name='expect'] > MemberExpression.arguments[property.name='${field}']:has(CallExpression[callee.property.name='json'])`;
 const REFUSAL_BODY_HALF = [
   {
     selector: "CallExpression[callee.property.name='toMatchObject'] > ObjectExpression.arguments:has(> Property[key.name='code']):not(:has(> Property[key.name='message']))",
@@ -287,6 +288,11 @@ export default tseslint.config(
           // #76: the page has read nothing yet, so the absence holds whatever its facts say.
           selector: `ExpressionStatement${matcher('goto')} + ${ABSENCE}`,
           message: 'Assert what the loaded page shows before what it does not: right after goto, nothing is there yet (#76).',
+        },
+        {
+          // #208 retro: a spec's own copy of the helpers lost switchActor, and its journey met the cookie race again.
+          selector: "VariableDeclarator > Identifier.id[name=/^(loginAs|switchActor)$/], FunctionDeclaration > Identifier.id[name=/^(loginAs|switchActor)$/]",
+          message: 'Take loginAs and switchActor from actorSwitch in tests/e2e/support/actors.ts, the one actor switch of every journey (#208 retro).',
         },
       ],
     },
