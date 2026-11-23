@@ -1,6 +1,6 @@
 import type { FastifyPluginAsync } from 'fastify';
 import { z } from 'zod';
-import { requireCapability } from '../middleware/authorization.ts';
+import { isGranted, requireAnyCapability, requireCapability } from '../middleware/authorization.ts';
 import { invalidQueryBody, pageQueryFields, requestableMaterialSearchField } from './list-query.ts';
 import { errorBody, parseWrite } from './write-request.ts';
 import { isValidUuid } from '../services/capability.service.ts';
@@ -51,14 +51,21 @@ const OfferedRequestableMaterialQuerySchema = z
   })
   .strict();
 
-// "คำขอของฉัน": a state filter, every state by default, each named in lower case (#202 Q19).
+// "คำขอของฉัน" and "คำขอเบิก": a state filter, every state by default, each named in lower case (#202 Q19).
 const STATE_FILTERS = Object.fromEntries(MATERIAL_REQUEST_STATES.map((state) => [state.toLowerCase(), state])) as Record<Lowercase<MaterialRequestState>, MaterialRequestState>;
-const MyMaterialRequestQuerySchema = z
+const MaterialRequestQuerySchema = z
   .object({
     state: z.enum(['all', ...(Object.keys(STATE_FILTERS) as Lowercase<MaterialRequestState>[])]).optional(),
     ...pageQueryFields,
   })
   .strict();
+
+// The list filters a parsed list query asks for: 25 from the first by default, in every state unless one is named.
+const listFilters = ({ limit = 25, offset = 0, state = 'all' }: z.infer<typeof MaterialRequestQuerySchema>) => ({
+  limit,
+  offset,
+  ...(state === 'all' ? {} : { state: STATE_FILTERS[state] }),
+});
 
 // The answer to a refused write, or null for an error that is not a refusal.
 const refusalOf = (err: unknown) => {
@@ -179,29 +186,44 @@ export const materialRequestRoutes: FastifyPluginAsync<MaterialRequestRoutesOpti
    */
   fastify.get('/my-material-requests', { preHandler: [requireCapability('material-request:create')] }, async (request, reply) => {
     reply.header('Cache-Control', 'no-store');
-    const parsed = MyMaterialRequestQuerySchema.safeParse(request.query ?? {});
+    const parsed = MaterialRequestQuerySchema.safeParse(request.query ?? {});
     if (!parsed.success) {
       return reply.status(400).send(invalidQueryBody(parsed.error));
     }
-    const { limit = 25, offset = 0, state = 'all' } = parsed.data;
-    const filters = { limit, offset, ...(state === 'all' ? {} : { state: STATE_FILTERS[state] }) };
-    return reply.status(200).send(await materialRequestReadService.listOf(request.user!.id, filters));
+    return reply.status(200).send(await materialRequestReadService.list({ requestedBy: request.user!.id, ...listFilters(parsed.data) }));
+  });
+
+  /**
+   * GET /material-requests
+   * "คำขอเบิก": every person's Material Requests, newest first, a page at a time, by state, read-only (#202 Q4, Q19).
+   * Protected: requires 'material-request:view' capability (Supply Officer, Administrator)
+   */
+  fastify.get('/material-requests', { preHandler: [requireCapability('material-request:view')] }, async (request, reply) => {
+    reply.header('Cache-Control', 'no-store');
+    const parsed = MaterialRequestQuerySchema.safeParse(request.query ?? {});
+    if (!parsed.success) {
+      return reply.status(400).send(invalidQueryBody(parsed.error));
+    }
+    return reply.status(200).send(await materialRequestReadService.list(listFilters(parsed.data)));
   });
 
   /**
    * GET /material-requests/:id
-   * A Material Request with its Requested Items and history (#202 Q19). Another person's answers as if it did not
-   * exist (P5).
-   * Protected: requires 'material-request:create' capability (Requester)
+   * A Material Request with its Requested Items and history (#202 Q19). A holder of material-request:view reads every
+   * one, read-only (Q4, F009-T6); without it another person's answers as if it did not exist (P5). Only its Requester
+   * holding material-request:create is offered a Cancel (P9; #207 start decision 2).
+   * Protected: requires 'material-request:view' (Supply Officer, Administrator) or 'material-request:create'
+   * (Requester) capability (#208 start decision 1)
    */
-  fastify.get('/material-requests/:id', { preHandler: [requireCapability('material-request:create')] }, async (request, reply) => {
+  fastify.get('/material-requests/:id', { preHandler: [requireAnyCapability(['material-request:view', 'material-request:create'])] }, async (request, reply) => {
     reply.header('Cache-Control', 'no-store');
     const { id } = request.params as { id: string };
     if (!isValidUuid(id)) {
       return reply.status(400).send(errorBody(400, 'INVALID_ID', 'Material Request ID must be a valid UUID string'));
     }
-    const materialRequest = await materialRequestReadService.read(id.trim().toLowerCase());
-    if (!materialRequest || materialRequest.requested_by !== request.user!.id) {
+    const caller = request.user!.id;
+    const materialRequest = await materialRequestReadService.read(id.trim().toLowerCase(), isGranted(request, 'material-request:create') ? caller : null);
+    if (!materialRequest || (!isGranted(request, 'material-request:view') && materialRequest.requested_by !== caller)) {
       return reply.status(404).send(errorBody(404, 'NOT_FOUND', 'Material Request not found'));
     }
     return reply.status(200).send(materialRequest);

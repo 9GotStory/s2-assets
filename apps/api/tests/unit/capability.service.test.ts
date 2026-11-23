@@ -51,6 +51,7 @@ describe('CapabilityService Unit Tests (T024 - US2)', () => {
         'verification:correct',
         'retirement:correct',
         'material:view',
+        'material-request:view',
       ]);
       // T4 (#25, D3): reference:maintain is granted to ADMINISTRATOR only.
       for (const role of ['SYSTEM_MAINTAINER', 'READ_ONLY', 'ASSET_CUSTODIAN']) {
@@ -181,7 +182,7 @@ describe('CapabilityService Unit Tests (T024 - US2)', () => {
     it('gives material:view to the Supply Officer, the Administrator and the Read-only User, and material:manage to the Supply Officer alone', () => {
       expect(KNOWN_ROLES).toContain('SUPPLY_OFFICER');
       expect(Object.isFrozen(ROLE_CAPABILITY_MAP.SUPPLY_OFFICER)).toBe(true);
-      expect(ROLE_CAPABILITY_MAP.SUPPLY_OFFICER).toEqual(['material:view', 'material:manage']);
+      expect(ROLE_CAPABILITY_MAP.SUPPLY_OFFICER).toEqual(['material:view', 'material:manage', 'material-request:view']);
       for (const role of ['ADMINISTRATOR', 'READ_ONLY']) {
         expect(ROLE_CAPABILITY_MAP[role]).toContain('material:view');
         expect(ROLE_CAPABILITY_MAP[role]).not.toContain('material:manage');
@@ -203,6 +204,19 @@ describe('CapabilityService Unit Tests (T024 - US2)', () => {
         expect(ROLE_CAPABILITY_MAP[role]).not.toContain('material-request:create');
       }
       expect(isKnownCapability('material-request:create')).toBe(true);
+    });
+
+    // F009-T6 (#202 Q4): the Supply Officer and the Administrator see every Material Request, read-only; no other role
+    // gains it, the Read-only User and the Requester included.
+    it('gives material-request:view to the Supply Officer and the Administrator alone', () => {
+      for (const role of ['SUPPLY_OFFICER', 'ADMINISTRATOR']) {
+        expect(ROLE_CAPABILITY_MAP[role]).toContain('material-request:view');
+        expect(ROLE_CAPABILITY_MAP[role]).not.toContain('material-request:create');
+      }
+      for (const role of ['SYSTEM_MAINTAINER', 'READ_ONLY', 'ASSET_CUSTODIAN', 'VERIFICATION_STAFF', 'REQUESTER']) {
+        expect(ROLE_CAPABILITY_MAP[role]).not.toContain('material-request:view');
+      }
+      expect(isKnownCapability('material-request:view')).toBe(true);
     });
 
     it('validates UUIDs correctly with isValidUuid', () => {

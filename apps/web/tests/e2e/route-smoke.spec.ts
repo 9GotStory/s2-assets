@@ -43,9 +43,10 @@ interface Fixtures {
   requestNumber: string;
 }
 
-// Each route of router.tsx: the page a Read-only User who is also a Requester opens and its heading, or why it is not
-// opened. F009-T4 (#206): the Requester role lets the visits reach the Requester's pages, and the Dashboard's
-// "ขอเบิกวัสดุ" probe answer 200; it grants nothing else (#202 Q1).
+// Each route of router.tsx: the page a Read-only User who is also a Requester and a Supply Officer opens and its
+// heading, or why it is not opened. F009-T4 (#206): the Requester role lets the visits reach the Requester's pages, and
+// the Dashboard's "ขอเบิกวัสดุ" probe answer 200 (#202 Q1). F009-T6 (#208 start decision 3): the Supply Officer role
+// lets them reach "คำขอเบิก" (material-request:view); the pages its other grants add actions to keep their headings.
 // A page that adds a route adds its row here; the first test fails until it does (F005-T3 retrospective, #101).
 const SMOKE: Record<string, { url: (f: Fixtures) => string; heading: (f: Fixtures) => string } | { skip: string }> = {
   '/': { url: () => '/', heading: () => 'เข้าสู่ระบบ' },
@@ -79,6 +80,8 @@ const SMOKE: Record<string, { url: (f: Fixtures) => string; heading: (f: Fixture
   '/my-material-requests': { url: () => '/my-material-requests', heading: () => 'คำขอของฉัน' },
   '/my-material-requests/new': { url: () => '/my-material-requests/new', heading: () => 'สร้างคำขอเบิก' },
   '/material-requests/:id': { url: (f) => `/material-requests/${f.materialRequestId}`, heading: (f) => `คำขอเบิก เลขที่คำขอ ${f.requestNumber}` },
+  // F009-T6 (#208): every person's Material Requests, for material-request:view.
+  '/material-requests': { url: () => '/material-requests', heading: () => 'คำขอเบิก' },
 };
 
 // The paths router.tsx declares, read from its text: importing it builds a browser router, which needs a window.
@@ -144,7 +147,7 @@ test.describe.serial('Route smoke: Real SPA -> Composed API -> PostgreSQL (Seam 
     const custodianUserId = await createUser('custodian_smoke', 'ASSET_CUSTODIAN');
     const officerUserId = await createUser('officer_smoke', 'SUPPLY_OFFICER');
     readonlyUserId = await createUser('readonly_smoke', 'READ_ONLY');
-    await pool.query(`INSERT INTO user_roles (user_id, role_id) VALUES ($1, 'REQUESTER')`, [readonlyUserId]);
+    await pool.query(`INSERT INTO user_roles (user_id, role_id) VALUES ($1, 'REQUESTER'), ($1, 'SUPPLY_OFFICER')`, [readonlyUserId]);
 
     const assetService = new AssetService({ db: pool });
     const today = new Intl.DateTimeFormat('en-CA', { timeZone: 'Asia/Bangkok', year: 'numeric', month: '2-digit', day: '2-digit' }).format(new Date());
@@ -237,7 +240,7 @@ test.describe.serial('Route smoke: Real SPA -> Composed API -> PostgreSQL (Seam 
     if ('skip' in row) {
       continue;
     }
-    test(`Route smoke: a Read-only User who is also a Requester opens ${routePath} and sees its heading with no error`, async ({ page, context }) => {
+    test(`Route smoke: a Read-only User who is also a Requester and a Supply Officer opens ${routePath} and sees its heading with no error`, async ({ page, context }) => {
       const session = await sessionService.createSession(readonlyUserId);
       await context.addCookies([{ name: 'session', value: session.token, url: targetBaseUrl }]);
       // Every read the page makes, and the status each answered with once it has. A read is matched by its request,

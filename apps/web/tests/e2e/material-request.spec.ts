@@ -747,7 +747,8 @@ test.describe.serial('Material Request journeys: Real SPA -> Composed API -> Pos
       await expect(page).toHaveURL(/\/login$/);
     }
 
-    // The Supply Officer holds no material-request:create: each page refuses them, offering nothing again (P9).
+    // The Supply Officer holds no material-request:create: the Requester's pages refuse them, offering nothing again
+    // (P9). The Material Request page opens to them through material-request:view (Journey F009-T6.1).
     await loginAs(context, officerUserId);
     await page.goto(`${targetBaseUrl}/my-material-requests`);
     await expect(page.locator('#material-request-list-error')).toHaveText('คุณไม่มีสิทธิ์เข้าถึงคำขอของฉัน (403 Forbidden) ');
@@ -755,9 +756,6 @@ test.describe.serial('Material Request journeys: Real SPA -> Composed API -> Pos
     await page.goto(`${targetBaseUrl}/my-material-requests/new`);
     await expect(page.locator('#material-request-create-forbidden')).toHaveText('คุณไม่มีสิทธิ์สร้างคำขอเบิก');
     await expect(page.locator('#material-request-form')).toHaveCount(0);
-    await page.goto(`${targetBaseUrl}/material-requests/${firstId}`);
-    await expect(page.locator('#material-request-error')).toContainText('คุณไม่มีสิทธิ์เข้าถึงข้อมูลคำขอเบิก (403 Forbidden)');
-    await expect(page.locator('#material-request-retry')).toHaveCount(0);
   });
 
   test('Journey F009-T5.1: a Requester Cancels one Requested Item of their Material Request with a note, then the whole Material Request, which shows "ยกเลิกแล้ว" with who Cancelled each and when, on its page, in its history and in "คำขอของฉัน"', async ({ page, context }) => {
@@ -911,5 +909,102 @@ test.describe.serial('Material Request journeys: Real SPA -> Composed API -> Pos
       await pool.query(`INSERT INTO user_roles (user_id, role_id) VALUES ($1, 'REQUESTER')`, [requesterId]);
     }
     expect((await pool.query('SELECT cancelled_at FROM requested_items WHERE id = $1', [one.items[1]])).rows[0].cancelled_at).toBeNull();
+  });
+
+  test('Journey F009-T6.1: a Supply Officer opens "คำขอเบิก" from its menu, finds every Material Request with its Requester and state, filters it by state, and opens a Pending one read-only, with no Cancel and the way back to "คำขอเบิก"; the Requester sees neither "คำขอเบิก" nor "วัสดุ" and is refused "คำขอเบิก"', async ({ page, context }) => {
+    // J3: the Material Request Journey F009-T4.1 saved and F009-T5.1 Cancelled, and a Pending one of the same Requester.
+    const requesterId = (await pool.query(`SELECT id FROM users WHERE username = 'requester_request'`)).rows[0].id;
+    const saved = (await pool.query(`SELECT id, request_number::text FROM material_requests WHERE note = 'ใช้ในงานประชุม'`)).rows[0];
+    const paperId = (await pool.query(`SELECT id FROM requestable_materials WHERE name = 'กระดาษ A4'`)).rows[0].id;
+    const folderId = (await pool.query(`SELECT id FROM requestable_materials WHERE name = 'หมวดขอเบิก 1'`)).rows[0].id;
+    const { material_request_id: pendingId, request_number: pendingNumber } = await new MaterialRequestService({ db: pool }).create(
+      requesterId,
+      { note: 'ขอใช้ในการอบรม', requested_items: [{ requestable_material_id: paperId, requested_quantity: '3' }, { requestable_material_id: folderId, requested_quantity: '1' }] },
+      { retryToken: crypto.randomUUID() }
+    );
+    // "คำขอเบิก" is read at /material-requests; "คำขอของฉัน" at /my-material-requests holds that text too.
+    const isAllMaterialRequests = (res: any) => new URL(res.url()).pathname === '/material-requests';
+
+    // The Supply Officer's Dashboard shows "คำขอเบิก" once it has asked, and still no "ขอเบิกวัสดุ" (P9).
+    await loginAs(context, officerUserId);
+    const probedOfficer = page.waitForResponse(isAllMaterialRequests);
+    await openDashboard(page);
+    await probedOfficer;
+    await expect(page.locator('#nav-all-material-request-section')).toContainText('คำขอเบิก');
+    await expect(page.locator('#nav-material-request-section')).toHaveCount(0);
+
+    await page.locator('#nav-all-material-request-list').click();
+    await expect(page).toHaveURL(/\/material-requests$/);
+    await expect(page.getByRole('heading', { level: 1, name: 'คำขอเบิก' })).toBeVisible();
+    await expect(page.locator('#material-request-create-action')).toHaveCount(0);
+    const pendingRow = page.locator(`[data-testid="material-request-row-${pendingId}"]`);
+    const savedRow = page.locator(`[data-testid="material-request-row-${saved.id}"]`);
+    await expect(pendingRow.locator('td')).toHaveText([pendingNumber, 'requester_request', /\S/, 'รอพิจารณา', '2 รายการ']);
+    await expect(page.locator('#material-request-list-table tbody tr').first()).toHaveAttribute('data-testid', `material-request-row-${pendingId}`);
+
+    // The state filter keeps its choice in the URL (Q19).
+    const stateCells = page.locator('#material-request-list-table tbody td:nth-child(4)');
+    await page.locator('#material-request-state-filter').selectOption('cancelled');
+    await expect(page).toHaveURL(/\/material-requests\?state=cancelled$/);
+    await expect(pendingRow).toHaveCount(0);
+    await expect(stateCells.first()).toHaveText('ยกเลิกแล้ว');
+    await expect(stateCells.filter({ hasNotText: 'ยกเลิกแล้ว' })).toHaveCount(0);
+    // The journeys before saved more than a page: J2's Material Request, the oldest, is the last Cancelled one.
+    const cancelledCount: number = (await (await page.request.get(`${targetBaseUrl}/material-requests?state=cancelled&limit=1`)).json()).total_count;
+    await page.goto(`${targetBaseUrl}/material-requests?state=cancelled&offset=${cancelledCount - 1}`);
+    await expect(savedRow.locator('td')).toHaveText([saved.request_number, 'requester_request', /\S/, 'ยกเลิกแล้ว', '2 รายการ']);
+    await page.locator('#material-request-state-filter').selectOption('pending');
+    await expect(pendingRow).toBeVisible();
+    await expect(savedRow).toHaveCount(0);
+    await page.locator('#material-request-state-filter').selectOption('all');
+    await expect(page).toHaveURL(/\/material-requests$/);
+
+    // The Pending Material Request's page shows every field, Requested Item and its history, and no Cancel once the
+    // session, and with it the CSRF token, has arrived (Q12, P9).
+    const sessionChecked = page.waitForResponse((res: any) => res.url().includes('/auth/session-check'));
+    await pendingRow.getByRole('link', { name: pendingNumber }).click();
+    await expect(page).toHaveURL(new RegExp(`/material-requests/${pendingId}\\?from=all$`));
+    await expect(page.getByRole('heading', { level: 1, name: `คำขอเบิก เลขที่คำขอ ${pendingNumber}` })).toBeVisible();
+    await sessionChecked;
+    await expect(page.locator('#material-request-state')).toHaveText('รอพิจารณา');
+    await expect(page.locator('dl')).toContainText('requester_request');
+    await expect(page.locator('#material-request-note')).toHaveText('ขอใช้ในการอบรม');
+    await expect(page.locator('[data-testid="requested-item-0"]')).toContainText('กระดาษ A4');
+    await expect(page.locator('[data-testid="requested-item-0"]')).toContainText('รอพิจารณา');
+    await expect(page.locator('[data-testid="requested-item-1"]')).toContainText('หมวดขอเบิก 1');
+    await expect(page.locator('[data-testid="material-request-history-1"]')).toContainText('requester_request');
+    await expect(page.locator('[data-testid^="requested-item-cancel-"]')).toHaveCount(0);
+    await expect(page.locator('#material-request-cancel-action')).toHaveCount(0);
+
+    // The way back leads to "คำขอเบิก", after a reload too (#208 start decision 2).
+    await page.reload();
+    await expect(page.locator('#back-material-request-list-link')).toHaveText('← กลับสู่คำขอเบิก');
+    await page.locator('#back-material-request-list-link').click();
+    await expect(page).toHaveURL(/\/material-requests$/);
+    await expect(page.getByRole('heading', { level: 1, name: 'คำขอเบิก' })).toBeVisible();
+    // The list has answered, so no read still under way renews the Supply Officer's rolling session cookie after the
+    // switch below.
+    await expect(pendingRow).toBeVisible();
+
+    // The Requester's Dashboard shows "ขอเบิกวัสดุ" and, once it has asked, neither "คำขอเบิก" nor "วัสดุ" (Q4, Q18, P9).
+    await context.clearCookies();
+    await loginAs(context, requesterId);
+    const probedRequester = Promise.all([page.waitForResponse(isAllMaterialRequests), page.waitForResponse((res: any) => res.url().includes('/my-material-requests?limit=1'))]);
+    await openDashboard(page);
+    await probedRequester;
+    await expect(page.locator('#nav-material-request-section')).toContainText('ขอเบิกวัสดุ');
+    await expect(page.locator('#nav-all-material-request-section')).toHaveCount(0);
+    await expect(page.locator('#nav-material-section')).toHaveCount(0);
+
+    // "คำขอเบิก" refuses the Requester, offering nothing again; their own Material Request's page, opened from
+    // "คำขอของฉัน", still offers its Cancels and leads back there.
+    await page.goto(`${targetBaseUrl}/material-requests`);
+    await expect(page.locator('#material-request-list-error')).toHaveText('คุณไม่มีสิทธิ์เข้าถึงคำขอเบิก (403 Forbidden) ');
+    await expect(page.locator('#material-request-list-retry')).toHaveCount(0);
+    await page.goto(`${targetBaseUrl}/my-material-requests`);
+    await page.locator(`[data-testid="material-request-row-${pendingId}"]`).getByRole('link', { name: pendingNumber }).click();
+    await expect(page).toHaveURL(new RegExp(`/material-requests/${pendingId}$`));
+    await expect(page.locator('#material-request-cancel-action')).toBeVisible();
+    await expect(page.locator('#back-material-request-list-link')).toHaveText('← กลับสู่คำขอของฉัน');
   });
 });

@@ -473,7 +473,7 @@ describe('Material Request (Seam A - F009-T4)', () => {
   });
 
   describe('"คำขอของฉัน" (Q19)', () => {
-    it("lists only the caller's own Material Requests, newest first, each with its Request Number, Recorded At, state and Requested Item count", async () => {
+    it("lists only the caller's own Material Requests, newest first, each with its Request Number, Requester, Recorded At, state and Requested Item count", async () => {
       const lister = await api.actor('requester_lister', 'REQUESTER');
       const paper = await offered();
       const pens = await offered();
@@ -485,8 +485,8 @@ describe('Material Request (Seam A - F009-T4)', () => {
 
       expect(list).toEqual({
         items: [
-          { id: newer.material_request_id, request_number: newer.request_number, recorded_at: expect.any(String), state: 'PENDING', requested_item_count: 2 },
-          { id: older.material_request_id, request_number: older.request_number, recorded_at: expect.any(String), state: 'PENDING', requested_item_count: 1 },
+          { id: newer.material_request_id, request_number: newer.request_number, requested_by: lister.id, requested_by_username: 'requester_lister', recorded_at: expect.any(String), state: 'PENDING', requested_item_count: 2 },
+          { id: older.material_request_id, request_number: older.request_number, requested_by: lister.id, requested_by_username: 'requester_lister', recorded_at: expect.any(String), state: 'PENDING', requested_item_count: 1 },
         ],
         limit: 25,
         offset: 0,
@@ -588,6 +588,8 @@ describe('Material Request (Seam A - F009-T4)', () => {
   });
 
   describe('permissions (Q1, P5, P9)', () => {
+    // The Supply Officer and the Administrator read the Material Request page through material-request:view (F009-T6,
+    // material-request-view.test.ts).
     it('lets only the Requester search, create, list and read, and refuses the six other roles and anyone without a session', async () => {
       const tag = `สิทธิ์ขอเบิก${crypto.randomUUID().slice(0, 6)}`;
       const paper = await offered({ name: tag });
@@ -600,8 +602,14 @@ describe('Material Request (Seam A - F009-T4)', () => {
       }
 
       const before = await requestCount();
-      for (const other of [officer, admin, readonly, custodian, staff, maintainer]) {
-        for (const url of reads) {
+      // Each role and the reads it is refused: the Material Request page opens to material-request:view.
+      const refusals: [Actor, string[]][] = [
+        [officer, reads.slice(0, 2)],
+        [admin, reads.slice(0, 2)],
+        ...[readonly, custodian, staff, maintainer].map((other): [Actor, string[]] => [other, reads]),
+      ];
+      for (const [other, refused] of refusals) {
+        for (const url of refused) {
           const res = await api.get(other, url);
           expect(res.statusCode).toBe(403);
           expect(res.json().error.code).toBe('FORBIDDEN');
@@ -619,7 +627,8 @@ describe('Material Request (Seam A - F009-T4)', () => {
       expect(await requestCount()).toBe(before);
     });
 
-    // The actor holds every role, so a gate on any other capability would let them through.
+    // The actor holds every role, so a gate on any other capability would let them through. The page also opens to
+    // material-request:view, which the actor holds: material-request-view.test.ts denies both (F009-T6).
     it('needs material-request:create itself for every read and the create, and fails closed when the lookup fails, saving nothing', async () => {
       const everyone = await api.actor('requester_every_role', 'REQUESTER');
       for (const role of ['SYSTEM_MAINTAINER', 'ADMINISTRATOR', 'READ_ONLY', 'ASSET_CUSTODIAN', 'VERIFICATION_STAFF', 'SUPPLY_OFFICER']) {
@@ -628,7 +637,7 @@ describe('Material Request (Seam A - F009-T4)', () => {
       const tag = `ปิดสิทธิ์ขอเบิก${crypto.randomUUID().slice(0, 6)}`;
       const paper = await offered({ name: tag });
       const { material_request_id: id } = await created([item(paper)], { note: tag }, everyone);
-      const reads = [`/offered-requestable-materials?search=${encodeURIComponent(tag)}`, '/my-material-requests', `/material-requests/${id}`];
+      const reads = [`/offered-requestable-materials?search=${encodeURIComponent(tag)}`, '/my-material-requests'];
 
       for (const url of reads) {
         expect((await api.get(everyone, url)).statusCode).toBe(200);

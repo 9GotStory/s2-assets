@@ -22,10 +22,12 @@ export interface OfferedRequestableMaterialList {
   has_more: boolean;
 }
 
-// One row of "คำขอของฉัน".
+// One row of "คำขอของฉัน" and of "คำขอเบิก" (#208 start decision 3).
 export interface MaterialRequestRow {
   id: string;
   request_number: string;
+  requested_by: string;
+  requested_by_username: string;
   recorded_at: string;
   state: MaterialRequestState;
   requested_item_count: number;

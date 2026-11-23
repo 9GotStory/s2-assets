@@ -4,7 +4,7 @@ import { REPAIR_LIST_LABEL, REPAIR_SECTION_LABEL } from '../components/repairFac
 import { VERIFICATION_ROUND_LABEL } from '../components/verificationFacts';
 import { CATALOG_LISTS_LABEL, STOCK_MATERIAL_LABEL } from '../components/materialFacts';
 import { REQUESTABLE_MATERIAL_LABEL } from '../components/requestableMaterialFacts';
-import { CREATE_MATERIAL_REQUEST_LABEL, MY_MATERIAL_REQUESTS_LABEL, REQUEST_MATERIALS_LABEL } from '../components/materialRequestFacts';
+import { CREATE_MATERIAL_REQUEST_LABEL, MATERIAL_REQUEST_LABEL, MY_MATERIAL_REQUESTS_LABEL, REQUEST_MATERIALS_LABEL } from '../components/materialRequestFacts';
 
 export interface SafeUser {
   id: string;
@@ -31,6 +31,9 @@ export const Dashboard: React.FC = () => {
   // F009-T4 (#202 P9): the "ขอเบิกวัสดุ" menu shows only to holders of material-request:create, which the server
   // answers by reading "คำขอของฉัน"; anything but a 200 hides it.
   const [canRequestMaterials, setCanRequestMaterials] = useState(false);
+  // F009-T6 (#202 P9): the "คำขอเบิก" menu shows only to holders of material-request:view, which the server answers
+  // by reading "คำขอเบิก"; anything but a 200 hides it.
+  const [canViewMaterialRequests, setCanViewMaterialRequests] = useState(false);
 
   const navigate = useNavigate();
 
@@ -97,6 +100,19 @@ export const Dashboard: React.FC = () => {
     };
 
     probeMaterialRequests();
+
+    const probeAllMaterialRequests = async () => {
+      try {
+        const response = await fetch('/material-requests?limit=1', { method: 'GET', credentials: 'include', signal: controller.signal });
+        // The answer is read to its end, so the request finishes instead of staying open with the page.
+        await response.text();
+        setCanViewMaterialRequests(response.ok);
+      } catch {
+        // An aborted or failed read leaves the menu hidden.
+      }
+    };
+
+    probeAllMaterialRequests();
 
     return () => {
       controller.abort();
@@ -722,6 +738,53 @@ export const Dashboard: React.FC = () => {
                 }}
               >
                 {CREATE_MATERIAL_REQUEST_LABEL}
+              </Link>
+            </div>
+          </section>
+        )}
+
+        {canViewMaterialRequests && (
+          <section
+            aria-labelledby="all-material-request-heading"
+            id="nav-all-material-request-section"
+            style={{
+              backgroundColor: '#f9fafb',
+              borderRadius: '6px',
+              padding: '1.25rem',
+              marginBottom: '1.5rem',
+            }}
+          >
+            <h2
+              id="all-material-request-heading"
+              style={{
+                fontSize: '1.125rem',
+                fontWeight: 600,
+                marginTop: 0,
+                marginBottom: '0.5rem',
+                color: '#374151',
+              }}
+            >
+              {MATERIAL_REQUEST_LABEL}
+            </h2>
+            <p style={{ margin: '0 0 1rem 0', fontSize: '0.875rem', color: '#4b5563' }}>
+              ดู{MATERIAL_REQUEST_LABEL}ของผู้ขอเบิกทุกคนและสถานะของแต่ละคำขอ แบบอ่านอย่างเดียว
+            </p>
+            <div style={{ display: 'flex', gap: '0.75rem', flexWrap: 'wrap' }}>
+              <Link
+                to="/material-requests"
+                id="nav-all-material-request-list"
+                style={{
+                  display: 'inline-block',
+                  padding: '0.5rem 1rem',
+                  backgroundColor: '#4b5563',
+                  color: '#ffffff',
+                  textDecoration: 'none',
+                  borderRadius: '4px',
+                  fontSize: '0.875rem',
+                  fontWeight: 500,
+                }}
+              >
+                รายการ{MATERIAL_REQUEST_LABEL}
               </Link>
             </div>
           </section>

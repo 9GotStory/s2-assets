@@ -409,6 +409,11 @@ export const routes: RouteObject[] = [
     path: '/my-material-requests/new',
     element: <MaterialRequestCreate />,
   },
+  // F009-T6 (#208): "คำขอเบิก", every person's Material Requests for Supply Officers and Administrators
+  {
+    path: '/material-requests',
+    element: <MaterialRequestList scope="all" />,
+  },
   {
     path: '/material-requests/:id',
     element: <MaterialRequestDetail />,

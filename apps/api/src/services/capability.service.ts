@@ -49,6 +49,7 @@ export const KNOWN_CAPABILITIES = [
   'material:view',
   'material:manage',
   'material-request:create',
+  'material-request:view',
 ] as const;
 
 export type Capability = (typeof KNOWN_CAPABILITIES)[number];
@@ -57,11 +58,11 @@ export type Capability = (typeof KNOWN_CAPABILITIES)[number];
  * Immutable role-to-capability mapping (Feature 002 T1–T7, Features 003 to 008 approved matrix).
  *
  * - SYSTEM_MAINTAINER: grants 'system:maintain' (preserves foundation maintenance grant)
- * - ADMINISTRATOR: grants 'system:maintain', 'asset:view', 'asset:correct', 'asset:search', 'acquisition:view', 'evidence:view', 'evidence:correct', 'reference:maintain', 'assignment:correct' (#50 Q3: Assignment Correction), 'loan:correct' (#74 Q12: Loan Correction), 'repair:correct' (#98 Q2: Repair Correction), 'verification:correct' (#125 Q1: Verification Correction, Reopen and voiding a Verification Round), 'retirement:correct' (#154 Q6: Retirement Correction), 'material:view' (#175 Q1: viewing and searching the Stock Material catalog)
+ * - ADMINISTRATOR: grants 'system:maintain', 'asset:view', 'asset:correct', 'asset:search', 'acquisition:view', 'evidence:view', 'evidence:correct', 'reference:maintain', 'assignment:correct' (#50 Q3: Assignment Correction), 'loan:correct' (#74 Q12: Loan Correction), 'repair:correct' (#98 Q2: Repair Correction), 'verification:correct' (#125 Q1: Verification Correction, Reopen and voiding a Verification Round), 'retirement:correct' (#154 Q6: Retirement Correction), 'material:view' (#175 Q1: viewing and searching the Stock Material catalog), 'material-request:view' (#202 Q4: listing and viewing every Material Request, read-only)
  * - READ_ONLY: grants 'asset:view', 'asset:search', 'acquisition:view', 'evidence:view' (view and search for registry, acquisitions & evidence), 'material:view' (#175 Q1)
  * - ASSET_CUSTODIAN: grants 'asset:view', 'asset:duplicate-check', 'asset:register', 'asset:bulk-register', 'asset:correct', 'asset:search', 'acquisition:create', 'acquisition:view', 'evidence:view', 'evidence:create', 'evidence:correct', 'assignment:reassign', 'assignment:correct' (#50 Q3: Initial Assignment, Reassignment and Assignment Correction), 'loan:record' (#74 Q12: starting a Loan), 'loan:correct' (#74 Q12: Loan Correction), 'repair:record' (#98 Q2: a Repair Start and its Repair Outcome), 'repair:correct' (#98 Q2: Repair Correction), 'verification:record' (#125 Q1: an Asset Verification and a Re-verification), 'verification:manage' (#125 Q1: opening, editing and closing a Verification Round, and a Late Addition), 'verification:correct' (#125 Q1: Verification Correction, Reopen and voiding a Verification Round), 'retirement:record' (#154 Q6: recording a Retirement), 'retirement:correct' (#154 Q6: Retirement Correction)
  * - VERIFICATION_STAFF: grants 'asset:view', 'asset:search', 'verification:record' (#125 Q1: Verification Staff)
- * - SUPPLY_OFFICER: grants 'material:view', 'material:manage' (#175 Q1: keeping the Stock Material catalog, its Units, Brands and Material Categories)
+ * - SUPPLY_OFFICER: grants 'material:view', 'material:manage' (#175 Q1: keeping the Stock Material catalog, its Units, Brands and Material Categories), 'material-request:view' (#202 Q4: listing and viewing every Material Request, read-only)
  * - REQUESTER: grants 'material-request:create' (#202 Q1: searching the offered Requestable Materials, creating Material Requests, and listing and viewing their own)
  * - Unknown roles: empty / unmapped
  */
@@ -82,6 +83,7 @@ export const ROLE_CAPABILITY_MAP: Readonly<Record<string, readonly string[]>> = 
     'verification:correct',
     'retirement:correct',
     'material:view',
+    'material-request:view',
   ] as const),
   READ_ONLY: Object.freeze([
     'asset:view',
@@ -115,7 +117,7 @@ export const ROLE_CAPABILITY_MAP: Readonly<Record<string, readonly string[]>> = 
     'retirement:correct',
   ] as const),
   VERIFICATION_STAFF: Object.freeze(['asset:view', 'asset:search', 'verification:record'] as const),
-  SUPPLY_OFFICER: Object.freeze(['material:view', 'material:manage'] as const),
+  SUPPLY_OFFICER: Object.freeze(['material:view', 'material:manage', 'material-request:view'] as const),
   REQUESTER: Object.freeze(['material-request:create'] as const),
 });
 
