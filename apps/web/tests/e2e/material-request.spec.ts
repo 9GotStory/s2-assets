@@ -241,7 +241,8 @@ test.describe.serial('Material Request journeys: Real SPA -> Composed API -> Pos
       { retryToken: crypto.randomUUID() }
     );
     // A choice names its Brand and Model beside its name.
-    const brandId = (await pool.query(`INSERT INTO brands (name, created_by, updated_by) VALUES ('ตราการ์ด', $1, $1) RETURNING id`, [officerUserId])).rows[0].id;
+    // Added through the list's own write, with its history, so the maintenance page that F009-T8.1 opens can list it.
+    const brandId = (await new CatalogListService({ db: pool }).add(officerUserId, 'brand', 'ตราการ์ด', { retryToken: crypto.randomUUID() })).id;
     const cardPaperId = (
       await stockMaterials.create(
         officerUserId,
@@ -1117,6 +1118,8 @@ test.describe.serial('Material Request journeys: Real SPA -> Composed API -> Pos
     const paperId = (await pool.query(`SELECT id FROM requestable_materials WHERE name = 'กระดาษ A4'`)).rows[0].id;
     // Another active Unit of the list to ask for it in.
     const otherUnit: string = (await pool.query('SELECT name FROM units WHERE is_active AND id <> $1 ORDER BY name LIMIT 1', [reamId])).rows[0].name;
+    // Another Requestable Material J2 asks for, whose name a Rename cannot take (Q6).
+    const other: { id: string; name: string } = (await pool.query(`SELECT id, name FROM requestable_materials WHERE id <> $1 ORDER BY name LIMIT 1`, [paperId])).rows[0];
 
     await loginAs(context, officerUserId);
     await delaySessionCheck(page);
@@ -1132,6 +1135,13 @@ test.describe.serial('Material Request journeys: Real SPA -> Composed API -> Pos
     await expect(page.locator('#requestable-material-rename-name')).toHaveValue('กระดาษ A4');
     await page.locator('#requestable-material-rename-submit').click();
     await expect(page.locator('[data-testid="requestable-material-rename-form-error"]')).toContainText('ชื่อใหม่ยังเหมือนชื่อเดิม');
+    await page.locator('#requestable-material-rename-name').fill('  ');
+    await page.locator('#requestable-material-rename-submit').click();
+    await expect(page.locator('[data-testid="requestable-material-rename-form-error"]')).toContainText('กรุณากรอกชื่อใหม่');
+    // A name another Requestable Material holds, in another case, is refused naming it.
+    await page.locator('#requestable-material-rename-name').fill(other.name.toUpperCase());
+    await page.locator('#requestable-material-rename-submit').click();
+    await expect(page.locator('[data-testid="requestable-material-rename-name-taken"]')).toHaveText(`มีวัสดุสำหรับขอเบิกชื่อนี้อยู่แล้ว: ${other.name}`);
     await page.locator('#requestable-material-rename-name').fill('กระดาษถ่ายเอกสาร A4');
     await page.locator('#requestable-material-rename-submit').click();
     await expect(page.getByRole('heading', { level: 1, name: 'กระดาษถ่ายเอกสาร A4' })).toBeVisible();
@@ -1141,15 +1151,24 @@ test.describe.serial('Material Request journeys: Real SPA -> Composed API -> Pos
     await expect(historyEntries.last()).toContainText('ชื่อกระดาษ A4 → กระดาษถ่ายเอกสาร A4');
     await expect(historyEntries.last()).toContainText('officer_request');
 
-    // "แก้ไขข้อมูลอื่น" changes the description, recorded before and after (#210 start decision 1).
+    // "แก้ไขข้อมูลอื่น" refuses a save of nothing before it is sent, then changes the description, recorded before and
+    // after, and the whole-number setting, each alone (#210 start decision 1).
     await page.locator('#requestable-material-details-action').click();
     await expect(page.locator('#requestable-material-details-form h3')).toHaveText('แก้ไขข้อมูลอื่น');
     await expect(page.locator('#requestable-material-details-request-unit')).toHaveValue(reamId);
+    await page.locator('#requestable-material-details-description').fill('  กระดาษถ่ายเอกสารขนาด A4 ');
+    await page.locator('#requestable-material-details-submit').click();
+    await expect(page.locator('[data-testid="requestable-material-details-form-error"]')).toContainText('ยังไม่มีข้อมูลที่เปลี่ยน');
     await page.locator('#requestable-material-details-description').fill('กระดาษขาว 80 แกรม');
     await page.locator('#requestable-material-details-submit').click();
     await expect(page.locator('[data-testid="requestable-material-description"]')).toHaveText('กระดาษขาว 80 แกรม');
     await expect(historyEntries.last()).toContainText('แก้ไขข้อมูลอื่น');
     await expect(historyEntries.last()).toContainText('รายละเอียดกระดาษถ่ายเอกสารขนาด A4 → กระดาษขาว 80 แกรม');
+    await page.locator('#requestable-material-details-action').click();
+    await page.locator('#requestable-material-details-whole-number-only').uncheck();
+    await page.locator('#requestable-material-details-submit').click();
+    await expect(page.locator('[data-testid="requestable-material-whole-number-only"]')).toHaveText('ไม่ใช่ (มีเศษได้)');
+    await expect(historyEntries.last()).toContainText('นับเป็นจำนวนเต็มเท่านั้นใช่ → ไม่ใช่ (มีเศษได้)');
 
     // A new Request Unit is refused: Requested Items of J2 and J3 use it, each in รีม as recorded (P2).
     await page.locator('#requestable-material-details-action').click();
@@ -1167,5 +1186,33 @@ test.describe.serial('Material Request journeys: Real SPA -> Composed API -> Pos
     await page.locator('#requestable-material-search-submit').click();
     await expect(page).toHaveURL(/\?search=/);
     await expect(page.locator(`[data-testid="requestable-material-row-${paperId}"]`)).toContainText('กระดาษถ่ายเอกสาร A4');
+
+    // A Request Unit made Inactive in the Unit list stays offered as itself, marked, and kept by a save of the other
+    // details (#202 Q15, story 11).
+    const bar = 'แท่งขอเบิก';
+    await page.goto(`${targetBaseUrl}/stock-materials/lists`);
+    await page.locator('#unit-add').click();
+    await page.locator('#unit-name').fill(bar);
+    await page.locator('#unit-add-submit').click();
+    await expect(page.locator('#catalog-list-unit')).toContainText(bar);
+    const barId: string = (await pool.query('SELECT id FROM units WHERE name = $1', [bar])).rows[0].id;
+    await page.goto(`${targetBaseUrl}/requestable-materials/new`);
+    await page.locator('#requestable-material-name').fill('ปากกาไวท์บอร์ด');
+    await page.locator('#requestable-material-request-unit').selectOption({ label: bar });
+    await page.locator('#requestable-material-submit').click();
+    await expect(page.getByRole('heading', { level: 1, name: 'ปากกาไวท์บอร์ด' })).toBeVisible();
+    const penUrl = page.url();
+    await page.goto(`${targetBaseUrl}/stock-materials/lists`);
+    await page.locator(`#unit-inactivate-${barId}`).click();
+    await page.locator('#unit-status-submit').click();
+    await expect(page.locator(`[data-testid="unit-status-${barId}"]`)).toHaveText('หยุดใช้');
+    await page.goto(penUrl);
+    await page.locator('#requestable-material-details-action').click();
+    await expect(page.locator('#requestable-material-details-request-unit')).toHaveValue(barId);
+    await expect(page.locator('#requestable-material-details-request-unit option:checked')).toHaveText(`${bar} (หยุดใช้)`);
+    await page.locator('#requestable-material-details-description').fill('สีดำ');
+    await page.locator('#requestable-material-details-submit').click();
+    await expect(page.locator('[data-testid="requestable-material-description"]')).toHaveText('สีดำ');
+    await expect(page.locator('[data-testid="requestable-material-request-unit"]')).toHaveText(bar);
   });
 });
