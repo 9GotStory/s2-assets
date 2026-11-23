@@ -69,6 +69,10 @@ const API_GUARDS = [WRITES_TO_LOAN_TABLES, WRITES_TO_ASSIGNMENT_CHANGES, WRITES_
 const matcher = (name) => `[expression.argument.callee.property.name='${name}']`;
 const NEGATED = "[expression.argument.callee.object.property.name='not']";
 const NOT_NEGATED = "[expression.argument.callee.object.property.name!='not']";
+// #209 retro: a status filter's select and a list's back link change the URL, and the next step acts on the URL the
+// page last showed (CODING_STANDARDS, "A journey step waits for the URL it changes").
+const URL_STEP = `ExpressionStatement:matches([expression.argument.callee.property.name='selectOption'][expression.argument.callee.object.arguments.0.value=/-filter$/], [expression.argument.callee.property.name='click'][expression.argument.callee.object.arguments.0.value=/^#back-.*-link$/])`;
+const URL_WAIT = "CallExpression:matches([callee.property.name='toHaveURL'], [callee.property.name='waitForURL'])";
 const ABSENCE = `ExpressionStatement:matches(${matcher('toHaveCount')}[expression.argument.arguments.0.value=0]${NOT_NEGATED}, ${matcher('toBeHidden')}${NOT_NEGATED}, ${matcher('toBeVisible')}${NEGATED}, ${matcher('toBeAttached')}${NEGATED})`;
 
 // #155 retro: a loop of refused payloads that asserts only a 400 or VALIDATION_FAILED stays green when
@@ -293,6 +297,10 @@ export default tseslint.config(
           // #208 retro: a spec's own copy of the helpers lost switchActor, and its journey met the cookie race again.
           selector: "VariableDeclarator > Identifier.id[name=/^(loginAs|switchActor)$/], FunctionDeclaration > Identifier.id[name=/^(loginAs|switchActor)$/]",
           message: 'Take loginAs and switchActor from actorSwitch in tests/e2e/support/actors.ts, the one actor switch of every journey (#208 retro).',
+        },
+        {
+          selector: `${URL_STEP} + :not(:has(${URL_WAIT})), ${URL_STEP}:last-child`,
+          message: 'Wait for the URL a filter select or a back link changes with toHaveURL in the next statement: the page acts on the URL it last showed (#209 retro).',
         },
       ],
     },

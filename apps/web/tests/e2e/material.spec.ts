@@ -654,6 +654,7 @@ test.describe.serial('Stock Material journeys: Real SPA -> Composed API -> Postg
 
     // The list shows the Stock Materials in use by default, so it is not there until the status filter finds it.
     await page.locator('#back-stock-material-list-link').click();
+    await expect(page).toHaveURL(/\/stock-materials$/);
     await page.locator('#stock-material-search').fill(tag);
     await page.locator('#stock-material-search-submit').click();
     await expect(page).toHaveURL(/search=/);
