@@ -423,7 +423,8 @@ A Requestable Material with no Compatible Stock Material, which Requesters are n
 
 **Material Request** (คำขอเบิก):
 A Requester's request for one or more Requestable Materials, known by its Request Number. It never
-changes stock.
+changes stock. A Requester's menu ขอเบิกวัสดุ lists their own in คำขอของฉัน and makes a new one in
+สร้างคำขอเบิก (#206).
 _Avoid_: requisition, ใบเบิก
 
 **Request Number** (เลขที่คำขอ):

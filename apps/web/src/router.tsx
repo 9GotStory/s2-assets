@@ -23,6 +23,9 @@ import { CatalogListMaintenance } from './pages/CatalogListMaintenance';
 import { RequestableMaterialList } from './pages/RequestableMaterialList';
 import { RequestableMaterialCreate } from './pages/RequestableMaterialCreate';
 import { RequestableMaterialDetail } from './pages/RequestableMaterialDetail';
+import { MaterialRequestList } from './pages/MaterialRequestList';
+import { MaterialRequestCreate } from './pages/MaterialRequestCreate';
+import { MaterialRequestDetail } from './pages/MaterialRequestDetail';
 
 export const ProtectedDetailBoundary: React.FC = () => {
   const navigate = useNavigate();
@@ -396,6 +399,19 @@ export const routes: RouteObject[] = [
   {
     path: '/requestable-materials/:id',
     element: <RequestableMaterialDetail />,
+  },
+  // F009-T4 (#206): the Requester's Material Requests
+  {
+    path: '/my-material-requests',
+    element: <MaterialRequestList />,
+  },
+  {
+    path: '/my-material-requests/new',
+    element: <MaterialRequestCreate />,
+  },
+  {
+    path: '/material-requests/:id',
+    element: <MaterialRequestDetail />,
   },
 ];
 

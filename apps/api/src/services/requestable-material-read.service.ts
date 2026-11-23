@@ -71,6 +71,33 @@ export interface RequestableMaterialDetail extends RequestableMaterialRow {
   history: RequestableMaterialHistoryEntry[];
 }
 
+// F009-T4 (#206): one offered Requestable Material as a Requester finds it: its name, Request Unit, whole-number
+// setting and description alone (#202 MRQ-01, Q18).
+export interface OfferedRequestableMaterial {
+  id: string;
+  name: string;
+  request_unit: { unit_id: string; name: string };
+  whole_number_only: boolean;
+  description: string | null;
+}
+
+export interface OfferedRequestableMaterialList {
+  items: OfferedRequestableMaterial[];
+  limit: number;
+  offset: number;
+  total_count: number;
+  has_more: boolean;
+}
+
+/**
+ * F009-T4 (#206): the names the Requestable Materials `ids` have now, for the Material Request page, which shows a
+ * Requested Item's Requestable Material under its name now (#206 start decision 3).
+ */
+export async function requestableMaterialNamesOf(db: pg.Pool | pg.PoolClient, ids: string[]): Promise<Map<string, string>> {
+  const res = await db.query('SELECT id, name FROM requestable_materials WHERE id = ANY($1::uuid[])', [ids]);
+  return new Map(res.rows.map(({ id, name }: any) => [id, name]));
+}
+
 const ROW_COLUMNS = `r.id, r.name, r.whole_number_only, r.is_active, ${offered('r')} AS is_offered, u.id AS request_unit_id, u.name AS request_unit_name, u.is_active AS request_unit_is_active`;
 
 const toRow = (row: any): RequestableMaterialRow => ({
@@ -122,6 +149,51 @@ export class RequestableMaterialReadService {
     // `counted` has one row, which the page joins.
     const totalCount: number = res.rows[0].total_count;
     const items = res.rows.filter((row: any) => row.id !== null).map(toRow);
+    return { items, limit: filters.limit, offset: filters.offset, total_count: totalCount, has_more: filters.offset + items.length < totalCount };
+  }
+
+  /**
+   * F009-T4 (#206): a page of the Requestable Materials offered to Requesters, by name, found by text in the name
+   * ignoring case and repeated spaces (#202 Q9, Q18). Offered comes from its one SQL source (P10).
+   */
+  async offeredList(filters: RequestableMaterialListFilters): Promise<OfferedRequestableMaterialList> {
+    const params: unknown[] = [];
+    const conditions = [offered('r')];
+    if (filters.search !== undefined) {
+      params.push(filters.search);
+      conditions.push(`strpos(${comparedName('r.name')}, ${comparedName(`$${params.length}`)}) > 0`);
+    }
+    const values = [...params, filters.limit, filters.offset];
+    // requestable_materials_name_unique makes the compared name unique, so the order needs no tiebreak.
+    const res = await this.db.query(
+      `WITH filtered AS (
+         SELECT r.id, r.name, r.whole_number_only, r.description, u.id AS request_unit_id, u.name AS request_unit_name
+         FROM requestable_materials r
+         ${joinUnitEntry('u', 'r.request_unit_id')}
+         WHERE ${conditions.join(' AND ')}
+       ),
+       counted AS (SELECT count(*)::int AS total_count FROM filtered),
+       paged AS (
+         SELECT * FROM filtered
+         ORDER BY lower(name) ASC
+         LIMIT $${values.length - 1} OFFSET $${values.length}
+       )
+       SELECT p.*, c.total_count
+       FROM counted c
+       LEFT JOIN paged p ON true
+       ORDER BY lower(p.name) ASC`,
+      values
+    );
+    const totalCount: number = res.rows[0].total_count;
+    const items = res.rows
+      .filter((row: any) => row.id !== null)
+      .map((row: any) => ({
+        id: row.id,
+        name: row.name,
+        request_unit: { unit_id: row.request_unit_id, name: row.request_unit_name },
+        whole_number_only: row.whole_number_only,
+        description: row.description,
+      }));
     return { items, limit: filters.limit, offset: filters.offset, total_count: totalCount, has_more: filters.offset + items.length < totalCount };
   }
 

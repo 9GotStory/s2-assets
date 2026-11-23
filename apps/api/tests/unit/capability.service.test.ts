@@ -194,6 +194,17 @@ describe('CapabilityService Unit Tests (T024 - US2)', () => {
       expect(isKnownCapability('material:manage')).toBe(true);
     });
 
+    // F009-T4 (#202 Q1): the Requester asks for materials; no other role gains it, and the Requester gains nothing else.
+    it('gives material-request:create to the Requester alone, and the Requester nothing else', () => {
+      expect(KNOWN_ROLES).toContain('REQUESTER');
+      expect(Object.isFrozen(ROLE_CAPABILITY_MAP.REQUESTER)).toBe(true);
+      expect(ROLE_CAPABILITY_MAP.REQUESTER).toEqual(['material-request:create']);
+      for (const role of ['SYSTEM_MAINTAINER', 'ADMINISTRATOR', 'READ_ONLY', 'ASSET_CUSTODIAN', 'VERIFICATION_STAFF', 'SUPPLY_OFFICER']) {
+        expect(ROLE_CAPABILITY_MAP[role]).not.toContain('material-request:create');
+      }
+      expect(isKnownCapability('material-request:create')).toBe(true);
+    });
+
     it('validates UUIDs correctly with isValidUuid', () => {
       expect(isValidUuid(validUserId)).toBe(true);
       expect(isValidUuid('not-a-uuid')).toBe(false);

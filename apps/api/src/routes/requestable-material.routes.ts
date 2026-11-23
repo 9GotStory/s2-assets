@@ -1,13 +1,11 @@
 import type { FastifyPluginAsync } from 'fastify';
 import { z } from 'zod';
 import { requireCapability } from '../middleware/authorization.ts';
-import { invalidQueryBody, pageQueryFields, stockMaterialSearchField } from './list-query.ts';
+import { invalidQueryBody, pageQueryFields, requestableMaterialSearchField, stockMaterialSearchField } from './list-query.ts';
 import { errorBody, parseWrite } from './write-request.ts';
 import { isValidUuid, type CapabilityService } from '../services/capability.service.ts';
-import { hasStrictControlChars } from '../services/control-characters.ts';
 import type { RequestableMaterialReadService } from '../services/requestable-material-read.service.ts';
 import {
-  REQUESTABLE_MATERIAL_NAME_MAX_LENGTH,
   RequestableMaterialNameTakenError,
   type AddCompatibleStockMaterialInput,
   type CreateRequestableMaterialInput,
@@ -53,15 +51,7 @@ const EndCompatibleStockMaterialSchema = z
 
 const RequestableMaterialListQuerySchema = z
   .object({
-    // It searches the name, which is one line, so it refuses every control character as the name does
-    // (CODING_STANDARDS.md).
-    search: z
-      .string()
-      .refine((text) => !hasStrictControlChars(text), 'must not contain control characters')
-      .transform((text) => text.trim())
-      .refine((text) => text.length > 0, 'must not be blank')
-      .refine((text) => text.length <= REQUESTABLE_MATERIAL_NAME_MAX_LENGTH, `must be at most ${REQUESTABLE_MATERIAL_NAME_MAX_LENGTH} characters`)
-      .optional(),
+    search: requestableMaterialSearchField,
     ...pageQueryFields,
   })
   .strict();

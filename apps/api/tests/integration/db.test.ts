@@ -45,6 +45,7 @@ const MIGRATIONS = [
   '0028_minimum_stock',
   '0029_requestable_materials',
   '0030_compatible_stock_materials',
+  '0031_material_requests',
 ] as const;
 
 describe('Database Migrations Integration', () => {
