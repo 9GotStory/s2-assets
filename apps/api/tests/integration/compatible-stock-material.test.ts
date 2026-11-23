@@ -23,7 +23,7 @@ describe('Compatible Stock Material (Seam A - F009-T2)', () => {
   const helpers = materialHelpers(() => ({ api, officer, reader: readonly }));
   const { unitNamed } = helpers;
   const { whileWriting, untilWaiting } = lockHelpers(() => ({ api }));
-  const { requestableIn, requestableOf, add, end } = requestableMaterialHelpers(() => ({ api, officer, reader: readonly }));
+  const { requestableIn, requestableOf, add, end, inactivate } = requestableMaterialHelpers(() => ({ api, officer, reader: readonly }));
 
   // A Stock Material whose Base Unit is `baseUnit`, named `name` or uniquely, and its id.
   const stockMaterialIn = (baseUnit: string, overrides: Record<string, unknown> = {}) => helpers.created({ base_unit: { unit_id: baseUnit }, ...overrides });
@@ -327,7 +327,8 @@ describe('Compatible Stock Material (Seam A - F009-T2)', () => {
     // Whether the list row and the page say the Requestable Material `id` is offered, which they must agree on.
     const offeredOf = async (id: string): Promise<boolean> => {
       const page = await requestableOf(id);
-      const res = await api.get(readonly, `/requestable-materials?search=${encodeURIComponent(page.name)}`);
+      // F009-T7: an Inactive one is listed under status=all.
+      const res = await api.get(readonly, `/requestable-materials?search=${encodeURIComponent(page.name)}&status=all`);
       expect(res.statusCode).toBe(200);
       const row = res.json().items.find((item: any) => item.id === id);
       expect(row.is_offered).toBe(page.is_offered);
@@ -360,8 +361,7 @@ describe('Compatible Stock Material (Seam A - F009-T2)', () => {
     it('is not offered while Inactive, even with a current Compatible Stock Material', async () => {
       const requestable = await requestableIn(ream);
       expect((await add(requestable, await stockMaterialIn(ream))).statusCode).toBe(200);
-      // What making a Requestable Material Inactive will write (F009-T7).
-      await api.pool.query('UPDATE requestable_materials SET is_active = false, version = version + 1 WHERE id = $1', [requestable]);
+      expect((await inactivate(requestable)).statusCode).toBe(200);
 
       expect(await offeredOf(requestable)).toBe(false);
     });

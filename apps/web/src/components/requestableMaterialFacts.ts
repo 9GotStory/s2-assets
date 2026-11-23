@@ -2,7 +2,7 @@
 // their labels from GLOSSARY.md (#202, Web).
 
 import type React from 'react';
-import { HISTORY_KIND_LABELS, type NamedListEntry, type StockMaterialRow, type StockMaterialUnit } from './materialFacts';
+import { HISTORY_KIND_LABELS, INACTIVE_LABEL, REACTIVATE_LABEL, type NamedListEntry, type StockMaterialRow, type StockMaterialUnit } from './materialFacts';
 
 // The Request Unit of a Requestable Material, under the name its list entry has now.
 export interface RequestUnit {
@@ -32,9 +32,9 @@ export interface RequestableMaterialList {
   can_manage: boolean;
 }
 
-// F009-T1 writes CREATED, T2 the add and the end of a Compatible Stock Material; T7 adds INACTIVATED and
-// REACTIVATED, T8 RENAMED and DETAILS_CHANGED.
-export type RequestableMaterialHistoryKind = 'CREATED' | 'COMPATIBLE_STOCK_MATERIAL_ADDED' | 'COMPATIBLE_STOCK_MATERIAL_ENDED';
+// F009-T1 writes CREATED, T2 the add and the end of a Compatible Stock Material, T7 INACTIVATED and REACTIVATED; T8
+// adds RENAMED and DETAILS_CHANGED.
+export type RequestableMaterialHistoryKind = 'CREATED' | 'COMPATIBLE_STOCK_MATERIAL_ADDED' | 'COMPATIBLE_STOCK_MATERIAL_ENDED' | 'INACTIVATED' | 'REACTIVATED';
 
 // A value a creation records, none before it: the Request Unit under its name then (#202 Q17, #175 P6). F009-T2: the
 // Stock Material an add or an end names, under its name then, after an add and before an end.
@@ -42,7 +42,9 @@ export type RequestableMaterialRecordedChange =
   | { field: 'name' | 'description'; before: null; after: string }
   | { field: 'request_unit'; before: null; after: NamedListEntry }
   | { field: 'whole_number_only'; before: null; after: boolean }
-  | { field: 'compatible_stock_material'; before: NamedListEntry | null; after: NamedListEntry | null };
+  | { field: 'compatible_stock_material'; before: NamedListEntry | null; after: NamedListEntry | null }
+  // F009-T7: made Inactive or reactivated.
+  | { field: 'is_active'; before: boolean; after: boolean };
 
 // F009-T2: a Compatible Stock Material, with the Stock Material's name, status and Units now, current or ended (P1).
 export interface CompatibleStockMaterial {
@@ -85,6 +87,8 @@ export interface RequestableMaterialDetail extends RequestableMaterialRow {
   // The current ones first.
   compatible_stock_materials: CompatibleStockMaterial[];
   history: RequestableMaterialHistoryEntry[];
+  // F009-T7: how many Pending Requested Items ask for it (#202 Q16, P6).
+  pending_requested_item_count: number;
   can_manage: boolean;
 }
 
@@ -118,6 +122,8 @@ export const REQUESTABLE_HISTORY_KIND_LABELS: Record<RequestableMaterialHistoryK
   CREATED: HISTORY_KIND_LABELS.CREATED,
   COMPATIBLE_STOCK_MATERIAL_ADDED: ADD_COMPATIBLE_STOCK_MATERIAL_LABEL,
   COMPATIBLE_STOCK_MATERIAL_ENDED: COMPATIBLE_STOCK_MATERIAL_ENDED_LABEL,
+  INACTIVATED: INACTIVE_LABEL,
+  REACTIVATED: REACTIVATE_LABEL,
 };
 
 // Whether a Requestable Material shows the "ยังไม่มีวัสดุที่ใช้จ่าย" badge: active, and not offered (#202 Q9).
@@ -134,3 +140,7 @@ export const noCompatibleBadgeStyle: React.CSSProperties = {
   fontWeight: 600,
   whiteSpace: 'nowrap',
 };
+
+// F009-T7: how the "หยุดใช้" badge looks beside the name of an Inactive Requestable Material in the list, as on the
+// Stock Material list.
+export const inactiveBadgeStyle: React.CSSProperties = { ...noCompatibleBadgeStyle, backgroundColor: '#e5e7eb', color: '#374151' };

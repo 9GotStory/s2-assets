@@ -26,7 +26,8 @@ const migrationFolder = path.resolve(__dirname, '../../../../packages/db/src/mig
 // Feature 009 (#202, Seam B). F009-T1 (#203): Journey J1 starts: a Supply Officer creates the Requestable Material
 // "กระดาษ A4" with Request Unit รีม and finds it in the list and on its page. F009-T2 (#204) completes it with its
 // Compatible Stock Materials and the "ยังไม่มีวัสดุที่ใช้จ่าย" badge. F009-T4 (#206): Journey J2 starts: a Requester saves a
-// Material Request of two Requested Items; F009-T5 (#207) completes it with their Cancels.
+// Material Request of two Requested Items; F009-T5 (#207) completes it with their Cancels. F009-T7 (#209) grows J1 with
+// "หยุดใช้" and "เปิดใช้อีกครั้ง", last, once J2 and J3 have left Pending Requested Items.
 test.describe.serial('Material Request journeys: Real SPA -> Composed API -> PostgreSQL (Seam B)', () => {
   let container: StartedPostgreSqlContainer;
   let pool: pg.Pool;
@@ -132,6 +133,12 @@ test.describe.serial('Material Request journeys: Real SPA -> Composed API -> Pos
     await expect(page).toHaveURL(/\/requestable-materials$/);
     await expect(page.getByRole('heading', { level: 1, name: 'วัสดุสำหรับขอเบิก' })).toBeVisible();
     await expect(page.locator('#requestable-material-list-empty')).toContainText('ยังไม่มีวัสดุสำหรับขอเบิก');
+    // F009-T7: a status filter that finds nothing says so as a search does, and "ใช้งานอยู่" again leaves the URL bare.
+    await page.locator('#requestable-material-status-filter').selectOption('inactive');
+    await expect(page.locator('#requestable-material-list-empty')).toHaveText('ไม่พบวัสดุสำหรับขอเบิกที่ค้นหา');
+    await page.locator('#requestable-material-status-filter').selectOption('');
+    await expect(page).toHaveURL(/\/requestable-materials$/);
+    await expect(page.locator('#requestable-material-list-empty')).toContainText('ยังไม่มีวัสดุสำหรับขอเบิก');
 
     await delaySessionCheck(page);
     await page.locator('#requestable-material-add-action').click();
@@ -207,7 +214,9 @@ test.describe.serial('Material Request journeys: Real SPA -> Composed API -> Pos
     await page.locator('#requestable-material-request-unit').selectOption({ label: 'รีม' });
     await page.locator('#requestable-material-submit').click();
     const taken = page.locator('[data-testid="requestable-material-name-taken"]');
-    await expect(taken).toContainText('มีวัสดุสำหรับขอเบิกชื่อนี้อยู่แล้ว: กระดาษ A4');
+    await expect(taken).toHaveText('มีวัสดุสำหรับขอเบิกชื่อนี้อยู่แล้ว: กระดาษ A4');
+    // F009-T7: one in use offers no "เปิดใช้อีกครั้ง".
+    await expect(page.locator('#requestable-material-offer-reactivate')).toHaveCount(0);
     await taken.getByRole('link', { name: 'กระดาษ A4' }).click();
     await expect(page).toHaveURL(pageUrl);
   });
@@ -238,16 +247,17 @@ test.describe.serial('Material Request journeys: Real SPA -> Composed API -> Pos
     for (let n = 1; n <= 25; n++) {
       await stockMaterials.create(officerUserId, { name: `แฟ้มเอกสาร ${n}`, base_unit: { unit_id: box.id }, explicit_continuation: true }, { retryToken: crypto.randomUUID() });
     }
-    // An Inactive Requestable Material is not offered either, but shows no badge (#202 Q9): what F009-T7's write leaves.
+    // An Inactive Requestable Material is not offered either, but shows no "ยังไม่มีวัสดุที่ใช้จ่าย" badge (#202 Q9).
     const { requestable_material_id: inkId } = await new RequestableMaterialService({ db: pool }).create(
       officerUserId,
       { name: 'หมึกพิมพ์เลิกขอ', request_unit_id: reamId },
       { retryToken: crypto.randomUUID() }
     );
-    await pool.query('UPDATE requestable_materials SET is_active = false, version = version + 1 WHERE id = $1', [inkId]);
+    await new RequestableMaterialService({ db: pool }).inactivate(officerUserId, inkId, { expected_version: 1 }, { retryToken: crypto.randomUUID() });
 
     await loginAs(context, officerUserId);
-    await page.goto(`${targetBaseUrl}/requestable-materials`);
+    // F009-T7: the list shows the active ones unless asked for all.
+    await page.goto(`${targetBaseUrl}/requestable-materials?status=all`);
     const paperRow = page.locator('#requestable-material-list-table tbody tr').filter({ hasText: 'กระดาษ A4' });
     const penRow = page.locator('#requestable-material-list-table tbody tr').filter({ hasText: 'ปากกาน้ำเงิน' });
     // Neither has a Compatible Stock Material yet (#202 Q9).
@@ -390,6 +400,8 @@ test.describe.serial('Material Request journeys: Real SPA -> Composed API -> Pos
     await expect(page.locator('#compatible-stock-material-table thead th')).toHaveText(['วัสดุ', 'สถานะวัสดุ', 'หน่วยนับ', 'การใช้จ่าย']);
     await expect(page.locator('#compatible-stock-material-add-action')).toHaveCount(0);
     await expect(page.locator(`[data-testid="compatible-stock-material-end-${copyPaperId}"]`)).toHaveCount(0);
+    // F009-T7: nor "หยุดใช้".
+    await expect(page.locator('#requestable-material-status-action')).toHaveCount(0);
 
     // F009-T3 (#205 start decision 1): the Units form refuses making รีม Inactive on a Stock Material that "กระดาษ A4"
     // is asked for in through it, naming "กระดาษ A4", and keeps the form open (#202 Q15, ADR 0002).
@@ -1001,5 +1013,84 @@ test.describe.serial('Material Request journeys: Real SPA -> Composed API -> Pos
     await expect(page).toHaveURL(new RegExp(`/material-requests/${pendingId}$`));
     await expect(page.locator('#material-request-cancel-action')).toBeVisible();
     await expect(page.locator('#back-material-request-list-link')).toHaveText('← กลับสู่คำขอของฉัน');
+  });
+
+  test('Journey F009-T7.1: a Supply Officer sees how many Pending Requested Items ask for "กระดาษ A4" before ending its last Compatible Stock Material and before "หยุดใช้", makes it Inactive, finds it with its "หยุดใช้" badge only under the Inactive filter, is offered "เปิดใช้อีกครั้ง" by a create of its name, and reactivates it', async ({ page, context }) => {
+    const paperId = (await pool.query(`SELECT id FROM requestable_materials WHERE name = 'กระดาษ A4'`)).rows[0].id;
+    // The Pending Requested Items J2 and J3 left on it (#202 Q16, P6).
+    const pending: number = (await pool.query('SELECT count(*)::int AS n FROM requested_items WHERE requestable_material_id = $1 AND cancelled_at IS NULL', [paperId])).rows[0].n;
+    expect(pending).toBeGreaterThan(1);
+    const pendingLine = `มีรายการที่ขอ ${pending} รายการที่ยังรอพิจารณา ซึ่งจะยังรอพิจารณาต่อไป`;
+    // The two current Compatible Stock Materials J1 left on it: ending the first is not ending the last.
+    const current = await pool.query('SELECT stock_material_id FROM compatible_stock_materials WHERE requestable_material_id = $1 AND is_current ORDER BY stock_material_id', [paperId]);
+    expect(current.rows).toHaveLength(2);
+    const [endedId, lastId] = current.rows.map(({ stock_material_id }: { stock_material_id: string }) => stock_material_id);
+
+    await loginAs(context, officerUserId);
+    await delaySessionCheck(page);
+    await page.goto(`${targetBaseUrl}/requestable-materials/${paperId}`);
+    await expect(page.getByRole('heading', { level: 1, name: 'กระดาษ A4' })).toBeVisible();
+
+    // Ending one of two current ones shows no count; ending the last one does (#209 start decision 3).
+    await page.locator(`[data-testid="compatible-stock-material-end-${endedId}"]`).click();
+    await expect(page.locator('[data-testid="compatible-stock-material-end-notice"]')).toBeVisible();
+    await expect(page.locator('[data-testid="compatible-stock-material-end-pending-count"]')).toHaveCount(0);
+    await page.locator('#compatible-stock-material-end-submit').click();
+    await expect(page.locator(`[data-testid="compatible-stock-material-row-${endedId}"]`)).toContainText('เลิกแล้ว');
+    await page.locator(`[data-testid="compatible-stock-material-end-${lastId}"]`).click();
+    await expect(page.locator('[data-testid="compatible-stock-material-end-pending-count"]')).toHaveText(pendingLine);
+    await page.locator('#compatible-stock-material-end-cancel').click();
+    await expect(page.locator(`[data-testid="compatible-stock-material-row-${lastId}"]`)).toContainText('ใช้อยู่');
+
+    // "หยุดใช้" shows the same count first; its Pending Requested Items stay Pending (Q16).
+    await page.locator('#requestable-material-status-action').click();
+    await expect(page.locator('#requestable-material-status-form')).toContainText('หยุดใช้');
+    await expect(page.locator('[data-testid="requestable-material-status-pending-count"]')).toHaveText(pendingLine);
+    await expect(page.locator('[data-testid="requestable-material-status-notice"]')).toContainText('ผู้ขอเบิกจะไม่เห็นวัสดุนี้อีก');
+    await expect(page.locator('#requestable-material-status-action')).toHaveCount(0);
+    await page.locator('#requestable-material-status-submit').click();
+    await expect(page.locator('[data-testid="requestable-material-status"]')).toHaveText('หยุดใช้');
+    await expect(page.locator('#requestable-material-status-action')).toHaveText('เปิดใช้อีกครั้ง');
+    // An Inactive one shows no "ยังไม่มีวัสดุที่ใช้จ่าย" badge (Q9).
+    await expect(page.locator('[data-testid="requestable-material-no-compatible-badge"]')).toHaveCount(0);
+    const historyEntries = page.locator('#requestable-material-history > li');
+    await expect(historyEntries.last()).toContainText('หยุดใช้');
+    await expect(historyEntries.last()).toContainText('สถานะหยุดใช้');
+    await expect(historyEntries.last()).toContainText('officer_request');
+
+    // The list hides it by default and shows it with its "หยุดใช้" badge under the Inactive filter, and under all.
+    await page.locator('#back-requestable-material-list-link').click();
+    await page.locator('#requestable-material-search').fill('กระดาษ A4');
+    await page.locator('#requestable-material-search-submit').click();
+    await expect(page.locator('#requestable-material-list-empty')).toHaveText('ไม่พบวัสดุสำหรับขอเบิกที่ค้นหา');
+    await page.locator('#requestable-material-status-filter').selectOption('inactive');
+    await expect(page).toHaveURL(/status=inactive/);
+    const paperRow = page.locator(`[data-testid="requestable-material-row-${paperId}"]`);
+    await expect(page.locator(`[data-testid="requestable-material-inactive-badge-${paperId}"]`)).toHaveText('หยุดใช้');
+    await expect(paperRow).not.toContainText('ยังไม่มีวัสดุที่ใช้จ่าย');
+    await page.locator('#requestable-material-status-filter').selectOption('all');
+    await expect(page.locator(`[data-testid="requestable-material-inactive-badge-${paperId}"]`)).toBeVisible();
+    await page.locator('#requestable-material-status-filter').selectOption('');
+    await expect(page.locator('#requestable-material-list-empty')).toBeVisible();
+
+    // A create of its name, in another case, is refused naming it and offers "เปิดใช้อีกครั้ง", which opens its page
+    // with the confirmation open (Q6, #209 start decision 2).
+    await page.goto(`${targetBaseUrl}/requestable-materials/new`);
+    await page.locator('#requestable-material-name').fill('กระดาษ a4');
+    await page.locator('#requestable-material-request-unit').selectOption({ label: 'รีม' });
+    await page.locator('#requestable-material-submit').click();
+    await expect(page.locator('[data-testid="requestable-material-name-taken"]')).toContainText('มีวัสดุสำหรับขอเบิกชื่อนี้อยู่แล้ว: กระดาษ A4 ซึ่งถูกหยุดใช้อยู่');
+    await page.locator('#requestable-material-offer-reactivate').click();
+    await expect(page).toHaveURL(new RegExp(`/requestable-materials/${paperId}$`));
+    await expect(page.locator('#requestable-material-status-form')).toContainText('เปิดใช้อีกครั้ง');
+    await expect(page.locator('[data-testid="requestable-material-status-pending-count"]')).toHaveCount(0);
+    await page.locator('#requestable-material-status-submit').click();
+
+    // Reactivated as the same record, offered again with its Compatible Stock Material.
+    await expect(page.locator('[data-testid="requestable-material-status"]')).toHaveText('ใช้งานอยู่');
+    await expect(page.locator('#requestable-material-status-action')).toHaveText('หยุดใช้');
+    await expect(historyEntries.last()).toContainText('เปิดใช้อีกครั้ง');
+    await expect(historyEntries.last()).toContainText('สถานะใช้งานอยู่');
+    await expect(page.locator('[data-testid="requestable-material-no-compatible-badge"]')).toHaveCount(0);
   });
 });

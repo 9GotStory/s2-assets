@@ -11,6 +11,7 @@ import {
   type CreateRequestableMaterialInput,
   type EndCompatibleStockMaterialInput,
   type RequestableMaterialService,
+  type StatusChangeInput,
 } from '../services/requestable-material.service.ts';
 import { NotFoundError, RetryTokenConflictError, StaleBeforeConflictError } from '../services/service-errors.ts';
 import { ValidationError } from '../services/validation-error.ts';
@@ -49,9 +50,19 @@ const EndCompatibleStockMaterialSchema = z
   })
   .strict();
 
+// F009-T7 (#209): making a Requestable Material Inactive or reactivating it, at the version the request read.
+const StatusChangeSchema = z
+  .object({
+    expected_version: z.number().int().positive(),
+    retry_token: z.string().optional(),
+  })
+  .strict();
+
 const RequestableMaterialListQuerySchema = z
   .object({
     search: requestableMaterialSearchField,
+    // F009-T7 (#209): ใช้งานอยู่ by default, หยุดใช้, or ทั้งหมด (#202 Q19).
+    status: z.enum(['active', 'inactive', 'all']).optional(),
     ...pageQueryFields,
   })
   .strict();
@@ -85,7 +96,7 @@ export const requestableMaterialRoutes: FastifyPluginAsync<RequestableMaterialRo
   /**
    * GET /requestable-materials
    * The Requestable Materials by name, a page at a time, found by text in the name ignoring case and repeated spaces,
-   * with `can_manage` telling the page whether to offer adding one (#202 P9).
+   * the active ones unless a status is asked for (F009-T7), with `can_manage` telling the page whether to offer adding one (#202 P9).
    * Protected: requires 'material:view' capability (Supply Officer, Administrator, Read-only User)
    */
   fastify.get('/requestable-materials', { preHandler: [requireCapability('material:view')] }, async (request, reply) => {
@@ -94,8 +105,8 @@ export const requestableMaterialRoutes: FastifyPluginAsync<RequestableMaterialRo
     if (!parsed.success) {
       return reply.status(400).send(invalidQueryBody(parsed.error));
     }
-    const { limit = 25, offset = 0, search } = parsed.data;
-    const list = await requestableMaterialReadService.list({ search, limit, offset });
+    const { limit = 25, offset = 0, search, status = 'active' } = parsed.data;
+    const list = await requestableMaterialReadService.list({ search, status, limit, offset });
     const canManage = await capabilityService.hasCapability(request.user!.id, 'material:manage');
     return reply.status(200).send({ ...list, can_manage: canManage });
   });
@@ -229,4 +240,34 @@ export const requestableMaterialRoutes: FastifyPluginAsync<RequestableMaterialRo
       return reply.status(refusal.statusCode).send(refusal);
     }
   });
+
+  /**
+   * POST /requestable-materials/:id/inactivate, POST /requestable-materials/:id/reactivate
+   * Makes the Requestable Material Inactive ("หยุดใช้") or reactivates it ("เปิดใช้อีกครั้ง", F009-T7) at the version
+   * the request read.
+   * Protected: requires 'material:manage' capability (Supply Officer)
+   */
+  for (const action of ['inactivate', 'reactivate'] as const) {
+    fastify.post(`/requestable-materials/:id/${action}`, { preHandler: [requireCapability('material:manage')] }, async (request, reply) => {
+      const { id } = request.params as { id: string };
+      if (!isValidUuid(id)) {
+        return reply.status(400).send(errorBody(400, 'INVALID_ID', 'Requestable Material ID must be a valid UUID string'));
+      }
+      const write = parseWrite(StatusChangeSchema, request);
+      if ('refusal' in write) {
+        return reply.status(400).send(write.refusal);
+      }
+      try {
+        const { retry_token: _retryToken, ...input } = write.data;
+        const recorded = await requestableMaterialService[action](request.user!.id, id.trim().toLowerCase(), input as StatusChangeInput, { retryToken: write.retryToken });
+        return reply.status(200).send(recorded);
+      } catch (err) {
+        const refusal = refusalOf(err);
+        if (!refusal) {
+          throw err;
+        }
+        return reply.status(refusal.statusCode).send(refusal);
+      }
+    });
+  }
 };

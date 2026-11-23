@@ -10,6 +10,7 @@ import {
   type RequestableMaterialList as RequestableList,
   NO_COMPATIBLE_STOCK_MATERIAL_LABEL,
   isActiveWithoutCompatibleStockMaterial,
+  inactiveBadgeStyle,
   noCompatibleBadgeStyle,
 } from '../components/requestableMaterialFacts';
 
@@ -28,15 +29,20 @@ const RequestableMaterialListContent: React.FC = () => {
   // The search and the page live in the URL, so a reload or a link keeps them.
   const [params, setParams] = useSearchParams();
   const search = params.get('search') ?? '';
+  // F009-T7: ใช้งานอยู่ unless the URL asks for หยุดใช้ ("inactive") or ทั้งหมด ("all").
+  const status = params.get('status') ?? '';
   const offset = Math.max(0, Number(params.get('offset')) || 0);
   const [searchInput, setSearchInput] = useState(search);
 
   const requestables = useQuery<RequestableList, Error & { status?: number }>({
-    queryKey: ['requestable-materials', search, offset],
+    queryKey: ['requestable-materials', search, status, offset],
     queryFn: async ({ signal }) => {
       const query = new URLSearchParams({ limit: String(PAGE_SIZE), offset: String(offset) });
       if (search.trim() !== '') {
         query.set('search', search.trim());
+      }
+      if (status !== '') {
+        query.set('status', status);
       }
       const res = await fetch(`/requestable-materials?${query}`, { credentials: 'include', signal });
       if (!res.ok) {
@@ -59,11 +65,15 @@ const RequestableMaterialListContent: React.FC = () => {
   const list = requestables.isError ? undefined : requestables.data;
   const isForbidden = requestables.error?.status === 403;
 
-  const goTo = (next: { search?: string; offset?: number }) => {
+  const goTo = (next: { search?: string; status?: string; offset?: number }) => {
     const query = new URLSearchParams();
     const nextSearch = (next.search ?? search).trim();
     if (nextSearch !== '') {
       query.set('search', nextSearch);
+    }
+    const nextStatus = next.status ?? status;
+    if (nextStatus !== '') {
+      query.set('status', nextStatus);
     }
     if (next.offset) {
       query.set('offset', String(next.offset));
@@ -131,6 +141,19 @@ const RequestableMaterialListContent: React.FC = () => {
               <button type="submit" id="requestable-material-search-submit" style={{ padding: '0.5rem 1rem', backgroundColor: '#4b5563', color: '#ffffff', border: 'none', borderRadius: '6px', fontSize: '0.875rem' }}>
                 ค้นหา
               </button>
+              <label htmlFor="requestable-material-status-filter" style={{ fontSize: '0.875rem', color: '#374151', alignSelf: 'center' }}>
+                สถานะ
+              </label>
+              <select
+                id="requestable-material-status-filter"
+                value={status}
+                onChange={(e) => goTo({ search: searchInput, status: e.target.value, offset: 0 })}
+                style={{ ...fieldInputStyle, width: 'auto', flex: '0 1 10rem' }}
+              >
+                <option value="">{ACTIVE_LABEL}</option>
+                <option value="inactive">{INACTIVE_LABEL}</option>
+                <option value="all">ทั้งหมด</option>
+              </select>
             </form>
 
             <section aria-label={REQUESTABLE_MATERIAL_LABEL} id="requestable-material-list-region">
@@ -139,7 +162,7 @@ const RequestableMaterialListContent: React.FC = () => {
                   id="requestable-material-list-empty"
                   style={{ padding: '3rem 1rem', textAlign: 'center', backgroundColor: '#f9fafb', borderRadius: '6px', border: '1px dashed #d1d5db', color: '#6b7280', fontSize: '0.9375rem' }}
                 >
-                  {search.trim() === '' ? `ยังไม่มี${REQUESTABLE_MATERIAL_LABEL}` : `ไม่พบ${REQUESTABLE_MATERIAL_LABEL}ที่ค้นหา`}
+                  {search.trim() === '' && status === '' ? `ยังไม่มี${REQUESTABLE_MATERIAL_LABEL}` : `ไม่พบ${REQUESTABLE_MATERIAL_LABEL}ที่ค้นหา`}
                 </div>
               ) : (
                 <div style={{ overflowX: 'auto' }}>
@@ -162,6 +185,11 @@ const RequestableMaterialListContent: React.FC = () => {
                             {isActiveWithoutCompatibleStockMaterial(requestable) && (
                               <span data-testid={`requestable-material-no-compatible-badge-${requestable.id}`} style={noCompatibleBadgeStyle}>
                                 {NO_COMPATIBLE_STOCK_MATERIAL_LABEL}
+                              </span>
+                            )}
+                            {!requestable.is_active && (
+                              <span data-testid={`requestable-material-inactive-badge-${requestable.id}`} style={inactiveBadgeStyle}>
+                                {INACTIVE_LABEL}
                               </span>
                             )}
                           </td>
@@ -197,7 +225,8 @@ const RequestableMaterialListContent: React.FC = () => {
 
 /**
  * "วัสดุสำหรับขอเบิก" (F009-T1): the Requestable Materials by name, searchable by name, each with its Request Unit and
- * status, and "เพิ่มวัสดุสำหรับขอเบิก" for holders of material:manage (#202 Q19, P9).
+ * status, and "เพิ่มวัสดุสำหรับขอเบิก" for holders of material:manage (#202 Q19, P9). F009-T7: filtered by status,
+ * ใช้งานอยู่ by default, an Inactive one with its "หยุดใช้" badge.
  */
 export const RequestableMaterialList: React.FC = () => {
   const [queryClient] = useState(() => new QueryClient({ defaultOptions: { queries: { retry: false, refetchOnWindowFocus: true } } }));

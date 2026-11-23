@@ -25,9 +25,9 @@ describe('Material Request (Seam A - F009-T4)', () => {
 
   const materials = materialHelpers(() => ({ api, officer, reader: readonly }));
   const { unitNamed, materialOf } = materials;
-  const { requestableIn, requestableOf, add, end } = requestableMaterialHelpers(() => ({ api, officer, reader: readonly }));
+  const { requestableIn, requestableOf, add, end, inactivate } = requestableMaterialHelpers(() => ({ api, officer, reader: readonly }));
   const { offeredIn, offered, createRequest, item, created, requestOf, cancelItem } = materialRequestHelpers(() => ({ api, requester, officer, reader: readonly, requestUnit: ream }));
-  const { whileWriting, untilWaiting } = lockHelpers(() => ({ api }));
+  const { whileHolding, whileWriting, untilWaiting } = lockHelpers(() => ({ api }));
 
   // "คำขอของฉัน" as `actor` reads it for `query`.
   const mine = async (query = '', actor: Actor = requester) => {
@@ -199,7 +199,8 @@ describe('Material Request (Seam A - F009-T4)', () => {
       const changed = Object.fromEntries(Object.keys(after).filter((table) => after[table] !== before[table]).map((table) => [table, after[table] - before[table]]));
       expect(changed).toEqual({ material_requests: 1, requested_items: 2, material_request_history: 1, registration_retry_tokens: 1 });
       expect(await materialOf(stockMaterial)).toEqual(materialBefore);
-      expect(await requestableOf(requestable)).toEqual(requestableBefore);
+      // F009-T7: only the count of its Pending Requested Items moves.
+      expect(await requestableOf(requestable)).toEqual({ ...requestableBefore, pending_requested_item_count: requestableBefore.pending_requested_item_count + 1 });
     });
 
     it('takes no field it does not know, on the Material Request or a Requested Item', async () => {
@@ -330,8 +331,7 @@ describe('Material Request (Seam A - F009-T4)', () => {
     it('refuses an Inactive Requestable Material that still has a current Compatible Stock Material', async () => {
       const paper = await offered();
       const inactive = await offered();
-      // What F009-T7's Inactive writes, standing in until T7 builds it (#206 start decisions).
-      await api.pool.query('UPDATE requestable_materials SET is_active = false, version = version + 1 WHERE id = $1', [inactive]);
+      expect((await inactivate(inactive)).statusCode).toBe(200);
 
       expectNotOffered(await createRequest({ requested_items: [item(paper), item(inactive)] }), 1);
     });
@@ -370,13 +370,16 @@ describe('Material Request (Seam A - F009-T4)', () => {
       const paper = await offered();
       const requestable = await offered();
 
-      const [res] = await whileWriting(
-        // What F009-T7's Inactive writes, held uncommitted.
-        { sql: 'UPDATE requestable_materials SET is_active = false, version = version + 1 WHERE id = $1', params: [requestable] },
-        () => [createRequest({ requested_items: [item(paper), item(requestable)] })],
+      // F009-T7's own Inactive write queues first on the held row, and the create queues behind it (#206 review
+      // decision 2): once the hold goes, the Inactive commits and the create reads the status it left.
+      const [madeInactive, res] = await whileHolding(
+        'requestable_materials',
+        requestable,
+        () => [inactivate(requestable, { version: 2 }), untilWaiting('requestable_materials').then(() => createRequest({ requested_items: [item(paper), item(requestable)] }))],
         () => untilWaiting('requestable_materials', 1, 'FOR SHARE')
       );
 
+      expect(madeInactive.statusCode).toBe(200);
       expectNotOffered(res, 1);
     });
 
@@ -422,7 +425,7 @@ describe('Material Request (Seam A - F009-T4)', () => {
       const { requestable: ended, stockMaterial } = await offeredIn(ream, { name: `${tag} ค เลิกแล้ว` });
       expect((await end(ended, stockMaterial)).statusCode).toBe(200);
       const inactive = await offered({ name: `${tag} ง หยุดใช้` });
-      await api.pool.query('UPDATE requestable_materials SET is_active = false, version = version + 1 WHERE id = $1', [inactive]);
+      expect((await inactivate(inactive)).statusCode).toBe(200);
 
       const found = await offeredFor(`search=${encodeURIComponent(tag)}`);
 

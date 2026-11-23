@@ -4,7 +4,7 @@ import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import { LoanSaveForm } from '../components/LoanSaveForm';
 import { fieldInputStyle, fieldLabelStyle } from '../components/ReferenceContextFields';
 import { useCsrfToken, useUnitList } from '../components/materialQueries';
-import { WHOLE_NUMBER_UNIT_LABEL } from '../components/materialFacts';
+import { INACTIVE_LABEL, REACTIVATE_LABEL, WHOLE_NUMBER_UNIT_LABEL } from '../components/materialFacts';
 import { ADD_REQUESTABLE_MATERIAL_LABEL, REQUEST_UNIT_LABEL, REQUESTABLE_MATERIAL_LABEL, type RequestableMaterialNameTaken } from '../components/requestableMaterialFacts';
 
 const fieldStyle: React.CSSProperties = { marginBottom: '0.75rem' };
@@ -52,7 +52,8 @@ const RequestableMaterialCreateContent: React.FC = () => {
     description: description.trim() || null,
   });
 
-  // A name already used names the Requestable Material that holds it (#202 Q6); T7 offers reactivating an Inactive one.
+  // A name already used names the Requestable Material that holds it (#202 Q6). F009-T7: an Inactive one is offered for
+  // reactivation, on its own page with the confirmation open (#209 start decision 2).
   const nameTaken = (body: RequestableMaterialNameTaken | null) =>
     body?.code === 'DUPLICATE_NAME' ? (
       <span data-testid="requestable-material-name-taken">
@@ -60,6 +61,19 @@ const RequestableMaterialCreateContent: React.FC = () => {
         <Link to={`/requestable-materials/${body.entry.id}`} style={{ color: '#991b1b', fontWeight: 600 }}>
           {body.entry.name}
         </Link>
+        {!body.entry.is_active && (
+          <>
+            {` ซึ่งถูก${INACTIVE_LABEL}อยู่`}
+            <button
+              type="button"
+              id="requestable-material-offer-reactivate"
+              onClick={() => navigate(`/requestable-materials/${body.entry.id}`, { state: { offer: 'reactivate' } })}
+              style={{ marginLeft: '0.75rem', padding: '0.25rem 0.75rem', borderRadius: '4px', border: '1px solid #d1d5db', backgroundColor: '#ffffff', color: '#111827', cursor: 'pointer', fontWeight: 500 }}
+            >
+              {REACTIVATE_LABEL}
+            </button>
+          </>
+        )}
       </span>
     ) : null;
 

@@ -1,6 +1,7 @@
 import React, { useState } from 'react';
 import { useQuery } from '@tanstack/react-query';
 import { LoanSaveForm } from './LoanSaveForm';
+import { PendingCountNotice } from './RequestableMaterialStatusForm';
 import { fieldInputStyle, fieldLabelStyle } from './ReferenceContextFields';
 import { STOCK_MATERIAL_LABEL } from './materialFacts';
 import {
@@ -189,9 +190,13 @@ export const CompatibleStockMaterialEndForm: React.FC<CompatibleStockMaterialFor
     onPermissionRevoked={onPermissionRevoked}
   >
     {() => (
-      <p data-testid="compatible-stock-material-end-notice" style={{ fontSize: '0.875rem', color: '#4b5563', margin: '0 0 1rem 0' }}>
-        รายการนี้จะยังแสดงเป็นเลิกแล้วพร้อมประวัติ และเพิ่มกลับได้ภายหลัง
-      </p>
+      <>
+        {/* F009-T7 (#209 start decision 3): ending the last current one shows the Pending count, active or Inactive. */}
+        {requestable.compatible_stock_materials.filter((entry) => entry.is_current).length === 1 && <PendingCountNotice requestable={requestable} idPrefix="compatible-stock-material-end" />}
+        <p data-testid="compatible-stock-material-end-notice" style={{ fontSize: '0.875rem', color: '#4b5563', margin: '0 0 1rem 0' }}>
+          รายการนี้จะยังแสดงเป็นเลิกแล้วพร้อมประวัติ และเพิ่มกลับได้ภายหลัง
+        </p>
+      </>
     )}
   </LoanSaveForm>
 );

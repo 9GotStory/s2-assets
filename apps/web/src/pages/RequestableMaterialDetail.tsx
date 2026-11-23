@@ -1,9 +1,10 @@
 import React, { useEffect, useState } from 'react';
-import { Link, useNavigate, useParams } from 'react-router';
+import { Link, useLocation, useNavigate, useParams } from 'react-router';
 import { QueryClient, QueryClientProvider, useQuery } from '@tanstack/react-query';
 import { CompatibleStockMaterialAddForm, CompatibleStockMaterialEndForm } from '../components/CompatibleStockMaterialForms';
+import { RequestableMaterialStatusForm } from '../components/RequestableMaterialStatusForm';
 import { useCsrfToken } from '../components/materialQueries';
-import { ACTIVE_LABEL, BASE_UNIT_LABEL, INACTIVE_LABEL, STOCK_MATERIAL_LABEL, UNIT_LABEL, WHOLE_NUMBER_UNIT_LABEL, wholeNumberLine, type StockMaterialUnit } from '../components/materialFacts';
+import { ACTIVE_LABEL, BASE_UNIT_LABEL, INACTIVE_LABEL, REACTIVATE_LABEL, STOCK_MATERIAL_LABEL, UNIT_LABEL, WHOLE_NUMBER_UNIT_LABEL, wholeNumberLine, type StockMaterialUnit } from '../components/materialFacts';
 import {
   ADD_COMPATIBLE_STOCK_MATERIAL_LABEL,
   COMPATIBLE_STOCK_MATERIAL_LABEL,
@@ -39,11 +40,16 @@ const RECORDED_FIELD_LABELS: Record<RequestableMaterialRecordedChange['field'], 
   whole_number_only: WHOLE_NUMBER_UNIT_LABEL,
   description: 'รายละเอียด',
   compatible_stock_material: COMPATIBLE_STOCK_MATERIAL_LABEL,
+  is_active: 'สถานะ',
 };
 
 // A recorded value as the history shows it: the Request Unit by its name then, the whole-number setting as ใช่ or
 // ไม่ใช่, text as it was; F009-T2: the Stock Material an add or an end names, by its name then.
 const recordedValue = (change: RequestableMaterialRecordedChange): string => {
+  // F009-T7: the status it was given.
+  if (change.field === 'is_active') {
+    return change.after ? ACTIVE_LABEL : INACTIVE_LABEL;
+  }
   if (change.field === 'compatible_stock_material') {
     return (change.after ?? change.before)!.name;
   }
@@ -83,8 +89,13 @@ const actionStyle: React.CSSProperties = { padding: '0.375rem 0.75rem', borderRa
 
 const RequestableMaterialDetailContent: React.FC<{ id: string }> = ({ id }) => {
   const navigate = useNavigate();
-  // The Compatible Stock Material action opened: the add, or the end of one Stock Material.
-  const [compatibleAction, setCompatibleAction] = useState<{ kind: 'add' } | { kind: 'end'; stockMaterialId: string } | null>(null);
+  const location = useLocation();
+  // The action opened: the add of a Compatible Stock Material, the end of one, or F009-T7's "หยุดใช้" or
+  // "เปิดใช้อีกครั้ง". The create form sends a Supply Officer here with "เปิดใช้อีกครั้ง" open when the name they
+  // typed belongs to this Inactive Requestable Material (#209 start decision 2).
+  const [compatibleAction, setCompatibleAction] = useState<
+    { kind: 'add' } | { kind: 'end'; stockMaterialId: string } | { kind: 'inactivate' } | { kind: 'reactivate' } | null
+  >(() => ((location.state as { offer?: string } | null)?.offer === 'reactivate' ? { kind: 'reactivate' } : null));
 
   const requestable = useQuery<RequestableDetail, Error & { status?: number }>({
     queryKey: ['requestable-material', id],
@@ -174,6 +185,26 @@ const RequestableMaterialDetailContent: React.FC<{ id: string }> = ({ id }) => {
               </dd>
             </dl>
 
+            {/* F009-T7: "หยุดใช้" on one in use, "เปิดใช้อีกครั้ง" on an Inactive one (#202 MC-14, P9). */}
+            {mayManage && compatibleAction === null && (
+              <div style={{ marginTop: '1rem' }}>
+                <button
+                  type="button"
+                  id="requestable-material-status-action"
+                  onClick={() => setCompatibleAction({ kind: detail.is_active ? 'inactivate' : 'reactivate' })}
+                  style={actionStyle}
+                >
+                  {detail.is_active ? INACTIVE_LABEL : REACTIVATE_LABEL}
+                </button>
+              </div>
+            )}
+            {/* The form keeps the action it was opened for: one another Supply Officer already took is refused as a no-op. */}
+            {mayManage && (compatibleAction?.kind === 'inactivate' || compatibleAction?.kind === 'reactivate') && (
+              <div style={{ marginTop: '1rem' }}>
+                <RequestableMaterialStatusForm key={detail.version} requestable={detail} action={compatibleAction.kind} csrfToken={csrfToken} {...formHandlers} />
+              </div>
+            )}
+
             <h2 style={sectionHeadingStyle}>{COMPATIBLE_STOCK_MATERIAL_LABEL}</h2>
             {detail.compatible_stock_materials.length === 0 ? (
               <p id="compatible-stock-material-empty" style={{ color: '#6b7280', fontSize: '0.875rem', margin: '0 0 0.75rem 0' }}>
@@ -253,8 +284,8 @@ const RequestableMaterialDetailContent: React.FC<{ id: string }> = ({ id }) => {
 
 /**
  * A Requestable Material's page (F009-T1): every field and its creation in the history (#202 Q17, Q19). F009-T2: its
- * Compatible Stock Materials, added and ended from here, and the "ยังไม่มีวัสดุที่ใช้จ่าย" badge (Q9); T7 and T8 add
- * the rest.
+ * Compatible Stock Materials, added and ended from here, and the "ยังไม่มีวัสดุที่ใช้จ่าย" badge (Q9). F009-T7:
+ * "หยุดใช้" and "เปิดใช้อีกครั้ง", with the Pending count (Q16, P6); T8 adds the rest.
  */
 export const RequestableMaterialDetail: React.FC = () => {
   const { id = '' } = useParams<{ id: string }>();
