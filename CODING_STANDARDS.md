@@ -127,6 +127,11 @@ every rule checked before it: it expects the version the held write leaves, so o
 decides. In F008-T7 (#180), each order test expected the version from before the held write, so the stale
 check refused every time; the "already Inactive" rule got its test from the Standards review.
 
+A pair the Product Owner exempts on the ticket needs no order test: the lock plan posted at `/implement`
+start lists it under "No pair" with the comment that exempts it, and the review takes that as decided. In
+F009-T7 (#209), a Material Request create queued behind a reactivate was exempt (comment 7090131450), yet
+the Standards review raised it as a hard finding and it went back to the Product Owner.
+
 ## A journey step waits for the URL it changes
 
 A journey step that changes the URL, such as a filter link or a select that navigates, waits for that

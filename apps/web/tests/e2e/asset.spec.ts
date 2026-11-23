@@ -1922,6 +1922,7 @@ test.describe.serial('Asset Registry Real SPA -> Composed API -> PostgreSQL Jour
     // 2. Click back to dashboard while body parsing is pending
     // This unmounts AssetSearch, calling its cleanup: abortController.abort()
     await page.locator('#back-dashboard-link').click();
+    await expect(page).toHaveURL(`${targetBaseUrl}/dashboard`);
 
     // Wait for microtask / obsolete continuation
     await page.waitForTimeout(1000);

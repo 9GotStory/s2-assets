@@ -968,6 +968,7 @@ test.describe.serial('Material Request journeys: Real SPA -> Composed API -> Pos
     await page.goto(`${targetBaseUrl}/material-requests?state=cancelled&offset=${cancelledCount - 1}`);
     await expect(savedRow.locator('td')).toHaveText([saved.request_number, 'requester_request', /\S/, 'ยกเลิกแล้ว', '2 รายการ']);
     await page.locator('#material-request-state-filter').selectOption('pending');
+    await expect(page).toHaveURL(/\/material-requests\?state=pending$/);
     await expect(pendingRow).toBeVisible();
     await expect(savedRow).toHaveCount(0);
     await page.locator('#material-request-state-filter').selectOption('all');
