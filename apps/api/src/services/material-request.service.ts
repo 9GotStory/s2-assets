@@ -54,17 +54,20 @@ type CurrentState = { version: number; state: MaterialRequestState; requested_it
 
 /**
  * F009-T5 (#207): a Cancel of a Requested Item already Cancelled, or of a Material Request with no Pending Requested
- * Item left, at the version the request read (Q20; #207 start decision 1).
+ * Item left, at the version the request read (Q20; #207 start decision 1). Like a stale refusal it carries the current
+ * state and the version expected (#207 review decision 1).
  */
 export class NotPendingError extends Error {
   statusCode = 409;
   code = 'NOT_PENDING';
   current_values: CurrentState;
+  expected_values: { version: number };
 
-  constructor(message: string, currentValues: CurrentState) {
+  constructor(message: string, currentValues: CurrentState, expectedVersion: number) {
     super(message);
     this.name = 'NotPendingError';
     this.current_values = currentValues;
+    this.expected_values = { version: expectedVersion };
   }
 }
 
@@ -246,7 +249,7 @@ export class MaterialRequestService {
       const current: CurrentState = { version, state: await stateOf(client, requestId), requested_item_state: res.rows[0].state };
       refuseStale(current, input.expected_version);
       if (current.requested_item_state !== 'PENDING') {
-        throw new NotPendingError('The Requested Item is already Cancelled', current);
+        throw new NotPendingError('The Requested Item is already Cancelled', current, input.expected_version);
       }
       return recordCancel(client, actorId, requestId, 'REQUESTED_ITEM_CANCELLED', [itemId], note);
     });
@@ -268,7 +271,7 @@ export class MaterialRequestService {
       const current: CurrentState = { version, state: await stateOf(client, requestId) };
       refuseStale(current, input.expected_version);
       if (pending.rows.length === 0) {
-        throw new NotPendingError('The Material Request has no Pending Requested Item', current);
+        throw new NotPendingError('The Material Request has no Pending Requested Item', current, input.expected_version);
       }
       return recordCancel(client, actorId, requestId, 'MATERIAL_REQUEST_CANCELLED', pending.rows.map(({ id }: { id: string }) => id), note);
     });

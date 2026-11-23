@@ -137,6 +137,7 @@ describe('Material Request (Seam A - F009-T4)', () => {
           cancelled_by_username: null,
           cancelled_at: null,
           cancel_note: null,
+          can_cancel: true,
         },
         {
           id: expect.any(String),
@@ -151,6 +152,7 @@ describe('Material Request (Seam A - F009-T4)', () => {
           cancelled_by_username: null,
           cancelled_at: null,
           cancel_note: null,
+          can_cancel: true,
         },
       ]);
       expect(page.history).toEqual([

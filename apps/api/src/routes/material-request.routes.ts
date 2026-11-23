@@ -70,12 +70,26 @@ const refusalOf = (err: unknown) => {
     return { ...errorBody(err.statusCode, err.code, err.message), current_values: err.current_values, expected_values: err.expected_values };
   }
   if (err instanceof NotPendingError) {
-    return { ...errorBody(err.statusCode, err.code, err.message), current_values: err.current_values };
+    return { ...errorBody(err.statusCode, err.code, err.message), current_values: err.current_values, expected_values: err.expected_values };
   }
   if (err instanceof RetryTokenConflictError || err instanceof NotFoundError || err instanceof ValidationError) {
     return errorBody(err.statusCode, err.code, err.message);
   }
   return null;
+};
+
+// Runs the write `write` and answers it with `statusCode`, or answers its refusal; an error that is not a refusal goes
+// on to the error handler.
+const answered = async (statusCode: number, write: () => Promise<unknown>) => {
+  try {
+    return { statusCode, body: await write() };
+  } catch (err) {
+    const refusal = refusalOf(err);
+    if (!refusal) {
+      throw err;
+    }
+    return { statusCode: refusal.statusCode, body: refusal };
+  }
 };
 
 /**
@@ -111,30 +125,10 @@ export const materialRequestRoutes: FastifyPluginAsync<MaterialRequestRoutesOpti
     if ('refusal' in write) {
       return reply.status(400).send(write.refusal);
     }
-    try {
-      const { retry_token: _retryToken, ...input } = write.data;
-      return reply.status(201).send(await materialRequestService.create(request.user!.id, input, { retryToken: write.retryToken }));
-    } catch (err) {
-      const refusal = refusalOf(err);
-      if (!refusal) {
-        throw err;
-      }
-      return reply.status(refusal.statusCode).send(refusal);
-    }
+    const { retry_token: _retryToken, ...input } = write.data;
+    const answer = await answered(201, () => materialRequestService.create(request.user!.id, input, { retryToken: write.retryToken }));
+    return reply.status(answer.statusCode).send(answer.body);
   });
-
-  // Runs a Cancel `write` and answers it, or its refusal.
-  const cancelled = async (write: () => Promise<unknown>) => {
-    try {
-      return { statusCode: 200, body: await write() };
-    } catch (err) {
-      const refusal = refusalOf(err);
-      if (!refusal) {
-        throw err;
-      }
-      return { statusCode: refusal.statusCode, body: refusal };
-    }
-  };
 
   /**
    * POST /material-requests/:id/cancel
@@ -152,7 +146,7 @@ export const materialRequestRoutes: FastifyPluginAsync<MaterialRequestRoutesOpti
       return reply.status(400).send(write.refusal);
     }
     const { retry_token: _retryToken, ...input } = write.data;
-    const answer = await cancelled(() => materialRequestService.cancelMaterialRequest(request.user!.id, id.trim().toLowerCase(), input, { retryToken: write.retryToken }));
+    const answer = await answered(200, () => materialRequestService.cancelMaterialRequest(request.user!.id, id.trim().toLowerCase(), input, { retryToken: write.retryToken }));
     return reply.status(answer.statusCode).send(answer.body);
   });
 
@@ -175,7 +169,7 @@ export const materialRequestRoutes: FastifyPluginAsync<MaterialRequestRoutesOpti
       return reply.status(400).send(write.refusal);
     }
     const { retry_token: _retryToken, ...input } = write.data;
-    const answer = await cancelled(() =>
+    const answer = await answered(200, () =>
       materialRequestService.cancelRequestedItem(request.user!.id, id.trim().toLowerCase(), requestedItemId.trim().toLowerCase(), input, { retryToken: write.retryToken })
     );
     return reply.status(answer.statusCode).send(answer.body);

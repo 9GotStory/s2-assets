@@ -46,6 +46,17 @@ describe('Material Request Cancel (Seam A - F009-T5)', () => {
     expect(await requestOf(id)).toEqual(before);
   };
 
+  // The whole body of a Cancel refused with the current state (#207 start decision 1, review decision 1): Feature 002's
+  // shape with the Material Request's version and state now, and the version the Cancel expected.
+  const refusalBody = (code: string, message: string, current: Record<string, unknown>, expectedVersion: number) => ({
+    statusCode: 409,
+    code,
+    error: code,
+    message,
+    current_values: current,
+    expected_values: { version: expectedVersion },
+  });
+
   // Queues the Cancel `first` behind a held lock of the Material Request `id`, then `second` behind it, and answers both:
   // a row lock grants its waiters in turn, so `second` reads what `first` committed (CODING_STANDARDS, "A rule read
   // under a lock has a test of its order").
@@ -152,7 +163,9 @@ describe('Material Request Cancel (Seam A - F009-T5)', () => {
       const res = await cancelItem(id, items[0], { version: version + 1, note: 'ครั้งที่สอง' });
 
       await expectRefused(res, 409, 'NOT_PENDING', 'The Requested Item is already Cancelled', id, before);
-      expect(res.json().current_values).toEqual({ version: version + 1, state: 'PENDING', requested_item_state: 'CANCELLED' });
+      expect(res.json()).toEqual(
+        refusalBody('NOT_PENDING', 'The Requested Item is already Cancelled', { version: version + 1, state: 'PENDING', requested_item_state: 'CANCELLED' }, version + 1)
+      );
     });
 
     it('refuses a version other than the one the Material Request has, with the current state', async () => {
@@ -163,7 +176,9 @@ describe('Material Request Cancel (Seam A - F009-T5)', () => {
       for (const stale of [version, version + 2]) {
         const res = await cancelItem(id, items[1], { version: stale });
         await expectRefused(res, 409, 'STALE_BEFORE_CONFLICT', 'The Material Request changed since it was read', id, before);
-        expect(res.json()).toMatchObject({ current_values: { version: version + 1, state: 'PENDING', requested_item_state: 'PENDING' }, expected_values: { version: stale } });
+        expect(res.json()).toEqual(
+          refusalBody('STALE_BEFORE_CONFLICT', 'The Material Request changed since it was read', { version: version + 1, state: 'PENDING', requested_item_state: 'PENDING' }, stale)
+        );
       }
     });
 
@@ -175,7 +190,9 @@ describe('Material Request Cancel (Seam A - F009-T5)', () => {
       const res = await cancelItem(id, items[0], { version });
 
       await expectRefused(res, 409, 'STALE_BEFORE_CONFLICT', 'The Material Request changed since it was read', id, before);
-      expect(res.json().current_values).toEqual({ version: version + 1, state: 'PENDING', requested_item_state: 'CANCELLED' });
+      expect(res.json()).toEqual(
+        refusalBody('STALE_BEFORE_CONFLICT', 'The Material Request changed since it was read', { version: version + 1, state: 'PENDING', requested_item_state: 'CANCELLED' }, version)
+      );
     });
 
     it('answers 404 for a Requested Item of another Material Request or none, and 400 for an id that is not a UUID', async () => {
@@ -275,7 +292,7 @@ describe('Material Request Cancel (Seam A - F009-T5)', () => {
       const res = await cancelRequest(id, { version: version + 1, note: 'อีกครั้ง' });
 
       await expectRefused(res, 409, 'NOT_PENDING', 'The Material Request has no Pending Requested Item', id, before);
-      expect(res.json().current_values).toEqual({ version: version + 1, state: 'CANCELLED' });
+      expect(res.json()).toEqual(refusalBody('NOT_PENDING', 'The Material Request has no Pending Requested Item', { version: version + 1, state: 'CANCELLED' }, version + 1));
     });
 
     it('refuses a version other than the one the Material Request has, before whether any Requested Item is Pending, with the current state', async () => {
@@ -285,13 +302,13 @@ describe('Material Request Cancel (Seam A - F009-T5)', () => {
 
       const stale = await cancelRequest(id, { version });
       await expectRefused(stale, 409, 'STALE_BEFORE_CONFLICT', 'The Material Request changed since it was read', id, partly);
-      expect(stale.json()).toMatchObject({ current_values: { version: version + 1, state: 'PENDING' }, expected_values: { version } });
+      expect(stale.json()).toEqual(refusalBody('STALE_BEFORE_CONFLICT', 'The Material Request changed since it was read', { version: version + 1, state: 'PENDING' }, version));
 
       expect((await cancelRequest(id, { version: version + 1 })).statusCode).toBe(200);
       const before = await requestOf(id);
       const res = await cancelRequest(id, { version: version + 1 });
       await expectRefused(res, 409, 'STALE_BEFORE_CONFLICT', 'The Material Request changed since it was read', id, before);
-      expect(res.json().current_values).toEqual({ version: version + 2, state: 'CANCELLED' });
+      expect(res.json()).toEqual(refusalBody('STALE_BEFORE_CONFLICT', 'The Material Request changed since it was read', { version: version + 2, state: 'CANCELLED' }, version + 1));
     });
 
     it('takes a note of 500 characters and refuses one character more or a control character, writing nothing', async () => {
@@ -329,14 +346,22 @@ describe('Material Request Cancel (Seam A - F009-T5)', () => {
       for (const role of ['SYSTEM_MAINTAINER', 'ADMINISTRATOR', 'READ_ONLY', 'ASSET_CUSTODIAN', 'VERIFICATION_STAFF', 'SUPPLY_OFFICER']) {
         await api.pool.query('INSERT INTO user_roles (user_id, role_id) VALUES ($1, $2)', [both.id, role]);
       }
+      // One Requested Item already Cancelled, so that a stale version and a Requested Item not Pending would each be
+      // refused with the current state if the owner were checked after them.
       const { id, version, items } = await pendingRequest(2, otherRequester);
+      expect((await cancelItem(id, items[0], { version, actor: otherRequester })).statusCode).toBe(200);
       const before = await requestOf(id, otherRequester);
 
       for (const actor of [requester, both]) {
-        for (const res of [await cancelItem(id, items[0], { version, actor }), await cancelRequest(id, { version, actor })]) {
+        for (const res of [
+          await cancelItem(id, items[1], { version: version + 1, actor }),
+          await cancelItem(id, items[1], { version, actor }),
+          await cancelItem(id, items[0], { version: version + 1, actor }),
+          await cancelRequest(id, { version: version + 1, actor }),
+          await cancelRequest(id, { version, actor }),
+        ]) {
           expect(res.statusCode).toBe(404);
-          expect(res.json()).toMatchObject({ code: 'NOT_FOUND', message: 'Material Request not found' });
-          expect(res.body).not.toContain('current_values');
+          expect(res.json()).toEqual({ statusCode: 404, code: 'NOT_FOUND', error: 'NOT_FOUND', message: 'Material Request not found' });
         }
       }
       expect(await requestOf(id, otherRequester)).toEqual(before);

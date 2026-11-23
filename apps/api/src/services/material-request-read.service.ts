@@ -153,56 +153,56 @@ export class MaterialRequestReadService {
 
 // The Material Request page as `client` reads it, or null when there is none.
 const readIn = async (client: pg.PoolClient, id: string): Promise<MaterialRequestDetail | null> => {
-    const res = await client.query(
-      `SELECT m.id, m.request_number::text, m.requested_by, u.username AS requested_by_username, m.recorded_at, m.note, m.version,
-              ${materialRequestState('m')} AS state
-       FROM material_requests m
-       JOIN users u ON u.id = m.requested_by
-       WHERE m.id = $1`,
-      [id]
-    );
-    const row = res.rows[0];
-    if (!row) {
-      return null;
-    }
-    const items = await client.query(
-      `SELECT i.id, i.position, i.requestable_material_id, trim_scale(i.requested_quantity)::text AS requested_quantity, ru.id AS request_unit_id, ru.name AS request_unit_name, i.note,
-              ${requestedItemState('i')} AS state, i.cancelled_by, c.username AS cancelled_by_username, i.cancelled_at, i.cancel_note
-       FROM requested_items i
-       ${joinUnitEntry('ru', 'i.request_unit_id')}
-       LEFT JOIN users c ON c.id = i.cancelled_by
-       WHERE i.material_request_id = $1
-       ORDER BY i.position ASC`,
-      [id]
-    );
-    const names = await requestableMaterialNamesOf(client, items.rows.map(({ requestable_material_id }: any) => requestable_material_id));
-    const history = await client.query(
-      `SELECT h.version, h.kind, h.requested_item_ids, h.note, h.recorded_by, u.username AS recorded_by_username, h.recorded_at
-       FROM material_request_history h
-       JOIN users u ON u.id = h.recorded_by
-       WHERE h.material_request_id = $1
-       ORDER BY h.version ASC`,
-      [id]
-    );
-    return {
-      ...row,
-      recorded_at: new Date(row.recorded_at).toISOString(),
-      can_cancel: row.state === 'PENDING',
-      requested_items: items.rows.map((item: any) => ({
-        id: item.id,
-        position: item.position,
-        requestable_material_id: item.requestable_material_id,
-        requestable_material_name: names.get(item.requestable_material_id)!,
-        requested_quantity: item.requested_quantity,
-        request_unit: { unit_id: item.request_unit_id, name: item.request_unit_name },
-        note: item.note,
-        state: item.state,
-        cancelled_by: item.cancelled_by,
-        cancelled_by_username: item.cancelled_by_username,
-        cancelled_at: isoOrNull(item.cancelled_at),
-        cancel_note: item.cancel_note,
-        can_cancel: item.state === 'PENDING',
-      })),
-      history: history.rows.map((entry: any) => ({ ...entry, recorded_at: new Date(entry.recorded_at).toISOString() })),
-    };
+  const res = await client.query(
+    `SELECT m.id, m.request_number::text, m.requested_by, u.username AS requested_by_username, m.recorded_at, m.note, m.version,
+            ${materialRequestState('m')} AS state
+     FROM material_requests m
+     JOIN users u ON u.id = m.requested_by
+     WHERE m.id = $1`,
+    [id]
+  );
+  const row = res.rows[0];
+  if (!row) {
+    return null;
+  }
+  const items = await client.query(
+    `SELECT i.id, i.position, i.requestable_material_id, trim_scale(i.requested_quantity)::text AS requested_quantity, ru.id AS request_unit_id, ru.name AS request_unit_name, i.note,
+            ${requestedItemState('i')} AS state, i.cancelled_by, c.username AS cancelled_by_username, i.cancelled_at, i.cancel_note
+     FROM requested_items i
+     ${joinUnitEntry('ru', 'i.request_unit_id')}
+     LEFT JOIN users c ON c.id = i.cancelled_by
+     WHERE i.material_request_id = $1
+     ORDER BY i.position ASC`,
+    [id]
+  );
+  const names = await requestableMaterialNamesOf(client, items.rows.map(({ requestable_material_id }: any) => requestable_material_id));
+  const history = await client.query(
+    `SELECT h.version, h.kind, h.requested_item_ids, h.note, h.recorded_by, u.username AS recorded_by_username, h.recorded_at
+     FROM material_request_history h
+     JOIN users u ON u.id = h.recorded_by
+     WHERE h.material_request_id = $1
+     ORDER BY h.version ASC`,
+    [id]
+  );
+  return {
+    ...row,
+    recorded_at: new Date(row.recorded_at).toISOString(),
+    can_cancel: row.state === 'PENDING',
+    requested_items: items.rows.map((item: any) => ({
+      id: item.id,
+      position: item.position,
+      requestable_material_id: item.requestable_material_id,
+      requestable_material_name: names.get(item.requestable_material_id)!,
+      requested_quantity: item.requested_quantity,
+      request_unit: { unit_id: item.request_unit_id, name: item.request_unit_name },
+      note: item.note,
+      state: item.state,
+      cancelled_by: item.cancelled_by,
+      cancelled_by_username: item.cancelled_by_username,
+      cancelled_at: isoOrNull(item.cancelled_at),
+      cancel_note: item.cancel_note,
+      can_cancel: item.state === 'PENDING',
+    })),
+    history: history.rows.map((entry: any) => ({ ...entry, recorded_at: new Date(entry.recorded_at).toISOString() })),
+  };
 };
