@@ -2,8 +2,10 @@ import pg from 'pg';
 import { normalizeText } from './assignment.service.ts';
 import { isValidUuid } from './capability.service.ts';
 import { formatDecimal, isWhole, parseDecimal } from './exact-decimal.ts';
+import { materialRequestState, requestedItemState, type MaterialRequestState } from './material-request-state.ts';
 import { requestableMaterialsAskedFor } from './requestable-material-asked-for.ts';
 import { commitOnce } from './retryable-write.ts';
+import { NotFoundError, StaleBeforeConflictError } from './service-errors.ts';
 import { ValidationError } from './validation-error.ts';
 
 // #202 Q10, P7: a Material Request holds 1 to 50 Requested Items; its note is at most 2000 characters and each
@@ -11,6 +13,8 @@ import { ValidationError } from './validation-error.ts';
 export const MAX_REQUESTED_ITEMS = 50;
 export const MATERIAL_REQUEST_NOTE_MAX_LENGTH = 2000;
 export const REQUESTED_ITEM_NOTE_MAX_LENGTH = 500;
+// P7: a Cancel's note is at most 500 characters.
+export const CANCEL_NOTE_MAX_LENGTH = 500;
 
 export interface RequestedItemInput {
   requestable_material_id: string;
@@ -30,6 +34,38 @@ export interface MaterialRequestCreated {
   // A bigint, as a string of digits (P3).
   request_number: string;
   version: number;
+}
+
+// F009-T5 (#207): a Cancel, at the version of the Material Request the request read (P4), with an optional note.
+export interface CancelInput {
+  expected_version: number;
+  note?: string | null;
+}
+
+// What a Cancel answers: the Material Request and the version it moved to.
+export interface MaterialRequestVersion {
+  material_request_id: string;
+  version: number;
+}
+
+// The current state a Cancel is refused with (Q20, P4; #207 start decision 1): the Material Request's version and
+// state, and the Requested Item's state on a Requested Item's Cancel.
+type CurrentState = { version: number; state: MaterialRequestState; requested_item_state?: MaterialRequestState };
+
+/**
+ * F009-T5 (#207): a Cancel of a Requested Item already Cancelled, or of a Material Request with no Pending Requested
+ * Item left, at the version the request read (Q20; #207 start decision 1).
+ */
+export class NotPendingError extends Error {
+  statusCode = 409;
+  code = 'NOT_PENDING';
+  current_values: CurrentState;
+
+  constructor(message: string, currentValues: CurrentState) {
+    super(message);
+    this.name = 'NotPendingError';
+    this.current_values = currentValues;
+  }
 }
 
 /** A Requested Item asking for a Requestable Material Requesters are not offered (#202 Q9, Q20), named by its position. */
@@ -94,6 +130,48 @@ const normalizeFacts = (input: CreateMaterialRequestInput) => {
   return { note: normalizeText(input.note, 'note', MATERIAL_REQUEST_NOTE_MAX_LENGTH, ''), requested_items: requestedItems };
 };
 
+// Locks the Material Request `id` FOR UPDATE, so its Cancels take turns (P4), and answers its version; another
+// person's answers as if it did not exist (Q12, P5). What the Cancel reads next comes in later statements, so that
+// it sees what a Cancel committed while this one waited.
+const lockedOwn = async (client: pg.PoolClient, actorId: string, id: string): Promise<number> => {
+  const res = await client.query('SELECT version, requested_by FROM material_requests WHERE id = $1 FOR UPDATE', [id]);
+  const stored = res.rows[0];
+  if (!stored || stored.requested_by !== actorId) {
+    throw new NotFoundError('Material Request not found');
+  }
+  return stored.version;
+};
+
+// The state of the Material Request `id`, from the one SQL source (P10).
+const stateOf = async (client: pg.PoolClient, id: string): Promise<MaterialRequestState> =>
+  (await client.query(`SELECT ${materialRequestState('m')} AS state FROM material_requests m WHERE m.id = $1`, [id])).rows[0].state;
+
+// Refuses a Cancel at a version other than the one the Material Request has (Q20, P4).
+const refuseStale = (current: CurrentState, expectedVersion: number): void => {
+  if (current.version !== expectedVersion) {
+    throw new StaleBeforeConflictError('The Material Request changed since it was read', current, { version: expectedVersion });
+  }
+};
+
+// Cancels the Requested Items `ids` of the Material Request `id` with `note`, moves it to its next version with one
+// history entry of `kind` naming them, and answers that version. Nothing is deleted (MRQ-19).
+const recordCancel = async (
+  client: pg.PoolClient,
+  actorId: string,
+  id: string,
+  kind: 'REQUESTED_ITEM_CANCELLED' | 'MATERIAL_REQUEST_CANCELLED',
+  ids: string[],
+  note: string | null
+): Promise<MaterialRequestVersion> => {
+  await client.query('UPDATE requested_items SET cancelled_by = $2, cancelled_at = now(), cancel_note = $3 WHERE id = ANY($1::uuid[])', [ids, actorId, note]);
+  const { version } = (await client.query('UPDATE material_requests SET version = version + 1 WHERE id = $1 RETURNING version', [id])).rows[0];
+  await client.query(
+    'INSERT INTO material_request_history (material_request_id, version, kind, requested_item_ids, note, recorded_by) VALUES ($1, $2, $3, $4::uuid[], $5, $6)',
+    [id, version, kind, ids, note, actorId]
+  );
+  return { material_request_id: id, version };
+};
+
 /**
  * F009-T4 (#206): creating a Material Request (คำขอเบิก), the Requester's request for Requestable Materials in the
  * words of their work (#202 MRQ-01, MRQ-16, MRQ-28, Q10). It changes no stock (MRQ-05, MRQ-07). The reads are in
@@ -150,6 +228,49 @@ export class MaterialRequestService {
       );
       await client.query(`INSERT INTO material_request_history (material_request_id, version, kind, recorded_by) VALUES ($1, $2, 'CREATED', $3)`, [id, version, actorId]);
       return { material_request_id: id, request_number: requestNumber, version };
+    });
+  }
+  /**
+   * F009-T5 (#207): Cancels the Pending Requested Item `itemId` of the Material Request `requestId` that `actorId`
+   * created, with an optional note (MRQ-19, Q12, P4).
+   */
+  async cancelRequestedItem(actorId: string, requestId: string, itemId: string, input: CancelInput, { retryToken }: { retryToken: string }): Promise<MaterialRequestVersion> {
+    const note = normalizeText(input.note, 'note', CANCEL_NOTE_MAX_LENGTH, '');
+    const payload = { material_request_id: requestId, requested_item_id: itemId, expected_version: input.expected_version, note };
+    return commitOnce(this.db, { actorId, operation: 'requested-item:cancel', retryToken, payload, explicitContinuation: false }, async (client) => {
+      const version = await lockedOwn(client, actorId, requestId);
+      const res = await client.query(`SELECT ${requestedItemState('i')} AS state FROM requested_items i WHERE i.id = $1 AND i.material_request_id = $2`, [itemId, requestId]);
+      if (res.rows.length === 0) {
+        throw new NotFoundError('Requested Item not found');
+      }
+      const current: CurrentState = { version, state: await stateOf(client, requestId), requested_item_state: res.rows[0].state };
+      refuseStale(current, input.expected_version);
+      if (current.requested_item_state !== 'PENDING') {
+        throw new NotPendingError('The Requested Item is already Cancelled', current);
+      }
+      return recordCancel(client, actorId, requestId, 'REQUESTED_ITEM_CANCELLED', [itemId], note);
+    });
+  }
+
+  /**
+   * F009-T5 (#207): Cancels every Pending Requested Item of the Material Request `requestId` that `actorId` created, in
+   * one transaction with one note and one history entry naming them (MRQ-19, Q12, Q20, P4).
+   */
+  async cancelMaterialRequest(actorId: string, requestId: string, input: CancelInput, { retryToken }: { retryToken: string }): Promise<MaterialRequestVersion> {
+    const note = normalizeText(input.note, 'note', CANCEL_NOTE_MAX_LENGTH, '');
+    const payload = { material_request_id: requestId, expected_version: input.expected_version, note };
+    return commitOnce(this.db, { actorId, operation: 'material-request:cancel', retryToken, payload, explicitContinuation: false }, async (client) => {
+      const version = await lockedOwn(client, actorId, requestId);
+      const pending = await client.query(
+        `SELECT i.id FROM requested_items i WHERE i.material_request_id = $1 AND ${requestedItemState('i')} = 'PENDING' ORDER BY i.position ASC`,
+        [requestId]
+      );
+      const current: CurrentState = { version, state: await stateOf(client, requestId) };
+      refuseStale(current, input.expected_version);
+      if (pending.rows.length === 0) {
+        throw new NotPendingError('The Material Request has no Pending Requested Item', current);
+      }
+      return recordCancel(client, actorId, requestId, 'MATERIAL_REQUEST_CANCELLED', pending.rows.map(({ id }: { id: string }) => id), note);
     });
   }
 }

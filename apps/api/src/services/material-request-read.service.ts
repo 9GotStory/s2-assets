@@ -2,6 +2,7 @@ import pg from 'pg';
 import { joinUnitEntry } from './catalog-list-entries.ts';
 import { materialRequestState, requestedItemState, type MaterialRequestState } from './material-request-state.ts';
 import { requestableMaterialNamesOf } from './requestable-material-read.service.ts';
+import { rollbackQuietly } from './retryable-write.ts';
 
 // One row of "คำขอของฉัน" (#202 Q19).
 export interface MaterialRequestRow {
@@ -42,6 +43,8 @@ export interface RequestedItem {
   cancelled_by_username: string | null;
   cancelled_at: string | null;
   cancel_note: string | null;
+  // Whether the page offers its Cancel (P9): while it is Pending (#207 start decision 2).
+  can_cancel: boolean;
 }
 
 // One entry of a Material Request's history: created, or one of T5's Cancels with the Requested Items it cancelled.
@@ -64,6 +67,9 @@ export interface MaterialRequestDetail {
   note: string | null;
   version: number;
   state: MaterialRequestState;
+  // Whether the page offers Cancelling every Pending Requested Item (P9): while any is (#207 start decision 2). Only the
+  // Requester who created it reads the page until F009-T6 (#208) widens it and adds who may.
+  can_cancel: boolean;
   // In the order asked.
   requested_items: RequestedItem[];
   // Oldest first.
@@ -125,9 +131,29 @@ export class MaterialRequestReadService {
     return { items, limit: filters.limit, offset: filters.offset, total_count: totalCount, has_more: filters.offset + items.length < totalCount };
   }
 
-  /** A Material Request with its Requested Items and history, or null when there is none. */
+  /**
+   * A Material Request with its Requested Items and history, or null when there is none. Its reads share one snapshot,
+   * so a Cancel committed meanwhile shows on all of them or none (#206 review decision 1, F009-T5).
+   */
   async read(id: string): Promise<MaterialRequestDetail | null> {
-    const res = await this.db.query(
+    const client: pg.PoolClient = await this.db.connect();
+    try {
+      await client.query('BEGIN TRANSACTION ISOLATION LEVEL REPEATABLE READ READ ONLY');
+      const detail = await readIn(client, id);
+      await client.query('COMMIT');
+      return detail;
+    } catch (err) {
+      await rollbackQuietly(client);
+      throw err;
+    } finally {
+      client.release();
+    }
+  }
+}
+
+// The Material Request page as `client` reads it, or null when there is none.
+const readIn = async (client: pg.PoolClient, id: string): Promise<MaterialRequestDetail | null> => {
+    const res = await client.query(
       `SELECT m.id, m.request_number::text, m.requested_by, u.username AS requested_by_username, m.recorded_at, m.note, m.version,
               ${materialRequestState('m')} AS state
        FROM material_requests m
@@ -139,7 +165,7 @@ export class MaterialRequestReadService {
     if (!row) {
       return null;
     }
-    const items = await this.db.query(
+    const items = await client.query(
       `SELECT i.id, i.position, i.requestable_material_id, trim_scale(i.requested_quantity)::text AS requested_quantity, ru.id AS request_unit_id, ru.name AS request_unit_name, i.note,
               ${requestedItemState('i')} AS state, i.cancelled_by, c.username AS cancelled_by_username, i.cancelled_at, i.cancel_note
        FROM requested_items i
@@ -149,8 +175,8 @@ export class MaterialRequestReadService {
        ORDER BY i.position ASC`,
       [id]
     );
-    const names = await requestableMaterialNamesOf(this.db, items.rows.map(({ requestable_material_id }: any) => requestable_material_id));
-    const history = await this.db.query(
+    const names = await requestableMaterialNamesOf(client, items.rows.map(({ requestable_material_id }: any) => requestable_material_id));
+    const history = await client.query(
       `SELECT h.version, h.kind, h.requested_item_ids, h.note, h.recorded_by, u.username AS recorded_by_username, h.recorded_at
        FROM material_request_history h
        JOIN users u ON u.id = h.recorded_by
@@ -161,6 +187,7 @@ export class MaterialRequestReadService {
     return {
       ...row,
       recorded_at: new Date(row.recorded_at).toISOString(),
+      can_cancel: row.state === 'PENDING',
       requested_items: items.rows.map((item: any) => ({
         id: item.id,
         position: item.position,
@@ -174,8 +201,8 @@ export class MaterialRequestReadService {
         cancelled_by_username: item.cancelled_by_username,
         cancelled_at: isoOrNull(item.cancelled_at),
         cancel_note: item.cancel_note,
+        can_cancel: item.state === 'PENDING',
       })),
       history: history.rows.map((entry: any) => ({ ...entry, recorded_at: new Date(entry.recorded_at).toISOString() })),
     };
-  }
-}
+};

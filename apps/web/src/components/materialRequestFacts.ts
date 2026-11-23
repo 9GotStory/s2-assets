@@ -48,12 +48,19 @@ export interface RequestedItem {
   requested_quantity: string;
   request_unit: { unit_id: string; name: string };
   note: string | null;
-  // The API also answers who Cancelled it, when and why; T5 shows them (#202 P4).
   state: MaterialRequestState;
+  // Who Cancelled it, when and why, all null while it is Pending (F009-T5, #202 P4).
+  cancelled_by: string | null;
+  cancelled_by_username: string | null;
+  cancelled_at: string | null;
+  cancel_note: string | null;
+  // Whether the page offers its Cancel (P9).
+  can_cancel: boolean;
 }
 
-// F009-T4 writes CREATED; T5 adds REQUESTED_ITEM_CANCELLED and MATERIAL_REQUEST_CANCELLED, which 0031 already takes.
-export type MaterialRequestHistoryKind = 'CREATED';
+// F009-T4 writes CREATED; F009-T5 writes a Requested Item's Cancel and a Material Request's, each naming the Requested
+// Items it Cancelled.
+export type MaterialRequestHistoryKind = 'CREATED' | 'REQUESTED_ITEM_CANCELLED' | 'MATERIAL_REQUEST_CANCELLED';
 
 export interface MaterialRequestHistoryEntry {
   version: number;
@@ -74,6 +81,8 @@ export interface MaterialRequestDetail {
   note: string | null;
   version: number;
   state: MaterialRequestState;
+  // Whether the page offers Cancelling every Pending Requested Item (P9).
+  can_cancel: boolean;
   requested_items: RequestedItem[];
   history: MaterialRequestHistoryEntry[];
 }
@@ -89,6 +98,18 @@ export const REQUESTER_LABEL = 'ผู้ขอเบิก';
 export const REQUEST_MATERIALS_LABEL = 'ขอเบิกวัสดุ';
 export const MY_MATERIAL_REQUESTS_LABEL = 'คำขอของฉัน';
 export const CREATE_MATERIAL_REQUEST_LABEL = 'สร้างคำขอเบิก';
+// F009-T5 (#207 start decision 3): Cancel on a Requested Item's row, and on the whole Material Request.
+export const CANCEL_LABEL = 'ยกเลิก';
+// glossary: no entry — the history entry and form of a Requested Item's Cancel, made of the term ยกเลิก (Cancel)
+export const CANCEL_REQUESTED_ITEM_LABEL = 'ยกเลิกรายการที่ขอ';
+// glossary: no entry — the page's action, made of the term ยกเลิก (Cancel)
+export const CANCEL_MATERIAL_REQUEST_LABEL = 'ยกเลิกคำขอเบิก';
+// glossary: no entry — the Cancel form's submit, made of the term ยกเลิก (Cancel)
+export const CONFIRM_CANCEL_LABEL = 'ยืนยันการยกเลิก';
+// glossary: no entry — a form field
+export const CANCEL_NOTE_LABEL = 'หมายเหตุการยกเลิก';
+// P7: a Cancel's note is at most 500 characters.
+export const CANCEL_NOTE_MAX_LENGTH = 500;
 
 // What each state is called.
 export const MATERIAL_REQUEST_STATE_LABELS: Record<MaterialRequestState, string> = {
@@ -99,6 +120,8 @@ export const MATERIAL_REQUEST_STATE_LABELS: Record<MaterialRequestState, string>
 // What the kind of each history entry is called on the Material Request page.
 export const MATERIAL_REQUEST_HISTORY_KIND_LABELS: Record<MaterialRequestHistoryKind, string> = {
   CREATED: HISTORY_KIND_LABELS.CREATED,
+  REQUESTED_ITEM_CANCELLED: CANCEL_REQUESTED_ITEM_LABEL,
+  MATERIAL_REQUEST_CANCELLED: CANCEL_MATERIAL_REQUEST_LABEL,
 };
 
 // "รายการที่ขอที่ 2": the Requested Item at the zero-based `position`, as a refusal names it.

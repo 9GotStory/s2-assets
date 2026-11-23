@@ -1,8 +1,12 @@
 import React, { useEffect, useState } from 'react';
 import { Link, useNavigate, useParams } from 'react-router';
 import { QueryClient, QueryClientProvider, useQuery } from '@tanstack/react-query';
+import { useCsrfToken } from '../components/materialQueries';
+import { MaterialRequestCancelForm, RequestedItemCancelForm } from '../components/MaterialRequestCancelForms';
 import { REQUESTABLE_MATERIAL_LABEL } from '../components/requestableMaterialFacts';
 import {
+  CANCEL_LABEL,
+  CANCEL_MATERIAL_REQUEST_LABEL,
   MATERIAL_REQUEST_HISTORY_KIND_LABELS,
   MATERIAL_REQUEST_LABEL,
   MATERIAL_REQUEST_STATE_LABELS,
@@ -13,6 +17,7 @@ import {
   REQUESTER_LABEL,
   requestNumberLine,
   type MaterialRequestDetail as RequestDetail,
+  type MaterialRequestHistoryEntry,
 } from '../components/materialRequestFacts';
 
 const THAI_DATE_TIME = new Intl.DateTimeFormat('th-TH', { dateStyle: 'long', timeStyle: 'short', timeZone: 'Asia/Bangkok' });
@@ -28,9 +33,33 @@ const sectionHeadingStyle: React.CSSProperties = { fontSize: '1.125rem', fontWei
 const termStyle: React.CSSProperties = { fontWeight: 500, color: '#4b5563' };
 const headStyle: React.CSSProperties = { textAlign: 'left', padding: '0.5rem 0.75rem', fontSize: '0.8125rem', color: '#4b5563', borderBottom: '1px solid #e5e7eb' };
 const cellStyle: React.CSSProperties = { padding: '0.5rem 0.75rem', fontSize: '0.875rem', color: '#111827', verticalAlign: 'top' };
+const factStyle: React.CSSProperties = { fontSize: '0.8125rem', color: '#6b7280', marginTop: '0.25rem', whiteSpace: 'pre-line' };
+const actionStyle: React.CSSProperties = { padding: '0.375rem 0.75rem', backgroundColor: '#ffffff', color: '#991b1b', border: '1px solid #fca5a5', borderRadius: '6px', fontSize: '0.8125rem', fontWeight: 500, cursor: 'pointer' };
+
+// Which Cancel form is open: one Requested Item's, or the whole Material Request's.
+type CancelAction = { kind: 'requested-item'; requestedItemId: string } | { kind: 'material-request' };
+
+// A history entry: its kind, the Requested Items a Cancel named under their names now, its note, and who recorded it
+// when (#202 P4).
+const HistoryEntry: React.FC<{ entry: MaterialRequestHistoryEntry; detail: RequestDetail }> = ({ entry, detail }) => (
+  <li data-testid={`material-request-history-${entry.version}`} style={{ borderLeft: '3px solid #d1d5db', padding: '0.25rem 0 0.75rem 0.75rem', marginBottom: '0.5rem' }}>
+    <div style={{ fontWeight: 600, color: '#111827' }}>{MATERIAL_REQUEST_HISTORY_KIND_LABELS[entry.kind]}</div>
+    {entry.requested_item_ids !== null && (
+      <div style={{ fontSize: '0.875rem', color: '#374151' }}>
+        {REQUESTED_ITEM_LABEL}:{' '}
+        {entry.requested_item_ids.map((itemId) => detail.requested_items.find((requested) => requested.id === itemId)!.requestable_material_name).join(', ')}
+      </div>
+    )}
+    {entry.note !== null && <div style={{ fontSize: '0.875rem', color: '#374151', whiteSpace: 'pre-line' }}>หมายเหตุ: {entry.note}</div>}
+    <div style={{ fontSize: '0.8125rem', color: '#6b7280' }}>
+      บันทึกเมื่อ <time dateTime={entry.recorded_at}>{THAI_DATE_TIME.format(new Date(entry.recorded_at))}</time> โดย {entry.recorded_by_username}
+    </div>
+  </li>
+);
 
 const MaterialRequestDetailContent: React.FC<{ id: string }> = ({ id }) => {
   const navigate = useNavigate();
+  const [cancelAction, setCancelAction] = useState<CancelAction | null>(null);
 
   const request = useQuery<RequestDetail, Error & { status?: number }>({
     queryKey: ['material-request', id],
@@ -55,6 +84,24 @@ const MaterialRequestDetailContent: React.FC<{ id: string }> = ({ id }) => {
   // A failed read hides what an earlier one showed: a lost grant fails closed.
   const detail = request.isError ? undefined : request.data;
   const isForbidden = request.error?.status === 403 || request.error?.status === 404 || request.error?.status === 400;
+  // Each Cancel waits for the token: a request sent without it is refused as if the grant were gone (#135). The page
+  // offers a Cancel from `can_cancel` alone (P9), so the token is read for every viewer.
+  const session = useCsrfToken(true);
+  const csrfToken = session.data ?? null;
+  // The open form's target while it can still be Cancelled: a read after a stale save closes the form otherwise.
+  const cancelling = cancelAction?.kind === 'requested-item' ? detail?.requested_items.find((requested) => requested.id === cancelAction.requestedItemId && requested.can_cancel) : undefined;
+  const cancellingAll = cancelAction?.kind === 'material-request' && detail?.can_cancel === true;
+  // The actions show while no Cancel form is open.
+  const offersCancel = csrfToken !== null && cancelling === undefined && !cancellingAll;
+  const formHandlers = {
+    onRefresh: async () => (await request.refetch()).isSuccess,
+    onSaved: async () => {
+      await request.refetch();
+      setCancelAction(null);
+    },
+    onCancel: () => setCancelAction(null),
+    onPermissionRevoked: () => void request.refetch(),
+  };
 
   return (
     <main style={{ minHeight: '100vh', backgroundColor: '#f3f4f6', padding: '1rem', fontFamily: 'system-ui, -apple-system, sans-serif', boxSizing: 'border-box' }}>
@@ -130,23 +177,54 @@ const MaterialRequestDetailContent: React.FC<{ id: string }> = ({ id }) => {
                         {item.requested_quantity} {item.request_unit.name}
                       </td>
                       <td style={{ ...cellStyle, whiteSpace: 'pre-line' }}>{item.note ?? '-'}</td>
-                      {/* Who Cancelled it, when and why are T5's to show (#202 P4). */}
-                      <td style={cellStyle}>{MATERIAL_REQUEST_STATE_LABELS[item.state]}</td>
+                      {/* The state, who Cancelled it, when and why (#202 P4), and its Cancel. */}
+                      <td style={cellStyle}>
+                        <div>{MATERIAL_REQUEST_STATE_LABELS[item.state]}</div>
+                        {item.cancelled_at !== null && (
+                          <div data-testid={`requested-item-cancelled-${item.position}`} style={factStyle}>
+                            โดย {item.cancelled_by_username} เมื่อ <time dateTime={item.cancelled_at}>{THAI_DATE_TIME.format(new Date(item.cancelled_at))}</time>
+                            {item.cancel_note !== null && `\nหมายเหตุ: ${item.cancel_note}`}
+                          </div>
+                        )}
+                        {offersCancel && item.can_cancel && (
+                          <button
+                            type="button"
+                            data-testid={`requested-item-cancel-${item.position}`}
+                            aria-label={`${CANCEL_LABEL} ${item.requestable_material_name}`}
+                            onClick={() => setCancelAction({ kind: 'requested-item', requestedItemId: item.id })}
+                            style={{ ...actionStyle, marginTop: '0.375rem' }}
+                          >
+                            {CANCEL_LABEL}
+                          </button>
+                        )}
+                      </td>
                     </tr>
                   ))}
                 </tbody>
               </table>
             </div>
 
+            {offersCancel && detail.can_cancel && (
+              <button type="button" id="material-request-cancel-action" onClick={() => setCancelAction({ kind: 'material-request' })} style={{ ...actionStyle, marginTop: '0.75rem' }}>
+                {CANCEL_MATERIAL_REQUEST_LABEL}
+              </button>
+            )}
+            {/* A new read starts a form again from what it shows, so a Cancel never carries a version read before it. */}
+            {csrfToken !== null && cancelling && (
+              <div style={{ marginTop: '1rem' }}>
+                <RequestedItemCancelForm key={detail.version} materialRequest={detail} requestedItem={cancelling} csrfToken={csrfToken} {...formHandlers} />
+              </div>
+            )}
+            {csrfToken !== null && cancellingAll && (
+              <div style={{ marginTop: '1rem' }}>
+                <MaterialRequestCancelForm key={detail.version} materialRequest={detail} csrfToken={csrfToken} {...formHandlers} />
+              </div>
+            )}
+
             <h2 style={sectionHeadingStyle}>ประวัติ</h2>
             <ol id="material-request-history" style={{ listStyle: 'none', padding: 0, margin: 0 }}>
               {detail.history.map((entry) => (
-                <li key={entry.version} data-testid={`material-request-history-${entry.version}`} style={{ borderLeft: '3px solid #d1d5db', padding: '0.25rem 0 0.75rem 0.75rem', marginBottom: '0.5rem' }}>
-                  <div style={{ fontWeight: 600, color: '#111827' }}>{MATERIAL_REQUEST_HISTORY_KIND_LABELS[entry.kind]}</div>
-                  <div style={{ fontSize: '0.8125rem', color: '#6b7280' }}>
-                    บันทึกเมื่อ <time dateTime={entry.recorded_at}>{THAI_DATE_TIME.format(new Date(entry.recorded_at))}</time> โดย {entry.recorded_by_username}
-                  </div>
-                </li>
+                <HistoryEntry key={entry.version} entry={entry} detail={detail} />
               ))}
             </ol>
           </>
@@ -159,6 +237,8 @@ const MaterialRequestDetailContent: React.FC<{ id: string }> = ({ id }) => {
 /**
  * A Material Request's page (F009-T4): its Request Number, date, note, each Requested Item with its Requestable Material,
  * Requested Quantity, Request Unit as recorded, note and state, and its history; there is no edit (#202 MRQ-04, Q11, Q19).
+ * F009-T5 (#207): "ยกเลิก" on each Pending Requested Item and "ยกเลิกคำขอเบิก" on the whole, each with an optional note,
+ * and who Cancelled each Requested Item, when and why (MRQ-19, Q12, P4).
  */
 export const MaterialRequestDetail: React.FC = () => {
   const { id = '' } = useParams();
