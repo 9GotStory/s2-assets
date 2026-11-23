@@ -688,7 +688,7 @@ export const Dashboard: React.FC = () => {
               {REQUEST_MATERIALS_LABEL}
             </h2>
             <p style={{ margin: '0 0 1rem 0', fontSize: '0.875rem', color: '#4b5563' }}>
-              ขอเบิกวัสดุสำหรับขอเบิกที่ต้องใช้ และติดตามคำขอเบิกของตนเอง
+              สร้างคำขอเบิกจากวัสดุสำหรับขอเบิกที่ต้องใช้ และติดตามคำขอเบิกของตนเอง
             </p>
             <div style={{ display: 'flex', gap: '0.75rem', flexWrap: 'wrap' }}>
               <Link

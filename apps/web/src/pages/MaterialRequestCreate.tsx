@@ -215,6 +215,9 @@ const MaterialRequestCreateContent: React.FC = () => {
                       </li>
                     ))}
                   </ul>
+                  {choices.data?.has_more && (
+                    <p id="material-request-choices-more" style={{ color: '#6b7280', fontSize: '0.8125rem', margin: '0.5rem 0 0 0' }}>{`แสดง ${CHOICES_PAGE_SIZE} รายการแรกจาก ${choices.data.total_count} รายการ ค้นหาให้แคบลงเพื่อดูรายการอื่น`}</p>
+                  )}
                 </section>
 
                 <h4 style={{ fontSize: '0.9375rem', fontWeight: 600, color: '#374151', margin: '0 0 0.5rem 0' }}>

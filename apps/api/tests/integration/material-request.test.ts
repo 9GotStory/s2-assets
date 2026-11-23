@@ -489,13 +489,13 @@ describe('Material Request (Seam A - F009-T4)', () => {
 
     it('refuses a search with a control character, a blank one or an unknown parameter', async () => {
       for (const [query, part] of [
-        ['search=%07ก', 'control characters'],
-        ['search=%20%20', 'blank'],
+        ['search=%07ก', 'search: must not contain control characters'],
+        ['search=%20%20', 'search: must not be blank'],
         ['status=all', 'status'],
       ]) {
         const res = await api.get(requester, `/offered-requestable-materials?${query}`);
-        expect(res.statusCode).toBe(400);
-        expect(res.json().message).toContain(part);
+        expect(res.statusCode, query).toBe(400);
+        expect(res.json()).toMatchObject({ code: 'VALIDATION_FAILED', message: expect.stringContaining(part) });
       }
     });
   });
@@ -524,6 +524,8 @@ describe('Material Request (Seam A - F009-T4)', () => {
       expect(list.items[0].recorded_at).toBe((await requestOf(newer.material_request_id, lister)).recorded_at);
     });
 
+    // The unique constraint on request_number makes the sort key unique, so Request Numbers cannot tie and need no
+    // tiebreak (CODING_STANDARDS, "An order test of a paged list splits a tie across a page break").
     it('pages by Request Number, newest first', async () => {
       const lister = await api.actor('requester_pager', 'REQUESTER');
       const paper = await offered();
@@ -567,12 +569,12 @@ describe('Material Request (Seam A - F009-T4)', () => {
 
     it('refuses a state it does not know and an unknown parameter', async () => {
       for (const [query, part] of [
-        ['state=issued', 'state'],
+        ['state=issued', 'state:'],
         ['requested_by=me', 'requested_by'],
       ]) {
         const res = await api.get(requester, `/my-material-requests?${query}`);
-        expect(res.statusCode).toBe(400);
-        expect(res.json().message).toContain(part);
+        expect(res.statusCode, query).toBe(400);
+        expect(res.json()).toMatchObject({ code: 'VALIDATION_FAILED', message: expect.stringContaining(part) });
       }
     });
   });
@@ -611,7 +613,7 @@ describe('Material Request (Seam A - F009-T4)', () => {
       expect(missing.json()).toMatchObject({ code: 'NOT_FOUND', message: 'Material Request not found' });
       const invalid = await api.get(requester, '/material-requests/not-a-uuid');
       expect(invalid.statusCode).toBe(400);
-      expect(invalid.json()).toMatchObject({ code: 'INVALID_ID' });
+      expect(invalid.json()).toMatchObject({ code: 'INVALID_ID', message: 'Material Request ID must be a valid UUID string' });
     });
   });
 
@@ -740,7 +742,7 @@ describe('Material Request (Seam A - F009-T4)', () => {
       ]) {
         const res = await createRequest(changed, token);
         expect(res.statusCode).toBe(409);
-        expect(res.json().code).toBe('RETRY_TOKEN_PAYLOAD_MISMATCH');
+        expect(res.json()).toMatchObject({ code: 'RETRY_TOKEN_PAYLOAD_MISMATCH', message: 'Retry token reused with different payload is rejected without writes' });
       }
       expect(await requestCount()).toBe(before);
     });

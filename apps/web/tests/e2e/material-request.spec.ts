@@ -480,6 +480,7 @@ test.describe.serial('Material Request journeys: Real SPA -> Composed API -> Pos
     await expect(choices.nth(0)).toContainText('กระดาษ A4 (รีม)');
     await expect(choices.nth(1)).toContainText('ซองจดหมายขอเบิก (รีม)ซองสีน้ำตาลขนาด A4');
     await expect(page.locator('#material-request-choices-empty')).toHaveCount(0);
+    await expect(page.locator('#material-request-choices-more')).toHaveCount(0);
     await page.locator('#material-request-search').fill('กระดาษ');
     await page.locator('#material-request-search').press('Enter');
     await expect(choices).toHaveCount(1);
@@ -566,6 +567,14 @@ test.describe.serial('Material Request journeys: Real SPA -> Composed API -> Pos
       { requested_items: [{ requestable_material_id: paperId, requested_quantity: '1' }] },
       { retryToken: crypto.randomUUID() }
     );
+    // 11 offered Requestable Materials of one name, more than the picker's 10: the offered search is paged (#206). They
+    // sort after ซองจดหมายขอเบิก, so the first page still holds the two this journey chooses.
+    const requestables = new RequestableMaterialService({ db: pool });
+    const envelopeStockId = (await pool.query('SELECT stock_material_id FROM compatible_stock_materials WHERE requestable_material_id = $1 AND is_current', [envelopeId])).rows[0].stock_material_id;
+    for (let n = 1; n <= 11; n++) {
+      const { requestable_material_id: id } = await requestables.create(officerUserId, { name: `หมวดขอเบิก ${n}`, request_unit_id: reamId, whole_number_only: true }, { retryToken: crypto.randomUUID() });
+      await requestables.addCompatibleStockMaterial(officerUserId, id, { stock_material_id: envelopeStockId, expected_version: 1 }, { retryToken: crypto.randomUUID() });
+    }
     // React Query reads again on the window's visibilitychange, which a page coming back to view sends.
     const readAgain = () => page.evaluate(() => window.dispatchEvent(new Event('visibilitychange')));
 
@@ -669,6 +678,12 @@ test.describe.serial('Material Request journeys: Real SPA -> Composed API -> Pos
     await page.unroute(grantUrl);
     await page.reload();
 
+    // A search that finds more than a page says how many it found.
+    await page.locator('#material-request-search').fill('หมวดขอเบิก');
+    await page.locator('#material-request-search-submit').click();
+    await expect(page.locator('#material-request-choices-more')).toHaveText('แสดง 10 รายการแรกจาก 11 รายการ ค้นหาให้แคบลงเพื่อดูรายการอื่น');
+    await expect(page.locator('#material-request-choices li')).toHaveCount(10);
+
     // A search that finds nothing, or fails, says so.
     const choicesUrl = /\/offered-requestable-materials\?limit=10/;
     await page.locator('#material-request-search').fill('ไม่มีวัสดุนี้');
@@ -708,8 +723,7 @@ test.describe.serial('Material Request journeys: Real SPA -> Composed API -> Pos
 
     // A Requestable Material no longer offered when the Requester saves is refused, naming its Requested Item (#202 Q9).
     const { version: envelopeVersion } = (await pool.query('SELECT version FROM requestable_materials WHERE id = $1', [envelopeId])).rows[0];
-    const envelopeStockId = (await pool.query('SELECT stock_material_id FROM compatible_stock_materials WHERE requestable_material_id = $1 AND is_current', [envelopeId])).rows[0].stock_material_id;
-    await new RequestableMaterialService({ db: pool }).endCompatibleStockMaterial(officerUserId, envelopeId, envelopeStockId, { expected_version: envelopeVersion }, { retryToken: crypto.randomUUID() });
+    await requestables.endCompatibleStockMaterial(officerUserId, envelopeId, envelopeStockId, { expected_version: envelopeVersion }, { retryToken: crypto.randomUUID() });
     await page.locator('#material-request-submit').click();
     await expect(page.locator('[data-testid="material-request-refused-item"]')).toHaveText('รายการที่ขอที่ 2: วัสดุสำหรับขอเบิกนี้ไม่เปิดให้ขอเบิกแล้ว');
 

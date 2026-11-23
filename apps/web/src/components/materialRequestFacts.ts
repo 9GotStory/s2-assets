@@ -48,11 +48,8 @@ export interface RequestedItem {
   requested_quantity: string;
   request_unit: { unit_id: string; name: string };
   note: string | null;
+  // The API also answers who Cancelled it, when and why; T5 shows them (#202 P4).
   state: MaterialRequestState;
-  cancelled_by: string | null;
-  cancelled_by_username: string | null;
-  cancelled_at: string | null;
-  cancel_note: string | null;
 }
 
 // F009-T4 writes CREATED; T5 adds REQUESTED_ITEM_CANCELLED and MATERIAL_REQUEST_CANCELLED, which 0031 already takes.

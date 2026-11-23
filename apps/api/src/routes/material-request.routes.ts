@@ -5,8 +5,9 @@ import { invalidQueryBody, pageQueryFields, requestableMaterialSearchField } fro
 import { errorBody, parseWrite } from './write-request.ts';
 import { isValidUuid } from '../services/capability.service.ts';
 import type { MaterialRequestReadService } from '../services/material-request-read.service.ts';
-import { RequestableMaterialNotOfferedError, type CreateMaterialRequestInput, type MaterialRequestService } from '../services/material-request.service.ts';
+import { RequestableMaterialNotOfferedError, type MaterialRequestService } from '../services/material-request.service.ts';
 import type { RequestableMaterialReadService } from '../services/requestable-material-read.service.ts';
+import { MATERIAL_REQUEST_STATES, type MaterialRequestState } from '../services/material-request-state.ts';
 import { RetryTokenConflictError } from '../services/service-errors.ts';
 import { ValidationError } from '../services/validation-error.ts';
 
@@ -41,10 +42,11 @@ const OfferedRequestableMaterialQuerySchema = z
   })
   .strict();
 
-// "คำขอของฉัน": a state filter, every state by default (#202 Q19).
+// "คำขอของฉัน": a state filter, every state by default, each named in lower case (#202 Q19).
+const STATE_FILTERS = Object.fromEntries(MATERIAL_REQUEST_STATES.map((state) => [state.toLowerCase(), state])) as Record<Lowercase<MaterialRequestState>, MaterialRequestState>;
 const MyMaterialRequestQuerySchema = z
   .object({
-    state: z.enum(['all', 'pending', 'cancelled']).optional(),
+    state: z.enum(['all', ...(Object.keys(STATE_FILTERS) as Lowercase<MaterialRequestState>[])]).optional(),
     ...pageQueryFields,
   })
   .strict();
@@ -95,7 +97,7 @@ export const materialRequestRoutes: FastifyPluginAsync<MaterialRequestRoutesOpti
     }
     try {
       const { retry_token: _retryToken, ...input } = write.data;
-      return reply.status(201).send(await materialRequestService.create(request.user!.id, input as CreateMaterialRequestInput, { retryToken: write.retryToken }));
+      return reply.status(201).send(await materialRequestService.create(request.user!.id, input, { retryToken: write.retryToken }));
     } catch (err) {
       const refusal = refusalOf(err);
       if (!refusal) {
@@ -117,7 +119,7 @@ export const materialRequestRoutes: FastifyPluginAsync<MaterialRequestRoutesOpti
       return reply.status(400).send(invalidQueryBody(parsed.error));
     }
     const { limit = 25, offset = 0, state = 'all' } = parsed.data;
-    const filters = { limit, offset, ...(state === 'all' ? {} : { state: state === 'pending' ? ('PENDING' as const) : ('CANCELLED' as const) }) };
+    const filters = { limit, offset, ...(state === 'all' ? {} : { state: STATE_FILTERS[state] }) };
     return reply.status(200).send(await materialRequestReadService.listOf(request.user!.id, filters));
   });
 
