@@ -127,7 +127,8 @@ export const RequestableMaterialDetailsForm: React.FC<RequestableMaterialEditFor
       }
       requestBody={() => ({
         expected_version: requestable.version,
-        description: description.trim() || null,
+        // The server stores it trimmed, blank as none.
+        description,
         whole_number_only: wholeNumberOnly,
         request_unit_id: requestUnitId,
       })}

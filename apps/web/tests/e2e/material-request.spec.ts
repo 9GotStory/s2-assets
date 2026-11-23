@@ -1187,6 +1187,13 @@ test.describe.serial('Material Request journeys: Real SPA -> Composed API -> Pos
     await expect(page).toHaveURL(/\?search=/);
     await expect(page.locator(`[data-testid="requestable-material-row-${paperId}"]`)).toContainText('กระดาษถ่ายเอกสาร A4');
 
+  });
+
+  test('Journey F009-T8.2: "แก้ไขข้อมูลอื่น" says when the Unit list is loading and fails closed when it cannot be read, and keeps a Request Unit made Inactive in the Unit list, shown marked, through a save of the description', async ({ page, context }) => {
+    await loginAs(context, officerUserId);
+    await delaySessionCheck(page);
+    const historyEntries = page.locator('#requestable-material-history > li');
+
     // A Request Unit made Inactive in the Unit list stays offered as itself, marked, and kept by a save of the other
     // details (#202 Q15, story 11).
     const bar = 'แท่งขอเบิก';
@@ -1206,13 +1213,31 @@ test.describe.serial('Material Request journeys: Real SPA -> Composed API -> Pos
     await page.locator(`#unit-inactivate-${barId}`).click();
     await page.locator('#unit-status-submit').click();
     await expect(page.locator(`[data-testid="unit-status-${barId}"]`)).toHaveText('หยุดใช้');
+    // The form says when the Unit list is loading, and fails closed when it cannot be read.
     await page.goto(penUrl);
+    let releaseUnits = () => {};
+    const unitsHeld = new Promise<void>((resolve) => {
+      releaseUnits = resolve;
+    });
+    await page.route('**/units', async (route) => {
+      await unitsHeld;
+      await route.fulfill({ status: 500, contentType: 'application/json', body: '{}' });
+    });
+    await page.locator('#requestable-material-details-action').click();
+    await expect(page.getByRole('status')).toHaveText('กำลังโหลด...');
+    releaseUnits();
+    await expect(page.locator('#requestable-material-details-error')).toHaveText('เกิดข้อผิดพลาดในการโหลดรายการหน่วยนับ');
+    await expect(page.locator('#requestable-material-details-form')).toHaveCount(0);
+    await page.unroute('**/units');
+    await page.reload();
     await page.locator('#requestable-material-details-action').click();
     await expect(page.locator('#requestable-material-details-request-unit')).toHaveValue(barId);
+    await expect(page.locator('#requestable-material-details-description')).toHaveValue('');
     await expect(page.locator('#requestable-material-details-request-unit option:checked')).toHaveText(`${bar} (หยุดใช้)`);
     await page.locator('#requestable-material-details-description').fill('สีดำ');
     await page.locator('#requestable-material-details-submit').click();
     await expect(page.locator('[data-testid="requestable-material-description"]')).toHaveText('สีดำ');
+    await expect(historyEntries.last()).toContainText('รายละเอียด- → สีดำ');
     await expect(page.locator('[data-testid="requestable-material-request-unit"]')).toHaveText(bar);
   });
 });
