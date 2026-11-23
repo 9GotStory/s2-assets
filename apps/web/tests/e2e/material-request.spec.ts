@@ -936,11 +936,12 @@ test.describe.serial('Material Request journeys: Real SPA -> Composed API -> Pos
     await page.locator('#nav-all-material-request-list').click();
     await expect(page).toHaveURL(/\/material-requests$/);
     await expect(page.getByRole('heading', { level: 1, name: 'คำขอเบิก' })).toBeVisible();
-    await expect(page.locator('#material-request-create-action')).toHaveCount(0);
     const pendingRow = page.locator(`[data-testid="material-request-row-${pendingId}"]`);
     const savedRow = page.locator(`[data-testid="material-request-row-${saved.id}"]`);
     await expect(pendingRow.locator('td')).toHaveText([pendingNumber, 'requester_request', /\S/, 'รอพิจารณา', '2 รายการ']);
     await expect(page.locator('#material-request-list-table tbody tr').first()).toHaveAttribute('data-testid', `material-request-row-${pendingId}`);
+    // Read-only: with its rows shown, the list offers no "สร้างคำขอเบิก".
+    await expect(page.locator('#material-request-create-action')).toHaveCount(0);
 
     // The state filter keeps its choice in the URL (Q19).
     const stateCells = page.locator('#material-request-list-table tbody td:nth-child(4)');
