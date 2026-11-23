@@ -1044,7 +1044,7 @@ test.describe.serial('Material Request journeys: Real SPA -> Composed API -> Pos
 
     // "หยุดใช้" shows the same count first; its Pending Requested Items stay Pending (Q16).
     await page.locator('#requestable-material-status-action').click();
-    await expect(page.locator('#requestable-material-status-form')).toContainText('หยุดใช้');
+    await expect(page.locator('#requestable-material-status-form h3')).toHaveText('หยุดใช้');
     await expect(page.locator('[data-testid="requestable-material-status-pending-count"]')).toHaveText(pendingLine);
     await expect(page.locator('[data-testid="requestable-material-status-notice"]')).toContainText('ผู้ขอเบิกจะไม่เห็นวัสดุนี้อีก');
     await expect(page.locator('#requestable-material-status-action')).toHaveCount(0);
@@ -1057,6 +1057,12 @@ test.describe.serial('Material Request journeys: Real SPA -> Composed API -> Pos
     await expect(historyEntries.last()).toContainText('หยุดใช้');
     await expect(historyEntries.last()).toContainText('สถานะหยุดใช้');
     await expect(historyEntries.last()).toContainText('officer_request');
+    // The page now offers "เปิดใช้อีกครั้ง" itself, without the count; closed here, to reach it from a create.
+    await page.locator('#requestable-material-status-action').click();
+    await expect(page.locator('#requestable-material-status-form h3')).toHaveText('เปิดใช้อีกครั้ง');
+    await expect(page.locator('[data-testid="requestable-material-status-pending-count"]')).toHaveCount(0);
+    await page.locator('#requestable-material-status-cancel').click();
+    await expect(page.locator('#requestable-material-status-form')).toHaveCount(0);
 
     // The list hides it by default and shows it with its "หยุดใช้" badge under the Inactive filter, and under all.
     await page.locator('#back-requestable-material-list-link').click();
@@ -1082,8 +1088,7 @@ test.describe.serial('Material Request journeys: Real SPA -> Composed API -> Pos
     await expect(page.locator('[data-testid="requestable-material-name-taken"]')).toContainText('มีวัสดุสำหรับขอเบิกชื่อนี้อยู่แล้ว: กระดาษ A4 ซึ่งถูกหยุดใช้อยู่');
     await page.locator('#requestable-material-offer-reactivate').click();
     await expect(page).toHaveURL(new RegExp(`/requestable-materials/${paperId}$`));
-    await expect(page.locator('#requestable-material-status-form')).toContainText('เปิดใช้อีกครั้ง');
-    await expect(page.locator('[data-testid="requestable-material-status-pending-count"]')).toHaveCount(0);
+    await expect(page.locator('#requestable-material-status-form h3')).toHaveText('เปิดใช้อีกครั้ง');
     await page.locator('#requestable-material-status-submit').click();
 
     // Reactivated as the same record, offered again with its Compatible Stock Material.
