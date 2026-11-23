@@ -109,16 +109,16 @@ keep_failed_results() {
   kept="$FAILED_RUNS/$(git rev-parse --short HEAD)-$(LC_ALL=C date -u +%Y%m%dT%H%M%SZ)"
   [[ -n $(ls -A "$results" 2>/dev/null) ]] && mkdir -p "$kept" && cp -r "$results/." "$kept/" || return 1
   ls -1dt "$FAILED_RUNS"/*/ | tail -n +4 | xargs -r -d '\n' rm -rf --
-  note "journeys failed; results in $kept" >&2
+  note "journeys failed at $tested_commit; results in $kept" >&2
   print_failed_responses "$kept" || true
 }
 
 if ((status != 0)); then
-  keep_failed_results || note "journeys failed; no results were kept" >&2
+  keep_failed_results || note "journeys failed at $tested_commit; no results were kept" >&2
   exit "$status"
 fi
 if ((failures > 0)); then
   note "cleanup failed ($failures)" >&2
   exit 1
 fi
-note "journeys passed; no test container left behind"
+note "journeys passed at $tested_commit; no test container left behind"
