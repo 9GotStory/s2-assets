@@ -143,6 +143,8 @@ const StockMaterialListQuerySchema = z
     minimum_stock: z.enum(['set', 'not_set']).optional(),
     // F008-T7 (#180): ใช้งานอยู่ by default, หยุดใช้, or ทั้งหมด (#175 MC-14, Q13).
     status: z.enum(['active', 'inactive', 'all']).optional(),
+    // F010-T2 (#233): only the Low Stock ones (ต่ำกว่าขั้นต่ำ, #231 Q14).
+    low_stock: z.literal('true').optional(),
     ...pageQueryFields,
   })
   .strict();
@@ -169,8 +171,8 @@ export const stockMaterialRoutes: FastifyPluginAsync<StockMaterialRoutesOptions>
   /**
    * GET /stock-materials
    * The Stock Materials by name, a page at a time, found by text in the name, the Brand's name, the Model or the
-   * Specification, by Material Category (F008-T4), by whether a Minimum Stock is set (F008-T6) and by status, those in use
-   * by default (F008-T7), with `can_manage` telling the page whether to offer "เพิ่มวัสดุ" (#175 P9).
+   * Specification, by Material Category (F008-T4), by whether a Minimum Stock is set (F008-T6), by status, those in use
+   * by default (F008-T7), and Low Stock only (F010-T2), each with its Current Stock, with `can_manage` telling the page whether to offer "เพิ่มวัสดุ" (#175 P9).
    * Protected: requires 'material:view' capability (Supply Officer, Administrator, Read-only User)
    */
   fastify.get('/stock-materials', { preHandler: [requireCapability('material:view')] }, async (request, reply) => {
@@ -179,8 +181,8 @@ export const stockMaterialRoutes: FastifyPluginAsync<StockMaterialRoutesOptions>
     if (!parsed.success) {
       return reply.status(400).send(invalidQueryBody(parsed.error));
     }
-    const { limit = 25, offset = 0, search, material_category_id, minimum_stock, status = 'active' } = parsed.data;
-    const list = await stockMaterialReadService.list({ search, material_category_id, minimum_stock, status, limit, offset });
+    const { limit = 25, offset = 0, search, material_category_id, minimum_stock, status = 'active', low_stock } = parsed.data;
+    const list = await stockMaterialReadService.list({ search, material_category_id, minimum_stock, status, low_stock: low_stock === 'true', limit, offset });
     const canManage = await capabilityService.hasCapability(request.user!.id, 'material:manage');
     return reply.status(200).send({ ...list, can_manage: canManage });
   });

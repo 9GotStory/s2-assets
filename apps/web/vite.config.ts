@@ -112,6 +112,17 @@ export const repositoryProxyConfig: Record<string, ProxyOptions> = {
       }
     },
   },
+  // F010-T2 (#233): the Opening Balances; the list, the Draft form and an Opening Balance's page are the SPA routes
+  // /opening-balances, /opening-balances/new, /opening-balances/:id and /opening-balances/:id/edit.
+  '/opening-balances': {
+    target: 'http://api:3000',
+    changeOrigin: true,
+    bypass: (req) => {
+      if (req.headers.accept?.includes('text/html')) {
+        return '/index.html';
+      }
+    },
+  },
   // F009-T4 (#206): the offered Requestable Materials a Requester asks for; no SPA route starts with
   // /offered-requestable-materials.
   '/offered-requestable-materials': {

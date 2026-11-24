@@ -18,6 +18,8 @@ import {
   MATERIAL_CATEGORY_LABEL,
   MATERIAL_CORRECTION_LABEL,
   MINIMUM_STOCK_LABEL,
+  CURRENT_STOCK_LABEL,
+  LOW_STOCK_LABEL,
   MODEL_LABEL,
   REACTIVATE_LABEL,
   RECORDED_FIELD_LABELS,
@@ -27,6 +29,7 @@ import {
   WHOLE_NUMBER_UNIT_LABEL,
   conversionLine,
   minimumStockLine,
+  currentStockLine,
   unitLine,
   wholeNumberLine,
   type NamedListEntry,
@@ -188,6 +191,19 @@ const StockMaterialDetailContent: React.FC<{ id: string }> = ({ id }) => {
               <dd data-testid="stock-material-note" style={{ margin: 0, whiteSpace: 'pre-line' }}>{detail.note ?? '-'}</dd>
               <dt style={{ fontWeight: 500, color: '#4b5563' }}>{MINIMUM_STOCK_LABEL}</dt>
               <dd data-testid="stock-material-minimum-stock" style={{ margin: 0 }}>{minimumStockLine(detail.minimum_stock, baseUnit?.name ?? '')}</dd>
+              {/* F010-T2 (#233, #231 Q14): คงเหลือ in the Base Unit, with ต่ำกว่าขั้นต่ำ. */}
+              <dt style={{ fontWeight: 500, color: '#4b5563' }}>{CURRENT_STOCK_LABEL}</dt>
+              <dd data-testid="stock-material-current-stock" style={{ margin: 0 }}>
+                {currentStockLine(detail, baseUnit?.name ?? '')}
+                {detail.low_stock && (
+                  <span
+                    data-testid="stock-material-low-stock-badge"
+                    style={{ marginLeft: '0.5rem', padding: '0.125rem 0.5rem', backgroundColor: '#fee2e2', color: '#991b1b', borderRadius: '9999px', fontSize: '0.75rem', fontWeight: 600, whiteSpace: 'nowrap' }}
+                  >
+                    {LOW_STOCK_LABEL}
+                  </span>
+                )}
+              </dd>
               <dt style={{ fontWeight: 500, color: '#4b5563' }}>สร้างเมื่อ</dt>
               <dd style={{ margin: 0 }}>
                 <time dateTime={detail.recorded_at}>{THAI_DATE_TIME.format(new Date(detail.recorded_at))}</time> โดย {detail.created_by_username ?? detail.created_by}

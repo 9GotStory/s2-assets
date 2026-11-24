@@ -4,6 +4,7 @@ import { REPAIR_LIST_LABEL, REPAIR_SECTION_LABEL } from '../components/repairFac
 import { VERIFICATION_ROUND_LABEL } from '../components/verificationFacts';
 import { CATALOG_LISTS_LABEL, STOCK_MATERIAL_LABEL } from '../components/materialFacts';
 import { REQUESTABLE_MATERIAL_LABEL } from '../components/requestableMaterialFacts';
+import { OPENING_BALANCE_LABEL } from '../components/openingBalanceFacts';
 import { CREATE_MATERIAL_REQUEST_LABEL, MATERIAL_REQUEST_LABEL, MY_MATERIAL_REQUESTS_LABEL, REQUEST_MATERIALS_LABEL } from '../components/materialRequestFacts';
 
 export interface SafeUser {
@@ -601,7 +602,7 @@ export const Dashboard: React.FC = () => {
               {STOCK_MATERIAL_LABEL}
             </h2>
             <p style={{ margin: '0 0 1rem 0', fontSize: '0.875rem', color: '#4b5563' }}>
-              ดูและค้นหารายการวัสดุสิ้นเปลือง พร้อมหน่วยนับของแต่ละรายการ ดูแลรายการยี่ห้อ หมวดวัสดุ และหน่วยนับ และวัสดุสำหรับขอเบิก
+              ดูและค้นหารายการวัสดุสิ้นเปลือง พร้อมหน่วยนับของแต่ละรายการ ดูแลรายการยี่ห้อ หมวดวัสดุ และหน่วยนับ วัสดุสำหรับขอเบิก และยอดตั้งต้น
             </p>
             <div style={{ display: 'flex', gap: '0.75rem', flexWrap: 'wrap' }}>
               <Link
@@ -652,6 +653,23 @@ export const Dashboard: React.FC = () => {
                 }}
               >
                 {REQUESTABLE_MATERIAL_LABEL}
+              </Link>
+              {/* F010-T2 (#233, #231 Q24): the Opening Balances, read with material:view as the Stock Materials are. */}
+              <Link
+                to="/opening-balances"
+                id="nav-opening-balance-list"
+                style={{
+                  display: 'inline-block',
+                  padding: '0.5rem 1rem',
+                  backgroundColor: '#4b5563',
+                  color: '#ffffff',
+                  textDecoration: 'none',
+                  borderRadius: '4px',
+                  fontSize: '0.875rem',
+                  fontWeight: 500,
+                }}
+              >
+                {OPENING_BALANCE_LABEL}
               </Link>
             </div>
           </section>

@@ -57,6 +57,15 @@ export interface StockMaterialRow {
   minimum_stock: string | null;
 }
 
+// F010-T2 (#233): what a Stock Material's Stock Movements give it, summed by the server on every read (#231 Q14, Q22).
+export interface StockFigures {
+  // คงเหลือ in the Base Unit, a decimal string without trailing zeros, or none while it has no Stock Movement.
+  current_stock: string | null;
+  has_stock_movement: boolean;
+  // ต่ำกว่าขั้นต่ำ: never while it has no Stock Movement or no Minimum Stock.
+  low_stock: boolean;
+}
+
 // F008-T5 (#181): the Duplicate Candidates a create or a Material Correction was refused with, in Feature 002's
 // DUPLICATE_CANDIDATES_FOUND contract: at most 50, with how many there are.
 export interface DuplicateCandidatesFound {
@@ -65,7 +74,7 @@ export interface DuplicateCandidatesFound {
 }
 
 export interface StockMaterialList {
-  items: StockMaterialRow[];
+  items: (StockMaterialRow & StockFigures)[];
   limit: number;
   offset: number;
   total_count: number;
@@ -109,7 +118,7 @@ export interface StockMaterialHistoryEntry {
   recorded_at: string;
 }
 
-export interface StockMaterialDetail {
+export interface StockMaterialDetail extends StockFigures {
   id: string;
   name: string;
   brand: NamedListEntry | null;
@@ -170,6 +179,14 @@ export const MINIMUM_STOCK_NOT_SET_LABEL = 'ยังไม่ตั้งจำ
 // glossary: no entry — the maintenance page of the "วัสดุ" menu, made of the terms ยี่ห้อ (Brand), หมวดวัสดุ (Material Category) and หน่วยนับ (Unit)
 export const CATALOG_LISTS_LABEL = 'ยี่ห้อ หมวดวัสดุ และหน่วยนับ';
 export const RENAME_LABEL = 'เปลี่ยนชื่อ';
+// F010-T2 (#233, #231 Q14, Q22): a Stock Material's stock.
+export const CURRENT_STOCK_LABEL = 'คงเหลือ';
+export const NO_STOCK_MOVEMENT_LABEL = 'ยังไม่มีรายการเคลื่อนไหว';
+export const LOW_STOCK_LABEL = 'ต่ำกว่าขั้นต่ำ';
+
+/** คงเหลือ in the Base Unit `baseName`, or "ยังไม่มีรายการเคลื่อนไหว" while there is no Stock Movement (Q22). */
+export const currentStockLine = (figures: StockFigures, baseName: string): string =>
+  figures.current_stock === null ? NO_STOCK_MOVEMENT_LABEL : `${figures.current_stock} ${baseName}`;
 
 // What each kind of history entry is called on the Stock Material page. F008-T1 writes CREATED, T3 UNITS_CHANGED,
 // T4 DETAILS_CHANGED, T5 CORRECTED, and T7 INACTIVATED and REACTIVATED.
