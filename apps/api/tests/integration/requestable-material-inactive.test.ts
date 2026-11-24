@@ -144,11 +144,19 @@ describe('Inactive and reactivate a Requestable Material (Seam A - F009-T7)', ()
     it('needs the expected version as a positive whole number, and nothing else', async () => {
       const page = await requestableOf(await fresh());
 
-      for (const payload of [{}, { expected_version: 0 }, { expected_version: '1' }, { expected_version: 1.5 }, { expected_version: 1, note: 'x' }]) {
+      // Each payload with the start of the message that names the field it breaks.
+      const payloads: [Record<string, unknown>, string][] = [
+        [{}, 'Invalid request payload: expected_version: '],
+        [{ expected_version: 0 }, 'Invalid request payload: expected_version: '],
+        [{ expected_version: '1' }, 'Invalid request payload: expected_version: '],
+        [{ expected_version: 1.5 }, 'Invalid request payload: expected_version: '],
+        [{ expected_version: 1, note: 'x' }, 'Invalid request payload: : Unrecognized key: "note"'],
+      ];
+      for (const [payload, message] of payloads) {
         for (const action of ['inactivate', 'reactivate']) {
           const res = await api.post(officer, `/requestable-materials/${page.id}/${action}`, payload, { 'x-retry-token': crypto.randomUUID() });
           expect(res.statusCode).toBe(400);
-          expect(res.json()).toMatchObject({ code: 'VALIDATION_FAILED', message: expect.any(String) });
+          expect(res.json()).toMatchObject({ code: 'VALIDATION_FAILED', message: expect.stringContaining(message) });
         }
       }
       expect(await requestableOf(page.id)).toEqual(page);

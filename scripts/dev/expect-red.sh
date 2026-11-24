@@ -51,7 +51,9 @@
 # tree included) that holds a branch (if, throw, &&, ||, ??, or a ? : choice), when no break in
 # <breaks.json> edits it: a break covers a line when a line of its old text, at least 8 characters, is
 # part of it, or it is part of that line; a throw right under a covered if goes with it. Run it before --batch, and give each line it lists a break or
-# a reason it has none. Exits 0 when every such line is covered and 1 otherwise. In F009-T2 (#204) a plan
+# a reason it has none. It also lists each break whose old text, its edits applied in order, does not occur
+# exactly once, which --batch would answer with ERROR. Exits 0 when every such line is covered and every old text
+# occurs once, and 1 otherwise. In F009-T2 (#204) a plan
 # of 83 breaks missed the Brand, the Model, a blank search and the loading line of a picker, and only
 # review found them.
 set -euo pipefail
@@ -93,8 +95,25 @@ for raw in diff.splitlines():
                 uncovered.append(f'{path}:{line}: {stripped[:140]}')
         after_covered_if = covered and stripped.startswith('if (')
         line += 1
-print('\n'.join(uncovered) if uncovered else 'expect-red.sh: every added branch line has a break')
-sys.exit(1 if uncovered else 0)
+# Each break's old text occurs exactly once, its edits applied in order as --batch applies them, so that no break of
+# the batch ends in ERROR (#210 retro).
+misplaced = []
+for b in breaks:
+    texts = {}
+    for i, e in enumerate(b.get('edits') or [{'file': b['file'], 'old': b['old'], 'new': b['new']}], 1):
+        if e['file'] not in texts:
+            try:
+                texts[e['file']] = open(e['file'], encoding='utf-8').read()
+            except FileNotFoundError:
+                misplaced.append(f"{b['name']}: {e['file']} does not exist")
+                break
+        count = texts[e['file']].count(e['old'])
+        if count != 1:
+            misplaced.append(f"{b['name']}: the old text of edit {i} occurs {count} times in {e['file']}, not once")
+            break
+        texts[e['file']] = texts[e['file']].replace(e['old'], e['new'])
+print('\n'.join(uncovered + misplaced) if uncovered or misplaced else 'expect-red.sh: every added branch line has a break, and every old text occurs once')
+sys.exit(1 if uncovered or misplaced else 0)
 EOF
 fi
 

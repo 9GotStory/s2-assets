@@ -84,6 +84,60 @@ const REFUSAL_LOOP_NAMES_NO_RULE = {
   message: 'Assert which rule refused each payload, by its message or details: a code alone stays green when another rule refuses it (CODING_STANDARDS.md, #155).',
 };
 
+// #210 retro: a validation refusal's message held as any string stays green when another rule refuses the request;
+// a loop over a named array of payloads slipped past REFUSAL_LOOP_NAMES_NO_RULE this way. A helper that checks each
+// part of the message off res.json().message is let through.
+const VALIDATION_MESSAGE_ANY = {
+  selector:
+    ":function > BlockStatement:not(:has(MemberExpression[property.name='message'])) ObjectExpression:has(> Property[key.name='code'][value.value='VALIDATION_FAILED']):has(> Property[key.name='message'][value.callee.object.name='expect'][value.callee.property.name='any'])",
+  message: "Assert which rule refused the request by its message, not expect.any(String): a validation code holds for every rule (CODING_STANDARDS.md, #210 retro).",
+};
+
+// #210 retro: J2.1's Brand inserted by SQL had no history, and the maintenance page that lists it crashed.
+const E2E_BUSINESS_INSERT = {
+  selector:
+    "CallExpression[callee.property.name='query'] > :matches(Literal[value=/^\\s*INSERT INTO (?!users |user_roles )/i], TemplateLiteral:has(> TemplateElement:first-child[value.raw=/^\\s*INSERT INTO (?!users |user_roles )/i])).arguments:first-child",
+  message: "Make business data through its service, with its history: an INSERT by SQL leaves the record a page reads half made (#210 retro). SQL inserts only users and user_roles.",
+};
+
+// The guards of every journey file; a later block replaces no-restricted-syntax whole, so both e2e blocks share them.
+const E2E_GUARDS = [
+  {
+    selector: "ExpressionStatement:not(:last-child) > AwaitExpression > CallExpression[callee.property.name='unrouteAll']",
+    message: 'Remove routes by name until the journey ends: unrouteAll takes the catch-all route with it (#66).',
+  },
+  {
+    // #206 retro: React Query 5's focusManager listens for visibilitychange on window, and an event dispatched
+    // on document does not reach it.
+    selector: "CallExpression[callee.object.name='document'][callee.property.name='dispatchEvent']:has(NewExpression > Literal[value='visibilitychange'])",
+    message: "Dispatch visibilitychange on window: React Query's focusManager listens there, and one on document refetches nothing (#206).",
+  },
+  {
+    // Playwright 1.63 marks networkidle DISCOURAGED for tests and points to web assertions.
+    selector: "Literal[value='networkidle']",
+    message: 'Wait with a web assertion on what the page shows: Playwright discourages networkidle in tests (#75).',
+  },
+  {
+    // #75: a read that lands between the two statements finds the user with no role.
+    selector: `${awaitedCallWith('DELETE FROM user_roles')} + ${awaitedCallWith('INSERT INTO user_roles')}`,
+    message: 'Change a role with one UPDATE, so that no read of an open page finds the user without one (#75).',
+  },
+  {
+    // #76: the page has read nothing yet, so the absence holds whatever its facts say.
+    selector: `ExpressionStatement${matcher('goto')} + ${ABSENCE}`,
+    message: 'Assert what the loaded page shows before what it does not: right after goto, nothing is there yet (#76).',
+  },
+  {
+    // #208 retro: a spec's own copy of the helpers lost switchActor, and its journey met the cookie race again.
+    selector: "VariableDeclarator > Identifier.id[name=/^(loginAs|switchActor)$/], FunctionDeclaration > Identifier.id[name=/^(loginAs|switchActor)$/]",
+    message: 'Take loginAs and switchActor from actorSwitch in tests/e2e/support/actors.ts, the one actor switch of every journey (#208 retro).',
+  },
+  {
+    selector: `${URL_STEP} + :not(:has(${URL_WAIT})), ${URL_STEP}:last-child`,
+    message: 'Wait for the URL a filter select or a back link changes with toHaveURL in the next statement: the page acts on the URL it last showed (#209 retro).',
+  },
+];
+
 // #102 retro: a container stop under host load outlasted a 30 s afterAll while every test passed.
 const AFTER_ALL_TIMEOUT = {
   selector: "CallExpression[callee.name='afterAll'][arguments.length>1]",
@@ -262,48 +316,15 @@ export default tseslint.config(
     },
   },
   {
-    // #66: a request that starts while a page's last route is removed can stay paused with no
-    // response, so unrouteAll is only the last statement of its block.
+    // #66 and the guards after it: see E2E_GUARDS.
     files: ['apps/web/tests/e2e/**/*.ts'],
-    rules: {
-      'no-restricted-syntax': [
-        'error',
-        {
-          selector: "ExpressionStatement:not(:last-child) > AwaitExpression > CallExpression[callee.property.name='unrouteAll']",
-          message: 'Remove routes by name until the journey ends: unrouteAll takes the catch-all route with it (#66).',
-        },
-        {
-          // #206 retro: React Query 5's focusManager listens for visibilitychange on window, and an event dispatched
-          // on document does not reach it.
-          selector: "CallExpression[callee.object.name='document'][callee.property.name='dispatchEvent']:has(NewExpression > Literal[value='visibilitychange'])",
-          message: "Dispatch visibilitychange on window: React Query's focusManager listens there, and one on document refetches nothing (#206).",
-        },
-        {
-          // Playwright 1.63 marks networkidle DISCOURAGED for tests and points to web assertions.
-          selector: "Literal[value='networkidle']",
-          message: 'Wait with a web assertion on what the page shows: Playwright discourages networkidle in tests (#75).',
-        },
-        {
-          // #75: a read that lands between the two statements finds the user with no role.
-          selector: `${awaitedCallWith('DELETE FROM user_roles')} + ${awaitedCallWith('INSERT INTO user_roles')}`,
-          message: 'Change a role with one UPDATE, so that no read of an open page finds the user without one (#75).',
-        },
-        {
-          // #76: the page has read nothing yet, so the absence holds whatever its facts say.
-          selector: `ExpressionStatement${matcher('goto')} + ${ABSENCE}`,
-          message: 'Assert what the loaded page shows before what it does not: right after goto, nothing is there yet (#76).',
-        },
-        {
-          // #208 retro: a spec's own copy of the helpers lost switchActor, and its journey met the cookie race again.
-          selector: "VariableDeclarator > Identifier.id[name=/^(loginAs|switchActor)$/], FunctionDeclaration > Identifier.id[name=/^(loginAs|switchActor)$/]",
-          message: 'Take loginAs and switchActor from actorSwitch in tests/e2e/support/actors.ts, the one actor switch of every journey (#208 retro).',
-        },
-        {
-          selector: `${URL_STEP} + :not(:has(${URL_WAIT})), ${URL_STEP}:last-child`,
-          message: 'Wait for the URL a filter select or a back link changes with toHaveURL in the next statement: the page acts on the URL it last showed (#209 retro).',
-        },
-      ],
-    },
+    rules: { 'no-restricted-syntax': ['error', ...E2E_GUARDS, E2E_BUSINESS_INSERT] },
+  },
+  {
+    // asset.spec.ts makes its Assets by SQL from before E2E_BUSINESS_INSERT (#210 retro); a ticket that touches those
+    // fixtures moves them to the services and drops this block.
+    files: ['apps/web/tests/e2e/asset.spec.ts'],
+    rules: { 'no-restricted-syntax': ['error', ...E2E_GUARDS] },
   },
   {
     // Every integration file; the block after it adds REFUSAL_BODY_HALF to those not exempt.
@@ -313,6 +334,7 @@ export default tseslint.config(
         'error',
         AFTER_ALL_TIMEOUT,
         REFUSAL_LOOP_NAMES_NO_RULE,
+        VALIDATION_MESSAGE_ANY,
       ],
     },
   },
@@ -326,6 +348,7 @@ export default tseslint.config(
         'error',
         AFTER_ALL_TIMEOUT,
         REFUSAL_LOOP_NAMES_NO_RULE,
+        VALIDATION_MESSAGE_ANY,
         ...REFUSAL_BODY_HALF,
       ],
     },
