@@ -135,10 +135,9 @@ export async function up(db: Kysely<any>): Promise<void> {
 
 export async function down(db: Kysely<any>): Promise<void> {
   // Refuse a destructive rollback while an Opening Balance, a Stock Movement or a retry receipt of their writes exists
-  // (#231 P10). Lines and history exist only with their Opening Balance, so this covers them too.
+  // (#231 P10). Lines, their Stock Movements and history exist only with their Opening Balance, so this covers them too.
   const facts = await sql<{ count: string }>`
     SELECT ((SELECT count(*) FROM opening_balances)
-            + (SELECT count(*) FROM stock_movements)
             + (SELECT count(*) FROM registration_retry_tokens WHERE operation LIKE 'opening-balance:%'))::text AS count`.execute(db);
   if (Number(facts.rows[0].count) > 0) {
     throw new Error('Refusing destructive rollback: Opening Balances, Stock Movements or their retry receipts exist');

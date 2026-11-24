@@ -3,7 +3,7 @@ import { bangkokDate, isCalendarDate, normalizeText } from './assignment.service
 import { normalizeQuantity, type QuantityRefusal } from './base-quantity.ts';
 import { isValidUuid } from './capability.service.ts';
 import { stockFiguresOf } from './current-stock.ts';
-import { formatDecimal, parseDecimal } from './exact-decimal.ts';
+import { parseDecimal } from './exact-decimal.ts';
 import { openingBalanceState, type OpeningBalanceState } from './opening-balance-state.ts';
 import { commitOnce } from './retryable-write.ts';
 import { NotFoundError, StaleBeforeConflictError } from './service-errors.ts';
@@ -107,7 +107,7 @@ const QUANTITY_REFUSALS: Record<QuantityRefusal, string> = {
 };
 
 // A quantity present on a Draft line, checked as it is typed: greater than 0, at most four decimal places, never
-// rounded (Q25), stored without trailing zeros.
+// rounded (Q25). PostgreSQL stores it as a number, and the reads give it without trailing zeros.
 const draftQuantityOf = (value: string, field: string): string => {
   const parsed = parseDecimal(value);
   if (!parsed.ok) {
@@ -116,19 +116,19 @@ const draftQuantityOf = (value: string, field: string): string => {
   if (parsed.scaled <= 0n) {
     throw new ValidationError(`${field} ${QUANTITY_REFUSALS.NOT_GREATER_THAN_ZERO}`);
   }
-  return formatDecimal(parsed.scaled);
+  return value;
 };
 
-// A UUID that is given, in lower case, or none.
-const uuidOrNull = (value: string | null | undefined, field: string): string | null => {
-  if (value === undefined || value === null) {
-    return null;
-  }
+// A UUID, in lower case.
+const uuidOf = (value: string, field: string): string => {
   if (!isValidUuid(value)) {
     throw new ValidationError(`${field} must be a valid UUID`);
   }
   return value.trim().toLowerCase();
 };
+
+// A UUID that is given, in lower case, or none.
+const uuidOrNull = (value: string | null | undefined, field: string): string | null => (value === undefined || value === null ? null : uuidOf(value, field));
 
 // A Draft's facts once validated, before any lock. The retry fingerprint covers these.
 const normalizeDraft = (input: OpeningBalanceDraftInput) => {
@@ -145,10 +145,8 @@ const normalizeDraft = (input: OpeningBalanceDraftInput) => {
   const positions = new Map<string, number>();
   const lines = input.lines.map((line, position) => {
     const field = `lines[${position}]`;
-    const stockMaterialId = uuidOrNull(line.stock_material_id, `${field}.stock_material_id`);
-    if (stockMaterialId === null) {
-      throw new ValidationError(`${field}.stock_material_id is required`);
-    }
+    // The route requires it as a string (opening-balance.routes.ts).
+    const stockMaterialId = uuidOf(line.stock_material_id, `${field}.stock_material_id`);
     const earlier = positions.get(stockMaterialId);
     if (earlier !== undefined) {
       throw new ValidationError(`${field}.stock_material_id repeats the Stock Material of lines[${earlier}]`);
@@ -359,7 +357,6 @@ export class OpeningBalanceService {
         const materialUnits = units.get(line.stock_material_id)!;
         if (materialUnits.some(({ unit_id, is_active }) => unit_id === line.unit_id && !is_active)) {
           problems.push({ field: `${field}.unit_id`, message: `${field}.unit_id names a Unit that is not active on its Stock Material` });
-          return null;
         }
         const normalized = normalizeQuantity(materialUnits, line.unit_id, line.quantity);
         if (!normalized.ok) {

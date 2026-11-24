@@ -399,6 +399,12 @@ describe('Opening Balance (Seam A - F010-T2)', () => {
       expect((await replaceUnits(paper.id, inOrder(unitsAsRead(page), [paper.box, false]))).statusCode).toBe(200);
 
       await expectNotConfirmable(id, [{ field: 'lines[0].unit_id', message: 'lines[0].unit_id names a Unit that is not active on its Stock Material' }]);
+
+      // Another Unit of the Stock Material being Inactive refuses nothing.
+      const ink = await stocked();
+      const inBase = await draft(complete([line(ink.id, ink.ream, '1')]));
+      expect((await replaceUnits(ink.id, inOrder(unitsAsRead(await materialOf(ink.id)), [ink.box, false]))).statusCode).toBe(200);
+      expect((await confirm(inBase, 1)).statusCode).toBe(200);
     });
 
     it('confirms a line in a Unit whose list entry is Inactive while its Stock Material still uses it (#233 start decision 2)', async () => {
@@ -479,7 +485,11 @@ describe('Opening Balance (Seam A - F010-T2)', () => {
   describe('the list (#233 start decision 4)', () => {
     it('lists the Opening Balances newest first with number, As-of Date, source, state and line count, by state and by text in the number, the source or a Stock Material name', async () => {
       const tag = `ตรวจรายการ${crypto.randomUUID().slice(0, 6)}`;
+      // A name and a source without a digit, so that a search by number can find the Opening Balance by its number alone.
+      const letters = [...crypto.randomUUID().replace(/-/g, '').slice(0, 10)].map((hex) => 'กขคงจฉชซญฎฏฐณดตถ'['0123456789abcdef'.indexOf(hex)]).join('');
       const paper = await stocked({ name: `${tag} กระดาษ` });
+      const marker = await stocked({ name: `ปากกาเคมี ${letters}` });
+      const third = await confirmed([line(marker.id, marker.ream, '1')], { source: `สมุดคุม ${letters}` });
       const pens = await stocked();
       const first = await draft({ source: `${tag} สมุด`, lines: [line(pens.id, null, null)] });
       const second = await confirmed([line(paper.id, paper.ream, '1'), line(pens.id, pens.ream, '1')], { source: 'แฟ้มนับ' });
@@ -492,7 +502,7 @@ describe('Opening Balance (Seam A - F010-T2)', () => {
       ]);
       expect((await listOf(`search=${encodeURIComponent(tag)}&state=draft`)).items.map(({ id }: any) => id)).toEqual([first]);
       expect((await listOf(`search=${encodeURIComponent(tag)}&state=confirmed`)).items.map(({ id }: any) => id)).toEqual([second.id]);
-      expect((await listOf(`search=${second.number}`)).items.map(({ id }: any) => id)).toContain(second.id);
+      expect((await listOf(`search=${third.number}&state=confirmed`)).items.map(({ id }: any) => id)).toContain(third.id);
       expect((await listOf(`search=${encodeURIComponent(tag)}`, officer)).can_manage).toBe(true);
       const refused = await api.get(readonly, '/opening-balances?state=voided');
       expect(refused.statusCode).toBe(400);

@@ -35,7 +35,7 @@ test.describe.serial('Material Stock journeys: Real SPA -> Composed API -> Postg
 
   let officerUserId: string;
   // Journey F010-T2.1's Stock Material and Draft, which Journey F010-T2.2 goes on with.
-  let j1: { name: string; ream: string; materialId: string; draftUrl: string };
+  let j1: { tag: string; name: string; ream: string; reamUnitId: string; materialId: string; draftUrl: string };
 
   test.beforeAll(async () => {
     test.setTimeout(120_000);
@@ -165,11 +165,18 @@ test.describe.serial('Material Stock journeys: Real SPA -> Composed API -> Postg
     await expect(page.locator('[data-testid="opening-balance-confirm-problems"]')).toContainText('source is required');
     await page.locator('#opening-balance-confirm-cancel').click();
     await expect(page.getByRole('heading', { level: 1, name: 'ยอดตั้งต้น ร่าง' })).toBeVisible();
-    j1 = { name, ream, materialId, draftUrl: page.url() };
+    j1 = { tag, name, ream, reamUnitId: reamUnit.id, materialId, draftUrl: page.url() };
   });
 
   test('Journey F010-T2.2: the Supply Officer completes the Draft, confirms it below the Minimum Stock, and sees คงเหลือ and ต่ำกว่าขั้นต่ำ on the list, the Low Stock filter and the page', async ({ page, context }) => {
-    const { name, ream, materialId, draftUrl } = j1;
+    const { tag, name, ream, reamUnitId, materialId, draftUrl } = j1;
+    // A second fact made here: a Stock Material found by the same search, with a Minimum Stock and no Stock Movement,
+    // so never ต่ำกว่าขั้นต่ำ (Q22).
+    const { stock_material_id: untouchedId } = await new StockMaterialService({ db: pool }).create(
+      officerUserId,
+      { name: `ปากกาลูกลื่น J1 ${tag}`, base_unit: { unit_id: reamUnitId }, minimum_stock: '5' },
+      { retryToken: crypto.randomUUID() }
+    );
     await loginAs(context, officerUserId);
     await page.goto(draftUrl);
     await expect(page.getByRole('heading', { level: 1, name: 'ยอดตั้งต้น ร่าง' })).toBeVisible();
@@ -194,14 +201,17 @@ test.describe.serial('Material Stock journeys: Real SPA -> Composed API -> Postg
     await expect(page.locator('#opening-balance-edit-action')).toHaveCount(0);
 
     // The Stock Material list shows คงเหลือ 7 รีม with ต่ำกว่าขั้นต่ำ, and the Low Stock filter finds it (MC-20, Q14).
-    await page.goto(`${targetBaseUrl}/stock-materials?search=${encodeURIComponent(name)}`);
-    await expect(page.locator('#stock-material-list-table tbody tr')).toHaveCount(1);
+    await page.goto(`${targetBaseUrl}/stock-materials?search=${encodeURIComponent(`J1 ${tag}`)}`);
+    await expect(page.locator('#stock-material-list-table tbody tr')).toHaveCount(2);
     await expect(page.locator(`[data-testid="stock-material-current-stock-${materialId}"]`)).toContainText(`7 ${ream}`);
     await expect(page.locator(`[data-testid="stock-material-low-stock-badge-${materialId}"]`)).toHaveText('ต่ำกว่าขั้นต่ำ');
+    await expect(page.locator(`[data-testid="stock-material-current-stock-${untouchedId}"]`)).toHaveText('ยังไม่มีรายการเคลื่อนไหว');
+    await expect(page.locator(`[data-testid="stock-material-low-stock-badge-${untouchedId}"]`)).toHaveCount(0);
     // The filters re-render with the list they read, so the click is checked against the list it brings.
     await page.locator('#stock-material-low-stock-filter').click();
     await expect(page).toHaveURL(/low_stock=true/);
     await expect(page.locator('#stock-material-low-stock-filter')).toBeChecked();
+    await expect(page.locator('#stock-material-list-table tbody tr')).toHaveCount(1);
     await expect(page.locator(`[data-testid="stock-material-row-${materialId}"]`)).toBeVisible();
 
     // And so does its page.
