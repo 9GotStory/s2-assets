@@ -81,7 +81,7 @@ const MaterialReceiptDetailContent: React.FC<{ id: string }> = ({ id }) => {
   // The open form closes once the Material Receipt is no longer a Draft.
   const acting = mayManage ? action : null;
   // The amounts for reference only, worked out from each line and never stored (Q8).
-  const amounts = (detail?.lines ?? []).map((line) => (line.quantity === null || line.unit_price === null ? null : lineAmount(line.quantity, line.unit_price)));
+  const amounts = (detail?.lines ?? []).map((line) => lineAmount(line.quantity ?? '', line.unit_price ?? ''));
   const total = amounts.some((amount) => amount !== null) ? amounts.reduce<bigint>((sum, amount) => sum + (amount ?? 0n), 0n) : null;
 
   return (
@@ -171,11 +171,11 @@ const MaterialReceiptDetailContent: React.FC<{ id: string }> = ({ id }) => {
                 requestError={() => null}
                 requestBody={() => ({ expected_version: detail.version })}
                 refusedList={(body) =>
-                  body?.code === 'NOT_CONFIRMABLE' && Array.isArray(body.problems) ? (
+                  Array.isArray(body?.problems) ? (
                     <>
                       <p style={{ margin: '0 0 0.5rem 0' }}>ยังยืนยันไม่ได้ กรุณาแก้ไขร่างตามรายการนี้</p>
                       <ul data-testid="material-receipt-confirm-problems" style={{ margin: 0, paddingLeft: '1.25rem' }}>
-                        {(body.problems as ReceiptConfirmProblem[]).map((problem, index) => (
+                        {(body!.problems as ReceiptConfirmProblem[]).map((problem, index) => (
                           <li key={index}>
                             {problemLine(problem)}
                             {problem.in_effect_opening_balance && (

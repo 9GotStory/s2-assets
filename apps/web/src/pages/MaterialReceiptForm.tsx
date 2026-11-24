@@ -126,8 +126,9 @@ const MaterialReceiptFormContent: React.FC<{ id: string | null }> = ({ id }) => 
     queryKey: ['material-receipt-stock-material-choices', search, includeInactive],
     queryFn: ({ signal }) => {
       const query = new URLSearchParams({ limit: String(CHOICES_PAGE_SIZE), status: includeInactive ? 'all' : 'active' });
-      if (search !== null && search.trim() !== '') {
-        query.set('search', search.trim());
+      // Runs only once a search is made (`enabled`).
+      if (search!.trim() !== '') {
+        query.set('search', search!.trim());
       }
       return readJson(`/stock-materials?${query}`, signal);
     },

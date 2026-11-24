@@ -109,7 +109,7 @@ export const materialReceiptRoutes: FastifyPluginAsync<MaterialReceiptRoutesOpti
    */
   fastify.get('/material-receipts', { preHandler: [requireCapability('material:view')] }, async (request, reply) => {
     reply.header('Cache-Control', 'no-store');
-    const parsed = MaterialReceiptListQuerySchema.safeParse(request.query ?? {});
+    const parsed = MaterialReceiptListQuerySchema.safeParse(request.query);
     if (!parsed.success) {
       return reply.status(400).send(invalidQueryBody(parsed.error));
     }

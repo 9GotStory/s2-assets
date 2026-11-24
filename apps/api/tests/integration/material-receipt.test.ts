@@ -116,7 +116,7 @@ describe('Material Receipt (Seam A - F010-T3)', () => {
       expect(await tableCount('stock_movements')).toBe(before);
     });
 
-    it('saves a Draft with its header and lines, a line without its Unit or quantity, and a Unit Price as typed, with no stock effect', async () => {
+    it('saves a Draft with its header and lines, a line without its Unit, quantity or Unit Price, sent empty or left out, and a Unit Price as typed, with no stock effect', async () => {
       const paper = await stocked();
       const party = await entryNamed('party', `ร้านสยาม ${crypto.randomUUID().slice(0, 6)}`);
       const type = await entryNamed('type');
@@ -127,7 +127,7 @@ describe('Material Receipt (Seam A - F010-T3)', () => {
         source_type_id: type,
         receipt_reference: '  ใบส่งของ 123\nลงวันที่ 20 พ.ย.  ',
         note: 'ตรวจนับแล้ว',
-        lines: [line(paper.id, paper.box, '2', { unit_price: '150.50', note: 'ชั้นบน' }), line(paper.id, paper.ream, '3', { unit_price: '0' }), line(paper.id, null, null)],
+        lines: [line(paper.id, paper.box, '2', { unit_price: '150.50', note: 'ชั้นบน' }), line(paper.id, paper.ream, '3', { unit_price: '0' }), line(paper.id, null, null), { stock_material_id: paper.id, unit_price: null }],
       });
       const page = await receiptOf(id);
       expect(page).toMatchObject({
@@ -153,6 +153,7 @@ describe('Material Receipt (Seam A - F010-T3)', () => {
         },
         expect.objectContaining({ position: 1, unit: { unit_id: paper.ream, name: expect.stringMatching(/^รีม /) }, quantity: '3', unit_price: '0', note: null }),
         expect.objectContaining({ position: 2, unit: null, quantity: null, unit_price: null }),
+        expect.objectContaining({ position: 3, unit: null, quantity: null, unit_price: null }),
       ]);
       expect(await tableCount('stock_movements')).toBe(before);
       expect((await materialOf(paper.id)).current_stock).toBeNull();
@@ -195,8 +196,9 @@ describe('Material Receipt (Seam A - F010-T3)', () => {
       await expectDraftRefused(() => createDraft({ lines: pairs.slice(0, 51) }), 'lines must hold at most 50 lines');
     });
 
-    it('refuses a Received Date that is not a date', async () => {
+    it('refuses a Received Date that is not a date, and saves one sent empty as none', async () => {
       await expectDraftRefused(() => createDraft({ received_date: '2026-02-30', lines: [] }), 'received_date must be a date (YYYY-MM-DD)');
+      expect((await receiptOf(await draft({ received_date: null, source_party_id: null, source_type_id: null, lines: [] }))).received_date).toBeNull();
     });
 
     it('refuses a Receipt Reference over 500 characters or with a control character, a note over 2000 characters, and a line note over 500 (P7)', async () => {
@@ -595,6 +597,12 @@ describe('Material Receipt (Seam A - F010-T3)', () => {
       const [high, low] = [one, two].sort().reverse();
       expect((await listOf(`search=${encodeURIComponent(`คู่ ${tag}`)}&limit=1&offset=0`)).items.map(({ id }: { id: string }) => id)).toEqual([high]);
       expect((await listOf(`search=${encodeURIComponent(`คู่ ${tag}`)}&limit=1&offset=1`)).items.map(({ id }: { id: string }) => id)).toEqual([low]);
+    });
+
+    it('refuses a state it does not know', async () => {
+      const refused = await api.get(readonly, '/material-receipts?state=voided');
+      expect(refused.statusCode).toBe(400);
+      expect(refused.json()).toMatchObject({ code: 'VALIDATION_FAILED', message: expect.stringContaining('state') });
     });
   });
 
