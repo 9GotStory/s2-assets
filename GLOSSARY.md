@@ -23,7 +23,7 @@ _Avoid_: registration context
 **Reassignment** (ย้าย / เปลี่ยนผู้รับผิดชอบ):
 A business event that changes one or more dimensions of an Asset's Permanent Assignment from an
 Effective Date.
-_Avoid_: Movement, Transfer, โอน, โอนย้าย
+_Avoid_: Asset Movement, Transfer, โอน, โอนย้าย
 
 **Bulk Reassignment** (ย้ายหลายรายการ):
 One action that records the same Reassignment for several Assets, each Asset getting its own
@@ -447,6 +447,101 @@ while any of its Requested Items is.
 The Requester withdrawing a Requested Item, or every Requested Item of a Material Request, before
 anything is issued for it. Nothing is deleted; a Material Request whose Requested Items are all
 Cancelled is Cancelled (ยกเลิกแล้ว).
+
+## Material Stock
+
+**Material Receipt** (รายการรับวัสดุ):
+A record that Stock Materials actually came into the office's stock: the Received Date, where they
+came from when that is known, and one Receipt Line for each quantity. It is no purchase, approval or
+payment, and the system produces no document from it.
+_Avoid_: ใบรับ, goods receipt, purchase order
+
+**Receipt Line**:
+One Stock Material of a Material Receipt, with its quantity in a Unit of that Stock Material. The
+quantity is what entered usable stock; what was refused or broken on arrival is not counted. A Stock
+Material appears twice only in different Units.
+
+**Draft** (ร่าง):
+A Material Receipt or an Opening Balance still being filled in. It moves no stock, any Supply
+Officer may change it, and it can be removed for good.
+
+**Received** (รับแล้ว):
+A Material Receipt confirmed (ยืนยันรับวัสดุ) as having happened. From then it holds its Receipt
+Number and its Stock Movements, and changes only through a Receipt Correction.
+
+**Receipt Number** (เลขที่รับ):
+The running number a Material Receipt is given when it becomes Received. It never restarts with a
+year.
+
+**Received Date** (วันที่รับ):
+The Thai calendar day the Stock Materials of a Material Receipt came in, which may be earlier than
+its Recorded At but never later than today.
+
+**Source Party** (แหล่งที่มา):
+The company, shop, agency or other organisation a Material Receipt's Stock Materials came from,
+chosen from a shared list that a Supply Officer may add to, and absent when unknown. It is only a
+name to trace a Material Receipt by, never part of what a Stock Material is. A Material Receipt that
+names the wrong one is fixed on the Material Receipt, not by a Rename.
+_Avoid_: Vendor, Supplier
+
+**Source Type** (วิธีได้มา):
+How a Material Receipt's Stock Materials were obtained, chosen from a shared list that a Supply
+Officer may add to, and absent when not stated.
+
+**Receipt Reference** (เอกสารอ้างอิง):
+The external document behind a Material Receipt, such as the number and date of a delivery note,
+noted as text when there is one. The system neither stores nor produces the document.
+
+**Unit Price** (ราคาต่อหน่วย):
+What one Original Unit of a Receipt Line cost, noted when known. The amounts shown from it are for
+reference only: the system puts no value on stock.
+
+**Opening Balance** (ยอดตั้งต้น):
+The quantity of a Stock Material the office already held when the system began keeping its stock,
+taken from a stated source (ที่มาของยอด) such as a stock book, a spreadsheet or an earlier count, as
+it stood on its As-of Date. It is a Draft until it is confirmed (ยืนยันยอดตั้งต้น), then ยืนยันแล้ว
+under a running number of its own. A Stock Material has at most one in effect, before any other
+Stock Movement; one with none starts from nothing. It is not a Material Receipt and never a way to
+fix stock later.
+
+**As-of Date** (ยอด ณ วันที่):
+The Thai calendar day, never later than today, up to whose end an Opening Balance already counts
+everything that happened. A Material Receipt of that Stock Material is dated after it.
+
+**Stock Movement** (รายการเคลื่อนไหว):
+One change to a Stock Material's stock, made by a business record such as a Received Material
+Receipt or an Opening Balance and traced back to it, keeping its Original Quantity, Original Unit,
+Conversion Snapshot and Base Quantity, its Effective Date and its Recorded At. Nobody writes or
+changes one directly, and none is ever removed.
+
+**Reversal** (กลับรายการ):
+A Stock Movement that takes back an earlier one in full, on that one's Effective Date. A Receipt
+Correction makes it; the earlier Stock Movement stays.
+
+**Receipt Correction** (แก้ไขรายการที่บันทึกผิด):
+A traceable fix, with a reason, to a Received Material Receipt that was wrong as recorded: changing
+a Receipt Line or the Received Date, adding a Receipt Line left out, or voiding (ยกเลิกรายการ) a
+Receipt Line or the whole Material Receipt that never happened, which stays shown as ยกเลิกแล้ว. A
+fix that changes stock adds a Reversal and, where something did happen, a new Stock Movement; a fix
+to the Source Party, Source Type, Receipt Reference, note or Unit Price moves no stock. One that
+would leave Current Stock below nothing is refused. A fix to the quantity alone keeps the Receipt
+Line's Conversion Snapshot, unless the Conversion Factor recorded then was itself wrong and the fix
+takes today's (คำนวณใหม่ด้วยอัตราแปลงปัจจุบัน). A confirmed Opening Balance is fixed the same way.
+
+**Current Stock** (คงเหลือ):
+How much of a Stock Material the office holds now, in its Base Unit, worked out from its Stock
+Movements. The office keeps one stock: it is not split by room, cabinet or person. A Stock Material
+with no Stock Movement yet has none to show (ยังไม่มีรายการเคลื่อนไหว).
+_Avoid_: balance on hand, available stock
+
+**Low Stock** (ต่ำกว่าขั้นต่ำ):
+A Stock Material whose Current Stock is less than its Minimum Stock. One with no Minimum Stock, or
+with no Stock Movement yet, is never Low Stock.
+
+**Fiscal Year** (ปีงบประมาณ):
+The period from 1 October to 30 September that a Stock Movement's Effective Date falls in, named by
+the Buddhist-era year in which it ends. It is worked out, never entered, and a new one moves no
+stock.
 
 ## Roles
 
