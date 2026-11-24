@@ -8,9 +8,15 @@ export const CATALOG_LISTS = Object.freeze({
   unit: { table: 'units', history: 'unit_history', column: 'unit_id', concept: 'Unit' },
   brand: { table: 'brands', history: 'brand_history', column: 'brand_id', concept: 'Brand' },
   'material-category': { table: 'material_categories', history: 'material_category_history', column: 'material_category_id', concept: 'Material Category' },
+  // F010-T1 (#232): the lists a Material Receipt names (#231 Q6, Q12, P6).
+  'source-party': { table: 'source_parties', history: 'source_party_history', column: 'source_party_id', concept: 'Source Party' },
+  'source-type': { table: 'source_types', history: 'source_type_history', column: 'source_type_id', concept: 'Source Type' },
 } as const);
 
 export type CatalogListKind = keyof typeof CATALOG_LISTS;
+
+/** The lists a Stock Material names; the others are named by Material Receipts (F010-T1, #232). */
+export type StockMaterialListKind = Exclude<CatalogListKind, 'source-party' | 'source-type'>;
 
 /** An entry of a list under a name: its name now on a Stock Material, its name then in a history entry (#175 P6). */
 export interface NamedListEntry {

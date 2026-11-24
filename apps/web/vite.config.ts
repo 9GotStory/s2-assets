@@ -144,6 +144,15 @@ export const repositoryProxyConfig: Record<string, ProxyOptions> = {
     target: 'http://api:3000',
     changeOrigin: true,
   },
+  // F010-T1 (#232): the Source Party and Source Type lists; no SPA route starts with /source-parties or /source-types.
+  '/source-parties': {
+    target: 'http://api:3000',
+    changeOrigin: true,
+  },
+  '/source-types': {
+    target: 'http://api:3000',
+    changeOrigin: true,
+  },
   // T4 (#25): reference lists; the maintenance page is the SPA route /admin/references.
   '/references': {
     target: 'http://api:3000',

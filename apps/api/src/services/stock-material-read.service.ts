@@ -1,6 +1,6 @@
 import pg from 'pg';
 import { containsPattern } from './asset-lookups.ts';
-import { joinCatalogListEntry, joinUnitEntry, type CatalogListKind, type NamedListEntry } from './catalog-list-entries.ts';
+import { joinCatalogListEntry, joinUnitEntry, type NamedListEntry, type StockMaterialListKind } from './catalog-list-entries.ts';
 import { comparedName } from './compared-name.ts';
 import { lowStock, stockFiguresOf } from './current-stock.ts';
 import { handlesUnit } from './stock-material-handles-unit.ts';
@@ -212,7 +212,7 @@ export async function stockMaterialSummariesOf(runner: pg.Pool | pg.PoolClient, 
 
 // How many Stock Materials name each entry of a list: a Unit as the Base Unit or an Alternate Unit, a Brand or a
 // Material Category as its own; those naming none count under no entry's id.
-const USAGE_QUERIES: Record<CatalogListKind, string> = {
+const USAGE_QUERIES: Record<StockMaterialListKind, string> = {
   unit: 'SELECT unit_id AS id, count(*)::int AS usage_count FROM stock_material_units GROUP BY unit_id',
   brand: 'SELECT brand_id AS id, count(*)::int AS usage_count FROM stock_materials GROUP BY brand_id',
   'material-category': 'SELECT material_category_id AS id, count(*)::int AS usage_count FROM stock_materials GROUP BY material_category_id',
@@ -223,7 +223,7 @@ const USAGE_QUERIES: Record<CatalogListKind, string> = {
  * saving (#175 Q19). It counts every one the new name would show on: Inactive Stock Materials and Inactive Alternate
  * Units included (#183 decision 3). An entry that none names is left out.
  */
-export async function stockMaterialUsageOf(runner: pg.Pool | pg.PoolClient, kind: CatalogListKind): Promise<Map<string, number>> {
+export async function stockMaterialUsageOf(runner: pg.Pool | pg.PoolClient, kind: StockMaterialListKind): Promise<Map<string, number>> {
   const res = await runner.query(USAGE_QUERIES[kind]);
   return new Map(res.rows.map((row: { id: string; usage_count: number }) => [row.id, row.usage_count]));
 }

@@ -15,6 +15,12 @@ export interface CatalogListRoutesOptions {
 
 const AddEntrySchema = z.object({ name: z.string(), retry_token: z.string().optional() }).strict();
 
+// F010-T1 (#232 decision 1): a Source Party is added with an optional note; the other lists hold none.
+const AddSourcePartySchema = z.object({ name: z.string(), note: z.string().nullable().optional(), retry_token: z.string().optional() }).strict();
+
+// F010-T1 (#232 decision 1): changing a Source Party's note, at the version the request read; null or blank clears it.
+const ChangeNoteSchema = z.object({ expected_version: z.number().int().positive(), note: z.string().nullable(), retry_token: z.string().optional() }).strict();
+
 // F008-T8 (#183): renaming an entry at the version the request read (#175 Q19, Q23).
 const RenameEntrySchema = z.object({ expected_version: z.number().int().positive(), name: z.string(), retry_token: z.string().optional() }).strict();
 
@@ -22,7 +28,13 @@ const RenameEntrySchema = z.object({ expected_version: z.number().int().positive
 const StatusEntrySchema = z.object({ expected_version: z.number().int().positive(), retry_token: z.string().optional() }).strict();
 
 // Each list's path.
-const PATHS: Record<CatalogListKind, string> = { unit: '/units', brand: '/brands', 'material-category': '/material-categories' };
+const PATHS: Record<CatalogListKind, string> = {
+  unit: '/units',
+  brand: '/brands',
+  'material-category': '/material-categories',
+  'source-party': '/source-parties',
+  'source-type': '/source-types',
+};
 
 // The answer to a refused write, or null for an error that is not a refusal.
 const refusalOf = (err: unknown) => {
@@ -78,11 +90,12 @@ export const catalogListRoutes: FastifyPluginAsync<CatalogListRoutesOptions> = a
      * Protected: requires 'material:manage' capability (Supply Officer)
      */
     fastify.post(path, { preHandler: [requireCapability('material:manage')] }, async (request, reply) => {
-      const write = parseWrite(AddEntrySchema, request);
+      const write = parseWrite(kind === 'source-party' ? AddSourcePartySchema : AddEntrySchema, request);
       if ('refusal' in write) {
         return reply.status(400).send(write.refusal);
       }
-      const { statusCode, body } = await outcomeOf(() => catalogListService.add(request.user!.id, kind, write.data.name, { retryToken: write.retryToken }), 201);
+      const { retry_token: _retryToken, ...input } = write.data;
+      const { statusCode, body } = await outcomeOf(() => catalogListService.add(request.user!.id, kind, input, { retryToken: write.retryToken }), 201);
       return reply.status(statusCode).send(body);
     });
 
@@ -128,6 +141,23 @@ export const catalogListRoutes: FastifyPluginAsync<CatalogListRoutesOptions> = a
       const { statusCode, body } = await outcomeOf(() => catalogListService.reactivate(request.user!.id, kind, write.id, write.data, { retryToken: write.retryToken }));
       return reply.status(statusCode).send(body);
     });
+
+    if (kind === 'source-party') {
+      /**
+       * POST /source-parties/:id/note
+       * Changes a Source Party's note (แก้ไขหมายเหตุ), at the version the request read (F010-T1, #232 decision 1).
+       * Protected: requires 'material:manage' capability (Supply Officer)
+       */
+      fastify.post(`${path}/:id/note`, { preHandler: [requireCapability('material:manage')] }, async (request, reply) => {
+        const write = parseEntryWrite(ChangeNoteSchema, request);
+        if ('refusal' in write) {
+          return reply.status(write.refusal.statusCode).send(write.refusal);
+        }
+        const { retry_token: _retryToken, ...input } = write.data;
+        const { statusCode, body } = await outcomeOf(() => catalogListService.changeNote(request.user!.id, write.id, input, { retryToken: write.retryToken }));
+        return reply.status(statusCode).send(body);
+      });
+    }
 
     // A write to the entry the URL names once its id and body are validated, with the retry token, or the refusal.
     function parseEntryWrite<T extends { retry_token?: string }>(schema: z.ZodType<T>, request: FastifyRequest) {

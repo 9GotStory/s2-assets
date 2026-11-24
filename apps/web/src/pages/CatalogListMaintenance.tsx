@@ -7,20 +7,27 @@ import {
   ACTIVE_LABEL,
   ADD_BRAND_LABEL,
   ADD_MATERIAL_CATEGORY_LABEL,
+  ADD_SOURCE_PARTY_LABEL,
+  ADD_SOURCE_TYPE_LABEL,
   ADD_UNIT_LABEL,
   BRAND_LABEL,
   CATALOG_LISTS_LABEL,
+  EDIT_NOTE_LABEL,
   INACTIVE_LABEL,
   MATERIAL_CATEGORY_LABEL,
+  MATERIAL_RECEIPT_LABEL,
   REACTIVATE_LABEL,
   RENAME_LABEL,
+  SOURCE_PARTY_LABEL,
+  SOURCE_TYPE_LABEL,
+  STOCK_MATERIAL_LABEL,
   UNIT_LABEL,
   type CatalogList,
   type ListEntry,
   type ListEntryHistoryEntry,
   type ListedEntry,
 } from '../components/materialFacts';
-import { useBrandList, useCsrfToken, useMaterialCategoryList, useUnitList } from '../components/materialQueries';
+import { useBrandList, useCsrfToken, useMaterialCategoryList, useSourcePartyList, useSourceTypeList, useUnitList } from '../components/materialQueries';
 
 const THAI_DATE_TIME = new Intl.DateTimeFormat('th-TH', { dateStyle: 'long', timeStyle: 'short', timeZone: 'Asia/Bangkok' });
 
@@ -31,26 +38,36 @@ const cellStyle: React.CSSProperties = { padding: '0.75rem 1rem', color: '#11182
 const headStyle: React.CSSProperties = { padding: '0.75rem 1rem', fontWeight: 600, color: '#374151', whiteSpace: 'nowrap' };
 const actionStyle: React.CSSProperties = { padding: '0.25rem 0.625rem', backgroundColor: '#f3f4f6', color: '#374151', border: '1px solid #d1d5db', borderRadius: '6px', fontSize: '0.8125rem', marginRight: '0.5rem' };
 
-// Each list on the page: the one its URL answers, what its entries are called and how one is added.
-type ListKind = 'brand' | 'material-category' | 'unit';
+// Each list on the page: the one its URL answers, what its entries are called and how one is added, what records
+// use its entries, and whether an entry holds a note (a Source Party, F010-T1, #232 decision 1).
+type ListKind = 'brand' | 'material-category' | 'unit' | 'source-party' | 'source-type';
 
 interface ListSpec {
   kind: ListKind;
   path: string;
   concept: string;
   addLabel: string;
+  usedBy: string;
+  noted?: boolean;
 }
 
-// The open form of a list: adding an entry, or a rename or a change of status of the entry `id`.
-type OpenForm = { mode: 'add' } | { mode: 'rename'; id: string } | { mode: 'status'; id: string; action: 'inactivate' | 'reactivate' };
+// The open form of a list: adding an entry, or a rename, a change of status or a note change of the entry `id`.
+type OpenForm = { mode: 'add' } | { mode: 'rename'; id: string } | { mode: 'note'; id: string } | { mode: 'status'; id: string; action: 'inactivate' | 'reactivate' };
+
+// A note as the page shows it, or "-" for none.
+const noteText = (note: string | null | undefined): string => note ?? '-';
 
 // What one history entry of a list entry says (#175 P6).
 const historyLine = (concept: string, { action, changes }: ListEntryHistoryEntry): string => {
   if (action === 'CREATED') {
-    return `เพิ่ม${concept} "${changes.name?.after}"`;
+    // A Source Party's note as it was added (#232 decision 1).
+    return `เพิ่ม${concept} "${changes.name?.after}"${changes.note?.after ? ` หมายเหตุ "${changes.note.after}"` : ''}`;
   }
   if (changes.name) {
     return `${RENAME_LABEL} "${changes.name.before}" เป็น "${changes.name.after}"`;
+  }
+  if (changes.note) {
+    return `${EDIT_NOTE_LABEL} "${noteText(changes.note.before)}" เป็น "${noteText(changes.note.after)}"`;
   }
   return changes.is_active?.after ? REACTIVATE_LABEL : INACTIVE_LABEL;
 };
@@ -65,9 +82,10 @@ interface ListSectionProps {
  * its history, and for holders of material:manage, adding an entry, its rename and หยุดใช้ / เปิดใช้อีกครั้ง (#175 P5).
  */
 const ListSection: React.FC<ListSectionProps> = ({ spec, list }) => {
-  const { kind, path, concept, addLabel } = spec;
+  const { kind, path, concept, addLabel, usedBy, noted = false } = spec;
   const [form, setForm] = useState<OpenForm | null>(null);
   const [name, setName] = useState('');
+  const [note, setNote] = useState('');
   const [saved, setSaved] = useState<string | null>(null);
 
   // A failed read hides what an earlier one showed: a lost grant fails closed.
@@ -84,6 +102,7 @@ const ListSection: React.FC<ListSectionProps> = ({ spec, list }) => {
   const open = (next: OpenForm | null) => {
     setForm(next);
     setName(next?.mode === 'rename' ? (entryOf(next.id)?.name ?? '') : '');
+    setNote(next?.mode === 'note' ? (entryOf(next.id)?.note ?? '') : '');
     setSaved(null);
   };
 
@@ -133,6 +152,15 @@ const ListSection: React.FC<ListSectionProps> = ({ spec, list }) => {
     </fieldset>
   );
 
+  const noteField = (isLocked: boolean, label: string) => (
+    <fieldset disabled={isLocked} style={{ border: 'none', padding: 0, margin: '0 0 1rem 0', minWidth: 0 }}>
+      <label htmlFor={`${kind}-note`} style={fieldLabelStyle}>
+        {label}
+      </label>
+      <textarea id={`${kind}-note`} value={note} maxLength={2000} rows={3} onChange={(e) => setNote(e.target.value)} style={fieldInputStyle} />
+    </fieldset>
+  );
+
   const renderForm = () => {
     if (form === null || !mayManage) {
       return null;
@@ -145,7 +173,8 @@ const ListSection: React.FC<ListSectionProps> = ({ spec, list }) => {
           saveUrl={path}
           csrfToken={csrfToken}
           requestError={() => (name.trim() === '' ? `กรุณากรอกชื่อ${concept}` : null)}
-          requestBody={() => ({ name: name.trim() })}
+          // The server trims the note and keeps a blank one as none.
+          requestBody={() => (noted ? { name: name.trim(), note } : { name: name.trim() })}
           refusedList={(body) => nameTaken(body, true)}
           forbiddenMessage={`คุณไม่มีสิทธิ์เพิ่ม${concept}`}
           refusedMessage={`ไม่สามารถเพิ่ม${concept}ได้`}
@@ -153,7 +182,12 @@ const ListSection: React.FC<ListSectionProps> = ({ spec, list }) => {
           onSaved={async (entry) => done(`เพิ่ม${concept} "${entry?.name}" แล้ว`)()}
           onCancel={() => open(null)}
         >
-          {(isLocked) => nameField(isLocked, `ชื่อ${concept}`)}
+          {(isLocked) => (
+            <>
+              {nameField(isLocked, `ชื่อ${concept}`)}
+              {noted && noteField(isLocked, 'หมายเหตุ (ถ้ามี)')}
+            </>
+          )}
         </LoanSaveForm>
       );
     }
@@ -183,11 +217,34 @@ const ListSection: React.FC<ListSectionProps> = ({ spec, list }) => {
           {(isLocked) => (
             <>
               <p data-testid={`${kind}-rename-usage`} style={{ fontSize: '0.875rem', color: '#4b5563', margin: '0 0 0.75rem 0' }}>
-                มีวัสดุใช้{concept}นี้อยู่ {entry.usage_count} รายการ ทุกรายการจะแสดงชื่อใหม่ ส่วนประวัติของวัสดุยังคงชื่อตามที่บันทึกไว้
+                มี{usedBy}ใช้{concept}นี้อยู่ {entry.usage_count} รายการ ทุกรายการจะแสดงชื่อใหม่ ส่วนประวัติของ{usedBy}ยังคงชื่อตามที่บันทึกไว้
               </p>
               {nameField(isLocked, `ชื่อ${concept}ใหม่`)}
             </>
           )}
+        </LoanSaveForm>
+      );
+    }
+    if (form.mode === 'note') {
+      return (
+        <LoanSaveForm
+          idPrefix={`${kind}-note`}
+          heading={`${EDIT_NOTE_LABEL}${concept} "${entry.name}"`}
+          saveUrl={`${path}/${encodeURIComponent(entry.id)}/note`}
+          csrfToken={csrfToken}
+          // The server compares the note as it stores it, trimmed and none when blank (CODING_STANDARDS, an amend form).
+          requestError={() => (note.trim() === (entry.note ?? '') ? 'หมายเหตุใหม่ยังเหมือนหมายเหตุเดิม' : null)}
+          requestBody={() => ({ expected_version: entry.version, note })}
+          refusedList={() => null}
+          forbiddenMessage={`คุณไม่มีสิทธิ์${EDIT_NOTE_LABEL}${concept}`}
+          refusedMessage={`ไม่สามารถ${EDIT_NOTE_LABEL}${concept}ได้`}
+          staleMessage={STALE_MESSAGE}
+          submitLabel={EDIT_NOTE_LABEL}
+          onRefresh={refresh}
+          onSaved={async () => done(`${EDIT_NOTE_LABEL}${concept} "${entry.name}" แล้ว`)()}
+          onCancel={() => open(null)}
+        >
+          {(isLocked) => noteField(isLocked, 'หมายเหตุใหม่ (เว้นว่างเพื่อลบ)')}
         </LoanSaveForm>
       );
     }
@@ -212,7 +269,7 @@ const ListSection: React.FC<ListSectionProps> = ({ spec, list }) => {
         {() => (
           <p data-testid={`${kind}-status-notice`} style={{ fontSize: '0.875rem', color: '#4b5563', margin: '0 0 1rem 0' }}>
             {inactivating
-              ? `วัสดุ ${entry.usage_count} รายการที่ใช้${concept}นี้ยังแสดง${concept}นี้ตามเดิม แต่จะเลือกให้วัสดุอื่นไม่ได้จนกว่าจะ${REACTIVATE_LABEL}`
+              ? `${usedBy} ${entry.usage_count} รายการที่ใช้${concept}นี้ยังแสดง${concept}นี้ตามเดิม แต่จะเลือกให้${usedBy}อื่นไม่ได้จนกว่าจะ${REACTIVATE_LABEL}`
               : `${concept}นี้จะกลับมาให้เลือกได้อีกครั้งเป็นรายการเดิม`}
           </p>
         )}
@@ -260,7 +317,8 @@ const ListSection: React.FC<ListSectionProps> = ({ spec, list }) => {
               <tr style={{ textAlign: 'left', borderBottom: '1px solid #e5e7eb' }}>
                 <th style={headStyle}>ชื่อ</th>
                 <th style={headStyle}>สถานะ</th>
-                <th style={headStyle}>วัสดุที่ใช้อยู่</th>
+                {noted && <th style={headStyle}>หมายเหตุ</th>}
+                <th style={headStyle}>{usedBy}ที่ใช้อยู่</th>
                 <th style={headStyle}>ประวัติ</th>
                 {mayManage && <th style={headStyle}>ดำเนินการ</th>}
               </tr>
@@ -274,6 +332,11 @@ const ListSection: React.FC<ListSectionProps> = ({ spec, list }) => {
                   <td style={cellStyle} data-testid={`${kind}-status-${entry.id}`}>
                     {entry.is_active ? ACTIVE_LABEL : INACTIVE_LABEL}
                   </td>
+                  {noted && (
+                    <td style={{ ...cellStyle, whiteSpace: 'pre-wrap' }} data-testid={`${kind}-note-${entry.id}`}>
+                      {noteText(entry.note)}
+                    </td>
+                  )}
                   <td style={cellStyle} data-testid={`${kind}-usage-${entry.id}`}>
                     {entry.usage_count} รายการ
                   </td>
@@ -295,6 +358,11 @@ const ListSection: React.FC<ListSectionProps> = ({ spec, list }) => {
                       <button type="button" id={`${kind}-rename-${entry.id}`} onClick={() => open({ mode: 'rename', id: entry.id })} style={actionStyle}>
                         {RENAME_LABEL}
                       </button>
+                      {noted && (
+                        <button type="button" id={`${kind}-edit-note-${entry.id}`} onClick={() => open({ mode: 'note', id: entry.id })} style={actionStyle}>
+                          {EDIT_NOTE_LABEL}
+                        </button>
+                      )}
                       {entry.is_active ? (
                         <button type="button" id={`${kind}-inactivate-${entry.id}`} onClick={() => open({ mode: 'status', id: entry.id, action: 'inactivate' })} style={actionStyle}>
                           {INACTIVE_LABEL}
@@ -321,7 +389,10 @@ const CatalogListMaintenanceContent: React.FC = () => {
   const brands = useBrandList();
   const materialCategories = useMaterialCategoryList();
   const units = useUnitList();
+  const sourceParties = useSourcePartyList();
+  const sourceTypes = useSourceTypeList();
 
+  // A lost session fails every list's read at once, so three of them tell it.
   const isSignedOut = [brands, materialCategories, units].some((list) => list.error?.status === 401);
   useEffect(() => {
     if (isSignedOut) {
@@ -337,19 +408,28 @@ const CatalogListMaintenanceContent: React.FC = () => {
         </Link>
         <h1 style={{ fontSize: '1.5rem', fontWeight: 700, color: '#111827', margin: '1rem 0 0.5rem 0' }}>{CATALOG_LISTS_LABEL}</h1>
         <p style={{ fontSize: '0.875rem', color: '#4b5563', margin: '0 0 1.5rem 0' }}>
-          {RENAME_LABEL}เพื่อแก้การสะกดเท่านั้น รายการที่{INACTIVE_LABEL}ยังแสดงบนวัสดุที่ใช้อยู่ แต่เลือกให้วัสดุใหม่ไม่ได้ ไม่มีการลบหรือรวมรายการ
+          {RENAME_LABEL}เพื่อแก้การสะกดเท่านั้น รายการที่{INACTIVE_LABEL}ยังแสดงบนวัสดุหรือรายการรับวัสดุที่ใช้อยู่ แต่เลือกให้รายการใหม่ไม่ได้ ไม่มีการลบหรือรวมรายการ
         </p>
-        <ListSection spec={{ kind: 'brand', path: '/brands', concept: BRAND_LABEL, addLabel: ADD_BRAND_LABEL }} list={brands} />
-        <ListSection spec={{ kind: 'material-category', path: '/material-categories', concept: MATERIAL_CATEGORY_LABEL, addLabel: ADD_MATERIAL_CATEGORY_LABEL }} list={materialCategories} />
-        <ListSection spec={{ kind: 'unit', path: '/units', concept: UNIT_LABEL, addLabel: ADD_UNIT_LABEL }} list={units} />
+        <ListSection spec={{ kind: 'brand', path: '/brands', concept: BRAND_LABEL, addLabel: ADD_BRAND_LABEL, usedBy: STOCK_MATERIAL_LABEL }} list={brands} />
+        <ListSection
+          spec={{ kind: 'material-category', path: '/material-categories', concept: MATERIAL_CATEGORY_LABEL, addLabel: ADD_MATERIAL_CATEGORY_LABEL, usedBy: STOCK_MATERIAL_LABEL }}
+          list={materialCategories}
+        />
+        <ListSection spec={{ kind: 'unit', path: '/units', concept: UNIT_LABEL, addLabel: ADD_UNIT_LABEL, usedBy: STOCK_MATERIAL_LABEL }} list={units} />
+        <ListSection
+          spec={{ kind: 'source-party', path: '/source-parties', concept: SOURCE_PARTY_LABEL, addLabel: ADD_SOURCE_PARTY_LABEL, usedBy: MATERIAL_RECEIPT_LABEL, noted: true }}
+          list={sourceParties}
+        />
+        <ListSection spec={{ kind: 'source-type', path: '/source-types', concept: SOURCE_TYPE_LABEL, addLabel: ADD_SOURCE_TYPE_LABEL, usedBy: MATERIAL_RECEIPT_LABEL }} list={sourceTypes} />
       </div>
     </main>
   );
 };
 
 /**
- * "ยี่ห้อ หมวดวัสดุ และหน่วยนับ" (F008-T8, #183): the maintenance page of the Brand, Material Category and Unit lists in
- * the "วัสดุ" menu (#175 P5). A Supply Officer adds an entry, renames one to normalize its spelling, or makes it
+ * "ยี่ห้อ หมวดวัสดุ หน่วยนับ แหล่งที่มา และวิธีได้มา" (F008-T8, #183; F010-T1, #232): the maintenance page of the Brand,
+ * Material Category and Unit lists in the "วัสดุ" menu (#175 P5), and of the Source Party and Source Type lists that a
+ * Material Receipt names (#231 Q24); a Source Party's note is changed apart from a Rename (#232 decision 1). A Supply Officer adds an entry, renames one to normalize its spelling, or makes it
  * Inactive and reactivates it; nothing is deleted, merged or aliased (MC-12, MC-26, Q19, Q20, Q21). Other holders of
  * material:view read the lists.
  */

@@ -25,6 +25,14 @@ export const useBrandList = () => useQuery<CatalogList, Error & { status?: numbe
 export const useMaterialCategoryList = () =>
   useQuery<CatalogList, Error & { status?: number }>({ queryKey: ['material-categories'], queryFn: ({ signal }) => readList('/material-categories', signal) });
 
+/** The Source Party list, Inactive entries included (F010-T1, #232). */
+export const useSourcePartyList = () =>
+  useQuery<CatalogList, Error & { status?: number }>({ queryKey: ['source-parties'], queryFn: ({ signal }) => readList('/source-parties', signal) });
+
+/** The Source Type list, Inactive entries included (F010-T1, #232). */
+export const useSourceTypeList = () =>
+  useQuery<CatalogList, Error & { status?: number }>({ queryKey: ['source-types'], queryFn: ({ signal }) => readList('/source-types', signal) });
+
 /** The session's CSRF token for a catalog write, read once `enabled`, or null when there is none. */
 export const useCsrfToken = (enabled: boolean) =>
   useQuery<string | null>({

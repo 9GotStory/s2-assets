@@ -1,5 +1,5 @@
 import pg from 'pg';
-import { normalizeLine } from './assignment.service.ts';
+import { normalizeLine, normalizeText } from './assignment.service.ts';
 import { comparedName } from './compared-name.ts';
 import { CATALOG_LISTS, type CatalogListKind, type NamedListEntry } from './catalog-list-entries.ts';
 import { commitOnce } from './retryable-write.ts';
@@ -10,10 +10,15 @@ import { ValidationError } from './validation-error.ts';
 // F008-T1, T4 (#176, #179, #175 P7): the longest name of a Unit, a Brand or a Material Category.
 export const CATALOG_LIST_NAME_MAX_LENGTH = 200;
 
-// One entry of the Unit, the Brand or the Material Category list.
+// F010-T1 (#232, #231 P7): the longest note of a Source Party.
+export const SOURCE_PARTY_NOTE_MAX_LENGTH = 2000;
+
+// One entry of a list: the Unit, Brand, Material Category, Source Party or Source Type list. Only a Source Party holds a
+// note (F010-T1, #232 decision 1).
 export interface CatalogListEntry {
   id: string;
   name: string;
+  note?: string | null;
   is_active: boolean;
   version: number;
 }
@@ -36,7 +41,7 @@ export class CatalogListNameTakenError extends Error {
 export interface CatalogListHistoryEntry {
   version: number;
   action: 'CREATED' | 'CHANGED';
-  changes: Record<string, { before: string | boolean | null; after: string | boolean }>;
+  changes: Record<string, { before: string | boolean | null; after: string | boolean | null }>;
   actor_id: string;
   actor_username: string;
   recorded_at: string;
@@ -48,7 +53,8 @@ export interface CatalogListItem extends CatalogListEntry {
   history: CatalogListHistoryEntry[];
 }
 
-const ENTRY_COLUMNS = 'id, name, is_active, version';
+// The columns of an entry of the list `kind`: a Source Party's note too.
+const entryColumnsOf = (kind: CatalogListKind): string => (kind === 'source-party' ? 'id, name, note, is_active, version' : 'id, name, is_active, version');
 
 const isUniqueViolation = (err: any) => err?.code === '23505';
 
@@ -60,6 +66,9 @@ const entryNameOf = (rawName: string): string => {
   }
   return name;
 };
+
+// The note a write gives a Source Party, once validated: none when blank (#231 P7).
+const sourcePartyNoteOf = (rawNote: string | null | undefined): string | null => normalizeText(rawNote, 'note', SOURCE_PARTY_NOTE_MAX_LENGTH, '');
 
 /**
  * Locks the entry `id` of the list `kind` FOR SHARE, so a concurrent Inactive waits for the caller's write, as
@@ -109,8 +118,8 @@ export class CatalogListService {
   /** Every entry of the list, Inactive ones included, by name, with how many Stock Materials use it and its history. */
   async list(kind: CatalogListKind): Promise<CatalogListItem[]> {
     const { table, history, column } = CATALOG_LISTS[kind];
-    const res = await this.db.query(`SELECT ${ENTRY_COLUMNS} FROM ${table} ORDER BY lower(name) ASC, id ASC`);
-    const usage = await stockMaterialUsageOf(this.db, kind);
+    const res = await this.db.query(`SELECT ${entryColumnsOf(kind)} FROM ${table} ORDER BY lower(name) ASC, id ASC`);
+    const usage = await this.usageOf(kind);
     const historyRes = await this.db.query(
       `SELECT h.${column} AS entry_id, h.version, h.action, h.changes, h.actor_id, u.username AS actor_username, h.recorded_at
        FROM ${history} h
@@ -125,17 +134,28 @@ export class CatalogListService {
     return res.rows.map((entry: CatalogListEntry) => ({ ...entry, usage_count: usage.get(entry.id) ?? 0, history: histories.get(entry.id)! }));
   }
 
-  async add(actorId: string, kind: CatalogListKind, rawName: string, { retryToken }: { retryToken: string }): Promise<CatalogListEntry> {
+  /** Adds an entry named `input.name`; a Source Party takes `input.note` too (F010-T1, #232 decision 1). */
+  async add(actorId: string, kind: CatalogListKind, input: { name: string; note?: string | null }, { retryToken }: { retryToken: string }): Promise<CatalogListEntry> {
     const { table, history, column } = CATALOG_LISTS[kind];
-    const name = entryNameOf(rawName);
+    const name = entryNameOf(input.name);
+    const noted = kind === 'source-party';
+    const note = noted ? sourcePartyNoteOf(input.note) : null;
+    const payload = noted ? { name, note } : { name };
     try {
-      return await commitOnce(this.db, { actorId, operation: `${kind}:create`, retryToken, payload: { name }, explicitContinuation: false }, async (client) => {
-        const res = await client.query(`INSERT INTO ${table} (name, created_by, updated_by) VALUES ($1, $2, $2) RETURNING ${ENTRY_COLUMNS}`, [name, actorId]);
+      return await commitOnce(this.db, { actorId, operation: `${kind}:create`, retryToken, payload, explicitContinuation: false }, async (client) => {
+        const res = noted
+          ? await client.query(`INSERT INTO ${table} (name, note, created_by, updated_by) VALUES ($1, $2, $3, $3) RETURNING ${entryColumnsOf(kind)}`, [name, note, actorId])
+          : await client.query(`INSERT INTO ${table} (name, created_by, updated_by) VALUES ($1, $2, $2) RETURNING ${entryColumnsOf(kind)}`, [name, actorId]);
         const entry: CatalogListEntry = res.rows[0];
+        const changes = {
+          name: { before: null, after: entry.name },
+          ...(noted ? { note: { before: null, after: entry.note } } : {}),
+          is_active: { before: null, after: entry.is_active },
+        };
         await client.query(`INSERT INTO ${history} (${column}, version, action, changes, actor_id) VALUES ($1, $2, 'CREATED', $3, $4)`, [
           entry.id,
           entry.version,
-          JSON.stringify({ name: { before: null, after: entry.name }, is_active: { before: null, after: entry.is_active } }),
+          JSON.stringify(changes),
           actorId,
         ]);
         return entry;
@@ -167,6 +187,23 @@ export class CatalogListService {
     }
   }
 
+  /**
+   * F010-T1 (#232 decision 1): changes the note of the Source Party `id` (แก้ไขหมายเหตุ), at the version the request
+   * read; a blank note clears it. Its history keeps the old note and the new; a note that does not change is refused,
+   * as a rename to the same name is (#183 decision 2).
+   */
+  async changeNote(actorId: string, id: string, input: { expected_version: number; note: string | null }, { retryToken }: { retryToken: string }): Promise<CatalogListEntry> {
+    const note = sourcePartyNoteOf(input.note);
+    const payload = { id, expected_version: input.expected_version, note };
+    return commitOnce(this.db, { actorId, operation: 'source-party:note', retryToken, payload, explicitContinuation: false }, async (client) => {
+      const stored = await this.lockedEntry(client, 'source-party', id, input.expected_version);
+      if (note === stored.note) {
+        throw new ValidationError('This note change changes nothing');
+      }
+      return this.change(client, 'source-party', actorId, id, { note: { before: stored.note ?? null, after: note } }, { name: stored.name, note, is_active: stored.is_active });
+    });
+  }
+
   /** F008-T8 (#183): makes the entry `id` Inactive (หยุดใช้): it stays on every Stock Material using it, but is no longer offered (#175 Q21). */
   async inactivate(actorId: string, kind: CatalogListKind, id: string, input: { expected_version: number }, options: { retryToken: string }): Promise<CatalogListEntry> {
     return this.changeStatus(actorId, kind, id, false, input.expected_version, options.retryToken);
@@ -194,7 +231,7 @@ export class CatalogListService {
   // one the request read (#175 Q23).
   private async lockedEntry(client: pg.PoolClient, kind: CatalogListKind, id: string, expectedVersion: number): Promise<CatalogListEntry> {
     const { table, concept } = CATALOG_LISTS[kind];
-    const res = await client.query(`SELECT ${ENTRY_COLUMNS} FROM ${table} WHERE id = $1 FOR UPDATE`, [id]);
+    const res = await client.query(`SELECT ${entryColumnsOf(kind)} FROM ${table} WHERE id = $1 FOR UPDATE`, [id]);
     if (res.rows.length === 0) {
       throw new NotFoundError(`${concept} not found`);
     }
@@ -205,20 +242,27 @@ export class CatalogListService {
     return stored;
   }
 
-  // Writes the entry `id` with `values` at its next version, and its history entry of what changed.
+  // Writes the entry `id` with `values` at its next version, and its history entry of what changed; a Source Party's
+  // note too when `values` has one.
   private async change(
     client: pg.PoolClient,
     kind: CatalogListKind,
     actorId: string,
     id: string,
-    changes: Record<string, { before: string | boolean; after: string | boolean }>,
-    values: { name: string; is_active: boolean }
+    changes: Record<string, { before: string | boolean | null; after: string | boolean | null }>,
+    values: { name: string; note?: string | null; is_active: boolean }
   ): Promise<CatalogListEntry> {
     const { table, history, column } = CATALOG_LISTS[kind];
-    const res = await client.query(
-      `UPDATE ${table} SET name = $2, is_active = $3, version = version + 1, updated_by = $4, updated_at = now() WHERE id = $1 RETURNING ${ENTRY_COLUMNS}`,
-      [id, values.name, values.is_active, actorId]
-    );
+    const res =
+      values.note === undefined
+        ? await client.query(
+            `UPDATE ${table} SET name = $2, is_active = $3, version = version + 1, updated_by = $4, updated_at = now() WHERE id = $1 RETURNING ${entryColumnsOf(kind)}`,
+            [id, values.name, values.is_active, actorId]
+          )
+        : await client.query(
+            `UPDATE ${table} SET name = $2, note = $5, is_active = $3, version = version + 1, updated_by = $4, updated_at = now() WHERE id = $1 RETURNING ${entryColumnsOf(kind)}`,
+            [id, values.name, values.is_active, actorId, values.note]
+          );
     const entry: CatalogListEntry = res.rows[0];
     await client.query(`INSERT INTO ${history} (${column}, version, action, changes, actor_id) VALUES ($1, $2, 'CHANGED', $3, $4)`, [
       entry.id,
@@ -229,6 +273,12 @@ export class CatalogListService {
     return entry;
   }
 
+  // How many records name each entry of the list `kind`, by its id: Stock Materials for the lists of the catalog, and
+  // Material Receipts for a Source Party or a Source Type, which none names until T3 (#234) adds them (#232).
+  private async usageOf(kind: CatalogListKind): Promise<Map<string, number>> {
+    return kind === 'source-party' || kind === 'source-type' ? new Map() : stockMaterialUsageOf(this.db, kind);
+  }
+
   // The answer to a write the unique index refused, naming the entry that holds the name (Q20), or `err` itself.
   private async nameTakenOr(err: unknown, kind: CatalogListKind, name: string): Promise<unknown> {
     if (!isUniqueViolation(err)) {
@@ -236,7 +286,7 @@ export class CatalogListService {
     }
     const { table, concept } = CATALOG_LISTS[kind];
     // The unique index answered after the entry holding the name committed, so it can be read now.
-    const taken = await this.db.query(`SELECT ${ENTRY_COLUMNS} FROM ${table} WHERE ${comparedName('name')} = ${comparedName('$1')}`, [name]);
+    const taken = await this.db.query(`SELECT ${entryColumnsOf(kind)} FROM ${table} WHERE ${comparedName('name')} = ${comparedName('$1')}`, [name]);
     return new CatalogListNameTakenError(concept, taken.rows[0]);
   }
 }

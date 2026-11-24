@@ -72,7 +72,7 @@ const SMOKE: Record<string, { url: (f: Fixtures) => string; heading: (f: Fixture
   '/stock-materials': { url: () => '/stock-materials', heading: () => 'วัสดุ' },
   '/stock-materials/new': { skip: 'a write: material:manage' },
   // F008-T8 (#183): every catalog viewer reads the Brand, Material Category and Unit lists; keeping them is material:manage.
-  '/stock-materials/lists': { url: () => '/stock-materials/lists', heading: () => 'ยี่ห้อ หมวดวัสดุ และหน่วยนับ' },
+  '/stock-materials/lists': { url: () => '/stock-materials/lists', heading: () => 'ยี่ห้อ หมวดวัสดุ หน่วยนับ แหล่งที่มา และวิธีได้มา' },
   '/stock-materials/:id': { url: (f) => `/stock-materials/${f.stockMaterialId}`, heading: (f) => f.stockMaterialName },
   // F009-T1 (#203): every catalog viewer reads the Requestable Materials; creating one is material:manage.
   '/requestable-materials': { url: () => '/requestable-materials', heading: () => 'วัสดุสำหรับขอเบิก' },
@@ -178,7 +178,7 @@ test.describe.serial('Route smoke: Real SPA -> Composed API -> PostgreSQL (Seam 
       { retryToken: crypto.randomUUID() }
     );
     const stockMaterialName = 'กระดาษ E2E route smoke';
-    const unit = await new CatalogListService({ db: pool }).add(officerUserId, 'unit', 'รีม', { retryToken: crypto.randomUUID() });
+    const unit = await new CatalogListService({ db: pool }).add(officerUserId, 'unit', { name: 'รีม' }, { retryToken: crypto.randomUUID() });
     const { stock_material_id: stockMaterialId } = await new StockMaterialService({ db: pool }).create(
       officerUserId,
       { name: stockMaterialName, base_unit: { unit_id: unit.id } },

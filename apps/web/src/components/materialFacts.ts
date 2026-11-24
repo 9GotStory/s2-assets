@@ -1,9 +1,11 @@
 // What the API answers about the Stock Material catalog (F008-T1, T3, T4, T5, T6, T8), and its labels from GLOSSARY.md (#175 Q17).
 
-// One entry of a list of the catalog: the shared Unit list (F008-T1), the Brand or the Material Category list (F008-T4).
+// One entry of a list of the catalog: the shared Unit list (F008-T1), the Brand or the Material Category list (F008-T4),
+// or the Source Party or Source Type list (F010-T1, #232); only a Source Party holds a note (#232 decision 1).
 export interface ListEntry {
   id: string;
   name: string;
+  note?: string | null;
   is_active: boolean;
   version: number;
 }
@@ -11,17 +13,22 @@ export interface ListEntry {
 export type UnitEntry = ListEntry;
 
 // F008-T8 (#183): one change of a list entry, as the entry's own history records it (#175 P6): its addition, a
-// rename with the old and the new name, or a change of status.
+// rename with the old and the new name, a change of status, or a Source Party's note change (F010-T1, #232).
 export interface ListEntryHistoryEntry {
   version: number;
   action: 'CREATED' | 'CHANGED';
-  changes: { name?: { before: string | null; after: string }; is_active?: { before: boolean | null; after: boolean } };
+  changes: {
+    name?: { before: string | null; after: string };
+    note?: { before: string | null; after: string | null };
+    is_active?: { before: boolean | null; after: boolean };
+  };
   actor_id: string;
   actor_username: string;
   recorded_at: string;
 }
 
-// An entry as its list answers it (F008-T8): how many Stock Materials use it, Inactive ones included, and its history.
+// An entry as its list answers it (F008-T8): how many records use it (Stock Materials, Inactive ones included, or
+// Material Receipts for a Source Party or a Source Type), and its history.
 export interface ListedEntry extends ListEntry {
   usage_count: number;
   history: ListEntryHistoryEntry[];
@@ -176,8 +183,19 @@ export const MATERIAL_CORRECTION_LABEL = 'แก้ไขรายการท�
 export const MINIMUM_STOCK_SET_LABEL = 'ตั้งจำนวนขั้นต่ำแล้ว';
 // glossary: no entry — the list filter's option, made of the term จำนวนขั้นต่ำ (Minimum Stock)
 export const MINIMUM_STOCK_NOT_SET_LABEL = 'ยังไม่ตั้งจำนวนขั้นต่ำ';
-// glossary: no entry — the maintenance page of the "วัสดุ" menu, made of the terms ยี่ห้อ (Brand), หมวดวัสดุ (Material Category) and หน่วยนับ (Unit)
-export const CATALOG_LISTS_LABEL = 'ยี่ห้อ หมวดวัสดุ และหน่วยนับ';
+// glossary: no entry — the maintenance page of the "วัสดุ" menu, made of the terms ยี่ห้อ (Brand), หมวดวัสดุ (Material Category), หน่วยนับ (Unit), แหล่งที่มา (Source Party) and วิธีได้มา (Source Type) (#232 decision 2)
+export const CATALOG_LISTS_LABEL = 'ยี่ห้อ หมวดวัสดุ หน่วยนับ แหล่งที่มา และวิธีได้มา';
+// F010-T1 (#232): the lists a Material Receipt names (#231 Q2, Q6, Q12).
+export const SOURCE_PARTY_LABEL = 'แหล่งที่มา';
+export const SOURCE_TYPE_LABEL = 'วิธีได้มา';
+// The record that names a Source Party or a Source Type (#231 Q2).
+export const MATERIAL_RECEIPT_LABEL = 'รายการรับวัสดุ';
+// glossary: no entry — the list's inline action, made of the term แหล่งที่มา (Source Party)
+export const ADD_SOURCE_PARTY_LABEL = 'เพิ่มแหล่งที่มา';
+// glossary: no entry — the list's inline action, made of the term วิธีได้มา (Source Type)
+export const ADD_SOURCE_TYPE_LABEL = 'เพิ่มวิธีได้มา';
+// #232 decision 1: changing a Source Party's note apart from a Rename.
+export const EDIT_NOTE_LABEL = 'แก้ไขหมายเหตุ';
 export const RENAME_LABEL = 'เปลี่ยนชื่อ';
 // F010-T2 (#233, #231 Q14, Q22): a Stock Material's stock.
 export const CURRENT_STOCK_LABEL = 'คงเหลือ';

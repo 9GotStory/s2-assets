@@ -203,7 +203,7 @@ test.describe.serial('Stock Material journeys: Real SPA -> Composed API -> Postg
   test('Journey F008-T3.1: a Supply Officer creates a Stock Material with an Alternate Unit, sees "1 กล่อง = 5 รีม", and changes its Base Unit in the Units editor', async ({ page, context }) => {
     // แผ่น and กระดาษถ่ายเอกสาร A4, which Journey F008-T1.1 adds when it runs first.
     if ((await pool.query(`SELECT 1 FROM units WHERE name = 'แผ่น'`)).rows.length === 0) {
-      await new CatalogListService({ db: pool }).add(officerUserId, 'unit', 'แผ่น', { retryToken: crypto.randomUUID() });
+      await new CatalogListService({ db: pool }).add(officerUserId, 'unit', { name: 'แผ่น' }, { retryToken: crypto.randomUUID() });
     }
     if ((await pool.query(`SELECT 1 FROM stock_materials WHERE name = 'กระดาษถ่ายเอกสาร A4'`)).rows.length === 0) {
       const sheet = (await pool.query(`SELECT id FROM units WHERE name = 'แผ่น'`)).rows[0].id;
@@ -382,7 +382,7 @@ test.describe.serial('Stock Material journeys: Real SPA -> Composed API -> Postg
     await openDashboard(page);
     await page.locator('#nav-catalog-lists').click();
     await expect(page).toHaveURL(/\/stock-materials\/lists$/);
-    await expect(page.getByRole('heading', { level: 1, name: 'ยี่ห้อ หมวดวัสดุ และหน่วยนับ' })).toBeVisible();
+    await expect(page.getByRole('heading', { level: 1, name: 'ยี่ห้อ หมวดวัสดุ หน่วยนับ แหล่งที่มา และวิธีได้มา' })).toBeVisible();
     const brandRow = page.locator('#catalog-list-brand tbody tr', { hasText: 'Pentel' });
     const brandId = (await brandRow.getAttribute('id'))!.replace('brand-entry-', '');
     await expect(page.locator(`[data-testid="brand-usage-${brandId}"]`)).toHaveText('1 รายการ');
@@ -504,8 +504,8 @@ test.describe.serial('Stock Material journeys: Real SPA -> Composed API -> Postg
   test('Journey F008-T5.1: a Supply Officer makes a Material Correction with a reason, warned that a different item is a new Stock Material and of a Duplicate Candidate, and finds it in the history', async ({ page, context }) => {
     const tag = crypto.randomUUID().slice(0, 4);
     const cartridge = freshUnitName('ตลับ');
-    const unit = await new CatalogListService({ db: pool }).add(officerUserId, 'unit', cartridge, { retryToken: crypto.randomUUID() });
-    const brand = await new CatalogListService({ db: pool }).add(officerUserId, 'brand', `HP ${tag}`, { retryToken: crypto.randomUUID() });
+    const unit = await new CatalogListService({ db: pool }).add(officerUserId, 'unit', { name: cartridge }, { retryToken: crypto.randomUUID() });
+    const brand = await new CatalogListService({ db: pool }).add(officerUserId, 'brand', { name: `HP ${tag}` }, { retryToken: crypto.randomUUID() });
     const service = new StockMaterialService({ db: pool });
     const { stock_material_id: id } = await service.create(
       officerUserId,
@@ -586,7 +586,7 @@ test.describe.serial('Stock Material journeys: Real SPA -> Composed API -> Postg
   test('Journey F008-T7.1: a Supply Officer makes a Stock Material Inactive with a note, finds it with the status filter and its "หยุดใช้" badge, and reactivates it as the same record, each refused as stale when another Supply Officer changed the status first', async ({ page, context }) => {
     const tag = crypto.randomUUID().slice(0, 8);
     const box = freshUnitName('กล่อง');
-    const unit = await new CatalogListService({ db: pool }).add(officerUserId, 'unit', box, { retryToken: crypto.randomUUID() });
+    const unit = await new CatalogListService({ db: pool }).add(officerUserId, 'unit', { name: box }, { retryToken: crypto.randomUUID() });
     const name = `ลวดเย็บกระดาษ ${tag}`;
     const service = new StockMaterialService({ db: pool });
     const { stock_material_id: id } = await service.create(
@@ -705,10 +705,10 @@ test.describe.serial('Stock Material journeys: Real SPA -> Composed API -> Postg
   test('Journey F008-T8.1: a Supply Officer makes a Brand Inactive on "ยี่ห้อ หมวดวัสดุ และหน่วยนับ", still sees it on the Stock Material using it, is offered reactivation when adding its name, and reactivates it; a rename is refused as stale when another Supply Officer renamed it first', async ({ page, context }) => {
     const tag = crypto.randomUUID().slice(0, 8);
     const lists = new CatalogListService({ db: pool });
-    const unit = await lists.add(officerUserId, 'unit', freshUnitName('ตลับ'), { retryToken: crypto.randomUUID() });
-    const brand = await lists.add(officerUserId, 'brand', `Horse ${tag}`, { retryToken: crypto.randomUUID() });
+    const unit = await lists.add(officerUserId, 'unit', { name: freshUnitName('ตลับ') }, { retryToken: crypto.randomUUID() });
+    const brand = await lists.add(officerUserId, 'brand', { name: `Horse ${tag}` }, { retryToken: crypto.randomUUID() });
     // In use, beside it: the form offers this one.
-    await lists.add(officerUserId, 'brand', `Elephant ${tag}`, { retryToken: crypto.randomUUID() });
+    await lists.add(officerUserId, 'brand', { name: `Elephant ${tag}` }, { retryToken: crypto.randomUUID() });
     const { stock_material_id: id } = await new StockMaterialService({ db: pool }).create(
       officerUserId,
       { name: `ลวดเสียบ ${tag}`, brand_id: brand.id, base_unit: { unit_id: unit.id }, explicit_continuation: true },
@@ -800,9 +800,94 @@ test.describe.serial('Stock Material journeys: Real SPA -> Composed API -> Postg
     await expect(page.locator(`[data-testid="brand-name-${brand.id}"]`)).toHaveText(`HORSE ${tag}`);
   });
 
+  test('Journey F010-T1.1: a Supply Officer adds a แหล่งที่มา with a note and a วิธีได้มา, renames the แหล่งที่มา, changes its note (refused as stale once when another Supply Officer changed it first), makes it Inactive and is offered reactivation when adding its name', async ({ page, context }) => {
+    const tag = crypto.randomUUID().slice(0, 8);
+    const party = `บริษัท เครื่องเขยีน ${tag}`;
+    const section = page.locator('#catalog-list-source-party');
+
+    await loginAs(context, officerUserId);
+    // The session answers late: the actions wait for its CSRF token, or a quick save would be refused as if the grant
+    // were gone (#135).
+    await delaySessionCheck(page);
+    await page.goto(`${targetBaseUrl}/stock-materials/lists`);
+    await expect(page.getByRole('heading', { level: 1, name: 'ยี่ห้อ หมวดวัสดุ หน่วยนับ แหล่งที่มา และวิธีได้มา' })).toBeVisible();
+    await expect(page.getByRole('heading', { level: 2, name: 'แหล่งที่มา' })).toBeVisible();
+    await expect(page.getByRole('heading', { level: 2, name: 'วิธีได้มา' })).toBeVisible();
+    await expect(page.locator('#source-party-add')).toHaveCount(0);
+    await endSessionDelay(page);
+
+    // A แหล่งที่มา is added with a note, which the list shows with no Material Receipt using it (#232 decision 1).
+    await page.locator('#source-party-add').click();
+    await page.locator('#source-party-name').fill(` ${party} `);
+    await page.locator('#source-party-note').fill('ติดต่อฝ่ายขาย\nโทร 02-000-0000');
+    await page.locator('#source-party-add-submit').click();
+    await expect(page.locator('#source-party-add-form')).toHaveCount(0);
+    await expect(page.locator('[data-testid="catalog-list-source-party-saved"]')).toContainText(`เพิ่มแหล่งที่มา "${party}" แล้ว`);
+    const row = section.locator('tbody tr', { hasText: party });
+    const id = (await row.getAttribute('id'))!.replace('source-party-entry-', '');
+    await expect(page.locator(`[data-testid="source-party-note-${id}"]`)).toHaveText('ติดต่อฝ่ายขาย\nโทร 02-000-0000');
+    await expect(page.locator(`[data-testid="source-party-usage-${id}"]`)).toHaveText('0 รายการ');
+    await expect(section.locator('th', { hasText: 'รายการรับวัสดุที่ใช้อยู่' })).toBeVisible();
+
+    // Rename fixes its spelling, telling first how many Material Receipts use it.
+    await page.locator(`#source-party-rename-${id}`).click();
+    await expect(page.locator('[data-testid="source-party-rename-usage"]')).toContainText('มีรายการรับวัสดุใช้แหล่งที่มานี้อยู่ 0 รายการ');
+    await page.locator('#source-party-name').fill(`บริษัท เครื่องเขียน ${tag}`);
+    await page.locator('#source-party-rename-submit').click();
+    await expect(page.locator('#source-party-rename-form')).toHaveCount(0);
+    await expect(page.locator(`[data-testid="source-party-name-${id}"]`)).toHaveText(`บริษัท เครื่องเขียน ${tag}`);
+
+    // Its note is changed apart from a Rename: one that does not change is refused, and a change by another Supply
+    // Officer while the form is open refuses it as stale; read again, a blank note clears it.
+    await page.locator(`#source-party-edit-note-${id}`).click();
+    await expect(page.locator('#source-party-note')).toHaveValue('ติดต่อฝ่ายขาย\nโทร 02-000-0000');
+    await page.locator('#source-party-note-submit').click();
+    await expect(page.locator('[data-testid="source-party-note-form-error"]')).toContainText('หมายเหตุใหม่ยังเหมือนหมายเหตุเดิม');
+    await page.locator('#source-party-note').fill(' ');
+    await new CatalogListService({ db: pool }).changeNote(officerUserId, id, { expected_version: 2, note: 'เปลี่ยนโดยอีกคน' }, { retryToken: crypto.randomUUID() });
+    await page.locator('#source-party-note-submit').click();
+    await expect(page.locator('[data-testid="source-party-note-form-error"]')).toContainText('มีผู้แก้ไขรายการนี้ไปแล้ว กรุณาโหลดใหม่');
+    await page.locator('#source-party-note-reload').click();
+    await expect(page.locator(`[data-testid="source-party-note-${id}"]`)).toHaveText('เปลี่ยนโดยอีกคน');
+    await page.locator('#source-party-note-submit').click();
+    await expect(page.locator('#source-party-note-form')).toHaveCount(0);
+    await expect(page.locator(`[data-testid="source-party-note-${id}"]`)).toHaveText('-');
+    const history = page.locator(`#source-party-history-${id}`);
+    await history.locator('summary').click();
+    await expect(history.locator('li')).toHaveCount(4);
+    await expect(history.locator('li').first()).toContainText(`เพิ่มแหล่งที่มา "${party}" หมายเหตุ "ติดต่อฝ่ายขาย`);
+    await expect(history.locator('li').nth(1)).toContainText(`เปลี่ยนชื่อ "${party}" เป็น "บริษัท เครื่องเขียน ${tag}"`);
+    await expect(history.locator('li').nth(3)).toContainText('แก้ไขหมายเหตุ "เปลี่ยนโดยอีกคน" เป็น "-"');
+
+    // Made Inactive, its name added again is refused with it, and the form offers to reactivate it (Q12).
+    await page.locator(`#source-party-inactivate-${id}`).click();
+    await expect(page.locator('[data-testid="source-party-status-notice"]')).toContainText('รายการรับวัสดุ 0 รายการที่ใช้แหล่งที่มานี้ยังแสดงแหล่งที่มานี้ตามเดิม');
+    await page.locator('#source-party-status-submit').click();
+    await expect(page.locator('#source-party-status-form')).toHaveCount(0);
+    await expect(page.locator(`[data-testid="source-party-status-${id}"]`)).toHaveText('หยุดใช้');
+    await page.locator('#source-party-add').click();
+    await page.locator('#source-party-name').fill(`บริษัท  เครื่องเขียน ${tag}`);
+    await page.locator('#source-party-add-submit').click();
+    await expect(page.locator('[data-testid="source-party-add-refused"]')).toContainText(`แหล่งที่มา "บริษัท เครื่องเขียน ${tag}" อยู่ในรายการแล้วแต่ถูกหยุดใช้`);
+    await page.locator('#source-party-add-offer-reactivate').click();
+    await page.locator('#source-party-status-submit').click();
+    await expect(page.locator('#source-party-status-form')).toHaveCount(0);
+    await expect(page.locator(`[data-testid="source-party-status-${id}"]`)).toHaveText('ใช้งานอยู่');
+
+    // A วิธีได้มา is added by name alone: it holds no note.
+    await page.locator('#source-type-add').click();
+    await expect(page.locator('#source-type-note')).toHaveCount(0);
+    await page.locator('#source-type-name').fill(`รับบริจาค ${tag}`);
+    await page.locator('#source-type-add-submit').click();
+    await expect(page.locator('[data-testid="catalog-list-source-type-saved"]')).toContainText(`เพิ่มวิธีได้มา "รับบริจาค ${tag}" แล้ว`);
+    const typeRow = page.locator('#catalog-list-source-type tbody tr', { hasText: `รับบริจาค ${tag}` });
+    await expect(typeRow.locator('td').nth(1)).toHaveText('ใช้งานอยู่');
+    await expect(typeRow.locator('[id^="source-type-edit-note-"]')).toHaveCount(0);
+  });
+
   test('Journey F008-T1.2: a Read-only User reads the list and a Stock Material page with no action, and an Asset Custodian has no "วัสดุ" menu', async ({ page, context }) => {
     const bottle = freshUnitName('ขวด');
-    const unit = await new CatalogListService({ db: pool }).add(officerUserId, 'unit', bottle, { retryToken: crypto.randomUUID() });
+    const unit = await new CatalogListService({ db: pool }).add(officerUserId, 'unit', { name: bottle }, { retryToken: crypto.randomUUID() });
     const { stock_material_id: id } = await new StockMaterialService({ db: pool }).create(
       officerUserId,
       { name: 'น้ำยาเช็ดกระจก', model: 'Glass Clean', specification: '500 มล.', base_unit: { unit_id: unit.id, whole_number_only: false } },
@@ -857,11 +942,14 @@ test.describe.serial('Stock Material journeys: Real SPA -> Composed API -> Postg
     await expect(page.locator(`#unit-history-${unit.id} li`).first()).toContainText(`เพิ่มหน่วยนับ "${bottle}"`);
     await expect(page.locator('#catalog-list-brand tbody tr').first()).toBeVisible();
     await expect(page.locator('#catalog-list-material-category tbody tr').first()).toBeVisible();
-    for (const kind of ['brand', 'material-category', 'unit']) {
+    // F010-T1 (#232): the Source Party and Source Type lists too (#231 Q3).
+    await expect(page.locator('#catalog-list-source-party')).toBeVisible();
+    await expect(page.locator('#catalog-list-source-type')).toBeVisible();
+    for (const kind of ['brand', 'material-category', 'unit', 'source-party', 'source-type']) {
       await expect(page.locator(`#${kind}-add`)).toHaveCount(0);
     }
     await expect(page.locator('th', { hasText: 'ดำเนินการ' })).toHaveCount(0);
-    await expect(page.locator('[id*="-rename-"], [id*="-inactivate-"], [id*="-reactivate-"]')).toHaveCount(0);
+    await expect(page.locator('[id*="-rename-"], [id*="-edit-note-"], [id*="-inactivate-"], [id*="-reactivate-"]')).toHaveCount(0);
 
     // The form refuses a viewer without material:manage.
     await page.goto(`${targetBaseUrl}/stock-materials/new`);
