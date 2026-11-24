@@ -133,6 +133,11 @@ const E2E_GUARDS = [
     message: 'Take loginAs and switchActor from actorSwitch in tests/e2e/support/actors.ts, the one actor switch of every journey (#208 retro).',
   },
   {
+    // #233 retro: six specs each held a copy of the session delay, and a journey that left it on ran past its budget.
+    selector: "VariableDeclarator > Identifier.id[name=/^(delaySessionCheck|endSessionDelay)$/], FunctionDeclaration > Identifier.id[name=/^(delaySessionCheck|endSessionDelay)$/]",
+    message: 'Take delaySessionCheck and endSessionDelay from tests/e2e/support/session-check.ts, the one session delay of every journey (#233 retro).',
+  },
+  {
     selector: `${URL_STEP} + :not(:has(${URL_WAIT})), ${URL_STEP}:last-child`,
     message: 'Wait for the URL a filter select or a back link changes with toHaveURL in the next statement: the page acts on the URL it last showed (#209 retro).',
   },

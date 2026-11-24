@@ -84,7 +84,9 @@ that last one before each commit (enable it once per clone with
 `git config core.hooksPath .githooks`). Before the full run, run
 every integration file that calls a route or names a response field the change touches (`grep -l`
 over `apps/api/tests/integration`), and `tests/e2e/route-smoke.spec.ts` when a file under
-`apps/web/src/pages` changes: earlier tests pin those shapes, their data and each page's heading. Such a
+`apps/web/src/pages` changes: earlier tests pin those shapes, their data and each page's heading. A migration
+that adds a table referencing `users`, or a trigger, adds `auth.test.ts`, `capability.service.test.ts` and
+`session.service.test.ts`, which reset with `TRUNCATE users CASCADE` (#233). Such a
 pre-run counts as evidence for the HEAD its last line names, with the tree clean: run it again after any later
 change, before its result goes to a reviewer. Start the full
 run once, after the code-review fixes are committed, together with the Product Owner's answer to any

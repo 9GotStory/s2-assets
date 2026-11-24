@@ -1,5 +1,6 @@
 import { test, expect } from '@playwright/test';
 import { actorSwitch } from './support/actors.ts';
+import { delaySessionCheck } from './support/session-check.ts';
 import { createServer, type ViteDevServer } from 'vite';
 import * as crypto from 'node:crypto';
 import * as path from 'node:path';
@@ -108,14 +109,6 @@ test.describe.serial('Material Request journeys: Real SPA -> Composed API -> Pos
     if (pool) await pool.end();
     if (container) await container.stop();
   });
-
-  // The session answers late, so that a page shows its facts before the CSRF token arrives: a write action waits for the
-  // token, or a quick save would be refused as if the grant were gone (#135).
-  const delaySessionCheck = (page: any) =>
-    page.route('**/auth/session-check', async (route: any) => {
-      await new Promise((resolve) => setTimeout(resolve, 3000));
-      await route.continue();
-    });
 
   const { loginAs, switchActor } = actorSwitch(() => sessionService, () => targetBaseUrl);
 

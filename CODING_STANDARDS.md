@@ -217,6 +217,10 @@ functions. `loan-item-periods.ts` gives the period of a LoanItem to both `loan-r
 that holds the fragment after what it holds, not after the table: `JOIN loan_periods` reads to the guard
 as the table `loan_periods`.
 
+A page's write goes through `apps/web/src/components/LoanSaveForm.tsx`, whatever it writes: the retry
+token, the CSRF header, the stale and refused answers and the retry after an unknown outcome live there,
+as the Stock Material and Opening Balance forms show (#233 retro). Its name dates from Feature 004.
+
 ## A derived condition has one SQL source
 
 When a write checks a condition that a read also derives, such as a Discrepancy, "ส่งซ่อมแล้ว" or
