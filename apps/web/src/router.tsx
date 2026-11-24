@@ -27,6 +27,9 @@ import { MaterialRequestList } from './pages/MaterialRequestList';
 import { OpeningBalanceList } from './pages/OpeningBalanceList';
 import { OpeningBalanceForm } from './pages/OpeningBalanceForm';
 import { OpeningBalanceDetail } from './pages/OpeningBalanceDetail';
+import { MaterialReceiptList } from './pages/MaterialReceiptList';
+import { MaterialReceiptForm } from './pages/MaterialReceiptForm';
+import { MaterialReceiptDetail } from './pages/MaterialReceiptDetail';
 import { MaterialRequestCreate } from './pages/MaterialRequestCreate';
 import { MaterialRequestDetail } from './pages/MaterialRequestDetail';
 
@@ -437,6 +440,23 @@ export const routes: RouteObject[] = [
   {
     path: '/opening-balances/:id/edit',
     element: <OpeningBalanceForm />,
+  },
+  // F010-T3 (#234): "รับวัสดุ", the Material Receipt Draft form and each Material Receipt's page
+  {
+    path: '/material-receipts',
+    element: <MaterialReceiptList />,
+  },
+  {
+    path: '/material-receipts/new',
+    element: <MaterialReceiptForm />,
+  },
+  {
+    path: '/material-receipts/:id',
+    element: <MaterialReceiptDetail />,
+  },
+  {
+    path: '/material-receipts/:id/edit',
+    element: <MaterialReceiptForm />,
   },
 ];
 

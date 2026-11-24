@@ -19,6 +19,7 @@ import { RequestableMaterialService } from '../../../api/src/services/requestabl
 import { MaterialRequestService } from '../../../api/src/services/material-request.service.ts';
 import { StockMaterialService } from '../../../api/src/services/stock-material.service.ts';
 import { OpeningBalanceService } from '../../../api/src/services/opening-balance.service.ts';
+import { MaterialReceiptService } from '../../../api/src/services/material-receipt.service.ts';
 import { repositoryProxyConfig } from '../../vite.config.ts';
 
 const { Pool } = pg;
@@ -43,6 +44,7 @@ interface Fixtures {
   materialRequestId: string;
   requestNumber: string;
   openingBalanceId: string;
+  materialReceiptId: string;
 }
 
 // Each route of router.tsx: the page a Read-only User who is also a Requester and a Supply Officer opens and its
@@ -89,6 +91,11 @@ const SMOKE: Record<string, { url: (f: Fixtures) => string; heading: (f: Fixture
   '/opening-balances/new': { url: () => '/opening-balances/new', heading: () => 'เพิ่มยอดตั้งต้น' },
   '/opening-balances/:id': { url: (f) => `/opening-balances/${f.openingBalanceId}`, heading: () => 'ยอดตั้งต้น ร่าง' },
   '/opening-balances/:id/edit': { url: (f) => `/opening-balances/${f.openingBalanceId}/edit`, heading: () => 'แก้ไขร่าง' },
+  // F010-T3 (#234): every catalog viewer reads the Material Receipts; the Supply Officer role reaches the Draft form.
+  '/material-receipts': { url: () => '/material-receipts', heading: () => 'รายการรับวัสดุ' },
+  '/material-receipts/new': { url: () => '/material-receipts/new', heading: () => 'เพิ่มรายการรับวัสดุ' },
+  '/material-receipts/:id': { url: (f) => `/material-receipts/${f.materialReceiptId}`, heading: () => 'รายการรับวัสดุ ร่าง' },
+  '/material-receipts/:id/edit': { url: (f) => `/material-receipts/${f.materialReceiptId}/edit`, heading: () => 'แก้ไขร่าง' },
 };
 
 // The paths router.tsx declares, read from its text: importing it builds a browser router, which needs a window.
@@ -207,6 +214,12 @@ test.describe.serial('Route smoke: Real SPA -> Composed API -> PostgreSQL (Seam 
       { lines: [{ stock_material_id: stockMaterialId, unit_id: unit.id, quantity: '3' }] },
       { retryToken: crypto.randomUUID() }
     );
+    // A Material Receipt Draft with one line, so the edit form reads its Stock Material's Units.
+    const { material_receipt_id: materialReceiptId } = await new MaterialReceiptService({ db: pool }).create(
+      officerUserId,
+      { lines: [{ stock_material_id: stockMaterialId, unit_id: unit.id, quantity: '3' }] },
+      { retryToken: crypto.randomUUID() }
+    );
     fixtures = {
       assetId: asset.id,
       assetName,
@@ -221,6 +234,7 @@ test.describe.serial('Route smoke: Real SPA -> Composed API -> PostgreSQL (Seam 
       materialRequestId,
       requestNumber,
       openingBalanceId,
+      materialReceiptId,
     };
 
     const testProxy: Record<string, any> = {};

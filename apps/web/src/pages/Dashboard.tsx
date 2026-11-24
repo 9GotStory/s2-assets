@@ -5,6 +5,7 @@ import { VERIFICATION_ROUND_LABEL } from '../components/verificationFacts';
 import { CATALOG_LISTS_LABEL, STOCK_MATERIAL_LABEL } from '../components/materialFacts';
 import { REQUESTABLE_MATERIAL_LABEL } from '../components/requestableMaterialFacts';
 import { OPENING_BALANCE_LABEL } from '../components/openingBalanceFacts';
+import { RECEIVE_MATERIAL_LABEL } from '../components/materialReceiptFacts';
 import { CREATE_MATERIAL_REQUEST_LABEL, MATERIAL_REQUEST_LABEL, MY_MATERIAL_REQUESTS_LABEL, REQUEST_MATERIALS_LABEL } from '../components/materialRequestFacts';
 
 export interface SafeUser {
@@ -670,6 +671,23 @@ export const Dashboard: React.FC = () => {
                 }}
               >
                 {OPENING_BALANCE_LABEL}
+              </Link>
+              {/* F010-T3 (#234, #231 Q24): the Material Receipts, read with material:view as the Stock Materials are. */}
+              <Link
+                to="/material-receipts"
+                id="nav-material-receipt-list"
+                style={{
+                  display: 'inline-block',
+                  padding: '0.5rem 1rem',
+                  backgroundColor: '#4b5563',
+                  color: '#ffffff',
+                  textDecoration: 'none',
+                  borderRadius: '4px',
+                  fontSize: '0.875rem',
+                  fontWeight: 500,
+                }}
+              >
+                {RECEIVE_MATERIAL_LABEL}
               </Link>
             </div>
           </section>
