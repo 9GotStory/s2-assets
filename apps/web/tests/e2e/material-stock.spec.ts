@@ -107,8 +107,8 @@ test.describe.serial('Material Stock journeys: Real SPA -> Composed API -> Postg
     const name = `กระดาษถ่ายเอกสาร J1 ${tag}`;
     const ream = `รีม ${tag}`;
     const catalog = new CatalogListService({ db: pool });
-    const reamUnit = await catalog.add(officerUserId, 'unit', ream, { retryToken: crypto.randomUUID() });
-    const boxUnit = await catalog.add(officerUserId, 'unit', `กล่อง ${tag}`, { retryToken: crypto.randomUUID() });
+    const reamUnit = await catalog.add(officerUserId, 'unit', { name: ream }, { retryToken: crypto.randomUUID() });
+    const boxUnit = await catalog.add(officerUserId, 'unit', { name: `กล่อง ${tag}` }, { retryToken: crypto.randomUUID() });
     const { stock_material_id: materialId } = await new StockMaterialService({ db: pool }).create(
       officerUserId,
       { name, base_unit: { unit_id: reamUnit.id, whole_number_only: true }, alternate_units: [{ unit_id: boxUnit.id, conversion_factor: '5' }] },

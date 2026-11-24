@@ -83,8 +83,8 @@ test.describe.serial('Material Request journeys: Real SPA -> Composed API -> Pos
     officerUserId = await createUser('officer_request', 'SUPPLY_OFFICER');
     // The Unit list the Supply Officer chooses from: รีม, and แผ่น made Inactive, which is not offered (#202 Q15).
     const units = new CatalogListService({ db: pool });
-    reamId = (await units.add(officerUserId, 'unit', 'รีม', { retryToken: crypto.randomUUID() })).id;
-    const sheet = await units.add(officerUserId, 'unit', 'แผ่น', { retryToken: crypto.randomUUID() });
+    reamId = (await units.add(officerUserId, 'unit', { name: 'รีม' }, { retryToken: crypto.randomUUID() })).id;
+    const sheet = await units.add(officerUserId, 'unit', { name: 'แผ่น' }, { retryToken: crypto.randomUUID() });
     await units.inactivate(officerUserId, 'unit', sheet.id, { expected_version: sheet.version }, { retryToken: crypto.randomUUID() });
 
     const testProxy: Record<string, any> = {};
@@ -222,7 +222,7 @@ test.describe.serial('Material Request journeys: Real SPA -> Composed API -> Pos
   test('Journey F009-T2.1: a Supply Officer sees "ยังไม่มีวัสดุที่ใช้จ่าย" on "กระดาษ A4", finds the Stock Material without รีม greyed with its reason, adds a Compatible Stock Material, which removes the badge, ends it and adds it again, and the Units form refuses making รีม Inactive on a Stock Material it is asked for in', async ({ page, context }) => {
     // A Stock Material counted in รีม, with กล่อง as an Inactive Alternate Unit; one with no รีม among its Units; and
     // 25 others, more than the picker shows at once.
-    const box = await new CatalogListService({ db: pool }).add(officerUserId, 'unit', 'กล่อง', { retryToken: crypto.randomUUID() });
+    const box = await new CatalogListService({ db: pool }).add(officerUserId, 'unit', { name: 'กล่อง' }, { retryToken: crypto.randomUUID() });
     const stockMaterials = new StockMaterialService({ db: pool });
     const copyPaperId = (
       await stockMaterials.create(officerUserId, { name: 'กระดาษถ่ายเอกสาร A4 80 แกรม', base_unit: { unit_id: reamId } }, { retryToken: crypto.randomUUID() })
@@ -235,7 +235,7 @@ test.describe.serial('Material Request journeys: Real SPA -> Composed API -> Pos
     );
     // A choice names its Brand and Model beside its name.
     // Added through the list's own write, with its history, so the maintenance page that F009-T8.1 opens can list it.
-    const brandId = (await new CatalogListService({ db: pool }).add(officerUserId, 'brand', 'ตราการ์ด', { retryToken: crypto.randomUUID() })).id;
+    const brandId = (await new CatalogListService({ db: pool }).add(officerUserId, 'brand', { name: 'ตราการ์ด' }, { retryToken: crypto.randomUUID() })).id;
     const cardPaperId = (
       await stockMaterials.create(
         officerUserId,
@@ -404,7 +404,7 @@ test.describe.serial('Material Request journeys: Real SPA -> Composed API -> Pos
 
     // F009-T3 (#205 start decision 1): the Units form refuses making รีม Inactive on a Stock Material that "กระดาษ A4"
     // is asked for in through it, naming "กระดาษ A4", and keeps the form open (#202 Q15, ADR 0002).
-    const leaf = await new CatalogListService({ db: pool }).add(officerUserId, 'unit', 'แผ่นกระดาษ', { retryToken: crypto.randomUUID() });
+    const leaf = await new CatalogListService({ db: pool }).add(officerUserId, 'unit', { name: 'แผ่นกระดาษ' }, { retryToken: crypto.randomUUID() });
     const loosePaperId = (
       await stockMaterials.create(
         officerUserId,

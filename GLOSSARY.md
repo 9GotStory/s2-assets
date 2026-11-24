@@ -481,7 +481,8 @@ its Recorded At but never later than today.
 The company, shop, agency or other organisation a Material Receipt's Stock Materials came from,
 chosen from a shared list that a Supply Officer may add to, and absent when unknown. It is only a
 name to trace a Material Receipt by, never part of what a Stock Material is. A Material Receipt that
-names the wrong one is fixed on the Material Receipt, not by a Rename.
+names the wrong one is fixed on the Material Receipt, not by a Rename. It may carry a short note,
+which a Supply Officer changes apart from a Rename (แก้ไขหมายเหตุ).
 _Avoid_: Vendor, Supplier
 
 **Source Type** (วิธีได้มา):
