@@ -2,9 +2,23 @@ import React, { useEffect, useState } from 'react';
 import { Link, useLocation, useNavigate, useParams } from 'react-router';
 import { QueryClient, QueryClientProvider, useQuery } from '@tanstack/react-query';
 import { CompatibleStockMaterialAddForm, CompatibleStockMaterialEndForm } from '../components/CompatibleStockMaterialForms';
+import { RequestableMaterialDetailsForm, RequestableMaterialRenameForm } from '../components/RequestableMaterialEditForms';
 import { RequestableMaterialStatusForm } from '../components/RequestableMaterialStatusForm';
 import { useCsrfToken } from '../components/materialQueries';
-import { ACTIVE_LABEL, BASE_UNIT_LABEL, INACTIVE_LABEL, REACTIVATE_LABEL, STOCK_MATERIAL_LABEL, UNIT_LABEL, WHOLE_NUMBER_UNIT_LABEL, wholeNumberLine, type StockMaterialUnit } from '../components/materialFacts';
+import {
+  ACTIVE_LABEL,
+  BASE_UNIT_LABEL,
+  EDIT_DETAILS_LABEL,
+  INACTIVE_LABEL,
+  REACTIVATE_LABEL,
+  RENAME_LABEL,
+  STOCK_MATERIAL_LABEL,
+  UNIT_LABEL,
+  WHOLE_NUMBER_UNIT_LABEL,
+  wholeNumberLine,
+  type NamedListEntry,
+  type StockMaterialUnit,
+} from '../components/materialFacts';
 import {
   ADD_COMPATIBLE_STOCK_MATERIAL_LABEL,
   COMPATIBLE_STOCK_MATERIAL_LABEL,
@@ -43,9 +57,21 @@ const RECORDED_FIELD_LABELS: Record<RequestableMaterialRecordedChange['field'], 
   is_active: 'สถานะ',
 };
 
-// A recorded value as the history shows it: the Request Unit by its name then, the whole-number setting as ใช่ or
-// ไม่ใช่, text as it was; F009-T2: the Stock Material an add or an end names, by its name then.
-const recordedValue = (change: RequestableMaterialRecordedChange): string => {
+// A value of a field as the history shows it: the Request Unit by its name then, the whole-number setting as ใช่ or
+// ไม่ใช่, text as it was, and none as "-".
+const shownValue = (value: string | boolean | NamedListEntry | null): string => {
+  if (value === null) {
+    return '-';
+  }
+  if (typeof value === 'boolean') {
+    return wholeNumberLine(value);
+  }
+  return typeof value === 'string' ? value : value.name;
+};
+
+// A recorded change as the history shows it: a creation its value; F009-T2: the Stock Material an add or an end names,
+// by its name then; F009-T8: a Rename or an Other Details change its value before and after.
+const recordedValue = (kind: RequestableMaterialHistoryEntry['kind'], change: RequestableMaterialRecordedChange): string => {
   // F009-T7: the status it was given.
   if (change.field === 'is_active') {
     return change.after ? ACTIVE_LABEL : INACTIVE_LABEL;
@@ -53,13 +79,7 @@ const recordedValue = (change: RequestableMaterialRecordedChange): string => {
   if (change.field === 'compatible_stock_material') {
     return (change.after ?? change.before)!.name;
   }
-  if (change.field === 'request_unit') {
-    return change.after.name;
-  }
-  if (change.field === 'whole_number_only') {
-    return wholeNumberLine(change.after);
-  }
-  return change.after;
+  return kind === 'CREATED' ? shownValue(change.after) : `${shownValue(change.before)} → ${shownValue(change.after)}`;
 };
 
 const HistoryEntry: React.FC<{ entry: RequestableMaterialHistoryEntry }> = ({ entry }) => (
@@ -72,7 +92,7 @@ const HistoryEntry: React.FC<{ entry: RequestableMaterialHistoryEntry }> = ({ en
       {entry.changes.map((change) => (
         <React.Fragment key={change.field}>
           <dt style={{ color: '#4b5563' }}>{RECORDED_FIELD_LABELS[change.field]}</dt>
-          <dd style={{ margin: 0, color: '#111827', whiteSpace: 'pre-line' }}>{recordedValue(change)}</dd>
+          <dd style={{ margin: 0, color: '#111827', whiteSpace: 'pre-line' }}>{recordedValue(entry.kind, change)}</dd>
         </React.Fragment>
       ))}
     </dl>
@@ -90,11 +110,11 @@ const actionStyle: React.CSSProperties = { padding: '0.375rem 0.75rem', borderRa
 const RequestableMaterialDetailContent: React.FC<{ id: string }> = ({ id }) => {
   const navigate = useNavigate();
   const location = useLocation();
-  // The action open: the add of a Compatible Stock Material, the end of one, or F009-T7's "หยุดใช้" or
-  // "เปิดใช้อีกครั้ง". The create form sends a Supply Officer here with "เปิดใช้อีกครั้ง" open when the name they
+  // The action open: the add of a Compatible Stock Material, the end of one, F009-T7's "หยุดใช้" or
+  // "เปิดใช้อีกครั้ง", or F009-T8's "เปลี่ยนชื่อ" or "แก้ไขข้อมูลอื่น". The create form sends a Supply Officer here with "เปิดใช้อีกครั้ง" open when the name they
   // typed belongs to this Inactive Requestable Material (#209 start decision 2).
   const [openAction, setOpenAction] = useState<
-    { kind: 'add' } | { kind: 'end'; stockMaterialId: string } | { kind: 'inactivate' } | { kind: 'reactivate' } | null
+    { kind: 'add' } | { kind: 'end'; stockMaterialId: string } | { kind: 'inactivate' } | { kind: 'reactivate' } | { kind: 'rename' } | { kind: 'details' } | null
   >(() => ((location.state as { offer?: string } | null)?.offer === 'reactivate' ? { kind: 'reactivate' } : null));
   // The offer opens the confirmation once: the page drops it from its history entry, so a reload or a return here
   // after the reactivation does not open it again.
@@ -191,9 +211,15 @@ const RequestableMaterialDetailContent: React.FC<{ id: string }> = ({ id }) => {
               </dd>
             </dl>
 
-            {/* F009-T7: "หยุดใช้" on one in use, "เปิดใช้อีกครั้ง" on an Inactive one (#202 MC-14, P9). */}
+            {/* F009-T8: "เปลี่ยนชื่อ" and "แก้ไขข้อมูลอื่น"; F009-T7: "หยุดใช้" on one in use, "เปิดใช้อีกครั้ง" on an Inactive one (#202 MC-14, P9). */}
             {mayManage && openAction === null && (
-              <div style={{ marginTop: '1rem' }}>
+              <div style={{ display: 'flex', flexWrap: 'wrap', gap: '0.5rem', marginTop: '1rem' }}>
+                <button type="button" id="requestable-material-rename-action" onClick={() => setOpenAction({ kind: 'rename' })} style={actionStyle}>
+                  {RENAME_LABEL}
+                </button>
+                <button type="button" id="requestable-material-details-action" onClick={() => setOpenAction({ kind: 'details' })} style={actionStyle}>
+                  {EDIT_DETAILS_LABEL}
+                </button>
                 <button
                   type="button"
                   id="requestable-material-status-action"
@@ -208,6 +234,17 @@ const RequestableMaterialDetailContent: React.FC<{ id: string }> = ({ id }) => {
             {mayManage && (openAction?.kind === 'inactivate' || openAction?.kind === 'reactivate') && (
               <div style={{ marginTop: '1rem' }}>
                 <RequestableMaterialStatusForm key={detail.version} requestable={detail} action={openAction.kind} csrfToken={csrfToken} {...formHandlers} />
+              </div>
+            )}
+            {/* A new read starts the form again from what it shows, so a save never carries a version read before it. */}
+            {mayManage && openAction?.kind === 'rename' && (
+              <div style={{ marginTop: '1rem' }}>
+                <RequestableMaterialRenameForm key={detail.version} requestable={detail} csrfToken={csrfToken} {...formHandlers} />
+              </div>
+            )}
+            {mayManage && openAction?.kind === 'details' && (
+              <div style={{ marginTop: '1rem' }}>
+                <RequestableMaterialDetailsForm key={detail.version} requestable={detail} csrfToken={csrfToken} {...formHandlers} />
               </div>
             )}
 
@@ -291,7 +328,7 @@ const RequestableMaterialDetailContent: React.FC<{ id: string }> = ({ id }) => {
 /**
  * A Requestable Material's page (F009-T1): every field and its creation in the history (#202 Q17, Q19). F009-T2: its
  * Compatible Stock Materials, added and ended from here, and the "ยังไม่มีวัสดุที่ใช้จ่าย" badge (Q9). F009-T7:
- * "หยุดใช้" and "เปิดใช้อีกครั้ง", with the Pending count (Q16, P6); T8 adds the rest.
+ * "หยุดใช้" and "เปิดใช้อีกครั้ง", with the Pending count (Q16, P6). F009-T8: "เปลี่ยนชื่อ" and "แก้ไขข้อมูลอื่น" (Q6, Q17, P2).
  */
 export const RequestableMaterialDetail: React.FC = () => {
   const { id = '' } = useParams<{ id: string }>();

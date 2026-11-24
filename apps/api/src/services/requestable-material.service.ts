@@ -1,8 +1,10 @@
 import pg from 'pg';
 import { normalizeLine, normalizeText } from './assignment.service.ts';
 import { isValidUuid } from './capability.service.ts';
-import { selectableCatalogListEntry } from './catalog-list.service.ts';
+import { type NamedListEntry } from './catalog-list-entries.ts';
+import { catalogListEntryOf, selectableCatalogListEntry } from './catalog-list.service.ts';
 import { comparedName } from './compared-name.ts';
+import { requestedItemsUse } from './material-request-uses.ts';
 import { commitOnce } from './retryable-write.ts';
 import { NotFoundError, StaleBeforeConflictError } from './service-errors.ts';
 import { lockedStockMaterial, stockMaterialForCompatibility } from './stock-material-read.service.ts';
@@ -37,6 +39,21 @@ export interface AddCompatibleStockMaterialInput {
 // F009-T2 (#204): ending a Compatible Stock Material at the version of the Requestable Material the request read.
 export interface EndCompatibleStockMaterialInput {
   expected_version: number;
+}
+
+// F009-T8 (#210): a Rename (เปลี่ยนชื่อ) of a Requestable Material, at the version the request read (#202 Q6, Q17).
+export interface RenameInput {
+  expected_version: number;
+  name: string;
+}
+
+// F009-T8 (#210): the Other Details (ข้อมูลอื่น) of a Requestable Material as they should be, each stated, null for no
+// description, at the version the request read (#202 Q17, P2).
+export interface ChangeDetailsInput {
+  expected_version: number;
+  description: string | null;
+  whole_number_only: boolean;
+  request_unit_id: string;
 }
 
 // F009-T7 (#209): making a Requestable Material Inactive or reactivating it, at the version the request read (#202 Q17).
@@ -81,37 +98,48 @@ export class RequestableMaterialNameTakenError extends Error {
 // The refusal of the unique index on the compared name (0029_requestable_materials).
 const isNameTaken = (err: any) => err?.constraint === 'requestable_materials_name_unique';
 
-// A request's facts once validated, before any lock. The retry fingerprint covers these.
-const normalizeFacts = (input: CreateRequestableMaterialInput) => {
-  // The name is one line (CODING_STANDARDS, "A text field's kind decides its control characters").
-  const name = normalizeLine(input.name, 'name', REQUESTABLE_MATERIAL_NAME_MAX_LENGTH);
+// A name as stored: one line (CODING_STANDARDS, "A text field's kind decides its control characters"), not blank.
+const nameOf = (value: string): string => {
+  const name = normalizeLine(value, 'name', REQUESTABLE_MATERIAL_NAME_MAX_LENGTH);
   if (name === null) {
     throw new ValidationError('name must not be blank');
   }
-  if (!isValidUuid(input.request_unit_id)) {
-    throw new ValidationError('request_unit_id must be a valid UUID');
-  }
-  return {
-    name,
-    request_unit_id: input.request_unit_id.trim().toLowerCase(),
-    whole_number_only: input.whole_number_only ?? true,
-    // Free text, keeping tab and line breaks inside it.
-    description: normalizeText(input.description, 'description', REQUESTABLE_MATERIAL_DESCRIPTION_MAX_LENGTH, ''),
-  };
+  return name;
 };
 
-// F009-T2 (#204): the Stock Material a Compatible Stock Material write names.
-const stockMaterialIdOf = (value: unknown): string => {
+// The id a write names in its `field`, as stored: a Request Unit's, or the Stock Material a Compatible Stock Material
+// write names (F009-T2, #204).
+const idOf = (field: 'request_unit_id' | 'stock_material_id', value: unknown): string => {
   if (!isValidUuid(value)) {
-    throw new ValidationError('stock_material_id must be a valid UUID');
+    throw new ValidationError(`${field} must be a valid UUID`);
   }
   return (value as string).trim().toLowerCase();
 };
 
+// A description as stored: free text, keeping tab and line breaks inside it; none when blank.
+const descriptionOf = (value: string | null | undefined): string | null => normalizeText(value, 'description', REQUESTABLE_MATERIAL_DESCRIPTION_MAX_LENGTH, '');
+
+// A request's facts once validated, before any lock. The retry fingerprint covers these.
+const normalizeFacts = (input: CreateRequestableMaterialInput) => ({
+  name: nameOf(input.name),
+  request_unit_id: idOf('request_unit_id', input.request_unit_id),
+  whole_number_only: input.whole_number_only ?? true,
+  description: descriptionOf(input.description),
+});
+
+// A Requestable Material's fields as its row stores them.
+interface StoredRequestableMaterial {
+  name: string;
+  request_unit_id: string;
+  whole_number_only: boolean;
+  description: string | null;
+  is_active: boolean;
+}
+
 // Locks the Requestable Material `id` FOR UPDATE, so writes on it take turns, and checks that it is at the version the
-// request read (#202 Q17): its Request Unit and status, or the refusal.
-const lockedAtVersion = async (client: pg.PoolClient, id: string, expectedVersion: number): Promise<{ request_unit_id: string; is_active: boolean }> => {
-  const res = await client.query('SELECT version, request_unit_id, is_active FROM requestable_materials WHERE id = $1 FOR UPDATE', [id]);
+// request read (#202 Q17): its fields, or the refusal.
+const lockedAtVersion = async (client: pg.PoolClient, id: string, expectedVersion: number): Promise<StoredRequestableMaterial> => {
+  const res = await client.query('SELECT version, name, request_unit_id, whole_number_only, description, is_active FROM requestable_materials WHERE id = $1 FOR UPDATE', [id]);
   if (res.rows.length === 0) {
     throw new NotFoundError('Requestable Material not found');
   }
@@ -130,6 +158,39 @@ const pairOf = async (client: pg.PoolClient, requestableMaterialId: string, stoc
     stockMaterialId,
   ]);
   return res.rows[0] ?? null;
+};
+
+// F009-T8 (#210): the Request Unit of the Requestable Material `id`, locked FOR UPDATE by the caller, changing from
+// `fromUnitId` to `toUnitId` under P2, or the refusal: the new Unit active on the list (Q15), no Requested Item
+// asking for it (P2, #210 start decision 3), and every current Compatible Stock Material having it among its active
+// Units (ADR 0002). Answers both Units under their names now, for the history (#175 P6).
+const requestUnitChange = async (client: pg.PoolClient, id: string, fromUnitId: string, toUnitId: string): Promise<{ before: NamedListEntry; after: NamedListEntry }> => {
+  // Locks the new Unit FOR SHARE, so making it Inactive or renaming it waits for this write or is seen by it.
+  const after = await selectableCatalogListEntry(client, 'unit', toUnitId);
+  if (after === null) {
+    throw new ValidationError('request_unit_id must name an active Unit of the list');
+  }
+  if (await requestedItemsUse(client, id)) {
+    throw new ValidationError('request_unit_id cannot change while Requested Items use this Requestable Material');
+  }
+  // The Requestable Material's lock keeps its Compatible Stock Materials as they are. Each Stock Material is locked
+  // FOR SHARE, in id order, so that a Units write waits for this write or is seen by it (#205 start decision 3).
+  const current = await client.query('SELECT stock_material_id FROM compatible_stock_materials WHERE requestable_material_id = $1 AND is_current ORDER BY stock_material_id', [id]);
+  const lacking: string[] = [];
+  for (const { stock_material_id: stockMaterialId } of current.rows) {
+    const stockMaterial = (await stockMaterialForCompatibility(client, stockMaterialId, toUnitId))!;
+    if (!stockMaterial.handles_request_unit) {
+      lacking.push(stockMaterial.name);
+    }
+  }
+  if (lacking.length > 0) {
+    const names = lacking
+      .sort((a, b) => a.localeCompare(b, 'th'))
+      .map((name) => JSON.stringify(name))
+      .join(', ');
+    throw new ValidationError(`request_unit_id names a Unit that is not an active Unit of the current Compatible Stock Materials ${names}; add it to their Units or end them first`);
+  }
+  return { before: await catalogListEntryOf(client, 'unit', fromUnitId), after };
 };
 
 // Moves the Requestable Material `id` to its next version with a history entry of `kind` listing `changes`, and
@@ -208,7 +269,7 @@ export class RequestableMaterialService {
     input: AddCompatibleStockMaterialInput,
     { retryToken }: { retryToken: string }
   ): Promise<RequestableMaterialVersion> {
-    const stockMaterialId = stockMaterialIdOf(input.stock_material_id);
+    const stockMaterialId = idOf('stock_material_id', input.stock_material_id);
     const payload = { requestable_material_id: requestableMaterialId, stock_material_id: stockMaterialId, expected_version: input.expected_version };
     return commitOnce(this.db, { actorId, operation: 'compatible-stock-material:add', retryToken, payload, explicitContinuation: false }, async (client) => {
       const { request_unit_id: requestUnitId } = await lockedAtVersion(client, requestableMaterialId, input.expected_version);
@@ -267,6 +328,67 @@ export class RequestableMaterialService {
       ]);
       const before = { id: stockMaterialId, name: stockMaterial.name };
       return recordChange(client, actorId, requestableMaterialId, 'COMPATIBLE_STOCK_MATERIAL_ENDED', [{ field: 'compatible_stock_material', before, after: null }]);
+    });
+  }
+
+  /**
+   * F009-T8 (#210): renames the Requestable Material `requestableMaterialId` to fix its spelling, never its meaning: a
+   * different meaning is a new Requestable Material (#202 Q6). The name keeps the create's rules, unique after
+   * normalization with Inactive ones (P7), and the history keeps the old name and the new (Q17). The very same name
+   * is refused; a change of case or spaces alone is a Rename (#183 decision 2).
+   */
+  async rename(actorId: string, requestableMaterialId: string, input: RenameInput, { retryToken }: { retryToken: string }): Promise<RequestableMaterialVersion> {
+    const name = nameOf(input.name);
+    const payload = { requestable_material_id: requestableMaterialId, expected_version: input.expected_version, name };
+    try {
+      return await commitOnce(this.db, { actorId, operation: 'requestable-material:rename', retryToken, payload, explicitContinuation: false }, async (client) => {
+        const stored = await lockedAtVersion(client, requestableMaterialId, input.expected_version);
+        if (stored.name === name) {
+          throw new ValidationError('This Rename changes nothing');
+        }
+        await client.query('UPDATE requestable_materials SET name = $2 WHERE id = $1', [requestableMaterialId, name]);
+        return recordChange(client, actorId, requestableMaterialId, 'RENAMED', [{ field: 'name', before: stored.name, after: name }]);
+      });
+    } catch (err) {
+      throw await this.nameTakenOr(err, name);
+    }
+  }
+
+  /**
+   * F009-T8 (#210): changes the Other Details of the Requestable Material `requestableMaterialId` (แก้ไขข้อมูลอื่น): its
+   * description and whole-number setting freely, and its Request Unit under P2. Requested Quantities already recorded
+   * never change (#202 Q17). One history entry lists each field the write changed, before and after (#210 start
+   * decision 1); a write that changes nothing is refused.
+   */
+  async changeDetails(actorId: string, requestableMaterialId: string, input: ChangeDetailsInput, { retryToken }: { retryToken: string }): Promise<RequestableMaterialVersion> {
+    const details = {
+      request_unit_id: idOf('request_unit_id', input.request_unit_id),
+      whole_number_only: input.whole_number_only,
+      description: descriptionOf(input.description),
+    };
+    const payload = { requestable_material_id: requestableMaterialId, expected_version: input.expected_version, ...details };
+    return commitOnce(this.db, { actorId, operation: 'requestable-material:details', retryToken, payload, explicitContinuation: false }, async (client) => {
+      const stored = await lockedAtVersion(client, requestableMaterialId, input.expected_version);
+      const changes: { field: string; before: unknown; after: unknown }[] = [];
+      if (details.request_unit_id !== stored.request_unit_id) {
+        changes.push({ field: 'request_unit', ...(await requestUnitChange(client, requestableMaterialId, stored.request_unit_id, details.request_unit_id)) });
+      }
+      if (details.whole_number_only !== stored.whole_number_only) {
+        changes.push({ field: 'whole_number_only', before: stored.whole_number_only, after: details.whole_number_only });
+      }
+      if (details.description !== stored.description) {
+        changes.push({ field: 'description', before: stored.description, after: details.description });
+      }
+      if (changes.length === 0) {
+        throw new ValidationError('This Other Details change changes nothing');
+      }
+      await client.query('UPDATE requestable_materials SET request_unit_id = $2, whole_number_only = $3, description = $4 WHERE id = $1', [
+        requestableMaterialId,
+        details.request_unit_id,
+        details.whole_number_only,
+        details.description,
+      ]);
+      return recordChange(client, actorId, requestableMaterialId, 'DETAILS_CHANGED', changes);
     });
   }
 

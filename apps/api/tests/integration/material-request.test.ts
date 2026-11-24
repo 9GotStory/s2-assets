@@ -25,7 +25,7 @@ describe('Material Request (Seam A - F009-T4)', () => {
 
   const materials = materialHelpers(() => ({ api, officer, reader: readonly }));
   const { unitNamed, materialOf } = materials;
-  const { requestableIn, requestableOf, add, end, inactivate } = requestableMaterialHelpers(() => ({ api, officer, reader: readonly }));
+  const { requestableIn, requestableOf, add, end, inactivate, changeDetails } = requestableMaterialHelpers(() => ({ api, officer, reader: readonly }));
   const { offeredIn, offered, createRequest, item, created, requestOf, cancelItem } = materialRequestHelpers(() => ({ api, requester, officer, reader: readonly, requestUnit: ream }));
   const { whileHolding, whileWriting, untilWaiting } = lockHelpers(() => ({ api }));
 
@@ -387,13 +387,19 @@ describe('Material Request (Seam A - F009-T4)', () => {
       const paper = await offered();
       const requestable = await offered({ wholeNumberOnly: false });
 
-      const [res] = await whileWriting(
-        // What F009-T8's details change writes, held uncommitted.
-        { sql: 'UPDATE requestable_materials SET whole_number_only = true, version = version + 1 WHERE id = $1', params: [requestable] },
-        () => [createRequest({ requested_items: [item(paper), item(requestable, '1.5')] })],
+      // F009-T8's own Other Details change queues first on the held row, and the create queues behind it (#206 review
+      // decision 2).
+      const [changed, res] = await whileHolding(
+        'requestable_materials',
+        requestable,
+        () => [
+          changeDetails(requestable, { whole_number_only: true }, { version: 2 }),
+          untilWaiting('requestable_materials').then(() => createRequest({ requested_items: [item(paper), item(requestable, '1.5')] })),
+        ],
         () => untilWaiting('requestable_materials', 1, 'FOR SHARE')
       );
 
+      expect(changed.statusCode).toBe(200);
       expect(res.statusCode).toBe(400);
       expect(res.json()).toMatchObject({ code: 'VALIDATION_FAILED', message: expect.stringContaining('requested_items[1].requested_quantity must be a whole number') });
     });
@@ -401,15 +407,24 @@ describe('Material Request (Seam A - F009-T4)', () => {
     it('waits for its Request Unit being changed and then records the new one (F009-T8)', async () => {
       const box = await unitNamed();
       const paper = await offered();
-      const requestable = await offered();
+      const { requestable, stockMaterial } = await offeredIn();
+      // Its Compatible Stock Material has the new Request Unit too (P2).
+      const units = materials.unitsAsRead(await materialOf(stockMaterial));
+      const withBox = { ...units, alternate_units: [{ unit_id: box, conversion_factor: '10', whole_number_only: true, is_active: true }] };
+      expect((await materials.replaceUnits(stockMaterial, withBox)).statusCode).toBe(200);
 
-      const [res] = await whileWriting(
-        // What F009-T8's Request Unit change writes, held uncommitted.
-        { sql: 'UPDATE requestable_materials SET request_unit_id = $2, version = version + 1 WHERE id = $1', params: [requestable, box] },
-        () => [createRequest({ requested_items: [item(paper), item(requestable)] })],
+      // F009-T8's own Request Unit change queues first on the held row, and the create queues behind it.
+      const [changed, res] = await whileHolding(
+        'requestable_materials',
+        requestable,
+        () => [
+          changeDetails(requestable, { request_unit_id: box }, { version: 2 }),
+          untilWaiting('requestable_materials').then(() => createRequest({ requested_items: [item(paper), item(requestable)] })),
+        ],
         () => untilWaiting('requestable_materials', 1, 'FOR SHARE')
       );
 
+      expect(changed.statusCode).toBe(200);
       expect(res.statusCode).toBe(201);
       const page = await requestOf(res.json().material_request_id);
       expect(page.requested_items.map(({ request_unit }: any) => request_unit.unit_id)).toEqual([ream, box]);

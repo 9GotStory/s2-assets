@@ -27,7 +27,8 @@ const migrationFolder = path.resolve(__dirname, '../../../../packages/db/src/mig
 // "กระดาษ A4" with Request Unit รีม and finds it in the list and on its page. F009-T2 (#204) completes it with its
 // Compatible Stock Materials and the "ยังไม่มีวัสดุที่ใช้จ่าย" badge. F009-T4 (#206): Journey J2 starts: a Requester saves a
 // Material Request of two Requested Items; F009-T5 (#207) completes it with their Cancels. F009-T7 (#209) grows J1 with
-// "หยุดใช้" and "เปิดใช้อีกครั้ง", last, once J2 and J3 have left Pending Requested Items.
+// "หยุดใช้" and "เปิดใช้อีกครั้ง", last, once J2 and J3 have left Pending Requested Items; F009-T8 (#210) after it with
+// "เปลี่ยนชื่อ" and "แก้ไขข้อมูลอื่น".
 test.describe.serial('Material Request journeys: Real SPA -> Composed API -> PostgreSQL (Seam B)', () => {
   let container: StartedPostgreSqlContainer;
   let pool: pg.Pool;
@@ -240,7 +241,8 @@ test.describe.serial('Material Request journeys: Real SPA -> Composed API -> Pos
       { retryToken: crypto.randomUUID() }
     );
     // A choice names its Brand and Model beside its name.
-    const brandId = (await pool.query(`INSERT INTO brands (name, created_by, updated_by) VALUES ('ตราการ์ด', $1, $1) RETURNING id`, [officerUserId])).rows[0].id;
+    // Added through the list's own write, with its history, so the maintenance page that F009-T8.1 opens can list it.
+    const brandId = (await new CatalogListService({ db: pool }).add(officerUserId, 'brand', 'ตราการ์ด', { retryToken: crypto.randomUUID() })).id;
     const cardPaperId = (
       await stockMaterials.create(
         officerUserId,
@@ -1110,5 +1112,151 @@ test.describe.serial('Material Request journeys: Real SPA -> Composed API -> Pos
     await page.reload();
     await expect(page.locator('#requestable-material-status-action')).toHaveText('หยุดใช้');
     await expect(page.locator('#requestable-material-status-form')).toHaveCount(0);
+  });
+
+  test('Journey F009-T8.1: a Supply Officer renames "กระดาษ A4" to "กระดาษถ่ายเอกสาร A4", reminded that a different meaning needs a new Requestable Material, finds the new name in the list and the old and new names in its history, changes its description with "แก้ไขข้อมูลอื่น", and is refused a new Request Unit while Requested Items use it', async ({ page, context }) => {
+    const paperId = (await pool.query(`SELECT id FROM requestable_materials WHERE name = 'กระดาษ A4'`)).rows[0].id;
+    // An Inactive Requestable Material whose name a Rename cannot take either.
+    const { requestable_material_id: retiredId } = await new RequestableMaterialService({ db: pool }).create(
+      officerUserId,
+      { name: 'ปากกาเลิกใช้', request_unit_id: reamId },
+      { retryToken: crypto.randomUUID() }
+    );
+    await new RequestableMaterialService({ db: pool }).inactivate(officerUserId, retiredId, { expected_version: 1 }, { retryToken: crypto.randomUUID() });
+    // Its Compatible Stock Materials ended, so that only the Requested Items refuse a new Request Unit (CODING_STANDARDS,
+    // a refusal test): which one T7.1 leaves current turns on the order of their ids.
+    const requestables = new RequestableMaterialService({ db: pool });
+    const current = await pool.query('SELECT stock_material_id FROM compatible_stock_materials WHERE requestable_material_id = $1 AND is_current', [paperId]);
+    for (const { stock_material_id: stockMaterialId } of current.rows) {
+      const { version } = (await pool.query('SELECT version FROM requestable_materials WHERE id = $1', [paperId])).rows[0];
+      await requestables.endCompatibleStockMaterial(officerUserId, paperId, stockMaterialId, { expected_version: version }, { retryToken: crypto.randomUUID() });
+    }
+    // Another active Unit of the list to ask for it in.
+    const otherUnit: string = (await pool.query('SELECT name FROM units WHERE is_active AND id <> $1 ORDER BY name LIMIT 1', [reamId])).rows[0].name;
+    // Another Requestable Material J2 asks for, whose name a Rename cannot take (Q6).
+    const other: { id: string; name: string } = (await pool.query(`SELECT id, name FROM requestable_materials WHERE id <> $1 ORDER BY name LIMIT 1`, [paperId])).rows[0];
+
+    await loginAs(context, officerUserId);
+    await delaySessionCheck(page);
+    await page.goto(`${targetBaseUrl}/requestable-materials/${paperId}`);
+    await expect(page.getByRole('heading', { level: 1, name: 'กระดาษ A4' })).toBeVisible();
+
+    // "เปลี่ยนชื่อ" fixes the spelling; the very same name is refused before it is sent (#202 Q6, story 6).
+    await page.locator('#requestable-material-rename-action').click();
+    await expect(page.locator('#requestable-material-rename-form h3')).toHaveText('เปลี่ยนชื่อ');
+    await expect(page.locator('[data-testid="requestable-material-rename-notice"]')).toHaveText(
+      'เปลี่ยนชื่อเพื่อแก้การสะกดเท่านั้น ถ้าความหมายเปลี่ยนเป็นวัสดุอื่น ให้เพิ่มวัสดุสำหรับขอเบิกใหม่แทน ประวัติจะเก็บชื่อเดิมและชื่อใหม่ไว้'
+    );
+    await expect(page.locator('#requestable-material-rename-name')).toHaveValue('กระดาษ A4');
+    await page.locator('#requestable-material-rename-submit').click();
+    await expect(page.locator('[data-testid="requestable-material-rename-form-error"]')).toContainText('ชื่อใหม่ยังเหมือนชื่อเดิม');
+    await page.locator('#requestable-material-rename-name').fill('  ');
+    await page.locator('#requestable-material-rename-submit').click();
+    await expect(page.locator('[data-testid="requestable-material-rename-form-error"]')).toContainText('กรุณากรอกชื่อใหม่');
+    // A name another Requestable Material holds, in another case, is refused naming it.
+    await page.locator('#requestable-material-rename-name').fill(other.name.toUpperCase());
+    await page.locator('#requestable-material-rename-submit').click();
+    await expect(page.locator('[data-testid="requestable-material-rename-name-taken"]')).toHaveText(`มีวัสดุสำหรับขอเบิกชื่อนี้อยู่แล้ว: ${other.name}`);
+    // One an Inactive Requestable Material holds is refused naming it, marked (#210 build decision 1).
+    await page.locator('#requestable-material-rename-name').fill('ปากกาเลิกใช้');
+    await page.locator('#requestable-material-rename-submit').click();
+    await expect(page.locator('[data-testid="requestable-material-rename-name-taken"]')).toHaveText('มีวัสดุสำหรับขอเบิกชื่อนี้อยู่แล้ว: ปากกาเลิกใช้ (หยุดใช้)');
+    await page.locator('#requestable-material-rename-name').fill('กระดาษถ่ายเอกสาร A4');
+    await page.locator('#requestable-material-rename-submit').click();
+    await expect(page.getByRole('heading', { level: 1, name: 'กระดาษถ่ายเอกสาร A4' })).toBeVisible();
+    await expect(page.locator('#requestable-material-rename-form')).toHaveCount(0);
+    const historyEntries = page.locator('#requestable-material-history > li');
+    await expect(historyEntries.last()).toContainText('เปลี่ยนชื่อ');
+    await expect(historyEntries.last()).toContainText('ชื่อกระดาษ A4 → กระดาษถ่ายเอกสาร A4');
+    await expect(historyEntries.last()).toContainText('officer_request');
+
+    // "แก้ไขข้อมูลอื่น" refuses a save of nothing before it is sent, then changes the description, recorded before and
+    // after, and the whole-number setting, each alone (#210 start decision 1).
+    await page.locator('#requestable-material-details-action').click();
+    await expect(page.locator('#requestable-material-details-form h3')).toHaveText('แก้ไขข้อมูลอื่น');
+    await expect(page.locator('#requestable-material-details-request-unit')).toHaveValue(reamId);
+    await page.locator('#requestable-material-details-description').fill('  กระดาษถ่ายเอกสารขนาด A4 ');
+    await page.locator('#requestable-material-details-submit').click();
+    await expect(page.locator('[data-testid="requestable-material-details-form-error"]')).toContainText('ยังไม่มีข้อมูลที่เปลี่ยน');
+    await page.locator('#requestable-material-details-description').fill('กระดาษขาว 80 แกรม');
+    await page.locator('#requestable-material-details-submit').click();
+    await expect(page.locator('[data-testid="requestable-material-description"]')).toHaveText('กระดาษขาว 80 แกรม');
+    await expect(historyEntries.last()).toContainText('แก้ไขข้อมูลอื่น');
+    await expect(historyEntries.last()).toContainText('รายละเอียดกระดาษถ่ายเอกสารขนาด A4 → กระดาษขาว 80 แกรม');
+    await page.locator('#requestable-material-details-action').click();
+    await page.locator('#requestable-material-details-whole-number-only').uncheck();
+    await page.locator('#requestable-material-details-submit').click();
+    await expect(page.locator('[data-testid="requestable-material-whole-number-only"]')).toHaveText('ไม่ใช่ (มีเศษได้)');
+    await expect(historyEntries.last()).toContainText('นับเป็นจำนวนเต็มเท่านั้นใช่ → ไม่ใช่ (มีเศษได้)');
+
+    // A new Request Unit is refused: Requested Items of J2 and J3 use it, each in รีม as recorded (P2).
+    await page.locator('#requestable-material-details-action').click();
+    await expect(page.locator('[data-testid="requestable-material-details-request-unit-notice"]')).toContainText('เปลี่ยนหน่วยที่ขอได้เฉพาะเมื่อยังไม่มีรายการที่ขอใช้วัสดุนี้');
+    await page.locator('#requestable-material-details-request-unit').selectOption({ label: otherUnit });
+    await page.locator('#requestable-material-details-submit').click();
+    await expect(page.locator('[data-testid="requestable-material-details-form-error"]')).toContainText('request_unit_id cannot change while Requested Items use this Requestable Material');
+    await page.locator('#requestable-material-details-cancel').click();
+    await expect(page.locator('[data-testid="requestable-material-request-unit"]')).toHaveText('รีม');
+
+    // The list shows the new name.
+    await page.locator('#back-requestable-material-list-link').click();
+    await expect(page).toHaveURL(/\/requestable-materials$/);
+    await page.locator('#requestable-material-search').fill('กระดาษถ่ายเอกสาร');
+    await page.locator('#requestable-material-search-submit').click();
+    await expect(page).toHaveURL(/\?search=/);
+    await expect(page.locator(`[data-testid="requestable-material-row-${paperId}"]`)).toContainText('กระดาษถ่ายเอกสาร A4');
+
+  });
+
+  test('Journey F009-T8.2: "แก้ไขข้อมูลอื่น" says when the Unit list is loading and fails closed when it cannot be read, and keeps a Request Unit made Inactive in the Unit list, shown marked, through a save of the description', async ({ page, context }) => {
+    await loginAs(context, officerUserId);
+    await delaySessionCheck(page);
+    const historyEntries = page.locator('#requestable-material-history > li');
+
+    // A Request Unit made Inactive in the Unit list stays offered as itself, marked, and kept by a save of the other
+    // details (#202 Q15, story 11).
+    const bar = 'แท่งขอเบิก';
+    await page.goto(`${targetBaseUrl}/stock-materials/lists`);
+    await page.locator('#unit-add').click();
+    await page.locator('#unit-name').fill(bar);
+    await page.locator('#unit-add-submit').click();
+    await expect(page.locator('#catalog-list-unit')).toContainText(bar);
+    const barId: string = (await pool.query('SELECT id FROM units WHERE name = $1', [bar])).rows[0].id;
+    await page.goto(`${targetBaseUrl}/requestable-materials/new`);
+    await page.locator('#requestable-material-name').fill('ปากกาไวท์บอร์ด');
+    await page.locator('#requestable-material-request-unit').selectOption({ label: bar });
+    await page.locator('#requestable-material-submit').click();
+    await expect(page.getByRole('heading', { level: 1, name: 'ปากกาไวท์บอร์ด' })).toBeVisible();
+    const penUrl = page.url();
+    await page.goto(`${targetBaseUrl}/stock-materials/lists`);
+    await page.locator(`#unit-inactivate-${barId}`).click();
+    await page.locator('#unit-status-submit').click();
+    await expect(page.locator(`[data-testid="unit-status-${barId}"]`)).toHaveText('หยุดใช้');
+    // The form says when the Unit list is loading, and fails closed when it cannot be read.
+    await page.goto(penUrl);
+    let releaseUnits = () => {};
+    const unitsHeld = new Promise<void>((resolve) => {
+      releaseUnits = resolve;
+    });
+    await page.route('**/units', async (route) => {
+      await unitsHeld;
+      await route.fulfill({ status: 500, contentType: 'application/json', body: '{}' });
+    });
+    await page.locator('#requestable-material-details-action').click();
+    await expect(page.getByRole('status')).toHaveText('กำลังโหลด...');
+    releaseUnits();
+    await expect(page.locator('#requestable-material-details-error')).toHaveText('เกิดข้อผิดพลาดในการโหลดรายการหน่วยนับ');
+    await expect(page.locator('#requestable-material-details-form')).toHaveCount(0);
+    await page.unroute('**/units');
+    await page.reload();
+    await page.locator('#requestable-material-details-action').click();
+    await expect(page.locator('#requestable-material-details-request-unit')).toHaveValue(barId);
+    await expect(page.locator('#requestable-material-details-description')).toHaveValue('');
+    await expect(page.locator('#requestable-material-details-request-unit option:checked')).toHaveText(`${bar} (หยุดใช้)`);
+    await page.locator('#requestable-material-details-description').fill('สีดำ');
+    await page.locator('#requestable-material-details-submit').click();
+    await expect(page.locator('[data-testid="requestable-material-description"]')).toHaveText('สีดำ');
+    await expect(historyEntries.last()).toContainText('รายละเอียด- → สีดำ');
+    await expect(page.locator('[data-testid="requestable-material-request-unit"]')).toHaveText(bar);
   });
 });
