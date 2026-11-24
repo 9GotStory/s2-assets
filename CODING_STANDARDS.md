@@ -139,6 +139,14 @@ URL with `toHaveURL` before the next step acts: a page acts on the URL it last s
 (#128), a Location chosen right after the "ทั้งหมด" Discrepancy link kept the Discrepancy filter the
 link had just removed.
 
+## A journey's fixture states the fact it needs
+
+A journey step that needs a fact of the data, such as a Unit every current Compatible Stock Material
+has, makes that fact itself through the services. It does not take the fact from whichever row an
+earlier journey left behind, because which row that is can turn on the order of random ids. In F009-T8 (#210),
+Journey T8.1 looked for such a Unit among the Compatible Stock Materials T7.1 left current. Which one
+T7.1 left turned on their ids, so the spec passed alone and failed in `all.sh`.
+
 ## A correction keeps every stored value it replaces
 
 A correction record lists the before and after of each stored value its write changes, side effects

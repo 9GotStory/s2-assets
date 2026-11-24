@@ -103,6 +103,16 @@ print_failed_responses() {
   done < <(find "$results" -name trace.zip -print0)
 }
 
+# Names each journey that ran out of time: its log shows only the assertion that was waiting when the test's
+# timeout ended it, which reads as a wrong value (#210 retro, a journey past 30 s).
+print_timeouts() {
+  local results=$1 context timeout
+  while IFS= read -r -d '' context; do
+    timeout=$(grep -m 1 -o 'Test timeout of [0-9]*ms exceeded' "$context") || continue
+    note "$timeout in $(basename "$(dirname "$context")"): the failed assertion above is the step it was waiting on" >&2
+  done < <(find "$results" -name error-context.md -print0)
+}
+
 # Copies a failed run's results out of the workspace. A run with no results takes no slot.
 keep_failed_results() {
   local results="$WORKSPACE/apps/web/test-results" kept
@@ -111,6 +121,7 @@ keep_failed_results() {
   ls -1dt "$FAILED_RUNS"/*/ | tail -n +4 | xargs -r -d '\n' rm -rf --
   note "journeys failed at $tested_commit; results in $kept" >&2
   print_failed_responses "$kept" || true
+  print_timeouts "$kept" || true
 }
 
 if ((status != 0)); then
