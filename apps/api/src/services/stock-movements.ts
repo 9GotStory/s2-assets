@@ -3,16 +3,17 @@ import type { ConversionSnapshot } from './base-quantity.ts';
 import { joinUnitEntry } from './catalog-list-entries.ts';
 
 // F010-T2 (#233): the module that owns stock_movements, the one table of Stock Movements (รายการเคลื่อนไหว) that
-// Features 010 to 014 share (ADR 0003, #231 P2). Rows are only ever added: a trigger refuses every UPDATE and DELETE.
+// Features 010 to 014 share (ADR 0003, #231 P2). Rows are only ever added: a trigger refuses every UPDATE, DELETE and TRUNCATE.
 // What they add up to is read through current-stock.ts.
 
-// The kinds Feature 010 writes so far (0032_opening_balances_stock_movements); T3 adds the Material Receipt's.
+// The kinds 0032_opening_balances_stock_movements allows; T3 adds the Material Receipt's, and T6 and T7 write the
+// Reversals.
 export type StockMovementKind = 'OPENING_BALANCE' | 'REVERSAL';
 
 // A Stock Movement made by an Opening Balance line, as Feature 008's quantity normalization gave it (#231 Numbers).
 export interface NewStockMovement {
   stock_material_id: string;
-  kind: StockMovementKind;
+  kind: 'OPENING_BALANCE';
   opening_balance_line_id: string;
   effective_date: string;
   original_quantity: string;

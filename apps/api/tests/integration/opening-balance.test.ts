@@ -442,7 +442,7 @@ describe('Opening Balance (Seam A - F010-T2)', () => {
       const before = await counts();
       const res = await confirm(id, 1);
       expect(res.statusCode).toBe(409);
-      const message = `lines[1].stock_material_id names a Stock Material with a Stock Movement in effect, from Opening Balance ${first.number}`;
+      const message = `lines[1].stock_material_id names ${paper.name}, a Stock Material with a Stock Movement in effect, from Opening Balance ${first.number}`;
       expect(res.json()).toMatchObject({ code: 'NOT_CONFIRMABLE', message: `The Opening Balance cannot be confirmed: ${message}` });
       expect(res.json().problems).toEqual([{ field: 'lines[1].stock_material_id', message, in_effect_opening_balance: { opening_balance_id: first.id, opening_balance_number: first.number } }]);
       expect(await counts()).toEqual(before);
@@ -686,6 +686,19 @@ describe('Opening Balance (Seam A - F010-T2)', () => {
         expect(failed.json().error).toMatchObject({ code: 'INTERNAL_SERVER_ERROR', message: 'An unexpected internal server error occurred.' });
       }
       expect(await counts()).toEqual(before);
+    });
+
+    it('tells the list and the page whether the viewer may write, which follows material:manage alone', async () => {
+      const id = await draft();
+      for (const url of ['/opening-balances?limit=1', `/opening-balances/${id}`]) {
+        expect((await api.get(officer, url)).json().can_manage).toBe(true);
+        for (const viewer of [admin, readonly]) {
+          expect((await api.get(viewer, url)).json().can_manage).toBe(false);
+        }
+        const denied = await withCapabilityAnswer(api.app, 'material:manage', async () => false, () => api.get(officer, url));
+        expect(denied.statusCode).toBe(200);
+        expect(denied.json().can_manage).toBe(false);
+      }
     });
 
     it('needs a session and the CSRF token for every write', async () => {

@@ -34,6 +34,12 @@ const actionStyle: React.CSSProperties = { padding: '0.5rem 1.25rem', borderRadi
 
 type Action = 'confirm' | 'remove';
 
+// A refusal names a line by its place, `lines[<i>]`: the page names it by its number in the table (ลำดับ).
+const problemLine = (problem: ConfirmProblem): string => {
+  const line = /^lines\[(\d+)\]/.exec(problem.field);
+  return line === null ? problem.message : `รายการที่ ${Number(line[1]) + 1}: ${problem.message}`;
+};
+
 const OpeningBalanceDetailContent: React.FC<{ id: string }> = ({ id }) => {
   const navigate = useNavigate();
   const [action, setAction] = useState<Action | null>(null);
@@ -158,7 +164,7 @@ const OpeningBalanceDetailContent: React.FC<{ id: string }> = ({ id }) => {
                       <ul data-testid="opening-balance-confirm-problems" style={{ margin: 0, paddingLeft: '1.25rem' }}>
                         {(body.problems as ConfirmProblem[]).map((problem, index) => (
                           <li key={index}>
-                            {problem.message}
+                            {problemLine(problem)}
                             {problem.in_effect_opening_balance && (
                               <>
                                 {' '}
@@ -207,6 +213,7 @@ const OpeningBalanceDetailContent: React.FC<{ id: string }> = ({ id }) => {
                 <table id="opening-balance-lines-table" style={{ width: '100%', borderCollapse: 'collapse', textAlign: 'left', fontSize: '0.875rem' }}>
                   <thead>
                     <tr style={{ backgroundColor: '#f9fafb', borderBottom: '2px solid #e5e7eb' }}>
+                      <th style={headStyle}>ลำดับ</th>
                       <th style={headStyle}>วัสดุ</th>
                       <th style={headStyle}>จำนวน</th>
                       <th style={headStyle}>{UNIT_LABEL}</th>
@@ -219,6 +226,7 @@ const OpeningBalanceDetailContent: React.FC<{ id: string }> = ({ id }) => {
                       const movement = line.stock_movements.find((recorded) => recorded.id === line.stock_movement_id);
                       return (
                         <tr key={line.id} data-testid={`opening-balance-line-${line.position}`} style={{ borderBottom: '1px solid #e5e7eb' }}>
+                          <td style={cellStyle}>{line.position + 1}</td>
                           <td style={cellStyle}>
                             <Link to={`/stock-materials/${line.stock_material.id}`} style={{ color: '#2563eb', textDecoration: 'underline' }}>
                               {line.stock_material.name}
@@ -227,7 +235,12 @@ const OpeningBalanceDetailContent: React.FC<{ id: string }> = ({ id }) => {
                           </td>
                           <td style={cellStyle}>{line.quantity ?? '-'}</td>
                           <td style={cellStyle}>{line.unit?.name ?? '-'}</td>
-                          <td style={cellStyle}>{movement ? `+${movement.base_quantity} ${movement.base_unit.name}` : '-'}</td>
+                          {/* In the Base Unit, with the conversion it was recorded with (#231 Numbers). */}
+                          <td style={cellStyle}>
+                            {movement
+                              ? `+${movement.base_quantity} ${movement.base_unit.name} (${movement.original_quantity} ${movement.original_unit.name} × ${movement.conversion_factor}) ณ ${thaiDate(movement.effective_date)}`
+                              : '-'}
+                          </td>
                           <td style={{ ...cellStyle, whiteSpace: 'pre-line' }}>{line.note ?? '-'}</td>
                         </tr>
                       );

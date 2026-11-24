@@ -106,7 +106,8 @@ export interface StockMaterialHistoryEntry {
   recorded_at: string;
 }
 
-export interface StockMaterialDetail {
+// F010-T2 (#233): with its Current Stock and Low Stock (#231 Q14).
+export interface StockMaterialDetail extends StockFigures {
   id: string;
   name: string;
   // F008-T4 (#179): under the name its list entry has now (#175 Q19), or none (Q2).
@@ -117,10 +118,6 @@ export interface StockMaterialDetail {
   material_category: NamedListEntry | null;
   // F008-T6 (#182): in the Base Unit, a decimal string without trailing zeros (#175 P1), or none (MC-20).
   minimum_stock: string | null;
-  // F010-T2 (#233): its Current Stock and Low Stock (#231 Q14).
-  current_stock: string | null;
-  has_stock_movement: boolean;
-  low_stock: boolean;
   is_active: boolean;
   version: number;
   created_by: string;

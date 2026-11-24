@@ -147,22 +147,23 @@ test.describe.serial('Material Stock journeys: Real SPA -> Composed API -> Postg
     await page.locator('#opening-balance-add-action').click();
     await expect(page.getByRole('heading', { level: 1, name: 'เพิ่มยอดตั้งต้น' })).toBeVisible();
 
-    // A Draft saves without ที่มาของยอด: 1 กล่อง and 3 รีม would be 8 รีม, so the line counts 1 กล่อง.
+    // A Draft saves without ที่มาของยอด, and with a line in กล่อง whose quantity is not yet counted.
     await page.locator('#opening-balance-as-of-date').fill('2026-09-30');
     await page.locator('#opening-balance-stock-material-search').fill(name);
     await page.locator('#opening-balance-stock-material-search-submit').click();
     await page.locator(`[data-testid="opening-balance-choose-${materialId}"]`).click();
     await expect(page.locator('[data-testid="opening-balance-line-0"]')).toContainText(name);
     await page.locator('#opening-balance-line-0-unit').selectOption({ label: `กล่อง ${tag}` });
-    await page.locator('#opening-balance-line-0-quantity').fill('1');
     await page.locator('#opening-balance-draft-submit').click();
     await expect(page.getByRole('heading', { level: 1, name: 'ยอดตั้งต้น ร่าง' })).toBeVisible();
     await expect(page.locator('[data-testid="opening-balance-source"]')).toHaveText('-');
 
-    // The confirm is refused with the rule it fails named, and nothing is recorded (Q25).
+    // The confirm is refused with every rule it fails named, a line's by its number in the table, and nothing is
+    // recorded (Q25).
     await page.locator('#opening-balance-confirm-action').click();
     await page.locator('#opening-balance-confirm-submit').click();
-    await expect(page.locator('[data-testid="opening-balance-confirm-problems"]')).toContainText('source is required');
+    const problems = page.locator('[data-testid="opening-balance-confirm-problems"] li');
+    await expect(problems).toHaveText(['source is required', 'รายการที่ 1: lines[0].quantity is required']);
     await page.locator('#opening-balance-confirm-cancel').click();
     await expect(page.getByRole('heading', { level: 1, name: 'ยอดตั้งต้น ร่าง' })).toBeVisible();
     j1 = { tag, name, ream, reamUnitId: reamUnit.id, materialId, draftUrl: page.url() };
@@ -184,7 +185,8 @@ test.describe.serial('Material Stock journeys: Real SPA -> Composed API -> Postg
     // "แก้ไขร่าง": ที่มาของยอด added, and the line moves to รีม: 7 รีม, below the Minimum Stock of 10.
     await page.locator('#opening-balance-edit-action').click();
     await expect(page.getByRole('heading', { level: 1, name: 'แก้ไขร่าง' })).toBeVisible();
-    await expect(page.locator('#opening-balance-line-0-quantity')).toHaveValue('1');
+    await expect(page.locator('#opening-balance-line-0-unit option:checked')).toHaveText(`กล่อง ${tag}`);
+    await expect(page.locator('#opening-balance-line-0-quantity')).toHaveValue('');
     await page.locator('#opening-balance-source').fill('สมุดคุมวัสดุ ปีงบประมาณ 2569');
     await page.locator('#opening-balance-line-0-unit').selectOption({ label: ream });
     await page.locator('#opening-balance-line-0-quantity').fill('7');
@@ -196,7 +198,7 @@ test.describe.serial('Material Stock journeys: Real SPA -> Composed API -> Postg
     await page.locator('#opening-balance-confirm-submit').click();
     await expect(page.getByRole('heading', { level: 1, name: /^ยอดตั้งต้น เลขที่ยอดตั้งต้น \d+$/ })).toBeVisible();
     await expect(page.locator('[data-testid="opening-balance-state"]')).toHaveText('ยืนยันแล้ว');
-    await expect(page.locator('[data-testid="opening-balance-line-0"]')).toContainText(`+7 ${ream}`);
+    await expect(page.locator('[data-testid="opening-balance-line-0"]')).toContainText(`+7 ${ream} (7 ${ream} × 1)`);
     await expect(page.locator('#opening-balance-confirm-action')).toHaveCount(0);
     await expect(page.locator('#opening-balance-edit-action')).toHaveCount(0);
 

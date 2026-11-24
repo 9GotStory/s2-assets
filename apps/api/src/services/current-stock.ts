@@ -12,7 +12,7 @@ export const stockMovementInEffect = (movement: string): string =>
   `(${movement}.reverses_stock_movement_id IS NULL AND NOT EXISTS (SELECT 1 FROM stock_movements rv WHERE rv.reverses_stock_movement_id = ${movement}.id))`;
 
 /**
- * A LATERAL subquery for `LEFT JOIN LATERAL … ON true`, over the Stock Movements of the Stock Material whose id is the
+ * A LATERAL subquery for `CROSS JOIN LATERAL`, one row however many there are, over the Stock Movements of the Stock Material whose id is the
  * SQL expression `stockMaterialId`, giving:
  * - `current_stock`: the sum of their Base Quantities in the Base Unit (MSL-03), or NULL when there is none;
  * - `has_stock_movement`: whether any exists, Reversals included;

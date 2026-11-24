@@ -118,7 +118,7 @@ describe('Opening Balance write order (Seam A - F010-T2)', () => {
       const number = won.json().opening_balance_number;
       expectRefusedFor(res, {
         field: 'lines[0].stock_material_id',
-        message: `lines[0].stock_material_id names a Stock Material with a Stock Movement in effect, from Opening Balance ${number}`,
+        message: `lines[0].stock_material_id names ${paper.name}, a Stock Material with a Stock Movement in effect, from Opening Balance ${number}`,
         in_effect_opening_balance: { opening_balance_id: first, opening_balance_number: number },
       } as any);
       expect((await materialOf(paper.id)).current_stock).toBe('3');

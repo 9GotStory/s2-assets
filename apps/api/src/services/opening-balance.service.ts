@@ -74,7 +74,7 @@ export class OpeningBalanceNotDraftError extends Error {
 export interface ConfirmProblem {
   field: string;
   message: string;
-  // For a Stock Material with a Stock Movement in effect from an Opening Balance: that one (story 40).
+  // For a Stock Material with a Stock Movement in effect from an Opening Balance line: that Opening Balance (story 40).
   in_effect_opening_balance?: { opening_balance_id: string; opening_balance_number: string };
 }
 
@@ -337,13 +337,14 @@ export class OpeningBalanceService {
       }
       const movements = lines.map((line) => {
         const field = `lines[${line.position}]`;
-        const found = inEffect.get(line.stock_material_id);
-        if (found !== undefined) {
-          problems.push({
-            field: `${field}.stock_material_id`,
-            message: `${field}.stock_material_id names a Stock Material with a Stock Movement in effect, from Opening Balance ${found.opening_balance_number}`,
-            in_effect_opening_balance: found,
-          });
+        if (inEffect.has(line.stock_material_id)) {
+          const holder = inEffect.get(line.stock_material_id);
+          const named = `${field}.stock_material_id names ${names.get(line.stock_material_id)!}, a Stock Material with a Stock Movement in effect`;
+          problems.push(
+            holder === null
+              ? { field: `${field}.stock_material_id`, message: named }
+              : { field: `${field}.stock_material_id`, message: `${named}, from Opening Balance ${holder!.opening_balance_number}`, in_effect_opening_balance: holder! }
+          );
         }
         if (line.unit_id === null) {
           problems.push({ field: `${field}.unit_id`, message: `${field}.unit_id is required` });
@@ -415,20 +416,22 @@ export class OpeningBalanceService {
   }
 
   /**
-   * Of the Stock Materials of `lines`, those with a Stock Movement in effect (Q28), from the one SQL source, each with
-   * the Opening Balance whose line holds it: in Feature 010 so far an Opening Balance makes every Stock Movement, and
-   * T3 (#234) adds the Material Receipt's.
+   * Of the Stock Materials of `lines`, those with a Stock Movement in effect (Q28), decided by the one SQL source alone,
+   * each with the Opening Balance whose line holds it, or null when no Opening Balance line does: T3 (#234) adds the
+   * Material Receipt's Stock Movements, and its refusal names the Receipt.
    */
-  private async inEffectOpeningBalances(client: pg.PoolClient, lines: StoredLine[]): Promise<Map<string, { opening_balance_id: string; opening_balance_number: string }>> {
+  private async inEffectOpeningBalances(client: pg.PoolClient, lines: StoredLine[]): Promise<Map<string, { opening_balance_id: string; opening_balance_number: string } | null>> {
     const res = await client.query(
       `SELECT s.id AS stock_material_id, ob.id AS opening_balance_id, ob.opening_balance_number::text AS opening_balance_number
        FROM unnest($1::uuid[]) AS s(id)
        CROSS JOIN LATERAL ${stockFiguresOf('s.id')} f
-       JOIN opening_balance_lines l ON l.stock_material_id = s.id AND l.stock_movement_id IS NOT NULL
-       JOIN opening_balances ob ON ob.id = l.opening_balance_id
+       LEFT JOIN opening_balance_lines l ON l.stock_material_id = s.id AND l.stock_movement_id IS NOT NULL
+       LEFT JOIN opening_balances ob ON ob.id = l.opening_balance_id
        WHERE f.has_stock_movement_in_effect`,
       [lines.map(({ stock_material_id }) => stock_material_id)]
     );
-    return new Map(res.rows.map((row: any) => [row.stock_material_id, { opening_balance_id: row.opening_balance_id, opening_balance_number: row.opening_balance_number }]));
+    return new Map(
+      res.rows.map((row: any) => [row.stock_material_id, row.opening_balance_id === null ? null : { opening_balance_id: row.opening_balance_id, opening_balance_number: row.opening_balance_number }])
+    );
   }
 }
