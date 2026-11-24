@@ -398,7 +398,7 @@ describe('Material Receipt (Seam A - F010-T3)', () => {
       expect((await materialOf(paper.id)).current_stock).toBe('5');
     });
 
-    it('keeps in the confirmed entry the names as they were, while the page shows them as they are now (#175 P6)', async () => {
+    it('keeps in the confirmed entry the names as they were, or none, while the page shows them as they are now (#175 P6)', async () => {
       const paper = await stocked();
       const party = await entryNamed('party');
       const before = (await entryOf('party', party)).name;
@@ -408,6 +408,10 @@ describe('Material Receipt (Seam A - F010-T3)', () => {
       const page = await receiptOf(id);
       expect(page.source_party).toEqual({ id: party, name: renamed, is_active: true });
       expect(page.history[0].facts.source_party).toEqual({ id: party, name: before });
+      expect(page.history[0].facts.source_type).toBeNull();
+      // One confirmed with neither keeps neither.
+      const plain = await received([line(paper.id, paper.ream, '1')]);
+      expect((await receiptOf(plain.id)).history[0].facts).toMatchObject({ source_party: null, source_type: null });
     });
 
     it('refuses a Draft with no line', async () => {

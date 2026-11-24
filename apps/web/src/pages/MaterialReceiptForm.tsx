@@ -206,14 +206,15 @@ const MaterialReceiptFormContent: React.FC<{ id: string | null }> = ({ id }) => 
               received_date: receivedDate === '' ? null : receivedDate,
               source_party_id: sourcePartyId === '' ? null : sourcePartyId,
               source_type_id: sourceTypeId === '' ? null : sourceTypeId,
-              receipt_reference: receiptReference.trim() === '' ? null : receiptReference,
-              note: note.trim() === '' ? null : note,
+              // The API trims free text and saves a blank one as none.
+              receipt_reference: receiptReference,
+              note,
               lines: lines.map((line) => ({
                 stock_material_id: line.stock_material_id,
                 unit_id: line.unit_id === '' ? null : line.unit_id,
                 quantity: line.quantity.trim() === '' ? null : line.quantity.trim(),
                 unit_price: line.unit_price.trim() === '' ? null : line.unit_price.trim(),
-                note: line.note.trim() === '' ? null : line.note,
+                note: line.note,
               })),
             })}
             refusedList={() => null}

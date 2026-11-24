@@ -236,6 +236,8 @@ test.describe.serial('Material Stock journeys: Real SPA -> Composed API -> Postg
       { name, base_unit: { unit_id: penUnit.id, whole_number_only: true }, alternate_units: [{ unit_id: boxUnit.id, conversion_factor: '12' }] },
       { retryToken: crypto.randomUUID() }
     );
+    // Another Draft of it, with no แหล่งที่มา, which the list's search leaves out.
+    await new MaterialReceiptService({ db: pool }).create(officerUserId, { lines: [{ stock_material_id: materialId }] }, { retryToken: crypto.randomUUID() });
     const party = `ร้านเครื่องเขียน J2 ${tag}`;
 
     await loginAs(context, officerUserId);
@@ -246,13 +248,14 @@ test.describe.serial('Material Stock journeys: Real SPA -> Composed API -> Postg
     await expect(page.getByRole('heading', { level: 1, name: 'รายการรับวัสดุ', exact: true })).toBeVisible();
     await page.locator('#material-receipt-add-action').click();
     await expect(page.getByRole('heading', { level: 1, name: 'เพิ่มรายการรับวัสดุ' })).toBeVisible();
-    await expect(page.locator('#material-receipt-form-not-allowed')).toHaveCount(0);
-    await expect(page.locator('[data-testid="material-receipt-total-amount"]')).toHaveCount(0);
 
     // A new แหล่งที่มา added from the form, which it then names; no วันที่รับ yet.
     await page.locator('#material-receipt-new-source-party').fill(party);
     await page.locator('#material-receipt-new-source-party-add').click();
     await expect(page.locator('#material-receipt-source-party option:checked')).toHaveText(party);
+    // The form loaded for a Supply Officer: no "not allowed" line, and no total while it has no line.
+    await expect(page.locator('#material-receipt-form-not-allowed')).toHaveCount(0);
+    await expect(page.locator('[data-testid="material-receipt-total-amount"]')).toHaveCount(0);
 
     // The Stock Material twice (Q9): 2 กล่อง at 120, then a second line, which takes the Unit no line of it holds, with
     // no quantity yet. An amount shows once its line has both, for reference only (Q8).
