@@ -27,6 +27,7 @@ import { stockMaterialRoutes } from './routes/stock-material.routes.ts';
 import { catalogListRoutes } from './routes/catalog-list.routes.ts';
 import { requestableMaterialRoutes } from './routes/requestable-material.routes.ts';
 import { materialRequestRoutes } from './routes/material-request.routes.ts';
+import { openingBalanceRoutes } from './routes/opening-balance.routes.ts';
 import { UserService, type DatabaseClient } from './services/user.service.ts';
 import { SessionService } from './services/session.service.ts';
 import { CapabilityService } from './services/capability.service.ts';
@@ -56,6 +57,8 @@ import { CatalogListService } from './services/catalog-list.service.ts';
 import { RequestableMaterialService } from './services/requestable-material.service.ts';
 import { RequestableMaterialReadService } from './services/requestable-material-read.service.ts';
 import { MaterialRequestService } from './services/material-request.service.ts';
+import { OpeningBalanceReadService } from './services/opening-balance-read.service.ts';
+import { OpeningBalanceService } from './services/opening-balance.service.ts';
 import { MaterialRequestReadService } from './services/material-request-read.service.ts';
 
 export interface AppOptions {
@@ -347,6 +350,12 @@ export async function buildApp(options: AppOptions = {}): Promise<FastifyInstanc
       materialRequestService: new MaterialRequestService({ db: dbClient }),
       materialRequestReadService: new MaterialRequestReadService({ db: dbClient }),
       requestableMaterialReadService: new RequestableMaterialReadService({ db: dbClient }),
+    });
+    // F010-T2 (#233): the Opening Balances
+    await app.register(openingBalanceRoutes, {
+      openingBalanceService: new OpeningBalanceService({ db: dbClient, clock: options.clock }),
+      openingBalanceReadService: new OpeningBalanceReadService({ db: dbClient }),
+      capabilityService,
     });
 
     // Acquisition routes mounted under /acquisitions

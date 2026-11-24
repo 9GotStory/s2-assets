@@ -2,6 +2,7 @@ import pg from 'pg';
 import { containsPattern } from './asset-lookups.ts';
 import { joinCatalogListEntry, joinUnitEntry, type CatalogListKind, type NamedListEntry } from './catalog-list-entries.ts';
 import { comparedName } from './compared-name.ts';
+import { lowStock, stockFiguresOf } from './current-stock.ts';
 import { handlesUnit } from './stock-material-handles-unit.ts';
 
 // One row of the Stock Material list (#175 Q15).
@@ -19,6 +20,19 @@ export interface StockMaterialRow {
   minimum_stock: string | null;
 }
 
+// F010-T2 (#233): what a Stock Material's Stock Movements give it, from the one SQL source (current-stock.ts, #231 P3).
+export interface StockFigures {
+  // Current Stock (คงเหลือ) in the Base Unit, a decimal string without trailing zeros, or none while it has no Stock
+  // Movement (ยังไม่มีรายการเคลื่อนไหว, Q22).
+  current_stock: string | null;
+  has_stock_movement: boolean;
+  // ต่ำกว่าขั้นต่ำ (MC-20).
+  low_stock: boolean;
+}
+
+// One row of the Stock Material list, with its stock (F010-T2, #231 Q14).
+export interface StockMaterialListRow extends StockMaterialRow, StockFigures {}
+
 export interface StockMaterialListFilters {
   // Text found in the name, the Brand's name, the Model or the Specification (#175 Q15, MC-10).
   search?: string;
@@ -28,12 +42,14 @@ export interface StockMaterialListFilters {
   minimum_stock?: 'set' | 'not_set';
   // F008-T7 (#180): the Stock Materials in use (ใช้งานอยู่), the Inactive ones (หยุดใช้), or all (#175 MC-14, Q13).
   status: 'active' | 'inactive' | 'all';
+  // F010-T2 (#233): only the Low Stock ones (ต่ำกว่าขั้นต่ำ, #231 Q14).
+  low_stock?: boolean;
   limit: number;
   offset: number;
 }
 
 export interface StockMaterialList {
-  items: StockMaterialRow[];
+  items: StockMaterialListRow[];
   limit: number;
   offset: number;
   total_count: number;
@@ -101,6 +117,10 @@ export interface StockMaterialDetail {
   material_category: NamedListEntry | null;
   // F008-T6 (#182): in the Base Unit, a decimal string without trailing zeros (#175 P1), or none (MC-20).
   minimum_stock: string | null;
+  // F010-T2 (#233): its Current Stock and Low Stock (#231 Q14).
+  current_stock: string | null;
+  has_stock_movement: boolean;
+  low_stock: boolean;
   is_active: boolean;
   version: number;
   created_by: string;
@@ -167,6 +187,16 @@ export async function lockedStockMaterial(client: pg.PoolClient, stockMaterialId
   return res.rows[0] ?? null;
 }
 
+/**
+ * F010-T2 (#233): the names of the Stock Materials `ids`, by id, each locked FOR UPDATE in id order, as a write that
+ * adds Stock Movements locks them (#231 P4). A Units write and a Material Correction lock a Stock Material FOR UPDATE
+ * too, so each waits for the write or is seen by it. An id with no Stock Material is left out.
+ */
+export async function lockedStockMaterialsForStock(client: pg.PoolClient, ids: string[]): Promise<Map<string, string>> {
+  const res = await client.query('SELECT id, name FROM stock_materials WHERE id = ANY($1::uuid[]) ORDER BY id FOR UPDATE', [ids]);
+  return new Map(res.rows.map((row: any) => [row.id, row.name]));
+}
+
 // F009-T2 (#204): a Stock Material as a Requestable Material's page lists it among its Compatible Stock Materials.
 export interface StockMaterialSummary {
   stock_material_id: string;
@@ -217,19 +247,36 @@ const toRow = (row: any): StockMaterialRow => ({
   minimum_stock: row.minimum_stock,
 });
 
+const toListRow = (row: any): StockMaterialListRow => ({
+  ...toRow(row),
+  current_stock: row.current_stock,
+  has_stock_movement: row.has_stock_movement,
+  low_stock: row.low_stock,
+});
+
 // The Stock Materials that every one of `conditions` passes, over `params`, a page of them by name with their count.
-async function pageOf(runner: pg.Pool | pg.PoolClient, conditions: string[], params: unknown[], limit: number, offset: number): Promise<StockMaterialList> {
+async function pageOf<Item>(
+  runner: pg.Pool | pg.PoolClient,
+  conditions: string[],
+  params: unknown[],
+  limit: number,
+  offset: number,
+  toItem: (row: any) => Item
+): Promise<Omit<StockMaterialList, 'items'> & { items: Item[] }> {
+  // F010-T2 (#233): a row reads its stock figures as `f`, which a condition may filter on; only the list shows them.
   const values = [...params, limit, offset];
   // The count joins the page, so a page past the end still says how many Stock Materials pass.
   const res = await runner.query(
     `WITH filtered AS (
        SELECT m.id, m.name, m.model, m.specification, trim_scale(m.minimum_stock)::text AS minimum_stock, m.is_active, u.id AS base_unit_id, u.name AS base_unit_name,
-              br.id AS brand_id, br.name AS brand_name, mc.id AS material_category_id, mc.name AS material_category_name
+              br.id AS brand_id, br.name AS brand_name, mc.id AS material_category_id, mc.name AS material_category_name,
+              trim_scale(f.current_stock)::text AS current_stock, f.has_stock_movement, ${lowStock('f', 'm.minimum_stock')} AS low_stock
        FROM stock_materials m
        JOIN stock_material_units b ON b.stock_material_id = m.id AND b.is_base
        ${joinUnitEntry('u', 'b.unit_id')}
        ${joinCatalogListEntry('brand', 'br', 'm.brand_id')}
        ${joinCatalogListEntry('material-category', 'mc', 'm.material_category_id')}
+       CROSS JOIN LATERAL ${stockFiguresOf('m.id')} f
        ${conditions.length > 0 ? `WHERE ${conditions.join(' AND ')}` : ''}
      ),
      counted AS (SELECT count(*)::int AS total_count FROM filtered),
@@ -245,7 +292,7 @@ async function pageOf(runner: pg.Pool | pg.PoolClient, conditions: string[], par
     values
   );
   const totalCount: number = res.rows[0]?.total_count ?? 0;
-  const items = res.rows.filter((row: any) => row.id !== null).map(toRow);
+  const items = res.rows.filter((row: any) => row.id !== null).map(toItem);
   return { items, limit, offset, total_count: totalCount, has_more: offset + items.length < totalCount };
 }
 
@@ -282,7 +329,7 @@ export async function stockMaterialChoicesOf(
   if (search !== undefined) {
     conditions.push(searchCondition(params, search));
   }
-  const page = await pageOf(runner, conditions, params, limit, offset);
+  const page = await pageOf(runner, conditions, params, limit, offset, toRow);
   const handled = await runner.query(`SELECT m.id, ${handlesUnit('m.id', '$2')} AS handles_request_unit FROM stock_materials m WHERE m.id = ANY($1::uuid[])`, [
     page.items.map(({ id }) => id),
     requestUnitId,
@@ -299,7 +346,7 @@ export async function stockMaterialChoicesOf(
 export async function duplicateCandidatesOf(runner: pg.Pool | pg.PoolClient, name: string, excludedId: string | null = null): Promise<DuplicateCandidates> {
   const condition = `(strpos(${comparedName('m.name')}, ${comparedName('$1')}) > 0 OR strpos(${comparedName('$1')}, ${comparedName('m.name')}) > 0)`;
   const conditions = excludedId === null ? [condition] : [condition, 'm.id <> $2'];
-  const page = await pageOf(runner, conditions, excludedId === null ? [name] : [name, excludedId], DUPLICATE_CANDIDATES_LIMIT, 0);
+  const page = await pageOf(runner, conditions, excludedId === null ? [name] : [name, excludedId], DUPLICATE_CANDIDATES_LIMIT, 0, toRow);
   return { candidates: page.items, total_count: page.total_count, has_more: page.has_more, limit: page.limit, offset: page.offset };
 }
 
@@ -329,7 +376,10 @@ export class StockMaterialReadService {
     if (filters.status !== 'all') {
       conditions.push(filters.status === 'active' ? 'm.is_active' : 'NOT m.is_active');
     }
-    return pageOf(this.db, conditions, params, filters.limit, filters.offset);
+    if (filters.low_stock) {
+      conditions.push(lowStock('f', 'm.minimum_stock'));
+    }
+    return pageOf(this.db, conditions, params, filters.limit, filters.offset, toListRow);
   }
 
   /** F008-T5 (#181): the Duplicate Candidates of `name`, but the Stock Material `excludedId`. */
@@ -340,9 +390,12 @@ export class StockMaterialReadService {
   /** A Stock Material with its Units and its history, or null when there is none. */
   async read(id: string): Promise<StockMaterialDetail | null> {
     const res = await this.db.query(
-      `SELECT m.id, m.name, m.model, m.specification, m.note, trim_scale(m.minimum_stock)::text AS minimum_stock, m.is_active, m.version, m.created_by, u.username AS created_by_username, m.recorded_at,
+      `SELECT m.id, m.name, m.model, m.specification, m.note, trim_scale(m.minimum_stock)::text AS minimum_stock,
+              trim_scale(f.current_stock)::text AS current_stock, f.has_stock_movement, ${lowStock('f', 'm.minimum_stock')} AS low_stock,
+              m.is_active, m.version, m.created_by, u.username AS created_by_username, m.recorded_at,
               b.id AS brand_id, b.name AS brand_name, c.id AS material_category_id, c.name AS material_category_name
        FROM stock_materials m
+       CROSS JOIN LATERAL ${stockFiguresOf('m.id')} f
        LEFT JOIN users u ON u.id = m.created_by
        ${joinCatalogListEntry('brand', 'b', 'm.brand_id')}
        ${joinCatalogListEntry('material-category', 'c', 'm.material_category_id')}

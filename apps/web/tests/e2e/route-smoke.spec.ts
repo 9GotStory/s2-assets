@@ -18,6 +18,7 @@ import { CatalogListService } from '../../../api/src/services/catalog-list.servi
 import { RequestableMaterialService } from '../../../api/src/services/requestable-material.service.ts';
 import { MaterialRequestService } from '../../../api/src/services/material-request.service.ts';
 import { StockMaterialService } from '../../../api/src/services/stock-material.service.ts';
+import { OpeningBalanceService } from '../../../api/src/services/opening-balance.service.ts';
 import { repositoryProxyConfig } from '../../vite.config.ts';
 
 const { Pool } = pg;
@@ -41,6 +42,7 @@ interface Fixtures {
   requestableMaterialName: string;
   materialRequestId: string;
   requestNumber: string;
+  openingBalanceId: string;
 }
 
 // Each route of router.tsx: the page a Read-only User who is also a Requester and a Supply Officer opens and its
@@ -82,6 +84,11 @@ const SMOKE: Record<string, { url: (f: Fixtures) => string; heading: (f: Fixture
   '/material-requests/:id': { url: (f) => `/material-requests/${f.materialRequestId}`, heading: (f) => `คำขอเบิก เลขที่คำขอ ${f.requestNumber}` },
   // F009-T6 (#208): every person's Material Requests, for material-request:view.
   '/material-requests': { url: () => '/material-requests', heading: () => 'คำขอเบิก' },
+  // F010-T2 (#233): every catalog viewer reads the Opening Balances; the Supply Officer role reaches the Draft form.
+  '/opening-balances': { url: () => '/opening-balances', heading: () => 'ยอดตั้งต้น' },
+  '/opening-balances/new': { url: () => '/opening-balances/new', heading: () => 'เพิ่มยอดตั้งต้น' },
+  '/opening-balances/:id': { url: (f) => `/opening-balances/${f.openingBalanceId}`, heading: () => 'ยอดตั้งต้น ร่าง' },
+  '/opening-balances/:id/edit': { url: (f) => `/opening-balances/${f.openingBalanceId}/edit`, heading: () => 'แก้ไขร่าง' },
 };
 
 // The paths router.tsx declares, read from its text: importing it builds a browser router, which needs a window.
@@ -194,6 +201,12 @@ test.describe.serial('Route smoke: Real SPA -> Composed API -> PostgreSQL (Seam 
       { requested_items: [{ requestable_material_id: requestableMaterialId, requested_quantity: '2' }] },
       { retryToken: crypto.randomUUID() }
     );
+    // A Draft with one line, so the edit form reads its Stock Material's Units.
+    const { opening_balance_id: openingBalanceId } = await new OpeningBalanceService({ db: pool }).create(
+      officerUserId,
+      { lines: [{ stock_material_id: stockMaterialId, unit_id: unit.id, quantity: '3' }] },
+      { retryToken: crypto.randomUUID() }
+    );
     fixtures = {
       assetId: asset.id,
       assetName,
@@ -207,6 +220,7 @@ test.describe.serial('Route smoke: Real SPA -> Composed API -> PostgreSQL (Seam 
       requestableMaterialName,
       materialRequestId,
       requestNumber,
+      openingBalanceId,
     };
 
     const testProxy: Record<string, any> = {};

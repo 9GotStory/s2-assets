@@ -24,6 +24,9 @@ import { RequestableMaterialList } from './pages/RequestableMaterialList';
 import { RequestableMaterialCreate } from './pages/RequestableMaterialCreate';
 import { RequestableMaterialDetail } from './pages/RequestableMaterialDetail';
 import { MaterialRequestList } from './pages/MaterialRequestList';
+import { OpeningBalanceList } from './pages/OpeningBalanceList';
+import { OpeningBalanceForm } from './pages/OpeningBalanceForm';
+import { OpeningBalanceDetail } from './pages/OpeningBalanceDetail';
 import { MaterialRequestCreate } from './pages/MaterialRequestCreate';
 import { MaterialRequestDetail } from './pages/MaterialRequestDetail';
 
@@ -417,6 +420,23 @@ export const routes: RouteObject[] = [
   {
     path: '/material-requests/:id',
     element: <MaterialRequestDetail />,
+  },
+  // F010-T2 (#233): "ยอดตั้งต้น", its Draft form and each Opening Balance's page
+  {
+    path: '/opening-balances',
+    element: <OpeningBalanceList />,
+  },
+  {
+    path: '/opening-balances/new',
+    element: <OpeningBalanceForm />,
+  },
+  {
+    path: '/opening-balances/:id',
+    element: <OpeningBalanceDetail />,
+  },
+  {
+    path: '/opening-balances/:id/edit',
+    element: <OpeningBalanceForm />,
   },
 ];
 

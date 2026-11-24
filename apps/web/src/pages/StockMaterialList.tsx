@@ -8,6 +8,8 @@ import {
   BASE_UNIT_LABEL,
   BRAND_LABEL,
   ACTIVE_LABEL,
+  CURRENT_STOCK_LABEL,
+  LOW_STOCK_LABEL,
   INACTIVE_LABEL,
   MATERIAL_CATEGORY_LABEL,
   MINIMUM_STOCK_LABEL,
@@ -17,6 +19,7 @@ import {
   NO_MATERIAL_CATEGORY_LABEL,
   SPECIFICATION_LABEL,
   STOCK_MATERIAL_LABEL,
+  currentStockLine,
   minimumStockLine,
   type StockMaterialList as MaterialList,
 } from '../components/materialFacts';
@@ -42,11 +45,13 @@ const StockMaterialListContent: React.FC = () => {
   const minimumStock = params.get('minimum_stock') ?? '';
   // "inactive", "all", or empty for those in use, the default (F008-T7, #175 Q13).
   const status = params.get('status') ?? '';
+  // "true" for the Low Stock ones only, or empty for every one (F010-T2, #231 Q14).
+  const lowStock = params.get('low_stock') === 'true';
   const offset = Math.max(0, Number(params.get('offset')) || 0);
   const [searchInput, setSearchInput] = useState(search);
 
   const materials = useQuery<MaterialList, Error & { status?: number }>({
-    queryKey: ['stock-materials', search, materialCategoryId, minimumStock, status, offset],
+    queryKey: ['stock-materials', search, materialCategoryId, minimumStock, status, lowStock, offset],
     queryFn: async ({ signal }) => {
       const query = new URLSearchParams({ limit: String(PAGE_SIZE), offset: String(offset) });
       if (search.trim() !== '') {
@@ -60,6 +65,9 @@ const StockMaterialListContent: React.FC = () => {
       }
       if (status !== '') {
         query.set('status', status);
+      }
+      if (lowStock) {
+        query.set('low_stock', 'true');
       }
       const res = await fetch(`/stock-materials?${query}`, { credentials: 'include', signal });
       if (!res.ok) {
@@ -85,7 +93,7 @@ const StockMaterialListContent: React.FC = () => {
   const list = materials.isError ? undefined : materials.data;
   const isForbidden = materials.error?.status === 403;
 
-  const goTo = (next: { search?: string; materialCategoryId?: string; minimumStock?: string; status?: string; offset?: number }) => {
+  const goTo = (next: { search?: string; materialCategoryId?: string; minimumStock?: string; status?: string; lowStock?: boolean; offset?: number }) => {
     const query = new URLSearchParams();
     const nextSearch = (next.search ?? search).trim();
     if (nextSearch !== '') {
@@ -102,6 +110,9 @@ const StockMaterialListContent: React.FC = () => {
     const nextStatus = next.status ?? status;
     if (nextStatus !== '') {
       query.set('status', nextStatus);
+    }
+    if (next.lowStock ?? lowStock) {
+      query.set('low_stock', 'true');
     }
     if (next.offset) {
       query.set('offset', String(next.offset));
@@ -215,6 +226,10 @@ const StockMaterialListContent: React.FC = () => {
                 <option value="inactive">{INACTIVE_LABEL}</option>
                 <option value="all">ทั้งหมด</option>
               </select>
+              <label htmlFor="stock-material-low-stock-filter" style={{ display: 'inline-flex', alignItems: 'center', gap: '0.375rem', fontSize: '0.875rem', color: '#374151' }}>
+                <input id="stock-material-low-stock-filter" type="checkbox" checked={lowStock} onChange={(e) => goTo({ lowStock: e.target.checked, offset: 0 })} />
+                {LOW_STOCK_LABEL}
+              </label>
             </div>
 
             <section aria-label={STOCK_MATERIAL_LABEL} id="stock-material-list-region">
@@ -223,7 +238,7 @@ const StockMaterialListContent: React.FC = () => {
                   id="stock-material-list-empty"
                   style={{ padding: '3rem 1rem', textAlign: 'center', backgroundColor: '#f9fafb', borderRadius: '6px', border: '1px dashed #d1d5db', color: '#6b7280', fontSize: '0.9375rem' }}
                 >
-                  {search.trim() === '' && materialCategoryId === '' && minimumStock === '' && status === '' ? 'ยังไม่มีวัสดุ' : 'ไม่พบวัสดุที่ค้นหา'}
+                  {search.trim() === '' && materialCategoryId === '' && minimumStock === '' && status === '' && !lowStock ? 'ยังไม่มีวัสดุ' : 'ไม่พบวัสดุที่ค้นหา'}
                 </div>
               ) : (
                 <div style={{ overflowX: 'auto' }}>
@@ -237,6 +252,7 @@ const StockMaterialListContent: React.FC = () => {
                         <th style={headStyle}>{MATERIAL_CATEGORY_LABEL}</th>
                         <th style={headStyle}>{BASE_UNIT_LABEL}</th>
                         <th style={headStyle}>{MINIMUM_STOCK_LABEL}</th>
+                        <th style={headStyle}>{CURRENT_STOCK_LABEL}</th>
                       </tr>
                     </thead>
                     <tbody>
@@ -261,6 +277,17 @@ const StockMaterialListContent: React.FC = () => {
                           <td style={cellStyle}>{material.material_category?.name ?? '-'}</td>
                           <td style={cellStyle}>{material.base_unit.name}</td>
                           <td style={cellStyle}>{minimumStockLine(material.minimum_stock, material.base_unit.name)}</td>
+                          <td style={cellStyle} data-testid={`stock-material-current-stock-${material.id}`}>
+                            <span style={material.has_stock_movement ? undefined : { color: '#6b7280' }}>{currentStockLine(material, material.base_unit.name)}</span>
+                            {material.low_stock && (
+                              <span
+                                data-testid={`stock-material-low-stock-badge-${material.id}`}
+                                style={{ marginLeft: '0.5rem', padding: '0.125rem 0.5rem', backgroundColor: '#fee2e2', color: '#991b1b', borderRadius: '9999px', fontSize: '0.75rem', fontWeight: 600, whiteSpace: 'nowrap' }}
+                              >
+                                {LOW_STOCK_LABEL}
+                              </span>
+                            )}
+                          </td>
                         </tr>
                       ))}
                     </tbody>
