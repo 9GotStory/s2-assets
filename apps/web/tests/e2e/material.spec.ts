@@ -838,12 +838,12 @@ test.describe.serial('Stock Material journeys: Real SPA -> Composed API -> Postg
     await expect(page.locator(`[data-testid="source-party-name-${id}"]`)).toHaveText(`บริษัท เครื่องเขียน ${tag}`);
 
     // Its note is changed apart from a Rename: one that does not change is refused, and a change by another Supply
-    // Officer while the form is open refuses it as stale; read again, it saves.
+    // Officer while the form is open refuses it as stale; read again, a blank note clears it.
     await page.locator(`#source-party-edit-note-${id}`).click();
     await expect(page.locator('#source-party-note')).toHaveValue('ติดต่อฝ่ายขาย\nโทร 02-000-0000');
     await page.locator('#source-party-note-submit').click();
     await expect(page.locator('[data-testid="source-party-note-form-error"]')).toContainText('หมายเหตุใหม่ยังเหมือนหมายเหตุเดิม');
-    await page.locator('#source-party-note').fill('ส่งของทุกวันจันทร์');
+    await page.locator('#source-party-note').fill(' ');
     await new CatalogListService({ db: pool }).changeNote(officerUserId, id, { expected_version: 2, note: 'เปลี่ยนโดยอีกคน' }, { retryToken: crypto.randomUUID() });
     await page.locator('#source-party-note-submit').click();
     await expect(page.locator('[data-testid="source-party-note-form-error"]')).toContainText('มีผู้แก้ไขรายการนี้ไปแล้ว กรุณาโหลดใหม่');
@@ -851,12 +851,12 @@ test.describe.serial('Stock Material journeys: Real SPA -> Composed API -> Postg
     await expect(page.locator(`[data-testid="source-party-note-${id}"]`)).toHaveText('เปลี่ยนโดยอีกคน');
     await page.locator('#source-party-note-submit').click();
     await expect(page.locator('#source-party-note-form')).toHaveCount(0);
-    await expect(page.locator(`[data-testid="source-party-note-${id}"]`)).toHaveText('ส่งของทุกวันจันทร์');
+    await expect(page.locator(`[data-testid="source-party-note-${id}"]`)).toHaveText('-');
     const history = page.locator(`#source-party-history-${id}`);
     await history.locator('summary').click();
     await expect(history.locator('li')).toHaveCount(4);
     await expect(history.locator('li').nth(1)).toContainText(`เปลี่ยนชื่อ "${party}" เป็น "บริษัท เครื่องเขียน ${tag}"`);
-    await expect(history.locator('li').nth(3)).toContainText('แก้ไขหมายเหตุ "เปลี่ยนโดยอีกคน" เป็น "ส่งของทุกวันจันทร์"');
+    await expect(history.locator('li').nth(3)).toContainText('แก้ไขหมายเหตุ "เปลี่ยนโดยอีกคน" เป็น "-"');
 
     // Made Inactive, its name added again is refused with it, and the form offers to reactivate it (Q12).
     await page.locator(`#source-party-inactivate-${id}`).click();

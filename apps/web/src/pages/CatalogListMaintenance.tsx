@@ -170,7 +170,8 @@ const ListSection: React.FC<ListSectionProps> = ({ spec, list }) => {
           saveUrl={path}
           csrfToken={csrfToken}
           requestError={() => (name.trim() === '' ? `กรุณากรอกชื่อ${concept}` : null)}
-          requestBody={() => (noted ? { name: name.trim(), note: note.trim() === '' ? null : note.trim() } : { name: name.trim() })}
+          // The server trims the note and keeps a blank one as none.
+          requestBody={() => (noted ? { name: name.trim(), note } : { name: name.trim() })}
           refusedList={(body) => nameTaken(body, true)}
           forbiddenMessage={`คุณไม่มีสิทธิ์เพิ่ม${concept}`}
           refusedMessage={`ไม่สามารถเพิ่ม${concept}ได้`}
@@ -230,7 +231,7 @@ const ListSection: React.FC<ListSectionProps> = ({ spec, list }) => {
           csrfToken={csrfToken}
           // The server compares the note as it stores it, trimmed and none when blank (CODING_STANDARDS, an amend form).
           requestError={() => (note.trim() === (entry.note ?? '') ? 'หมายเหตุใหม่ยังเหมือนหมายเหตุเดิม' : null)}
-          requestBody={() => ({ expected_version: entry.version, note: note.trim() === '' ? null : note.trim() })}
+          requestBody={() => ({ expected_version: entry.version, note })}
           refusedList={() => null}
           forbiddenMessage={`คุณไม่มีสิทธิ์${EDIT_NOTE_LABEL}${concept}`}
           refusedMessage={`ไม่สามารถ${EDIT_NOTE_LABEL}${concept}ได้`}
