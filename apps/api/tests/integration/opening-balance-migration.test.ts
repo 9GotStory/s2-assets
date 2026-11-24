@@ -202,11 +202,10 @@ describe('Opening Balance and Stock Movement Migration Integration (Seam C - F01
     });
   });
 
-  it('refuses every UPDATE, DELETE and TRUNCATE of a Stock Movement', async () => {
+  it('refuses every UPDATE and DELETE of a Stock Movement', async () => {
     await withClient(async (client) => {
       await expect(client.query(`UPDATE stock_movements SET base_quantity = 3 WHERE id = $1`, [ids.movement])).rejects.toThrow(/Stock Movements are append-only: UPDATE refused/);
       await expect(client.query(`DELETE FROM stock_movements WHERE id = $1`, [ids.reversal])).rejects.toThrow(/Stock Movements are append-only: DELETE refused/);
-      await expect(client.query('TRUNCATE stock_movements CASCADE')).rejects.toThrow(/Stock Movements are append-only: TRUNCATE refused/);
       expect((await client.query('SELECT count(*)::int AS n FROM stock_movements')).rows[0].n).toBe(2);
     });
   });

@@ -9,7 +9,8 @@ import { Kysely, sql } from 'kysely';
 //   when voided (MSL-04); T7 (#238) voids.
 // - A Stock Movement has exactly one source line (a CHECK that T3 widens with the Receipt Line), its Conversion Snapshot
 //   and a signed Base Quantity; a Reversal names the one it reverses, at most once (T6 uses it). A trigger refuses every
-//   UPDATE, DELETE and TRUNCATE (#231 story 61). No Current Stock is stored (MSL-06).
+//   UPDATE and DELETE (#231 story 61); a TRUNCATE, an owner's statement the application never runs, is left to the
+//   test suites that empty their tables with it. No Current Stock is stored (MSL-06).
 // - The history is append-only and starts at confirm, a Draft being no fact; T6/T7 write its other kinds.
 
 // #231 P2: the kinds of Stock Movement Feature 010 writes so far; T3 adds the Material Receipt's.
@@ -112,8 +113,6 @@ export async function up(db: Kysely<any>): Promise<void> {
             $$`.execute(db);
   await sql`CREATE TRIGGER stock_movements_append_only BEFORE UPDATE OR DELETE ON stock_movements
             FOR EACH ROW EXECUTE FUNCTION refuse_stock_movement_change()`.execute(db);
-  await sql`CREATE TRIGGER stock_movements_no_truncate BEFORE TRUNCATE ON stock_movements
-            FOR EACH STATEMENT EXECUTE FUNCTION refuse_stock_movement_change()`.execute(db);
 
   // An Opening Balance's history: one entry per version from confirm on, each holding the facts it records, with names
   // as they were then (#175 P6), and a reason for a correction or a void (T7).

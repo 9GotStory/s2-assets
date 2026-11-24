@@ -3,7 +3,7 @@ import type { ConversionSnapshot } from './base-quantity.ts';
 import { joinUnitEntry } from './catalog-list-entries.ts';
 
 // F010-T2 (#233): the module that owns stock_movements, the one table of Stock Movements (รายการเคลื่อนไหว) that
-// Features 010 to 014 share (ADR 0003, #231 P2). Rows are only ever added: a trigger refuses every UPDATE, DELETE and TRUNCATE.
+// Features 010 to 014 share (ADR 0003, #231 P2). Rows are only ever added: a trigger refuses every UPDATE and DELETE.
 // What they add up to is read through current-stock.ts.
 
 // The kinds 0032_opening_balances_stock_movements allows; T3 adds the Material Receipt's, and T6 and T7 write the
