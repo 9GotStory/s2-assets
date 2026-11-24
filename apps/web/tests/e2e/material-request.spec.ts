@@ -1116,8 +1116,17 @@ test.describe.serial('Material Request journeys: Real SPA -> Composed API -> Pos
 
   test('Journey F009-T8.1: a Supply Officer renames "กระดาษ A4" to "กระดาษถ่ายเอกสาร A4", reminded that a different meaning needs a new Requestable Material, finds the new name in the list and the old and new names in its history, changes its description with "แก้ไขข้อมูลอื่น", and is refused a new Request Unit while Requested Items use it', async ({ page, context }) => {
     const paperId = (await pool.query(`SELECT id FROM requestable_materials WHERE name = 'กระดาษ A4'`)).rows[0].id;
-    // Another active Unit of the list to ask for it in.
-    const otherUnit: string = (await pool.query('SELECT name FROM units WHERE is_active AND id <> $1 ORDER BY name LIMIT 1', [reamId])).rows[0].name;
+    // Another active Unit of the list to ask for it in, one each current Compatible Stock Material has as an active
+    // Unit, so that only the Requested Items refuse it (CODING_STANDARDS, a refusal test).
+    const otherUnit: string = (
+      await pool.query(
+        `SELECT u.name FROM units u WHERE u.is_active AND u.id <> $1 AND NOT EXISTS (
+           SELECT 1 FROM compatible_stock_materials c WHERE c.requestable_material_id = $2 AND c.is_current AND NOT EXISTS (
+             SELECT 1 FROM stock_material_units hu WHERE hu.stock_material_id = c.stock_material_id AND hu.unit_id = u.id AND hu.is_active))
+         ORDER BY u.name LIMIT 1`,
+        [reamId, paperId]
+      )
+    ).rows[0].name;
     // Another Requestable Material J2 asks for, whose name a Rename cannot take (Q6).
     const other: { id: string; name: string } = (await pool.query(`SELECT id, name FROM requestable_materials WHERE id <> $1 ORDER BY name LIMIT 1`, [paperId])).rows[0];
 

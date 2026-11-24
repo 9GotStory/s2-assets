@@ -199,24 +199,25 @@ describe('Rename and Other Details of a Requestable Material (Seam A - F009-T8)'
     it('needs every field of each write in its type, and nothing else', async () => {
       const page = await requestableOf(await fresh());
       const details = { expected_version: page.version, description: null, whole_number_only: false, request_unit_id: ream };
-      const payloads: [string, Record<string, unknown>][] = [
-        ['rename', {}],
-        ['rename', { expected_version: page.version }],
-        ['rename', { expected_version: 0, name: 'ชื่อ' }],
-        ['rename', { expected_version: page.version, name: 5 }],
-        ['rename', { expected_version: page.version, name: 'ชื่อ', note: 'x' }],
-        ['details', { ...details, expected_version: 1.5 }],
-        ['details', { expected_version: page.version, whole_number_only: false, request_unit_id: ream }],
-        ['details', { expected_version: page.version, description: null, request_unit_id: ream }],
-        ['details', { expected_version: page.version, description: null, whole_number_only: false }],
-        ['details', { ...details, whole_number_only: 'false' }],
-        ['details', { ...details, name: 'ชื่อ' }],
+      // Each payload with the start of the message that names the field it breaks.
+      const payloads: [string, Record<string, unknown>, string][] = [
+        ['rename', {}, 'Invalid request payload: expected_version: '],
+        ['rename', { expected_version: page.version }, 'Invalid request payload: name: '],
+        ['rename', { expected_version: 0, name: 'ชื่อ' }, 'Invalid request payload: expected_version: '],
+        ['rename', { expected_version: page.version, name: 5 }, 'Invalid request payload: name: '],
+        ['rename', { expected_version: page.version, name: 'ชื่อ', note: 'x' }, 'Invalid request payload: : Unrecognized key: "note"'],
+        ['details', { ...details, expected_version: 1.5 }, 'Invalid request payload: expected_version: '],
+        ['details', { expected_version: page.version, whole_number_only: false, request_unit_id: ream }, 'Invalid request payload: description: '],
+        ['details', { expected_version: page.version, description: null, request_unit_id: ream }, 'Invalid request payload: whole_number_only: '],
+        ['details', { expected_version: page.version, description: null, whole_number_only: false }, 'Invalid request payload: request_unit_id: '],
+        ['details', { ...details, whole_number_only: 'false' }, 'Invalid request payload: whole_number_only: '],
+        ['details', { ...details, name: 'ชื่อ' }, 'Invalid request payload: : Unrecognized key: "name"'],
       ];
-      for (const [path, payload] of payloads) {
+      for (const [path, payload, message] of payloads) {
         const send = path === 'rename' ? api.post : api.put;
         const res = await send.call(api, officer, `/requestable-materials/${page.id}/${path}`, payload, { 'x-retry-token': crypto.randomUUID() });
         expect(res.statusCode, JSON.stringify(payload)).toBe(400);
-        expect(res.json()).toMatchObject({ code: 'VALIDATION_FAILED', message: expect.any(String) });
+        expect(res.json()).toMatchObject({ code: 'VALIDATION_FAILED', message: expect.stringContaining(message) });
       }
       expect(await requestableOf(page.id)).toEqual(page);
     });
@@ -341,7 +342,8 @@ describe('Rename and Other Details of a Requestable Material (Seam A - F009-T8)'
 
     it('refuses a new Request Unit while a Pending Requested Item uses the Requestable Material, and still changes its other details', async () => {
       const box = await unitNamed();
-      const id = await offered();
+      // Its Compatible Stock Material has the new Unit, so only the Requested Item refuses it.
+      const id = await compatibleWith(await stockMaterialWith([ream, box]));
       await created([item(id)]);
 
       await expectDetailsRefused(id, { request_unit_id: box }, 'request_unit_id cannot change while Requested Items use this Requestable Material');
@@ -350,7 +352,7 @@ describe('Rename and Other Details of a Requestable Material (Seam A - F009-T8)'
 
     it('refuses a new Request Unit while only Cancelled Requested Items use it (#210 start decision 3)', async () => {
       const box = await unitNamed();
-      const id = await offered();
+      const id = await compatibleWith(await stockMaterialWith([ream, box]));
       const { material_request_id: requestId } = await created([item(id)]);
       expect((await cancelRequest(requestId)).statusCode).toBe(200);
 
@@ -533,13 +535,6 @@ describe('Rename and Other Details of a Requestable Material (Seam A - F009-T8)'
   // the lock-order plan (#210 start decisions, comment 7116487192). Each test expects the version the held write leaves,
   // so only the rule under test decides.
   describe('order', () => {
-    // What another write of the Requestable Material commits, held uncommitted: one moving it to its next version, as
-    // adding a Compatible Stock Material does, and one changing a field as well.
-    const versionHeld = (id: string) => ({ sql: 'UPDATE requestable_materials SET version = version + 1 WHERE id = $1', params: [id] });
-    const fieldHeld = (id: string, field: 'name' | 'description', value: string) => ({
-      sql: `UPDATE requestable_materials SET ${field} = $2, version = version + 1 WHERE id = $1`,
-      params: [id, value],
-    });
     // What a write on the Unit `id` of the list commits, held uncommitted: making it Inactive or active, or a Rename.
     const unitHeld = (id: string, change: 'is_active = false' | 'is_active = true' | 'name = $2', name?: string) => ({
       sql: `UPDATE units SET ${change}, version = version + 1 WHERE id = $1`,
@@ -556,9 +551,17 @@ describe('Rename and Other Details of a Requestable Material (Seam A - F009-T8)'
 
     it('Renames only after a write moving the Requestable Material on, then refuses the stale version', async () => {
       const id = await fresh();
+      const stockMaterial = await stockMaterialWith([ream]);
 
-      const [res] = await whileWriting(versionHeld(id), () => [rename(id, `ชื่อช้า ${crypto.randomUUID().slice(0, 8)}`, { version: 1 })], () => untilWaiting('requestable_materials'));
+      // The add of a Compatible Stock Material queues first on the held row, and the Rename queues behind it.
+      const [added, res] = await whileHolding(
+        'requestable_materials',
+        id,
+        () => [add(id, stockMaterial, { version: 1 }), untilWaiting('requestable_materials').then(() => rename(id, `ชื่อช้า ${crypto.randomUUID().slice(0, 8)}`, { version: 1 }))],
+        () => untilWaiting('requestable_materials', 2)
+      );
 
+      expect(added.statusCode).toBe(200);
       expect(res.statusCode).toBe(409);
       expect(res.json()).toMatchObject({ code: 'STALE_BEFORE_CONFLICT', message: 'The Requestable Material changed since it was read', current_values: { version: 2 } });
     });
@@ -567,17 +570,30 @@ describe('Rename and Other Details of a Requestable Material (Seam A - F009-T8)'
       const id = await fresh();
       const name = `ชื่อเดียวกัน ${crypto.randomUUID().slice(0, 8)}`;
 
-      const [res] = await whileWriting(fieldHeld(id, 'name', name), () => [rename(id, name, { version: 2 })], () => untilWaiting('requestable_materials'));
+      const [renamed, res] = await whileHolding(
+        'requestable_materials',
+        id,
+        () => [rename(id, name, { version: 1 }), untilWaiting('requestable_materials').then(() => rename(id, name, { version: 2 }))],
+        () => untilWaiting('requestable_materials', 2)
+      );
 
+      expect(renamed.statusCode).toBe(200);
       expect(res.statusCode).toBe(400);
       expect(res.json()).toMatchObject({ code: 'VALIDATION_FAILED', message: 'This Rename changes nothing' });
     });
 
     it('changes the Other Details only after a write moving the Requestable Material on, then refuses the stale version', async () => {
       const id = await fresh();
+      const stockMaterial = await stockMaterialWith([ream]);
 
-      const [res] = await whileWriting(versionHeld(id), () => [changeDetails(id, { description: 'ช้าไป' }, { version: 1 })], () => untilWaiting('requestable_materials'));
+      const [added, res] = await whileHolding(
+        'requestable_materials',
+        id,
+        () => [add(id, stockMaterial, { version: 1 }), untilWaiting('requestable_materials').then(() => changeDetails(id, { description: 'ช้าไป' }, { version: 1 }))],
+        () => untilWaiting('requestable_materials', 2)
+      );
 
+      expect(added.statusCode).toBe(200);
       expect(res.statusCode).toBe(409);
       expect(res.json()).toMatchObject({ code: 'STALE_BEFORE_CONFLICT', message: 'The Requestable Material changed since it was read', current_values: { version: 2 } });
     });
@@ -585,8 +601,14 @@ describe('Rename and Other Details of a Requestable Material (Seam A - F009-T8)'
     it('changes the Other Details only after the same change, then refuses it as changing nothing', async () => {
       const id = await fresh();
 
-      const [res] = await whileWriting(fieldHeld(id, 'description', 'สีขาว'), () => [changeDetails(id, { description: 'สีขาว' }, { version: 2 })], () => untilWaiting('requestable_materials'));
+      const [changed, res] = await whileHolding(
+        'requestable_materials',
+        id,
+        () => [changeDetails(id, { description: 'สีขาว' }, { version: 1 }), untilWaiting('requestable_materials').then(() => changeDetails(id, { description: 'สีขาว' }, { version: 2 }))],
+        () => untilWaiting('requestable_materials', 2)
+      );
 
+      expect(changed.statusCode).toBe(200);
       expect(res.statusCode).toBe(400);
       expect(res.json()).toMatchObject({ code: 'VALIDATION_FAILED', message: 'This Other Details change changes nothing' });
     });

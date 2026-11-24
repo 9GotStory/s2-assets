@@ -107,10 +107,11 @@ const nameOf = (value: string): string => {
   return name;
 };
 
-// A Request Unit's id as stored.
-const requestUnitIdOf = (value: unknown): string => {
+// The id a write names in its `field`, as stored: a Request Unit's, or the Stock Material a Compatible Stock Material
+// write names (F009-T2, #204).
+const idOf = (field: 'request_unit_id' | 'stock_material_id', value: unknown): string => {
   if (!isValidUuid(value)) {
-    throw new ValidationError('request_unit_id must be a valid UUID');
+    throw new ValidationError(`${field} must be a valid UUID`);
   }
   return (value as string).trim().toLowerCase();
 };
@@ -121,18 +122,10 @@ const descriptionOf = (value: string | null | undefined): string | null => norma
 // A request's facts once validated, before any lock. The retry fingerprint covers these.
 const normalizeFacts = (input: CreateRequestableMaterialInput) => ({
   name: nameOf(input.name),
-  request_unit_id: requestUnitIdOf(input.request_unit_id),
+  request_unit_id: idOf('request_unit_id', input.request_unit_id),
   whole_number_only: input.whole_number_only ?? true,
   description: descriptionOf(input.description),
 });
-
-// F009-T2 (#204): the Stock Material a Compatible Stock Material write names.
-const stockMaterialIdOf = (value: unknown): string => {
-  if (!isValidUuid(value)) {
-    throw new ValidationError('stock_material_id must be a valid UUID');
-  }
-  return (value as string).trim().toLowerCase();
-};
 
 // A Requestable Material's fields as its row stores them.
 interface StoredRequestableMaterial {
@@ -276,7 +269,7 @@ export class RequestableMaterialService {
     input: AddCompatibleStockMaterialInput,
     { retryToken }: { retryToken: string }
   ): Promise<RequestableMaterialVersion> {
-    const stockMaterialId = stockMaterialIdOf(input.stock_material_id);
+    const stockMaterialId = idOf('stock_material_id', input.stock_material_id);
     const payload = { requestable_material_id: requestableMaterialId, stock_material_id: stockMaterialId, expected_version: input.expected_version };
     return commitOnce(this.db, { actorId, operation: 'compatible-stock-material:add', retryToken, payload, explicitContinuation: false }, async (client) => {
       const { request_unit_id: requestUnitId } = await lockedAtVersion(client, requestableMaterialId, input.expected_version);
@@ -369,7 +362,7 @@ export class RequestableMaterialService {
    */
   async changeDetails(actorId: string, requestableMaterialId: string, input: ChangeDetailsInput, { retryToken }: { retryToken: string }): Promise<RequestableMaterialVersion> {
     const details = {
-      request_unit_id: requestUnitIdOf(input.request_unit_id),
+      request_unit_id: idOf('request_unit_id', input.request_unit_id),
       whole_number_only: input.whole_number_only,
       description: descriptionOf(input.description),
     };
