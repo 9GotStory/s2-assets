@@ -139,6 +139,8 @@ describe('Source Party and Source Type Migration Integration (Seam C - F010-T1)'
       const noted = await entry(client, 'source_parties', { note: 'ห'.repeat(2000) });
       expect((await client.query('SELECT length(note)::int AS n FROM source_parties WHERE id = $1', [noted])).rows).toEqual([{ n: 2000 }]);
       await expect(entry(client, 'source_parties', { note: 'ห'.repeat(2001) })).rejects.toThrow(/too long/);
+      // A blank note is none, as in 0031 and 0032.
+      await expect(entry(client, 'source_parties', { note: '   ' })).rejects.toThrow(/source_parties_note_check/);
       await expect(entry(client, 'source_types', { note: 'ไม่มีหมายเหตุ' })).rejects.toThrow(/note/);
     });
   });

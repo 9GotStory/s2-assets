@@ -226,6 +226,42 @@ describe.each([
     });
   });
 
+  // CODING_STANDARDS, "A refusal test sends a request only its rule refuses": one mismatch per field a write's
+  // retry fingerprint covers, each sent under the token of a committed write.
+  describe('retry token fingerprint', () => {
+    const mismatched = async (res: { statusCode: number; json: () => unknown }) => {
+      expect(res.statusCode).toBe(409);
+      expect(res.json()).toMatchObject({ code: 'RETRY_TOKEN_PAYLOAD_MISMATCH', message: expect.any(String) });
+    };
+
+    it('refuses a rename token reused with another entry, version or name', async () => {
+      const id = await entryId();
+      const other = await entryId();
+      const token = crypto.randomUUID();
+      const name = `ชื่อโทเคน ${id.slice(0, 8)}`;
+      expect((await rename(id, { expected_version: 1, name }, token)).statusCode).toBe(200);
+      await mismatched(await rename(other, { expected_version: 1, name }, token));
+      await mismatched(await rename(id, { expected_version: 2, name }, token));
+      await mismatched(await rename(id, { expected_version: 1, name: `${name} อื่น` }, token));
+      expect(await listed(other)).toMatchObject({ version: 1 });
+    });
+
+    it('refuses an Inactive or a reactivation token reused with another entry', async () => {
+      const token = crypto.randomUUID();
+      const id = await entryId();
+      const other = await entryId();
+      expect((await inactivate(id, { expected_version: 1 }, token)).statusCode).toBe(200);
+      await mismatched(await inactivate(other, { expected_version: 1 }, token));
+      const back = crypto.randomUUID();
+      expect((await reactivate(id, { expected_version: 2 }, back)).statusCode).toBe(200);
+      const inactiveOther = await inactiveEntryId();
+      await mismatched(await reactivate(inactiveOther, { expected_version: 2 }, back));
+      await mismatched(await reactivate(id, { expected_version: 3 }, back));
+      expect(await listed(other)).toMatchObject({ is_active: true, version: 1 });
+      expect(await listed(inactiveOther)).toMatchObject({ is_active: false, version: 2 });
+    });
+  });
+
   describe('no delete (MC-16)', () => {
     it('has no way to delete an entry', async () => {
       const id = await entryId();
@@ -574,6 +610,19 @@ describe('Source Party note (Seam A - F010-T1)', () => {
       const mismatch = await changeNote(id, { expected_version: 1, note: 'อื่น' }, token);
       expect(mismatch.statusCode).toBe(409);
       expect(mismatch.json()).toMatchObject({ code: 'RETRY_TOKEN_PAYLOAD_MISMATCH', message: expect.any(String) });
+      expect(await listed(id)).toMatchObject({ note: 'ใหม่', version: 2 });
+    });
+
+    it('refuses the same token with another Source Party or version, writing nothing', async () => {
+      const id = await partyId('เดิม');
+      const other = await partyId('เดิม');
+      const token = crypto.randomUUID();
+      expect((await changeNote(id, { expected_version: 1, note: 'ใหม่' }, token)).statusCode).toBe(200);
+      for (const res of [await changeNote(other, { expected_version: 1, note: 'ใหม่' }, token), await changeNote(id, { expected_version: 2, note: 'ใหม่' }, token)]) {
+        expect(res.statusCode).toBe(409);
+        expect(res.json()).toMatchObject({ code: 'RETRY_TOKEN_PAYLOAD_MISMATCH', message: expect.any(String) });
+      }
+      expect(await listed(other)).toMatchObject({ note: 'เดิม', version: 1 });
       expect(await listed(id)).toMatchObject({ note: 'ใหม่', version: 2 });
     });
 

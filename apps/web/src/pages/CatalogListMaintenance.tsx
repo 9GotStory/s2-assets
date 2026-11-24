@@ -15,10 +15,12 @@ import {
   EDIT_NOTE_LABEL,
   INACTIVE_LABEL,
   MATERIAL_CATEGORY_LABEL,
+  MATERIAL_RECEIPT_LABEL,
   REACTIVATE_LABEL,
   RENAME_LABEL,
   SOURCE_PARTY_LABEL,
   SOURCE_TYPE_LABEL,
+  STOCK_MATERIAL_LABEL,
   UNIT_LABEL,
   type CatalogList,
   type ListEntry,
@@ -58,7 +60,8 @@ const noteText = (note: string | null | undefined): string => note ?? '-';
 // What one history entry of a list entry says (#175 P6).
 const historyLine = (concept: string, { action, changes }: ListEntryHistoryEntry): string => {
   if (action === 'CREATED') {
-    return `เพิ่ม${concept} "${changes.name?.after}"`;
+    // A Source Party's note as it was added (#232 decision 1).
+    return `เพิ่ม${concept} "${changes.name?.after}"${changes.note?.after ? ` หมายเหตุ "${changes.note.after}"` : ''}`;
   }
   if (changes.name) {
     return `${RENAME_LABEL} "${changes.name.before}" เป็น "${changes.name.after}"`;
@@ -407,17 +410,17 @@ const CatalogListMaintenanceContent: React.FC = () => {
         <p style={{ fontSize: '0.875rem', color: '#4b5563', margin: '0 0 1.5rem 0' }}>
           {RENAME_LABEL}เพื่อแก้การสะกดเท่านั้น รายการที่{INACTIVE_LABEL}ยังแสดงบนวัสดุหรือรายการรับวัสดุที่ใช้อยู่ แต่เลือกให้รายการใหม่ไม่ได้ ไม่มีการลบหรือรวมรายการ
         </p>
-        <ListSection spec={{ kind: 'brand', path: '/brands', concept: BRAND_LABEL, addLabel: ADD_BRAND_LABEL, usedBy: 'วัสดุ' }} list={brands} />
+        <ListSection spec={{ kind: 'brand', path: '/brands', concept: BRAND_LABEL, addLabel: ADD_BRAND_LABEL, usedBy: STOCK_MATERIAL_LABEL }} list={brands} />
         <ListSection
-          spec={{ kind: 'material-category', path: '/material-categories', concept: MATERIAL_CATEGORY_LABEL, addLabel: ADD_MATERIAL_CATEGORY_LABEL, usedBy: 'วัสดุ' }}
+          spec={{ kind: 'material-category', path: '/material-categories', concept: MATERIAL_CATEGORY_LABEL, addLabel: ADD_MATERIAL_CATEGORY_LABEL, usedBy: STOCK_MATERIAL_LABEL }}
           list={materialCategories}
         />
-        <ListSection spec={{ kind: 'unit', path: '/units', concept: UNIT_LABEL, addLabel: ADD_UNIT_LABEL, usedBy: 'วัสดุ' }} list={units} />
+        <ListSection spec={{ kind: 'unit', path: '/units', concept: UNIT_LABEL, addLabel: ADD_UNIT_LABEL, usedBy: STOCK_MATERIAL_LABEL }} list={units} />
         <ListSection
-          spec={{ kind: 'source-party', path: '/source-parties', concept: SOURCE_PARTY_LABEL, addLabel: ADD_SOURCE_PARTY_LABEL, usedBy: 'รายการรับวัสดุ', noted: true }}
+          spec={{ kind: 'source-party', path: '/source-parties', concept: SOURCE_PARTY_LABEL, addLabel: ADD_SOURCE_PARTY_LABEL, usedBy: MATERIAL_RECEIPT_LABEL, noted: true }}
           list={sourceParties}
         />
-        <ListSection spec={{ kind: 'source-type', path: '/source-types', concept: SOURCE_TYPE_LABEL, addLabel: ADD_SOURCE_TYPE_LABEL, usedBy: 'รายการรับวัสดุ' }} list={sourceTypes} />
+        <ListSection spec={{ kind: 'source-type', path: '/source-types', concept: SOURCE_TYPE_LABEL, addLabel: ADD_SOURCE_TYPE_LABEL, usedBy: MATERIAL_RECEIPT_LABEL }} list={sourceTypes} />
       </div>
     </main>
   );

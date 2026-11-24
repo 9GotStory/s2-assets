@@ -18,7 +18,7 @@ export async function up(db: Kysely<any>): Promise<void> {
       .addColumn('id', 'uuid', (col) => col.primaryKey().defaultTo(sql`gen_random_uuid()`).notNull())
       .addColumn('name', 'varchar(200)', (col) => col.notNull().check(sql`btrim(name) <> ''`));
     if (table === 'source_parties') {
-      entries = entries.addColumn('note', 'varchar(2000)');
+      entries = entries.addColumn('note', 'varchar(2000)', (col) => col.check(sql`btrim(note) <> ''`));
     }
     await entries
       .addColumn('is_active', 'boolean', (col) => col.defaultTo(true).notNull())

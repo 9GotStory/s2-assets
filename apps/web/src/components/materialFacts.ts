@@ -188,6 +188,8 @@ export const CATALOG_LISTS_LABEL = 'ยี่ห้อ หมวดวัสด�
 // F010-T1 (#232): the lists a Material Receipt names (#231 Q2, Q6, Q12).
 export const SOURCE_PARTY_LABEL = 'แหล่งที่มา';
 export const SOURCE_TYPE_LABEL = 'วิธีได้มา';
+// The record that names a Source Party or a Source Type (#231 Q2).
+export const MATERIAL_RECEIPT_LABEL = 'รายการรับวัสดุ';
 // glossary: no entry — the list's inline action, made of the term แหล่งที่มา (Source Party)
 export const ADD_SOURCE_PARTY_LABEL = 'เพิ่มแหล่งที่มา';
 // glossary: no entry — the list's inline action, made of the term วิธีได้มา (Source Type)

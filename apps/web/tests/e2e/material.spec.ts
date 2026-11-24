@@ -855,6 +855,7 @@ test.describe.serial('Stock Material journeys: Real SPA -> Composed API -> Postg
     const history = page.locator(`#source-party-history-${id}`);
     await history.locator('summary').click();
     await expect(history.locator('li')).toHaveCount(4);
+    await expect(history.locator('li').first()).toContainText(`เพิ่มแหล่งที่มา "${party}" หมายเหตุ "ติดต่อฝ่ายขาย`);
     await expect(history.locator('li').nth(1)).toContainText(`เปลี่ยนชื่อ "${party}" เป็น "บริษัท เครื่องเขียน ${tag}"`);
     await expect(history.locator('li').nth(3)).toContainText('แก้ไขหมายเหตุ "เปลี่ยนโดยอีกคน" เป็น "-"');
 
