@@ -680,7 +680,9 @@ describe('Opening Balance (Seam A - F010-T2)', () => {
         () => confirm(id, 1),
       ];
       for (const write of writes) {
-        expect((await withCapabilityAnswer(api.app, 'material:manage', async () => false, write)).statusCode).toBe(403);
+        const denied = await withCapabilityAnswer(api.app, 'material:manage', async () => false, write);
+        expect(denied.statusCode).toBe(403);
+        expect(denied.json().error).toMatchObject({ code: 'FORBIDDEN', message: 'Permission denied' });
         const failed = await withCapabilityAnswer(api.app, 'material:manage', async () => { throw new Error('lookup failed'); }, write);
         expect(failed.statusCode).toBe(500);
         expect(failed.json().error).toMatchObject({ code: 'INTERNAL_SERVER_ERROR', message: 'An unexpected internal server error occurred.' });

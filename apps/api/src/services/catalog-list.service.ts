@@ -78,8 +78,8 @@ const sourcePartyNoteOf = (rawNote: string | null | undefined): string | null =>
  * waited for and seen (F008-T8): a lock in the WHERE clause would pass over a row whose stored version does not match.
  */
 export async function selectableCatalogListEntry(client: pg.PoolClient, kind: CatalogListKind, id: string): Promise<NamedListEntry | null> {
-  const res = await client.query(`SELECT id, name, is_active FROM ${CATALOG_LISTS[kind].table} WHERE id = $1 FOR SHARE`, [id]);
-  return res.rows[0]?.is_active ? { id: res.rows[0].id, name: res.rows[0].name } : null;
+  const entry = await lockedCatalogListEntry(client, kind, id);
+  return entry !== null && entry.is_active ? { id: entry.id, name: entry.name } : null;
 }
 
 /**
@@ -92,14 +92,26 @@ export async function catalogListEntryOf(client: pg.PoolClient, kind: CatalogLis
 }
 
 /**
- * F010-T3 (#234): the entry `id` of the list `kind` with its name now and whether it is active, locked FOR SHARE so
- * that an Inactive, a reactivation or a rename waits for the caller's write or is seen by it, as a Material Receipt
- * confirm reads its Source Party and Source Type (#231 P4, Q24). A foreign key holds `id` on the list, which deletes
- * nothing.
+ * F010-T3 (#234): the entry `id` of the list `kind` with its name now and whether it is active, or null when it is not
+ * on the list, locked FOR SHARE so that an Inactive, a reactivation or a rename waits for the caller's write or is
+ * seen by it, as a Material Receipt confirm reads its Source Party and Source Type (#231 P4, Q24).
  */
-export async function lockedCatalogListEntry(client: pg.PoolClient, kind: CatalogListKind, id: string): Promise<NamedListEntry & { is_active: boolean }> {
+export async function lockedCatalogListEntry(
+  client: pg.PoolClient,
+  kind: CatalogListKind,
+  id: string
+): Promise<(NamedListEntry & { is_active: boolean }) | null> {
   const res = await client.query(`SELECT id, name, is_active FROM ${CATALOG_LISTS[kind].table} WHERE id = $1 FOR SHARE`, [id]);
-  return res.rows[0];
+  return res.rows[0] ?? null;
+}
+
+/**
+ * F010-T3 (#234): whether the list `kind` holds the entry `id`, Inactive or not, as a Material Receipt Draft may name
+ * any entry the list holds (#234 start decision 1). It takes no lock: a foreign key holds the entry once the Draft is
+ * saved, and the list deletes nothing.
+ */
+export async function catalogListHolds(client: pg.PoolClient, kind: CatalogListKind, id: string): Promise<boolean> {
+  return (await client.query(`SELECT 1 FROM ${CATALOG_LISTS[kind].table} WHERE id = $1`, [id])).rowCount !== 0;
 }
 
 // Locks each named Unit FOR SHARE, so a concurrent Inactive or reactivation waits for the caller's write, as

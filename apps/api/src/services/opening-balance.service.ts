@@ -388,7 +388,7 @@ export class OpeningBalanceService {
   private async inEffectHolders(
     client: pg.PoolClient,
     lines: StoredLine[]
-  ): Promise<Map<string, { opening_balance_id: string; opening_balance_number: string } | InEffectMaterialReceipt>> {
+  ): Promise<Map<string, NonNullable<ConfirmProblem['in_effect_opening_balance']> | InEffectMaterialReceipt>> {
     const res = await client.query(
       `SELECT s.id FROM unnest($1::uuid[]) AS s(id) CROSS JOIN LATERAL ${stockFiguresOf('s.id')} f WHERE f.has_stock_movement_in_effect`,
       [lines.map(({ stock_material_id }) => stock_material_id)]

@@ -237,7 +237,11 @@ test.describe.serial('Material Stock journeys: Real SPA -> Composed API -> Postg
       { retryToken: crypto.randomUUID() }
     );
     // Another Draft of it, with no แหล่งที่มา, which the list's search leaves out.
-    await new MaterialReceiptService({ db: pool }).create(officerUserId, { lines: [{ stock_material_id: materialId }] }, { retryToken: crypto.randomUUID() });
+    const { material_receipt_id: otherDraftId } = await new MaterialReceiptService({ db: pool }).create(
+      officerUserId,
+      { lines: [{ stock_material_id: materialId }] },
+      { retryToken: crypto.randomUUID() }
+    );
     const party = `ร้านเครื่องเขียน J2 ${tag}`;
 
     await loginAs(context, officerUserId);
@@ -327,6 +331,16 @@ test.describe.serial('Material Stock journeys: Real SPA -> Composed API -> Postg
     // คงเหลือ: 24 + 5 = 29 ด้าม.
     await page.goto(`${targetBaseUrl}/stock-materials/${materialId}`);
     await expect(page.locator('[data-testid="stock-material-current-stock"]')).toContainText(`29 ${pen}`);
+
+    // The other Draft, removed from its page, leaves the list.
+    await page.goto(`${targetBaseUrl}/material-receipts/${otherDraftId}`);
+    await page.locator('#material-receipt-remove-action').click();
+    await expect(page.getByRole('heading', { level: 3, name: 'ลบร่าง' })).toBeVisible();
+    await expect(page.locator('#material-receipt-remove-submit')).toHaveText('ลบร่าง');
+    await page.locator('#material-receipt-remove-submit').click();
+    await expect(page.getByRole('heading', { level: 1, name: 'รายการรับวัสดุ', exact: true })).toBeVisible();
+    await expect(page.locator('#material-receipt-list-table')).toContainText(party);
+    await expect(page.locator(`[data-testid="material-receipt-row-${otherDraftId}"]`)).toHaveCount(0);
   });
 
   test('Journey F010-T3.2: a Read-only User reads รับวัสดุ and ยอดตั้งต้น from the "วัสดุ" menu, Drafts included, with no write action', async ({ page, context }) => {
@@ -349,6 +363,18 @@ test.describe.serial('Material Stock journeys: Real SPA -> Composed API -> Postg
     await expect(page.getByRole('heading', { level: 1, name: 'รายการรับวัสดุ', exact: true })).toBeVisible();
     await expect(page.locator(`[data-testid="material-receipt-row-${receiptId}"] td`)).toHaveText(['ร่าง', '-', '-', 'ร่าง', '1']);
     await expect(page.locator('#material-receipt-add-action')).toHaveCount(0);
+    // Found by its line's Stock Material from the search box; Drafts only keeps it, Received only does not.
+    await page.locator('#material-receipt-search').fill(`ยางลบ J3 ${tag}`);
+    await page.locator('#material-receipt-search-submit').click();
+    await expect(page).toHaveURL(/[?&]search=/);
+    await expect(page.locator('#material-receipt-list-table tbody tr')).toHaveCount(1);
+    await page.locator('#material-receipt-state-filter').selectOption('draft');
+    // The state joins the search, which stays.
+    await expect(page).toHaveURL(/\?search=[^&]+&state=draft$/);
+    await expect(page.locator(`[data-testid="material-receipt-row-${receiptId}"]`)).toHaveCount(1);
+    await page.locator('#material-receipt-state-filter').selectOption('received');
+    await expect(page).toHaveURL(/[?&]state=received/);
+    await expect(page.locator('#material-receipt-list-empty')).toHaveText('ไม่พบรายการรับวัสดุที่ค้นหา');
     await page.goto(`${targetBaseUrl}/material-receipts/${receiptId}`);
     await expect(page.getByRole('heading', { level: 1, name: 'รายการรับวัสดุ ร่าง' })).toBeVisible();
     await expect(page.locator('[data-testid="material-receipt-line-0"]')).toContainText(`ยางลบ J3 ${tag}`);

@@ -746,6 +746,7 @@ describe('Material Receipt (Seam A - F010-T3)', () => {
         ];
         for (const res of writes) {
           expect(res.statusCode).toBe(403);
+          expect(res.json().error).toMatchObject({ code: 'FORBIDDEN', message: 'Permission denied' });
         }
       }
       for (const actor of [requester, custodian, staff, maintainer]) {
@@ -773,7 +774,9 @@ describe('Material Receipt (Seam A - F010-T3)', () => {
       const before = await counts();
       const writes = [() => createDraft({ lines: [] }), () => replaceDraft(id, { expected_version: 1, lines: [] }), () => removeDraft(id, 1), () => confirm(id, 1)];
       for (const write of writes) {
-        expect((await withCapabilityAnswer(api.app, 'material:manage', async () => false, write)).statusCode).toBe(403);
+        const denied = await withCapabilityAnswer(api.app, 'material:manage', async () => false, write);
+        expect(denied.statusCode).toBe(403);
+        expect(denied.json().error).toMatchObject({ code: 'FORBIDDEN', message: 'Permission denied' });
         const failed = await withCapabilityAnswer(api.app, 'material:manage', async () => { throw new Error('lookup failed'); }, write);
         expect(failed.statusCode).toBe(500);
         expect(failed.json().error).toMatchObject({ code: 'INTERNAL_SERVER_ERROR', message: 'An unexpected internal server error occurred.' });

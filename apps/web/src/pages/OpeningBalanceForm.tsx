@@ -167,13 +167,14 @@ const OpeningBalanceFormContent: React.FC<{ id: string | null }> = ({ id }) => {
             requestBody={() => ({
               ...(id === null ? {} : { expected_version: version }),
               as_of_date: asOfDate === '' ? null : asOfDate,
-              source: source.trim() === '' ? null : source,
-              note: note.trim() === '' ? null : note,
+              // The API trims free text and saves a blank one as none.
+              source,
+              note,
               lines: lines.map((line) => ({
                 stock_material_id: line.stock_material_id,
                 unit_id: line.unit_id === '' ? null : line.unit_id,
                 quantity: line.quantity.trim() === '' ? null : line.quantity.trim(),
-                note: line.note.trim() === '' ? null : line.note,
+                note: line.note,
               })),
             })}
             refusedList={() => null}

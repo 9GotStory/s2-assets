@@ -1,11 +1,11 @@
 import pg from 'pg';
 import { bangkokDate, isCalendarDate, normalizeText } from './assignment.service.ts';
 import { normalizeQuantity } from './base-quantity.ts';
-import { lockedCatalogListEntry } from './catalog-list.service.ts';
+import { catalogListHolds, lockedCatalogListEntry } from './catalog-list.service.ts';
 import { CATALOG_LISTS } from './catalog-list-entries.ts';
 import { parseDecimal } from './exact-decimal.ts';
 import { materialReceiptState, type MaterialReceiptState } from './material-receipt-state.ts';
-import { openingBalancesInEffectOf } from './opening-balance-read.service.ts';
+import { openingBalancesInEffectOf, type InEffectOpeningBalance } from './opening-balance-read.service.ts';
 import { commitOnce } from './retryable-write.ts';
 import { NotFoundError, StaleBeforeConflictError } from './service-errors.ts';
 import { draftQuantityOf, QUANTITY_REFUSALS, uuidOf, uuidOrNull } from './stock-line-input.ts';
@@ -81,7 +81,7 @@ export interface ReceiptConfirmProblem {
   field: string;
   message: string;
   // For a line whose Stock Material has an Opening Balance in effect as of the Received Date or later (Q21).
-  in_effect_opening_balance?: { opening_balance_id: string; opening_balance_number: string; as_of_date: string };
+  in_effect_opening_balance?: InEffectOpeningBalance;
 }
 
 /** A confirm refused, with every failing rule and line named (#231 Q25). Nothing is written. */
@@ -171,7 +171,7 @@ const RECEIPT_LISTS = [
 const refuseUnknownChoices = async (client: pg.PoolClient, facts: DraftFacts): Promise<void> => {
   for (const { field, kind } of RECEIPT_LISTS) {
     const id = facts[field];
-    if (id !== null && (await client.query(`SELECT 1 FROM ${CATALOG_LISTS[kind].table} WHERE id = $1`, [id])).rowCount === 0) {
+    if (id !== null && !(await catalogListHolds(client, kind, id))) {
       throw new ValidationError(`${field} must name a ${CATALOG_LISTS[kind].concept}`);
     }
   }
