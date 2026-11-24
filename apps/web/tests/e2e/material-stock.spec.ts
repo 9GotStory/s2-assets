@@ -1,5 +1,6 @@
 import { test, expect } from '@playwright/test';
 import { actorSwitch } from './support/actors.ts';
+import { delaySessionCheck, endSessionDelay } from './support/session-check.ts';
 import { createServer, type ViteDevServer } from 'vite';
 import * as crypto from 'node:crypto';
 import * as path from 'node:path';
@@ -97,14 +98,6 @@ test.describe.serial('Material Stock journeys: Real SPA -> Composed API -> Postg
     if (container) await container.stop();
   });
 
-  // The session answers late, so that a page shows its facts before the CSRF token arrives: a write action waits for the
-  // token, or a quick save would be refused as if the grant were gone (#135).
-  const delaySessionCheck = (page: any) =>
-    page.route('**/auth/session-check', async (route: any) => {
-      await new Promise((resolve) => setTimeout(resolve, 3000));
-      await route.continue();
-    });
-
   const { loginAs } = actorSwitch(() => sessionService, () => targetBaseUrl);
 
   test('Journey F010-T2.1: a Supply Officer sets a Minimum Stock, saves an Opening Balance Draft without ที่มาของยอด, and is refused its confirm with the rule named', async ({ page, context }) => {
@@ -138,7 +131,7 @@ test.describe.serial('Material Stock journeys: Real SPA -> Composed API -> Postg
     await expect(page.locator('[data-testid="stock-material-minimum-stock"]')).toHaveText(`10 ${ream}`);
     await expect(page.locator('[data-testid="stock-material-current-stock"]')).toHaveText('ยังไม่มีรายการเคลื่อนไหว');
     await expect(page.locator('[data-testid="stock-material-low-stock-badge"]')).toHaveCount(0);
-    await page.unroute('**/auth/session-check');
+    await endSessionDelay(page);
 
     // "ยอดตั้งต้น" from the Dashboard's "วัสดุ" menu, then "เพิ่มยอดตั้งต้น".
     await page.goto(`${targetBaseUrl}/dashboard`);

@@ -1,5 +1,6 @@
 import { test, expect } from '@playwright/test';
 import { actorSwitch } from './support/actors.ts';
+import { delaySessionCheck, endSessionDelay } from './support/session-check.ts';
 import { createServer, type ViteDevServer } from 'vite';
 import * as crypto from 'node:crypto';
 import * as path from 'node:path';
@@ -118,14 +119,6 @@ test.describe.serial('Verification journeys: Real SPA -> Composed API -> Postgre
     if (container) await container.stop();
   });
 
-  // The session answers late, so that a page shows its facts before the CSRF token arrives: a write action waits for the
-  // token, or a quick save would be refused as if the grant were gone (#135).
-  const delaySessionCheck = (page: any) =>
-    page.route('**/auth/session-check', async (route: any) => {
-      await new Promise((resolve) => setTimeout(resolve, 3000));
-      await route.continue();
-    });
-
   const { loginAs, switchActor } = actorSwitch(() => sessionService, () => targetBaseUrl);
 
   // Closes the open Round, if any, as an Asset Custodian would, so that the next journey can open one (#125 Q17).
@@ -214,7 +207,7 @@ test.describe.serial('Verification journeys: Real SPA -> Composed API -> Postgre
     await page.locator('#verification-open-fiscal_year').fill('2569');
     await page.locator('#verification-open-submit').click();
     await expect(page.locator('[data-testid="verification-open-refused"]')).toContainText('ตรวจสอบพัสดุประจำปี 2569 ห้องประชุม');
-    await page.unroute('**/auth/session-check');
+    await endSessionDelay(page);
     await page.locator('#verification-open-cancel').click();
 
     // A Read-only User sees the list and the Round, with no action.
@@ -618,7 +611,7 @@ test.describe.serial('Verification journeys: Real SPA -> Composed API -> Postgre
     await page.locator('#repair-repair_kind').selectOption('REPAIR');
     await page.getByLabel('ผู้ซ่อมภายนอก').check();
     await page.locator('#repair-submit').click();
-    await page.unroute('**/auth/session-check');
+    await endSessionDelay(page);
 
     // The projector no longer awaits an action; the speaker still does.
     await expect(page.locator('#scope-entry-list-count')).toContainText('พบ 1 รายการ');
