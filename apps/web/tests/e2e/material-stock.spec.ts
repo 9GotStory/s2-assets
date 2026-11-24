@@ -247,31 +247,53 @@ test.describe.serial('Material Stock journeys: Real SPA -> Composed API -> Postg
     await page.locator('#material-receipt-add-action').click();
     await expect(page.getByRole('heading', { level: 1, name: 'เพิ่มรายการรับวัสดุ' })).toBeVisible();
 
-    // วันที่รับ, and a new แหล่งที่มา added from the form, which it then names.
-    await page.locator('#material-receipt-received-date').fill('2026-10-15');
+    // A new แหล่งที่มา added from the form, which it then names; no วันที่รับ yet.
     await page.locator('#material-receipt-new-source-party').fill(party);
     await page.locator('#material-receipt-new-source-party-add').click();
     await expect(page.locator('#material-receipt-source-party option:checked')).toHaveText(party);
 
-    // The Stock Material twice: 2 กล่อง at 120 and 5 ด้าม at 10.5, each amount and the total for reference only (Q8, Q9).
+    // The Stock Material twice (Q9): 2 กล่อง at 120, then a second line, which takes the Unit no line of it holds, with
+    // no quantity yet. An amount shows once its line has both, for reference only (Q8).
     await page.locator('#material-receipt-stock-material-search').fill(name);
     await page.locator('#material-receipt-stock-material-search-submit').click();
     await page.locator(`[data-testid="material-receipt-choose-${materialId}"]`).click();
     await expect(page.locator('[data-testid="material-receipt-line-0"]')).toContainText(name);
-    await page.locator(`[data-testid="material-receipt-choose-${materialId}"]`).click();
-    await expect(page.locator('[data-testid="material-receipt-line-1"]')).toContainText(name);
     await page.locator('#material-receipt-line-0-unit').selectOption({ label: box });
     await page.locator('#material-receipt-line-0-quantity').fill('2');
+    await expect(page.locator('[data-testid="material-receipt-line-0-amount"]')).toHaveText('-');
     await page.locator('#material-receipt-line-0-unit-price').fill('120');
-    await page.locator('#material-receipt-line-1-unit').selectOption({ label: pen });
-    await page.locator('#material-receipt-line-1-quantity').fill('5');
-    await page.locator('#material-receipt-line-1-unit-price').fill('10.5');
     await expect(page.locator('[data-testid="material-receipt-line-0-amount"]')).toHaveText('240.00');
-    await expect(page.locator('[data-testid="material-receipt-line-1-amount"]')).toHaveText('52.50');
-    await expect(page.locator('[data-testid="material-receipt-total-amount"]')).toHaveText('292.50');
+    await page.locator(`[data-testid="material-receipt-choose-${materialId}"]`).click();
+    await expect(page.locator('[data-testid="material-receipt-line-1"]')).toContainText(name);
+    await expect(page.locator('#material-receipt-line-1-unit option:checked')).toHaveText(pen);
+    await expect(page.locator('[data-testid="material-receipt-total-amount"]')).toHaveText('240.00');
     await page.locator('#material-receipt-draft-submit').click();
     await expect(page.getByRole('heading', { level: 1, name: 'รายการรับวัสดุ ร่าง' })).toBeVisible();
     await expect(page.locator('[data-testid="material-receipt-source-party"]')).toHaveText(party);
+    await expect(page.locator('[data-testid="material-receipt-total-amount"]')).toHaveText('240.00');
+
+    // The confirm is refused with every rule it fails named, a line's by its number in the table (Q25).
+    await page.locator('#material-receipt-confirm-action').click();
+    await page.locator('#material-receipt-confirm-submit').click();
+    await expect(page.locator('[data-testid="material-receipt-confirm-problems"] li')).toHaveText(['received_date is required', 'รายการที่ 2: lines[1].quantity is required']);
+    await page.locator('#material-receipt-confirm-cancel').click();
+
+    // "แก้ไขร่าง" reads the Draft back, and วันที่รับ and 5 ด้าม at 10.5 complete it.
+    await page.locator('#material-receipt-edit-action').click();
+    await expect(page.getByRole('heading', { level: 1, name: 'แก้ไขร่าง' })).toBeVisible();
+    await expect(page.locator('#material-receipt-source-party option:checked')).toHaveText(party);
+    await expect(page.locator('#material-receipt-line-0-unit option:checked')).toHaveText(box);
+    await expect(page.locator('#material-receipt-line-0-quantity')).toHaveValue('2');
+    await expect(page.locator('#material-receipt-line-0-unit-price')).toHaveValue('120');
+    await expect(page.locator('#material-receipt-line-1-unit option:checked')).toHaveText(pen);
+    await expect(page.locator('#material-receipt-line-1-quantity')).toHaveValue('');
+    await page.locator('#material-receipt-received-date').fill('2026-10-15');
+    await page.locator('#material-receipt-line-1-quantity').fill('5');
+    await page.locator('#material-receipt-line-1-unit-price').fill('10.5');
+    await expect(page.locator('[data-testid="material-receipt-line-1-amount"]')).toHaveText('52.50');
+    await expect(page.locator('[data-testid="material-receipt-total-amount"]')).toHaveText('292.50');
+    await page.locator('#material-receipt-draft-submit').click();
+    await expect(page.locator('[data-testid="material-receipt-received-date"]')).toHaveText('15 ตุลาคม 2569');
 
     // "ยืนยันรับวัสดุ": the Receipt Number is taken and each line's Stock Movement recorded in the Base Unit.
     await page.locator('#material-receipt-confirm-action').click();
