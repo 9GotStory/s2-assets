@@ -1,4 +1,5 @@
 import { test, expect } from '@playwright/test';
+import { actorSwitch } from './support/actors.ts';
 import { createServer, type ViteDevServer } from 'vite';
 import * as crypto from 'node:crypto';
 import * as path from 'node:path';
@@ -125,15 +126,7 @@ test.describe.serial('Verification journeys: Real SPA -> Composed API -> Postgre
       await route.continue();
     });
 
-  const loginAs = async (context: any, userId: string) => {
-    const session = await sessionService.createSession(userId);
-    await context.addCookies([{ name: 'session', value: session.token, url: targetBaseUrl }]);
-  };
-
-  const switchActor = async (page: any, context: any, userId: string) => {
-    await page.goto('about:blank');
-    await loginAs(context, userId);
-  };
+  const { loginAs, switchActor } = actorSwitch(() => sessionService, () => targetBaseUrl);
 
   // Closes the open Round, if any, as an Asset Custodian would, so that the next journey can open one (#125 Q17).
   const closeOpenRound = async () => {

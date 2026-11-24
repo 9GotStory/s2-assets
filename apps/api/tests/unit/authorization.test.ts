@@ -2,6 +2,7 @@ import { describe, it, expect, vi } from 'vitest';
 import Fastify, { type FastifyInstance, type FastifyRequest } from 'fastify';
 import { errorHandlerPlugin } from '../../src/plugins/error-handler.ts';
 import {
+  requireAnyCapability,
   requireCapability,
   AuthorizationError,
   type AuthorizationMiddlewareOptions,
@@ -612,6 +613,37 @@ describe('Authorization Middleware Unit Tests (T025 - US2)', () => {
 
       // Must have invoked hasCapability only ONCE despite two preHandler checks
       expect(mockService.hasCapability).toHaveBeenCalledTimes(1);
+
+      await app.close();
+    });
+
+    // A capability service answering yes to anything shows that the middleware itself refuses an unknown capability,
+    // without asking (F009-T6, #208).
+    it('never grants or looks up an unknown capability, even where the capability service would answer yes', async () => {
+      const mockService = {
+        hasCapability: vi.fn().mockResolvedValue(true),
+      };
+
+      const app = Fastify();
+      await app.register(errorHandlerPlugin);
+      app.decorate('capabilityService', mockService as any);
+
+      app.addHook('preHandler', async (request) => {
+        (request as any).user = { id: validUserId, is_active: true };
+        (request as any).session = { user_id: validUserId };
+      });
+
+      app.get('/unknown', { preHandler: [requireCapability('system:unknown_custom_cap')] }, async () => ({ ok: true }));
+      app.get('/unknown-any', { preHandler: [requireAnyCapability(['system:unknown_custom_cap', 'system:other_unknown_cap'])] }, async () => ({ ok: true }));
+
+      await app.ready();
+
+      for (const url of ['/unknown', '/unknown-any']) {
+        const response = await app.inject({ method: 'GET', url });
+        expect(response.statusCode, url).toBe(403);
+        expect(response.json().error).toHaveProperty('code', 'FORBIDDEN');
+      }
+      expect(mockService.hasCapability).not.toHaveBeenCalled();
 
       await app.close();
     });

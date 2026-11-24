@@ -72,11 +72,11 @@ if $remove_images; then
 fi
 
 if ((status != 0)); then
-  note "tests failed (exit $status)" >&2
+  note "tests failed at $tested_commit (exit $status)" >&2
   exit "$status"
 fi
 if ((failures > 0)); then
   note "cleanup failed ($failures)" >&2
   exit 1
 fi
-note "tests passed; no test container left behind"
+note "tests passed at $tested_commit; no test container left behind"

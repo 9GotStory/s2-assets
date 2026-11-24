@@ -41,6 +41,18 @@ unknown-entry check refused as well, and it stayed green with the cap removed. I
 real entry 1001 times. In F008-T3 (#178), the Alternate Unit cap case sent 101 copies of one Unit,
 which the duplicate rule refused too; it now sends 101 distinct Units.
 
+A refusal test asserts the body's `code` and `message`, beside its status: the error handler answers a
+thrown service error with the same status in its own envelope, so a status alone stays green when the
+route's own answer goes. In F009-T2 (#204), `refusalOf` without its NotFoundError branch still answered
+404; the tests now assert the route's `{ code: 'NOT_FOUND', message }`. ESLint flags a code or a
+message asserted alone in an integration file (`REFUSAL_BODY_HALF` in `eslint.config.mjs`, #206); the files
+from before it are listed in `REFUSAL_BODY_HALF_EXEMPT` until a ticket touches one.
+
+A retry-token mismatch case replays the token with one field of the payload changed, one case per field
+the fingerprint covers, so each case goes red when that field leaves the fingerprint. In F009-T5 (#207),
+two cases each changed the Requested Item and the version together, and a break that dropped either field
+from the payload stayed green.
+
 ## A relaxed constraint has a test of each path that must not reach it
 
 When a migration relaxes a constraint, such as dropping `NOT NULL` or widening a `CHECK`, so that a
@@ -56,6 +68,11 @@ outer `ORDER BY` returns them. Tied rows on one page come back in order even whe
 tiebreak is broken, so the test cannot fail. Put the tied rows on either side of a page break, as
 `loan-list.test.ts` and `repair-list.test.ts` do. In F005-T3 (#101), both tests first kept their
 same-day pair on one page, and breaking the tiebreak left them green.
+
+When a unique index makes the sort key unique, no tie exists: the order test names that index in
+its comment, and the query keeps no tiebreak, which no test could break. In F009-T1 (#203) names
+equal ignoring case could not both exist under `requestable_materials_name_unique`, so the tied
+pair could not be written.
 
 ## A rule read under a lock has a test of its order
 
@@ -110,12 +127,25 @@ every rule checked before it: it expects the version the held write leaves, so o
 decides. In F008-T7 (#180), each order test expected the version from before the held write, so the stale
 check refused every time; the "already Inactive" rule got its test from the Standards review.
 
+A pair the Product Owner exempts on the ticket needs no order test: the lock plan posted at `/implement`
+start lists it under "No pair" with the comment that exempts it, and the review takes that as decided. In
+F009-T7 (#209), a Material Request create queued behind a reactivate was exempt (comment 7090131450), yet
+the Standards review raised it as a hard finding and it went back to the Product Owner.
+
 ## A journey step waits for the URL it changes
 
 A journey step that changes the URL, such as a filter link or a select that navigates, waits for that
 URL with `toHaveURL` before the next step acts: a page acts on the URL it last showed. In F006-T3
 (#128), a Location chosen right after the "ทั้งหมด" Discrepancy link kept the Discrepancy filter the
 link had just removed.
+
+## A journey's fixture states the fact it needs
+
+A journey step that needs a fact of the data, such as a Unit every current Compatible Stock Material
+has, makes that fact itself through the services. It does not take the fact from whichever row an
+earlier journey left behind, because which row that is can turn on the order of random ids. In F009-T8 (#210),
+Journey T8.1 looked for such a Unit among the Compatible Stock Materials T7.1 left current. Which one
+T7.1 left turned on their ids, so the spec passed alone and failed in `all.sh`.
 
 ## A correction keeps every stored value it replaces
 

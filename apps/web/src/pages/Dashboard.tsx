@@ -3,6 +3,8 @@ import { useNavigate, Link } from 'react-router';
 import { REPAIR_LIST_LABEL, REPAIR_SECTION_LABEL } from '../components/repairFacts';
 import { VERIFICATION_ROUND_LABEL } from '../components/verificationFacts';
 import { CATALOG_LISTS_LABEL, STOCK_MATERIAL_LABEL } from '../components/materialFacts';
+import { REQUESTABLE_MATERIAL_LABEL } from '../components/requestableMaterialFacts';
+import { CREATE_MATERIAL_REQUEST_LABEL, MATERIAL_REQUEST_LABEL, MY_MATERIAL_REQUESTS_LABEL, REQUEST_MATERIALS_LABEL } from '../components/materialRequestFacts';
 
 export interface SafeUser {
   id: string;
@@ -26,6 +28,12 @@ export const Dashboard: React.FC = () => {
   // F008-T1 (#175 P9): the "วัสดุ" menu shows only to holders of material:view, which the server answers by
   // reading the Stock Material list; anything but a 200 hides it.
   const [canViewMaterials, setCanViewMaterials] = useState(false);
+  // F009-T4 (#202 P9): the "ขอเบิกวัสดุ" menu shows only to holders of material-request:create, which the server
+  // answers by reading "คำขอของฉัน"; anything but a 200 hides it.
+  const [canRequestMaterials, setCanRequestMaterials] = useState(false);
+  // F009-T6 (#202 P9): the "คำขอเบิก" menu shows only to holders of material-request:view, which the server answers
+  // by reading "คำขอเบิก"; anything but a 200 hides it.
+  const [canViewMaterialRequests, setCanViewMaterialRequests] = useState(false);
 
   const navigate = useNavigate();
 
@@ -67,18 +75,21 @@ export const Dashboard: React.FC = () => {
 
     verifySession();
 
-    const probeMaterials = async () => {
+    // Shows a menu when reading `url` answers 200; anything else, or a failed read, leaves it hidden.
+    const probe = async (url: string, setShown: (shown: boolean) => void) => {
       try {
-        const response = await fetch('/stock-materials?limit=1', { method: 'GET', credentials: 'include', signal: controller.signal });
+        const response = await fetch(url, { method: 'GET', credentials: 'include', signal: controller.signal });
         // The answer is read to its end, so the request finishes instead of staying open with the page.
         await response.text();
-        setCanViewMaterials(response.ok);
+        setShown(response.ok);
       } catch {
         // An aborted or failed read leaves the menu hidden.
       }
     };
 
-    probeMaterials();
+    probe('/stock-materials?limit=1', setCanViewMaterials);
+    probe('/my-material-requests?limit=1', setCanRequestMaterials);
+    probe('/material-requests?limit=1', setCanViewMaterialRequests);
 
     return () => {
       controller.abort();
@@ -590,7 +601,7 @@ export const Dashboard: React.FC = () => {
               {STOCK_MATERIAL_LABEL}
             </h2>
             <p style={{ margin: '0 0 1rem 0', fontSize: '0.875rem', color: '#4b5563' }}>
-              ดูและค้นหารายการวัสดุสิ้นเปลือง พร้อมหน่วยนับของแต่ละรายการ และดูแลรายการยี่ห้อ หมวดวัสดุ และหน่วยนับ
+              ดูและค้นหารายการวัสดุสิ้นเปลือง พร้อมหน่วยนับของแต่ละรายการ ดูแลรายการยี่ห้อ หมวดวัสดุ และหน่วยนับ และวัสดุสำหรับขอเบิก
             </p>
             <div style={{ display: 'flex', gap: '0.75rem', flexWrap: 'wrap' }}>
               <Link
@@ -624,6 +635,133 @@ export const Dashboard: React.FC = () => {
                 }}
               >
                 {CATALOG_LISTS_LABEL}
+              </Link>
+              {/* F009-T1 (#203, #202 P9): the Requestable Materials, read with material:view as the Stock Materials are. */}
+              <Link
+                to="/requestable-materials"
+                id="nav-requestable-material-list"
+                style={{
+                  display: 'inline-block',
+                  padding: '0.5rem 1rem',
+                  backgroundColor: '#4b5563',
+                  color: '#ffffff',
+                  textDecoration: 'none',
+                  borderRadius: '4px',
+                  fontSize: '0.875rem',
+                  fontWeight: 500,
+                }}
+              >
+                {REQUESTABLE_MATERIAL_LABEL}
+              </Link>
+            </div>
+          </section>
+        )}
+
+        {canRequestMaterials && (
+          <section
+            aria-labelledby="material-request-heading"
+            id="nav-material-request-section"
+            style={{
+              backgroundColor: '#f9fafb',
+              borderRadius: '6px',
+              padding: '1.25rem',
+              marginBottom: '1.5rem',
+            }}
+          >
+            <h2
+              id="material-request-heading"
+              style={{
+                fontSize: '1.125rem',
+                fontWeight: 600,
+                marginTop: 0,
+                marginBottom: '0.5rem',
+                color: '#374151',
+              }}
+            >
+              {REQUEST_MATERIALS_LABEL}
+            </h2>
+            <p style={{ margin: '0 0 1rem 0', fontSize: '0.875rem', color: '#4b5563' }}>
+              สร้างคำขอเบิกจากวัสดุสำหรับขอเบิกที่ต้องใช้ และติดตามคำขอเบิกของตนเอง
+            </p>
+            <div style={{ display: 'flex', gap: '0.75rem', flexWrap: 'wrap' }}>
+              <Link
+                to="/my-material-requests"
+                id="nav-my-material-request-list"
+                style={{
+                  display: 'inline-block',
+                  padding: '0.5rem 1rem',
+                  backgroundColor: '#4b5563',
+                  color: '#ffffff',
+                  textDecoration: 'none',
+                  borderRadius: '4px',
+                  fontSize: '0.875rem',
+                  fontWeight: 500,
+                }}
+              >
+                {MY_MATERIAL_REQUESTS_LABEL}
+              </Link>
+              <Link
+                to="/my-material-requests/new"
+                id="nav-material-request-create"
+                style={{
+                  display: 'inline-block',
+                  padding: '0.5rem 1rem',
+                  backgroundColor: '#4b5563',
+                  color: '#ffffff',
+                  textDecoration: 'none',
+                  borderRadius: '4px',
+                  fontSize: '0.875rem',
+                  fontWeight: 500,
+                }}
+              >
+                {CREATE_MATERIAL_REQUEST_LABEL}
+              </Link>
+            </div>
+          </section>
+        )}
+
+        {canViewMaterialRequests && (
+          <section
+            aria-labelledby="all-material-request-heading"
+            id="nav-all-material-request-section"
+            style={{
+              backgroundColor: '#f9fafb',
+              borderRadius: '6px',
+              padding: '1.25rem',
+              marginBottom: '1.5rem',
+            }}
+          >
+            <h2
+              id="all-material-request-heading"
+              style={{
+                fontSize: '1.125rem',
+                fontWeight: 600,
+                marginTop: 0,
+                marginBottom: '0.5rem',
+                color: '#374151',
+              }}
+            >
+              {MATERIAL_REQUEST_LABEL}
+            </h2>
+            <p style={{ margin: '0 0 1rem 0', fontSize: '0.875rem', color: '#4b5563' }}>
+              ดู{MATERIAL_REQUEST_LABEL}ของผู้ขอเบิกทุกคนและสถานะของแต่ละคำขอ แบบอ่านอย่างเดียว
+            </p>
+            <div style={{ display: 'flex', gap: '0.75rem', flexWrap: 'wrap' }}>
+              <Link
+                to="/material-requests"
+                id="nav-all-material-request-list"
+                style={{
+                  display: 'inline-block',
+                  padding: '0.5rem 1rem',
+                  backgroundColor: '#4b5563',
+                  color: '#ffffff',
+                  textDecoration: 'none',
+                  borderRadius: '4px',
+                  fontSize: '0.875rem',
+                  fontWeight: 500,
+                }}
+              >
+                รายการ{MATERIAL_REQUEST_LABEL}
               </Link>
             </div>
           </section>

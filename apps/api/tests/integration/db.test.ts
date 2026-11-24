@@ -43,6 +43,9 @@ const MIGRATIONS = [
   '0026_unknown_conversion_factor',
   '0027_brands_material_categories',
   '0028_minimum_stock',
+  '0029_requestable_materials',
+  '0030_compatible_stock_materials',
+  '0031_material_requests',
 ] as const;
 
 describe('Database Migrations Integration', () => {

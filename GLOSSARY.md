@@ -354,7 +354,8 @@ How many Base Units one Alternate Unit holds, given straight to the Base Unit an
 none, shown as "-"; reactivating it needs one (#178).
 
 **Whole-number Unit** (นับเป็นจำนวนเต็มเท่านั้น):
-A Unit of a Stock Material in which every quantity must be whole. The system never rounds a
+A Unit of a Stock Material, or the Request Unit of a Requestable Material, in which every quantity
+must be whole. The system never rounds a
 quantity to make it fit.
 
 **Original Quantity** and **Original Unit**:
@@ -368,13 +369,15 @@ The Conversion Factor a transaction used, kept with it so that later changes nev
 Quantity.
 
 **Inactive** (หยุดใช้):
-A Stock Material, Brand, Material Category or Unit no longer offered for new work. Nothing about it
+A Stock Material, Brand, Material Category, Unit or Requestable Material no longer offered for new
+work. Nothing about it
 is deleted, and stock an Inactive Stock Material still holds can still be handled. Reactivating
 (เปิดใช้อีกครั้ง) brings back the same one. One not Inactive is ใช้งานอยู่.
 _Avoid_: archived
 
 **Rename** (เปลี่ยนชื่อ):
-Changing how a Brand, Material Category or Unit is spelled, never what it means. Every Stock Material
+Changing how a Brand, Material Category, Unit or Requestable Material is spelled, never what it
+means. Every Stock Material
 using it shows the new name, while each history keeps the name as it was when recorded; the entry's
 own history keeps the old name and the new (#183).
 
@@ -394,14 +397,67 @@ was wrong as recorded, which stays the same thing. It never rewrites history: a 
 new Stock Material.
 
 **Other Details** (ข้อมูลอื่น):
-A Stock Material's Material Category, Minimum Stock and note, which a Supply Officer changes
-(แก้ไขข้อมูลอื่น) without a reason, each change recorded in its history. A change that changes
-nothing is refused.
+A Stock Material's Material Category, Minimum Stock and note, or a Requestable Material's
+description, whole-number setting and Request Unit, which a Supply Officer changes (แก้ไขข้อมูลอื่น)
+without a reason, each change recorded in its history. A change that changes nothing is refused
+(#210).
+
+## Material Requests
+
+**Requestable Material** (วัสดุสำหรับขอเบิก):
+What a Requester asks for, named in the words of the work, such as "กระดาษ A4", with one Request
+Unit. It is not a Stock Material and never says which Stock Material is issued; a different meaning
+is a new Requestable Material.
+
+**Request Unit** (หน่วยที่ขอ):
+The one Unit in which a Requestable Material is asked for, and in which its Requested Quantities are
+counted.
+
+**Compatible Stock Material** (วัสดุที่ใช้จ่ายได้):
+A Stock Material that a Supply Officer has confirmed can fulfil a Requestable Material, and that
+handles its Request Unit. A name, Material Category, Brand or Model is never proof of it. Ending one
+(เลิก) keeps it, with its history, as ended (เลิกแล้ว) beside the current ones (ใช้อยู่); adding it
+again makes it current again (#204).
+
+**No Compatible Stock Material** (ยังไม่มีวัสดุที่ใช้จ่าย):
+A Requestable Material with no Compatible Stock Material, which Requesters are not offered.
+
+**Material Request** (คำขอเบิก):
+A Requester's request for one or more Requestable Materials, known by its Request Number. It never
+changes stock. A Requester's menu ขอเบิกวัสดุ lists their own in คำขอของฉัน and makes a new one in
+สร้างคำขอเบิก (#206). The Supply Officer and the Administrator see every Material Request, with its
+Requester, in the menu คำขอเบิก (#208).
+_Avoid_: requisition, ใบเบิก
+
+**Request Number** (เลขที่คำขอ):
+The running number that names a Material Request.
+
+**Requested Item** (รายการที่ขอ):
+One Requestable Material in a Material Request, with its Requested Quantity. It stays apart from
+whatever Stock Material is later issued for it.
+
+**Requested Quantity** (จำนวนที่ขอ):
+How much of a Requested Item the Requester asked for, in the Request Unit as recorded.
+
+**Pending** (รอพิจารณา):
+A Requested Item still waiting for the Supply Officer, not Cancelled. A Material Request is Pending
+while any of its Requested Items is.
+
+**Cancel** (ยกเลิก):
+The Requester withdrawing a Requested Item, or every Requested Item of a Material Request, before
+anything is issued for it. Nothing is deleted; a Material Request whose Requested Items are all
+Cancelled is Cancelled (ยกเลิกแล้ว).
 
 ## Roles
 
+**Requester** (ผู้ขอเบิก):
+The role that asks for Requestable Materials and follows and Cancels its own Material Requests; also
+the account that made a given Material Request.
+_Avoid_: ผู้ใช้งานทั่วไป
+
 **Supply Officer** (เจ้าหน้าที่พัสดุ):
-The role that keeps the Stock Material catalog, its Brands, Material Categories and Units.
+The role that keeps the Stock Material catalog, its Brands, Material Categories and Units, and the
+Requestable Materials with their Compatible Stock Materials.
 
 **Asset Custodian** (ผู้ดูแลทะเบียนครุภัณฑ์):
 The role that keeps the Asset register, including its assignment work.

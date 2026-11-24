@@ -32,6 +32,8 @@ export interface LoanSaveFormProps {
   // What a save refused as stale says; a Loan's wording unless the form names its own target.
   staleMessage?: string;
   submitLabel?: string;
+  // What the button that closes the form says; "ปิด" where the write is itself a Cancel (F009-T5, #207 start decision 3).
+  dismissLabel?: string;
   onCancel: () => void;
   onPermissionRevoked?: (statusCode?: number) => void;
   children: (isLocked: boolean) => React.ReactNode;
@@ -105,6 +107,7 @@ export const LoanSaveForm: React.FC<LoanSaveFormProps> = ({
   onRefresh,
   staleMessage = 'มีการบันทึกรายการอื่นของการยืมนี้หลังจากเปิดฟอร์ม กรุณาโหลดข้อมูลล่าสุดแล้วตรวจสอบอีกครั้ง',
   submitLabel = 'บันทึก',
+  dismissLabel = 'ยกเลิก',
   onCancel,
   onPermissionRevoked,
   children,
@@ -291,7 +294,7 @@ export const LoanSaveForm: React.FC<LoanSaveFormProps> = ({
           disabled={isLocked}
           style={{ padding: '0.5rem 1rem', backgroundColor: '#f3f4f6', color: '#374151', border: '1px solid #d1d5db', borderRadius: '6px', fontSize: '0.875rem', cursor: isLocked ? 'not-allowed' : 'pointer' }}
         >
-          ยกเลิก
+          {dismissLabel}
         </button>
       </div>
     </form>

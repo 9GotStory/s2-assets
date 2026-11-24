@@ -103,22 +103,33 @@ print_failed_responses() {
   done < <(find "$results" -name trace.zip -print0)
 }
 
+# Names each journey that ran out of time: its log shows only the assertion that was waiting when the test's
+# timeout ended it, which reads as a wrong value (#210 retro, a journey past 30 s).
+print_timeouts() {
+  local results=$1 context timeout
+  while IFS= read -r -d '' context; do
+    timeout=$(grep -m 1 -o 'Test timeout of [0-9]*ms exceeded' "$context") || continue
+    note "$timeout in $(basename "$(dirname "$context")"): the failed assertion above is the step it was waiting on" >&2
+  done < <(find "$results" -name error-context.md -print0)
+}
+
 # Copies a failed run's results out of the workspace. A run with no results takes no slot.
 keep_failed_results() {
   local results="$WORKSPACE/apps/web/test-results" kept
   kept="$FAILED_RUNS/$(git rev-parse --short HEAD)-$(LC_ALL=C date -u +%Y%m%dT%H%M%SZ)"
   [[ -n $(ls -A "$results" 2>/dev/null) ]] && mkdir -p "$kept" && cp -r "$results/." "$kept/" || return 1
   ls -1dt "$FAILED_RUNS"/*/ | tail -n +4 | xargs -r -d '\n' rm -rf --
-  note "journeys failed; results in $kept" >&2
+  note "journeys failed at $tested_commit; results in $kept" >&2
   print_failed_responses "$kept" || true
+  print_timeouts "$kept" || true
 }
 
 if ((status != 0)); then
-  keep_failed_results || note "journeys failed; no results were kept" >&2
+  keep_failed_results || note "journeys failed at $tested_commit; no results were kept" >&2
   exit "$status"
 fi
 if ((failures > 0)); then
   note "cleanup failed ($failures)" >&2
   exit 1
 fi
-note "journeys passed; no test container left behind"
+note "journeys passed at $tested_commit; no test container left behind"

@@ -62,10 +62,11 @@ with `/code-review` → `/pr` → `/retro`.
   integration branch, branched from `main` when the feature starts and named
   `feature/<NNN>-<slug>` after its row in `docs/09-feature-map.md` (for example
   `feature/003-asset-assignment-movement`). Branch each task from its feature's integration
-  branch and target its pull request there. When a pull request stays in scope and its checks
-  pass, merge it yourself with `scripts/dev/merge-pr.sh <n> <headRefOid>` as a standalone
-  command: it merges, verifies the merge commit and deletes the task branch, in order, stopping
-  at the first step that fails.
+  branch and target its pull request there. When a pull request stays in scope, its checks
+  pass and the Product Owner has said to merge it (by name, or in a next-step line they answer),
+  merge it with `scripts/dev/merge-pr.sh <n> <headRefOid>` as a standalone command: it merges,
+  verifies the merge commit and deletes the task branch, in order, stopping at the first step that
+  fails.
 
   A feature the Product Owner has not accepted goes into `main` only on their word.
 
@@ -82,7 +83,10 @@ To run one test file or a typecheck, use the same scripts:
 that last one before each commit (enable it once per clone with
 `git config core.hooksPath .githooks`). Before the full run, run
 every integration file that calls a route or names a response field the change touches (`grep -l`
-over `apps/api/tests/integration`): earlier tests pin those shapes and their data. Start the full
+over `apps/api/tests/integration`), and `tests/e2e/route-smoke.spec.ts` when a file under
+`apps/web/src/pages` changes: earlier tests pin those shapes, their data and each page's heading. Such a
+pre-run counts as evidence for the HEAD its last line names, with the tree clean: run it again after any later
+change, before its result goes to a reviewer. Start the full
 run once, after the code-review fixes are committed, together with the Product Owner's answer to any
 review decision whose recommended option changes code: a full run started before them has to be run
 again.

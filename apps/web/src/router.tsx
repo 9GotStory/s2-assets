@@ -20,6 +20,12 @@ import { StockMaterialList } from './pages/StockMaterialList';
 import { StockMaterialCreate } from './pages/StockMaterialCreate';
 import { StockMaterialDetail } from './pages/StockMaterialDetail';
 import { CatalogListMaintenance } from './pages/CatalogListMaintenance';
+import { RequestableMaterialList } from './pages/RequestableMaterialList';
+import { RequestableMaterialCreate } from './pages/RequestableMaterialCreate';
+import { RequestableMaterialDetail } from './pages/RequestableMaterialDetail';
+import { MaterialRequestList } from './pages/MaterialRequestList';
+import { MaterialRequestCreate } from './pages/MaterialRequestCreate';
+import { MaterialRequestDetail } from './pages/MaterialRequestDetail';
 
 export const ProtectedDetailBoundary: React.FC = () => {
   const navigate = useNavigate();
@@ -381,6 +387,36 @@ export const routes: RouteObject[] = [
   {
     path: '/stock-materials/:id',
     element: <StockMaterialDetail />,
+  },
+  {
+    path: '/requestable-materials',
+    element: <RequestableMaterialList />,
+  },
+  {
+    path: '/requestable-materials/new',
+    element: <RequestableMaterialCreate />,
+  },
+  {
+    path: '/requestable-materials/:id',
+    element: <RequestableMaterialDetail />,
+  },
+  // F009-T4 (#206): the Requester's Material Requests
+  {
+    path: '/my-material-requests',
+    element: <MaterialRequestList />,
+  },
+  {
+    path: '/my-material-requests/new',
+    element: <MaterialRequestCreate />,
+  },
+  // F009-T6 (#208): "คำขอเบิก", every person's Material Requests for Supply Officers and Administrators
+  {
+    path: '/material-requests',
+    element: <MaterialRequestList scope="all" />,
+  },
+  {
+    path: '/material-requests/:id',
+    element: <MaterialRequestDetail />,
   },
 ];
 

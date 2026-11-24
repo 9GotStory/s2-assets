@@ -390,7 +390,7 @@ describe('Health & Readiness Integration Tests (T028 - US3)', () => {
         url: '/ready',
       });
       expect(outageRes1.statusCode).toBe(503);
-      expect(outageRes1.json().error.code).toBe('SERVICE_UNAVAILABLE');
+      expect(outageRes1.json().error).toMatchObject({ code: 'SERVICE_UNAVAILABLE', message: 'Service temporarily unavailable.' });
 
       // 4. Repeated outage request: must not return stale cached success
       const outageRes2 = await app.inject({
@@ -398,7 +398,7 @@ describe('Health & Readiness Integration Tests (T028 - US3)', () => {
         url: '/ready',
       });
       expect(outageRes2.statusCode).toBe(503);
-      expect(outageRes2.json().error.code).toBe('SERVICE_UNAVAILABLE');
+      expect(outageRes2.json().error).toMatchObject({ code: 'SERVICE_UNAVAILABLE', message: 'Service temporarily unavailable.' });
     });
   });
 
@@ -466,7 +466,7 @@ describe('Health & Readiness Integration Tests (T028 - US3)', () => {
         url: '/ready',
       });
       expect(readyResponse.statusCode).toBe(503);
-      expect(readyResponse.json().error.code).toBe('SERVICE_UNAVAILABLE');
+      expect(readyResponse.json().error).toMatchObject({ code: 'SERVICE_UNAVAILABLE', message: 'Service temporarily unavailable.' });
       assertNoSensitiveInformationLeaked(readyResponse.body, { databaseUrl });
 
       // D.2 Verify database-dependent route (/system/info) response during outage

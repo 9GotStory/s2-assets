@@ -37,4 +37,5 @@ status=0
 gh run watch "$run_id" --repo "$REPO" --exit-status >/dev/null 2>&1 || status=1
 gh run view "$run_id" --repo "$REPO" --json conclusion,jobs --jq '"run '"$run_id"': \(.conclusion)", (.jobs[] | "  \(.name): \(.conclusion)")'
 echo "headRefOid: $head"
+(( status == 0 )) || note "scripts/dev/ci-failure.sh $run_id shows the failed tests and their traces"
 exit "$status"

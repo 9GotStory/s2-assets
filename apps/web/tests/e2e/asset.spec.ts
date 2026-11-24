@@ -1,4 +1,5 @@
 import { test, expect } from '@playwright/test';
+import { actorSwitch } from './support/actors.ts';
 import { createServer, type ViteDevServer } from 'vite';
 import * as path from 'node:path';
 import * as fs from 'node:fs';
@@ -155,25 +156,7 @@ test.describe.serial('Asset Registry Real SPA -> Composed API -> PostgreSQL Jour
     await page.route('**/*', (route: any) => route.fallback());
   });
 
-  const loginAs = async (page: any, context: any, userId: string) => {
-    const session = await sessionService.createSession(userId);
-    await context.addCookies([
-      {
-        name: 'session',
-        value: session.token,
-        url: targetBaseUrl,
-      },
-    ]);
-  };
-
-  // Switches the actor for a fresh page load. The API renews the session cookie on every response,
-  // so a request still in flight from the previous actor's page can restore that actor's cookie
-  // after addCookies; Journey 12 flaked that way. Leaving the page first settles those requests.
-  // A switch under a mounted page, which the actor-switch journeys test, keeps using loginAs.
-  const switchActor = async (page: any, context: any, userId: string) => {
-    await page.goto('about:blank');
-    await loginAs(page, context, userId);
-  };
+  const { loginAs, switchActor } = actorSwitch(() => sessionService, () => targetBaseUrl);
 
   // An Asset page's sections read once its detail appears. A revocation while one is in flight answers
   // that read 403, and the page starts re-verifying before the journey means it to.
@@ -185,7 +168,7 @@ test.describe.serial('Asset Registry Real SPA -> Composed API -> PostgreSQL Jour
   };
 
   test('Journey 1: minimal ordinary registration -> linked detail/history view', async ({ page, context }) => {
-    await loginAs(page, context, custodianUserId);
+    await loginAs(context, custodianUserId);
 
     // Navigate to registration page
     await page.goto(`${targetBaseUrl}/assets/register`);
@@ -227,7 +210,7 @@ test.describe.serial('Asset Registry Real SPA -> Composed API -> PostgreSQL Jour
   });
 
   test('Journey 2: automatic duplicate continuation', async ({ page, context }) => {
-    await loginAs(page, context, custodianUserId);
+    await loginAs(context, custodianUserId);
 
     // Navigate to registration page to register another item with the same asset_number
     await page.goto(`${targetBaseUrl}/assets/register`);
@@ -270,7 +253,7 @@ test.describe.serial('Asset Registry Real SPA -> Composed API -> PostgreSQL Jour
   });
 
   test('Journey 3: incomplete legacy entry without fabricated placeholders', async ({ page, context }) => {
-    await loginAs(page, context, custodianUserId);
+    await loginAs(context, custodianUserId);
 
     await page.goto(`${targetBaseUrl}/assets/register`);
     await expect(page.getByRole('heading', { level: 1, name: 'ลงทะเบียนครุภัณฑ์' })).toBeVisible();
@@ -308,7 +291,7 @@ test.describe.serial('Asset Registry Real SPA -> Composed API -> PostgreSQL Jour
     page,
     context,
   }) => {
-    await loginAs(page, context, readonlyUserId);
+    await loginAs(context, readonlyUserId);
 
     // 1. Attempting to view register page -> forbidden
     await page.goto(`${targetBaseUrl}/assets/register`);
@@ -332,7 +315,7 @@ test.describe.serial('Asset Registry Real SPA -> Composed API -> PostgreSQL Jour
     page,
     context,
   }) => {
-    await loginAs(page, context, custodianUserId);
+    await loginAs(context, custodianUserId);
 
     await page.goto(`${targetBaseUrl}/assets/register`);
     await expect(page.getByRole('heading', { level: 1, name: 'ลงทะเบียนครุภัณฑ์' })).toBeVisible();
@@ -448,7 +431,7 @@ test.describe.serial('Asset Registry Real SPA -> Composed API -> PostgreSQL Jour
     page,
     context,
   }) => {
-    await loginAs(page, context, custodianUserId);
+    await loginAs(context, custodianUserId);
 
     await page.goto(`${targetBaseUrl}/assets/register`);
     await expect(page.getByRole('heading', { level: 1, name: 'ลงทะเบียนครุภัณฑ์' })).toBeVisible();
@@ -477,7 +460,7 @@ test.describe.serial('Asset Registry Real SPA -> Composed API -> PostgreSQL Jour
     page,
     context,
   }) => {
-    await loginAs(page, context, custodianUserId);
+    await loginAs(context, custodianUserId);
 
     // 1. Register a named legacy item
     await page.goto(`${targetBaseUrl}/assets/register`);
@@ -508,7 +491,7 @@ test.describe.serial('Asset Registry Real SPA -> Composed API -> PostgreSQL Jour
     page,
     context,
   }) => {
-    await loginAs(page, context, custodianUserId);
+    await loginAs(context, custodianUserId);
 
     await page.goto(`${targetBaseUrl}/assets/register`);
     await expect(page.getByRole('heading', { level: 1, name: 'ลงทะเบียนครุภัณฑ์' })).toBeVisible();
@@ -555,7 +538,7 @@ test.describe.serial('Asset Registry Real SPA -> Composed API -> PostgreSQL Jour
     page,
     context,
   }) => {
-    await loginAs(page, context, custodianUserId);
+    await loginAs(context, custodianUserId);
 
     await page.goto(`${targetBaseUrl}/assets/register`);
     await expect(page.getByRole('heading', { level: 1, name: 'ลงทะเบียนครุภัณฑ์' })).toBeVisible();
@@ -646,7 +629,7 @@ test.describe.serial('Asset Registry Real SPA -> Composed API -> PostgreSQL Jour
     );
 
     // 2. Login as Administrator
-    await loginAs(page, context, adminUserId);
+    await loginAs(context, adminUserId);
 
     // 3. Navigate to Asset Detail page
     await page.goto(`${targetBaseUrl}/assets/${testAssetId}`);
@@ -729,7 +712,7 @@ test.describe.serial('Asset Registry Real SPA -> Composed API -> PostgreSQL Jour
     );
 
     // Login as Read-only user
-    await loginAs(page, context, readonlyUserId);
+    await loginAs(context, readonlyUserId);
 
     // Navigate to Asset Detail page
     await page.goto(`${targetBaseUrl}/assets/${testAssetId}`);
@@ -771,7 +754,7 @@ test.describe.serial('Asset Registry Real SPA -> Composed API -> PostgreSQL Jour
     );
 
     // Login as Custodian
-    await loginAs(page, context, custodianUserId);
+    await loginAs(context, custodianUserId);
     await page.goto(`${targetBaseUrl}/assets/${targetAssetId}`);
 
     // Fill identifier to match existing asset X
@@ -825,7 +808,7 @@ test.describe.serial('Asset Registry Real SPA -> Composed API -> PostgreSQL Jour
     );
 
     // Login as Custodian
-    await loginAs(page, context, custodianUserId);
+    await loginAs(context, custodianUserId);
     await page.goto(`${targetBaseUrl}/assets/${testAssetId}`);
 
     // Fill form
@@ -901,7 +884,7 @@ test.describe.serial('Asset Registry Real SPA -> Composed API -> PostgreSQL Jour
       [crypto.randomUUID(), testAssetId, custodianUserId, JSON.stringify({ name: 'เครื่องตรวจวัดสภาพอากาศ' })]
     );
 
-    await loginAs(page, context, custodianUserId);
+    await loginAs(context, custodianUserId);
     await page.goto(`${targetBaseUrl}/assets/${testAssetId}`);
     await expect(page.locator('#asset-detail-heading')).toHaveText('เครื่องตรวจวัดสภาพอากาศ');
 
@@ -959,7 +942,7 @@ test.describe.serial('Asset Registry Real SPA -> Composed API -> PostgreSQL Jour
       [crypto.randomUUID(), testAssetId, custodianUserId, JSON.stringify({ name: 'โต๊ะทำงานพับได้' })]
     );
 
-    await loginAs(page, context, custodianUserId);
+    await loginAs(context, custodianUserId);
     await page.goto(`${targetBaseUrl}/assets/${testAssetId}`);
 
     // Clear asset_number
@@ -993,7 +976,7 @@ test.describe.serial('Asset Registry Real SPA -> Composed API -> PostgreSQL Jour
       [crypto.randomUUID(), testAssetId, custodianUserId, JSON.stringify({ name: 'เครื่องสำรองไฟฟ้า APC' })]
     );
 
-    await loginAs(page, context, custodianUserId);
+    await loginAs(context, custodianUserId);
     await page.goto(`${targetBaseUrl}/assets/${testAssetId}`);
     await expect(page.locator('#asset-detail-heading')).toHaveText('เครื่องสำรองไฟฟ้า APC');
     await expect(page.locator('#asset-correction-form')).toBeVisible();
@@ -1059,7 +1042,7 @@ test.describe.serial('Asset Registry Real SPA -> Composed API -> PostgreSQL Jour
       );
     }
 
-    await loginAs(page, context, custodianUserId);
+    await loginAs(context, custodianUserId);
     await page.goto(`${targetBaseUrl}/assets/${testAssetId}`);
 
     // Fill duplicate asset_number
@@ -1097,7 +1080,7 @@ test.describe.serial('Asset Registry Real SPA -> Composed API -> PostgreSQL Jour
       [crypto.randomUUID(), testAssetId, custodianUserId, JSON.stringify({ name: 'เครื่องปรับอากาศ Daikin' })]
     );
 
-    await loginAs(page, context, custodianUserId);
+    await loginAs(context, custodianUserId);
     await page.goto(`${targetBaseUrl}/assets/${testAssetId}`);
 
     await page.locator('#asset-correction-form input#name').fill('เครื่องปรับอากาศ Daikin Inverter');
@@ -1190,7 +1173,7 @@ test.describe.serial('Asset Registry Real SPA -> Composed API -> PostgreSQL Jour
       });
     });
 
-    await loginAs(page, context, custodianUserId);
+    await loginAs(context, custodianUserId);
     await page.goto(`${targetBaseUrl}/assets/${testAssetId}`);
 
     // Verify error screen is rendered and asset details/form are suppressed
@@ -1227,7 +1210,7 @@ test.describe.serial('Asset Registry Real SPA -> Composed API -> PostgreSQL Jour
     );
 
     // 3. Login as administrator and open asset detail page
-    await loginAs(page, context, userId);
+    await loginAs(context, userId);
     await page.goto(`${targetBaseUrl}/assets/${testAssetId}`);
 
     // Verify detail and correction form are visible
@@ -1279,7 +1262,7 @@ test.describe.serial('Asset Registry Real SPA -> Composed API -> PostgreSQL Jour
       [crypto.randomUUID(), testAssetId, adminUserId, JSON.stringify({ name: 'เครื่องสำรองไฟ UPS' })]
     );
 
-    await loginAs(page, context, adminUserId);
+    await loginAs(context, adminUserId);
     await page.goto(`${targetBaseUrl}/assets/${testAssetId}`);
 
     await expect(page.locator('#asset-detail-heading')).toBeVisible();
@@ -1395,7 +1378,7 @@ test.describe.serial('Asset Registry Real SPA -> Composed API -> PostgreSQL Jour
     );
 
     // 3. Login and navigate to target asset
-    await loginAs(page, context, adminUserId);
+    await loginAs(context, adminUserId);
     await page.goto(`${targetBaseUrl}/assets/${testAssetId}`);
 
     await expect(page.locator('#asset-detail-heading')).toBeVisible();
@@ -1580,7 +1563,7 @@ test.describe.serial('Asset Registry Real SPA -> Composed API -> PostgreSQL Jour
     page,
     context,
   }) => {
-    await loginAs(page, context, readonlyUserId);
+    await loginAs(context, readonlyUserId);
 
     // 1. Start on dashboard and click Search link
     await page.goto(`${targetBaseUrl}/dashboard`);
@@ -1618,7 +1601,7 @@ test.describe.serial('Asset Registry Real SPA -> Composed API -> PostgreSQL Jour
     page,
     context,
   }) => {
-    await loginAs(page, context, readonlyUserId);
+    await loginAs(context, readonlyUserId);
 
     await page.goto(`${targetBaseUrl}/assets/search`);
     await expect(page.getByRole('heading', { level: 1, name: 'ค้นหาและตรวจสอบครุภัณฑ์ (Asset Search)' })).toBeVisible();
@@ -1659,7 +1642,7 @@ test.describe.serial('Asset Registry Real SPA -> Composed API -> PostgreSQL Jour
     page,
     context,
   }) => {
-    await loginAs(page, context, readonlyUserId);
+    await loginAs(context, readonlyUserId);
 
     await page.goto(`${targetBaseUrl}/assets/search`);
     await expect(page.getByRole('heading', { level: 1, name: 'ค้นหาและตรวจสอบครุภัณฑ์ (Asset Search)' })).toBeVisible();
@@ -1695,7 +1678,7 @@ test.describe.serial('Asset Registry Real SPA -> Composed API -> PostgreSQL Jour
     context,
   }) => {
     // 1. Mount detail page with authenticated session
-    await loginAs(page, context, readonlyUserId);
+    await loginAs(context, readonlyUserId);
     await page.goto(`${targetBaseUrl}/assets/${firstCreatedAssetId}`);
     await expect(page.locator('#asset-detail-heading')).toHaveText('MacBook Pro 16');
 
@@ -1737,7 +1720,7 @@ test.describe.serial('Asset Registry Real SPA -> Composed API -> PostgreSQL Jour
     context,
   }) => {
     // 1. Login as maintainer_e2e who has valid session but role SYSTEM_MAINTAINER (lacks asset:view)
-    await loginAs(page, context, maintainerUserId);
+    await loginAs(context, maintainerUserId);
 
     // 2. Navigate to asset detail page
     await page.goto(`${targetBaseUrl}/assets/${firstCreatedAssetId}`);
@@ -1760,7 +1743,7 @@ test.describe.serial('Asset Registry Real SPA -> Composed API -> PostgreSQL Jour
     context,
   }) => {
     // 1. Login as readonly_e2e (Actor A)
-    await loginAs(page, context, readonlyUserId);
+    await loginAs(context, readonlyUserId);
     await page.goto(`${targetBaseUrl}/assets/search`);
     await expect(page.locator('#asset-search-table')).toBeVisible();
 
@@ -1802,7 +1785,7 @@ test.describe.serial('Asset Registry Real SPA -> Composed API -> PostgreSQL Jour
     context,
   }) => {
     // 1. Login as readonly_e2e
-    await loginAs(page, context, readonlyUserId);
+    await loginAs(context, readonlyUserId);
     await page.goto(`${targetBaseUrl}/assets/search`);
     await expect(page.locator('#asset-search-table')).toBeVisible();
 
@@ -1864,7 +1847,7 @@ test.describe.serial('Asset Registry Real SPA -> Composed API -> PostgreSQL Jour
     page,
     context,
   }) => {
-    await loginAs(page, context, readonlyUserId);
+    await loginAs(context, readonlyUserId);
     await page.goto(`${targetBaseUrl}/assets/search`);
     await expect(page.locator('#asset-search-table')).toBeVisible();
 
@@ -1902,7 +1885,7 @@ test.describe.serial('Asset Registry Real SPA -> Composed API -> PostgreSQL Jour
     page,
     context,
   }) => {
-    await loginAs(page, context, readonlyUserId);
+    await loginAs(context, readonlyUserId);
 
     // Instrument browser fetch: when simulating unmount body abort, headers succeed immediately (200 OK),
     // but body json() rejects with AbortError when unmount cleanup calls abortController.abort()
@@ -1939,6 +1922,7 @@ test.describe.serial('Asset Registry Real SPA -> Composed API -> PostgreSQL Jour
     // 2. Click back to dashboard while body parsing is pending
     // This unmounts AssetSearch, calling its cleanup: abortController.abort()
     await page.locator('#back-dashboard-link').click();
+    await expect(page).toHaveURL(`${targetBaseUrl}/dashboard`);
 
     // Wait for microtask / obsolete continuation
     await page.waitForTimeout(1000);
@@ -1954,7 +1938,7 @@ test.describe.serial('Asset Registry Real SPA -> Composed API -> PostgreSQL Jour
     page,
     context,
   }) => {
-    await loginAs(page, context, readonlyUserId);
+    await loginAs(context, readonlyUserId);
 
     // Instrument browser fetch: when simulating unmount body abort, headers succeed immediately (200 OK),
     // but body json() rejects with AbortError when unmount cleanup calls abortController.abort()
@@ -2020,7 +2004,7 @@ test.describe.serial('Asset Registry Real SPA -> Composed API -> PostgreSQL Jour
     );
 
     // 2. Login as admin and navigate to asset detail
-    await loginAs(page, context, adminUserId);
+    await loginAs(context, adminUserId);
     await page.goto(`${targetBaseUrl}/assets/${testAssetId}`);
     await expect(page.locator('#asset-detail-heading')).toHaveText('เครื่องแม่ข่ายเซิร์ฟเวอร์ก่อนแก้ไข');
 
@@ -2152,7 +2136,7 @@ test.describe.serial('Asset Registry Real SPA -> Composed API -> PostgreSQL Jour
     );
 
     // 2. Login as admin and navigate to asset detail
-    await loginAs(page, context, adminUserId);
+    await loginAs(context, adminUserId);
     await page.goto(`${targetBaseUrl}/assets/${testAssetId}`);
     await expect(page.locator('#asset-detail-heading')).toBeVisible();
 
@@ -2260,7 +2244,7 @@ test.describe.serial('Asset Registry Real SPA -> Composed API -> PostgreSQL Jour
     );
 
     // 2. Login as admin and navigate to asset detail
-    await loginAs(page, context, adminUserId);
+    await loginAs(context, adminUserId);
     await page.goto(`${targetBaseUrl}/assets/${testAssetId}`);
     await expect(page.locator('#asset-detail-heading')).toBeVisible();
 
@@ -2610,7 +2594,7 @@ test.describe.serial('Asset Registry Real SPA -> Composed API -> PostgreSQL Jour
     const qrAssetId = insertRes.rows[0].id;
 
     // 3. Login as Custodian and navigate to AssetDetail
-    await loginAs(page, context, custodianUserId);
+    await loginAs(context, custodianUserId);
     await page.goto(`${targetBaseUrl}/assets/${qrAssetId}`);
 
     await expect(page.locator('#asset-detail-heading')).toBeVisible();
@@ -2832,7 +2816,7 @@ test.describe.serial('Asset Registry Real SPA -> Composed API -> PostgreSQL Jour
     // B. Maintainer role (lacks asset:view) is denied with boundary error
     const maintainerContext = await context.browser()!.newContext();
     const maintainerPage = await maintainerContext.newPage();
-    await loginAs(maintainerPage, maintainerContext, maintainerUserId);
+    await loginAs(maintainerContext, maintainerUserId);
     await maintainerPage.goto(`${targetBaseUrl}/assets/${qrAssetId}`);
     await expect(maintainerPage.locator('#detail-boundary-error')).toBeVisible();
     await expect(maintainerPage.locator('#detail-boundary-error')).toContainText(
@@ -2937,7 +2921,7 @@ test.describe.serial('Asset Registry Real SPA -> Composed API -> PostgreSQL Jour
 
   test('Journey 12: Lightweight Acquisition lifecycle (Seam B) -> create acquisition -> link two assets -> verify whole-acquisition total separation and truthful details', async ({ page, context }) => {
     // 1. Login as Asset Custodian
-    await loginAs(page, context, custodianUserId);
+    await loginAs(context, custodianUserId);
 
     // 2. Navigate to Dashboard and verify Acquisition section exists
     await page.goto(`${targetBaseUrl}/dashboard`);
@@ -3052,7 +3036,7 @@ test.describe.serial('Asset Registry Real SPA -> Composed API -> PostgreSQL Jour
   });
 
   test('Lead T5: repository DEV proxy must route acquisition requests to the actual API and bypass HTML to SPA', async ({ page, context }) => {
-    await loginAs(page, context, custodianUserId);
+    await loginAs(context, custodianUserId);
     const auth = await (await page.request.get(`${targetBaseUrl}/auth/session-check`)).json();
     const cookie = (await context.cookies()).map((x: any) => `${x.name}=${x.value}`).join('; ');
 
@@ -3083,7 +3067,7 @@ test.describe.serial('Asset Registry Real SPA -> Composed API -> PostgreSQL Jour
   });
 
   test('Lead T5: browser transmits and persists exact decimal amount (NUMERIC(18,2) capacity)', async ({ page, context }) => {
-    await loginAs(page, context, custodianUserId);
+    await loginAs(context, custodianUserId);
     await page.goto(`${targetBaseUrl}/acquisitions/new`);
     await page.locator('#notes').fill('Exact sourced total; no allocation');
     await page.locator('#total_amount').fill('1234567890123456.78');
@@ -3114,7 +3098,7 @@ test.describe.serial('Asset Registry Real SPA -> Composed API -> PostgreSQL Jour
   });
 
   test('Lead T5: current permission loss suppresses protected acquisition facts on focus immediately during reauthorization', async ({ page, context }) => {
-    await loginAs(page, context, custodianUserId);
+    await loginAs(context, custodianUserId);
     const auth = await (await page.request.get(`${targetBaseUrl}/auth/session-check`)).json();
 
     const res = await page.request.post(`${targetBaseUrl}/acquisitions`, {
@@ -3146,7 +3130,7 @@ test.describe.serial('Asset Registry Real SPA -> Composed API -> PostgreSQL Jour
       // Trigger focus and visibilitychange
       await page.evaluate(() => {
         window.dispatchEvent(new Event('focus'));
-        document.dispatchEvent(new Event('visibilitychange'));
+        window.dispatchEvent(new Event('visibilitychange'));
       });
 
       // While request is held in-flight, protected facts MUST be suppressed immediately!
@@ -3169,7 +3153,7 @@ test.describe.serial('Asset Registry Real SPA -> Composed API -> PostgreSQL Jour
 
   test('Lead T5: obsolete submit completion during pending actor/session verification cannot navigate or mutate active route', async ({ page, context }) => {
     // 1. Log in as Custodian and navigate to AcquisitionCreate
-    await loginAs(page, context, custodianUserId);
+    await loginAs(context, custodianUserId);
     await page.goto(`${targetBaseUrl}/acquisitions/new`);
     await expect(page.locator('#submit-acquisition-btn')).toBeEnabled();
 
@@ -3213,7 +3197,7 @@ test.describe.serial('Asset Registry Real SPA -> Composed API -> PostgreSQL Jour
 
     // 3. Switch cookies to Read-only actor
     await context.clearCookies();
-    await loginAs(page, context, readonlyUserId);
+    await loginAs(context, readonlyUserId);
 
     let resolveSession!: () => void;
     const sessionHeldPromise = new Promise<void>((resolve) => {
@@ -3229,7 +3213,7 @@ test.describe.serial('Asset Registry Real SPA -> Composed API -> PostgreSQL Jour
     // Trigger focus and visibilitychange to start revalidation
     await page.evaluate(() => {
       window.dispatchEvent(new Event('focus'));
-      document.dispatchEvent(new Event('visibilitychange'));
+      window.dispatchEvent(new Event('visibilitychange'));
     });
 
     // 4. Verify form is gated while session verification is pending
@@ -3260,7 +3244,7 @@ test.describe.serial('Asset Registry Real SPA -> Composed API -> PostgreSQL Jour
     await expect(page.locator('#total_amount')).toHaveValue('99999.00');
 
     // 10. Read-only actor attempts submit -> rejected with 403 Forbidden, shows alert and disables submit
-    await loginAs(page, context, readonlyUserId);
+    await loginAs(context, readonlyUserId);
     await page.locator('#submit-acquisition-btn').click();
     await expect(page.locator('#forbidden-alert')).toBeVisible();
     await expect(page.locator('#submit-acquisition-btn')).toBeDisabled();
@@ -3276,7 +3260,7 @@ test.describe.serial('Asset Registry Real SPA -> Composed API -> PostgreSQL Jour
   });
 
   test('Lead T5: in-flight submit unmounted via SPA link cannot redirect active route or cause error upon completion', async ({ page, context }) => {
-    await loginAs(page, context, custodianUserId);
+    await loginAs(context, custodianUserId);
     await page.goto(`${targetBaseUrl}/acquisitions/new`);
     await page.locator('#notes').fill('SPA unmount submit test');
 
@@ -3321,7 +3305,7 @@ test.describe.serial('Asset Registry Real SPA -> Composed API -> PostgreSQL Jour
   });
 
   test('T6 Journey 1: Navigation shortcuts to Bulk Register (Dashboard and Acquisition Detail)', async ({ page, context }) => {
-    await loginAs(page, context, custodianUserId);
+    await loginAs(context, custodianUserId);
 
     // 1. From Dashboard to Bulk Register
     await page.goto(`${targetBaseUrl}/dashboard`);
@@ -3348,7 +3332,7 @@ test.describe.serial('Asset Registry Real SPA -> Composed API -> PostgreSQL Jour
   });
 
   test('T6 Journey 2: Atomic bulk registration of multiple assets with shared acquisition', async ({ page, context }) => {
-    await loginAs(page, context, custodianUserId);
+    await loginAs(context, custodianUserId);
 
     // Seed acquisition for link
     const acqRes = await pool.query(`
@@ -3411,7 +3395,7 @@ test.describe.serial('Asset Registry Real SPA -> Composed API -> PostgreSQL Jour
   });
 
   test('T6 Journey 3: Duplicate candidate detection and explicit continuation flow', async ({ page, context }) => {
-    await loginAs(page, context, custodianUserId);
+    await loginAs(context, custodianUserId);
 
     await page.goto(`${targetBaseUrl}/assets/bulk-register`);
 
@@ -3450,7 +3434,7 @@ test.describe.serial('Asset Registry Real SPA -> Composed API -> PostgreSQL Jour
   });
 
   test('T6 Journey 4: Role capability enforcement for non-custodian (Read-Only user)', async ({ page, context }) => {
-    await loginAs(page, context, readonlyUserId);
+    await loginAs(context, readonlyUserId);
 
     await page.goto(`${targetBaseUrl}/assets/bulk-register`);
 
@@ -3472,7 +3456,7 @@ test.describe.serial('Asset Registry Real SPA -> Composed API -> PostgreSQL Jour
   });
 
   test('T6 Journey 5: In-flight bulk submit unmounted via SPA link cannot redirect active route or cause error upon completion', async ({ page, context }) => {
-    await loginAs(page, context, custodianUserId);
+    await loginAs(context, custodianUserId);
 
     await page.goto(`${targetBaseUrl}/assets/bulk-register`);
     await page.locator('#item-name-0').fill('In-Flight Unmount Bulk Asset');
@@ -3531,7 +3515,7 @@ test.describe.serial('Asset Registry Real SPA -> Composed API -> PostgreSQL Jour
   });
 
   test('T6 Journey 6: Verbatim preservation of padded and whitespace-inclusive identifiers', async ({ page, context }) => {
-    await loginAs(page, context, custodianUserId);
+    await loginAs(context, custodianUserId);
 
     await page.goto(`${targetBaseUrl}/assets/bulk-register`);
     await page.locator('#item-name-0').fill('Verbatim Identifier Asset');
@@ -3553,7 +3537,7 @@ test.describe.serial('Asset Registry Real SPA -> Composed API -> PostgreSQL Jour
   });
 
   test('T6 Journey 7: Duplicate candidate review with links, 3+ pages load-more, and intent acknowledgment reset', async ({ page, context }) => {
-    await loginAs(page, context, custodianUserId);
+    await loginAs(context, custodianUserId);
 
     // Seed 110 existing assets for 3 pages of duplicate candidates (50 + 50 + 10)
     await pool.query(`
@@ -3614,7 +3598,7 @@ test.describe.serial('Asset Registry Real SPA -> Composed API -> PostgreSQL Jour
   });
 
   test('T6 Journey 8: Committed-but-lost recovery across permission loss: denied replay retains quarantined intent, restored authority replays exact UUIDs', async ({ page, context }) => {
-    await loginAs(page, context, custodianUserId);
+    await loginAs(context, custodianUserId);
 
     await page.goto(`${targetBaseUrl}/assets/bulk-register`);
     await page.locator('#item-name-0').fill('Committed Lost Recovery Asset');
@@ -3713,7 +3697,7 @@ test.describe.serial('Asset Registry Real SPA -> Composed API -> PostgreSQL Jour
 
   test('T6 Journey 9: In-place actor switch in mounted component clears draft and pending intent', async ({ page, context }) => {
     // 1. Custodian Alice logs in and enters draft data
-    await loginAs(page, context, custodianUserId);
+    await loginAs(context, custodianUserId);
     await page.goto(`${targetBaseUrl}/assets/bulk-register`);
     await page.locator('#item-name-0').fill('Custodian Draft Secret');
     await expect(page.locator('#item-name-0')).toHaveValue('Custodian Draft Secret');
@@ -3749,7 +3733,7 @@ test.describe.serial('Asset Registry Real SPA -> Composed API -> PostgreSQL Jour
   });
 
   test('T6 Journey 10: Suppresses protected duplicate warnings and facts during session verification and after 403', async ({ page, context }) => {
-    await loginAs(page, context, custodianUserId);
+    await loginAs(context, custodianUserId);
 
     // Seed duplicate asset
     await pool.query(`
@@ -3848,7 +3832,7 @@ test.describe.serial('Asset Registry Real SPA -> Composed API -> PostgreSQL Jour
   });
 
   test('T6 Journey 11: Candidate pagination preserves raw offset across overlapping records, deterministic error on repeated page, and retry recovery', async ({ page, context }) => {
-    await loginAs(page, context, custodianUserId);
+    await loginAs(context, custodianUserId);
 
     await page.goto(`${targetBaseUrl}/assets/bulk-register`);
     await page.locator('#item-name-0').fill('Pagination Candidate Subject');
@@ -4026,7 +4010,7 @@ test.describe.serial('Asset Registry Real SPA -> Composed API -> PostgreSQL Jour
     `);
     const ast2Id = ast2Res.rows[0].id;
 
-    await loginAs(page, context, custodianUserId);
+    await loginAs(context, custodianUserId);
 
     // 2. Open Acquisition detail page
     await page.goto(`${targetBaseUrl}/acquisitions/${acqId}`);
@@ -4102,7 +4086,7 @@ test.describe.serial('Asset Registry Real SPA -> Composed API -> PostgreSQL Jour
       VALUES ('${evId}', 1, 'CREATED', '${custodianUserId}', NULL, '{"reference_text": "BOL-T7-CORR-01"}');
     `);
 
-    await loginAs(page, context, custodianUserId);
+    await loginAs(context, custodianUserId);
 
     // 2. Open Asset 1 detail
     await page.goto(`${targetBaseUrl}/assets/${ast1Id}`);
@@ -4154,7 +4138,7 @@ test.describe.serial('Asset Registry Real SPA -> Composed API -> PostgreSQL Jour
     `);
     const legacyId = legacyRes.rows[0].id;
 
-    await loginAs(page, context, custodianUserId);
+    await loginAs(context, custodianUserId);
 
     await page.goto(`${targetBaseUrl}/assets/${legacyId}`);
     await expect(page.locator('[data-testid="evidence-panel-section"]')).toBeVisible();
@@ -4192,7 +4176,7 @@ test.describe.serial('Asset Registry Real SPA -> Composed API -> PostgreSQL Jour
     `);
 
     // 2. Read-only user can view but not create or correct
-    await loginAs(page, context, readonlyUserId);
+    await loginAs(context, readonlyUserId);
     await page.goto(`${targetBaseUrl}/assets/${assetId}`);
     await expect(page.getByText('Calibration Certificate #CAL-001')).toBeVisible();
     await expect(page.locator('[data-testid="add-evidence-btn"]')).not.toBeVisible();
@@ -4262,7 +4246,7 @@ test.describe.serial('Asset Registry Real SPA -> Composed API -> PostgreSQL Jour
       `);
     }
 
-    await loginAs(page, context, custodianUserId);
+    await loginAs(context, custodianUserId);
     await page.goto(`${targetBaseUrl}/acquisitions/${acqId}`);
     await expect(page.locator('[data-testid="evidence-table"]')).toBeVisible();
 
@@ -4314,7 +4298,7 @@ test.describe.serial('Asset Registry Real SPA -> Composed API -> PostgreSQL Jour
     const acqId = acqRes.rows[0].id;
 
     // Login as custodian
-    await loginAs(page, context, custodianUserId);
+    await loginAs(context, custodianUserId);
     await page.goto(`${targetBaseUrl}/acquisitions/${acqId}`);
 
     // Verify warning banner and amount are visible when fully loaded
@@ -4339,7 +4323,7 @@ test.describe.serial('Asset Registry Real SPA -> Composed API -> PostgreSQL Jour
     );
 
     // Switch actor cookie to second custodian while page remains mounted
-    await loginAs(page, context, secondCustodianId);
+    await loginAs(context, secondCustodianId);
     const newSession = page.waitForResponse((r) => new URL(r.url()).pathname === '/auth/session-check');
     await page.evaluate(() => window.dispatchEvent(new Event('focus')));
     await newSession;
@@ -4414,7 +4398,7 @@ test.describe.serial('Asset Registry Real SPA -> Composed API -> PostgreSQL Jour
     `);
 
     // 3. Login as custodian and navigate to acquisition page
-    await loginAs(page, context, custodianUserId);
+    await loginAs(context, custodianUserId);
     await page.goto(`${targetBaseUrl}/acquisitions/${acqId}`);
     await expect(page.locator('[data-testid="evidence-panel-section"]')).toBeVisible();
 
@@ -4552,7 +4536,7 @@ test.describe.serial('Asset Registry Real SPA -> Composed API -> PostgreSQL Jour
     const assetId = assetRes.rows[0].id;
 
     // 2. Login as custodian and navigate to acquisition page
-    await loginAs(page, context, custodianUserId);
+    await loginAs(context, custodianUserId);
     await page.goto(`${targetBaseUrl}/acquisitions/${acqId}`);
     await expect(page.locator('[data-testid="evidence-panel-section"]')).toBeVisible();
     await expect(page.locator('[data-testid="add-evidence-btn"]')).toBeVisible();
@@ -4714,7 +4698,7 @@ test.describe.serial('Asset Registry Real SPA -> Composed API -> PostgreSQL Jour
     const acqId = acqRes.rows[0].id;
 
     // 3. Login as Actor A (custodianUserId) and navigate to acquisition page
-    await loginAs(page, context, custodianUserId);
+    await loginAs(context, custodianUserId);
     await page.goto(`${targetBaseUrl}/acquisitions/${acqId}`);
     await expect(page.locator('[data-testid="evidence-panel-section"]')).toBeVisible();
     await expect(page.locator('[data-testid="add-evidence-btn"]')).toBeVisible();
@@ -4896,7 +4880,7 @@ test.describe.serial('Asset Registry Real SPA -> Composed API -> PostgreSQL Jour
     const assetId = assetRes.rows[0].id;
 
     // 2. Login as custodian and open acquisition page
-    await loginAs(page, context, custodianUserId);
+    await loginAs(context, custodianUserId);
     await page.goto(`${targetBaseUrl}/acquisitions/${acqId}`);
     await expect(page.locator('[data-testid="evidence-panel-section"]')).toBeVisible();
 
@@ -5142,7 +5126,7 @@ test.describe.serial('Asset Registry Real SPA -> Composed API -> PostgreSQL Jour
     const suspended = page.locator('[data-testid="uncertain-mutation-auth-suspended"]');
     const retry = page.locator('[data-testid="retry-mutation-btn"]');
 
-    await loginAs(page, context, actorA);
+    await loginAs(context, actorA);
     await page.goto(`${targetBaseUrl}/acquisitions/${acqId}`);
     await page.locator('[data-testid="add-evidence-btn"]').click();
     await page.locator('[data-testid="create-ref-text-input"]').fill(ref);
@@ -5230,7 +5214,7 @@ test.describe.serial('Asset Registry Real SPA -> Composed API -> PostgreSQL Jour
     const refA = `A2 H2 actor A intent ${Date.now()}`;
     const refB = `A2 H2 actor B own ${Date.now()}`;
 
-    await loginAs(page, context, actorA);
+    await loginAs(context, actorA);
     await page.goto(`${targetBaseUrl}/acquisitions/${acqId}`);
     await page.locator('[data-testid="add-evidence-btn"]').click();
     await page.locator('[data-testid="create-ref-text-input"]').fill(refVisible);
@@ -5247,7 +5231,7 @@ test.describe.serial('Asset Registry Real SPA -> Composed API -> PostgreSQL Jour
 
     // Real actor B login in the same browser context, without focus or revalidation: the page
     // still renders actor A and A's Retry button.
-    await loginAs(page, context, actorB);
+    await loginAs(context, actorB);
     const tokensAfterSwitch: string[] = [];
     const sessionActorsAfterSwitch: string[] = [];
     page.on('request', (req: any) => {
@@ -5279,7 +5263,7 @@ test.describe.serial('Asset Registry Real SPA -> Composed API -> PostgreSQL Jour
     expect(await countEvidence(refB, actorB)).toBe(1);
 
     // Positive control: verified actor A retries with the original token and current CSRF.
-    await loginAs(page, context, actorA);
+    await loginAs(context, actorA);
     await refocus(page, actorA);
     await expect(page.locator('[data-testid="uncertain-mutation-alert"]')).toBeVisible();
     const replay = page.waitForRequest((req: any) => isEvidenceMutation(req));
@@ -5305,7 +5289,7 @@ test.describe.serial('Asset Registry Real SPA -> Composed API -> PostgreSQL Jour
       const refB1 = `A2 H3 ${mode} actor B before release ${Date.now()}`;
       const refB2 = `A2 H3 ${mode} actor B after release ${Date.now()}`;
 
-      await loginAs(page, context, actorA);
+      await loginAs(context, actorA);
       await page.goto(`${targetBaseUrl}/acquisitions/${acqId}`);
       await page.locator('[data-testid="add-evidence-btn"]').click();
       await page.locator('[data-testid="create-ref-text-input"]').fill(refA);
@@ -5324,7 +5308,7 @@ test.describe.serial('Asset Registry Real SPA -> Composed API -> PostgreSQL Jour
       await expect.poll(() => page.evaluate(() => (window as any).__e2eBodyHeldStatus)).toBe(mode === '403' ? 403 : 201);
 
       // Real actor B login, verified B UI and a successful B mutation while A's body is held.
-      await loginAs(page, context, actorB);
+      await loginAs(context, actorB);
       await refocus(page, actorB);
       await expect(page.locator('[data-testid="add-evidence-btn"]'), mode).toBeEnabled();
       await page.locator('[data-testid="add-evidence-btn"]').click();
@@ -5357,7 +5341,7 @@ test.describe.serial('Asset Registry Real SPA -> Composed API -> PostgreSQL Jour
 
       // A committed: back as A, the held operation is A's to recover, exactly once.
       expect(await countEvidence(refA, actorA), mode).toBe(1);
-      await loginAs(page, context, actorA);
+      await loginAs(context, actorA);
       await refocus(page, actorA);
       await expect(page.locator('[data-testid="uncertain-mutation-alert"]'), mode).toBeVisible();
       await page.locator('[data-testid="retry-mutation-btn"]').click();
@@ -5376,7 +5360,7 @@ test.describe.serial('Asset Registry Real SPA -> Composed API -> PostgreSQL Jour
     const actorA = await seedCustodianActor('a2_h4');
     const acqId = await seedAcquisitionFor(actorA, 'PO-T7-A2-H4');
     const stamp = Date.now();
-    await loginAs(page, context, actorA);
+    await loginAs(context, actorA);
     await page.goto(`${targetBaseUrl}/acquisitions/${acqId}`);
     await expect(page.locator('[data-testid="add-evidence-btn"]')).toBeEnabled();
 
@@ -5490,7 +5474,7 @@ test.describe.serial('Asset Registry Real SPA -> Composed API -> PostgreSQL Jour
     const acqId = await seedAcquisitionFor(actorA, 'PO-T7-A2-H4H');
     const ref = `A2 H4 history target ${Date.now()}`;
 
-    await loginAs(page, context, actorA);
+    await loginAs(context, actorA);
     await page.goto(`${targetBaseUrl}/acquisitions/${acqId}`);
     await page.locator('[data-testid="add-evidence-btn"]').click();
     await page.locator('[data-testid="create-ref-text-input"]').fill(ref);
@@ -5534,7 +5518,7 @@ test.describe.serial('Asset Registry Real SPA -> Composed API -> PostgreSQL Jour
     // Actor B, in a separate browser context, moves the record on to v3.
     const contextB = await browser.newContext();
     const pageB = await contextB.newPage();
-    await loginAs(pageB, contextB, actorB);
+    await loginAs(contextB, actorB);
     await pageB.goto(`${targetBaseUrl}/acquisitions/${acqId}`);
     await pageB.locator(`[data-testid="correct-evidence-btn-${evidenceId}"]`).click();
     await pageB.locator('[data-testid="correct-reason-input"]').fill('A2 H4 B correction');
@@ -5583,7 +5567,7 @@ test.describe.serial('Asset Registry Real SPA -> Composed API -> PostgreSQL Jour
       if (isEvidenceMutation(req)) mutationTokens.push(req.headers()['x-retry-token']);
     });
 
-    await loginAs(page, context, actorA);
+    await loginAs(context, actorA);
     await page.goto(`${targetBaseUrl}/acquisitions/${acqId}`);
     await page.locator('[data-testid="add-evidence-btn"]').click();
     await page.locator('[data-testid="create-ref-text-input"]').fill(ref);
@@ -5646,7 +5630,7 @@ test.describe.serial('Asset Registry Real SPA -> Composed API -> PostgreSQL Jour
     const alert = page.locator('[data-testid="uncertain-mutation-alert"]');
     const retry = page.locator('[data-testid="retry-mutation-btn"]');
 
-    await loginAs(page, context, actorA);
+    await loginAs(context, actorA);
     await page.goto(`${targetBaseUrl}/acquisitions/${acqId}`);
     await page.locator('[data-testid="add-evidence-btn"]').click();
     await page.locator('[data-testid="create-ref-text-input"]').fill(ref);
@@ -5680,7 +5664,7 @@ test.describe.serial('Asset Registry Real SPA -> Composed API -> PostgreSQL Jour
 
   // T4 (#25, D7-A / D3): reference lists and Asset reference context through the real SPA.
   test('Journey T4.1: an Administrator maintains the flat reference lists; other viewers read them without controls', async ({ page, context }) => {
-    await loginAs(page, context, adminUserId);
+    await loginAs(context, adminUserId);
     await page.goto(`${targetBaseUrl}/dashboard`);
     await page.locator('#nav-reference-lists').click();
     await page.waitForURL(`${targetBaseUrl}/admin/references`);
@@ -5763,7 +5747,7 @@ test.describe.serial('Asset Registry Real SPA -> Composed API -> PostgreSQL Jour
   };
 
   test('Journey T4.2: a Custodian registers with optional context, sees it on detail, and finds it by each dimension and by legacy text', async ({ page, context }) => {
-    await loginAs(page, context, custodianUserId);
+    await loginAs(context, custodianUserId);
     await page.goto(`${targetBaseUrl}/assets/register`);
     await page.locator('input#name').fill('Projector T4');
 
@@ -5828,7 +5812,7 @@ test.describe.serial('Asset Registry Real SPA -> Composed API -> PostgreSQL Jour
 
   // #25 D3 as amended by F003 Q1 (ADR 0001): the registry correction no longer changes the context.
   test('Journey T4.3: bulk registration shares one Initial Assignment; the correction form leaves it to its own section; a deactivated entry stays shown', async ({ page, context }) => {
-    await loginAs(page, context, custodianUserId);
+    await loginAs(context, custodianUserId);
     await page.goto(`${targetBaseUrl}/assets/bulk-register`);
     await page.locator('#item-name-0').fill('Chair T4 A');
     await page.locator('#add-row-btn').click();
@@ -5882,7 +5866,7 @@ test.describe.serial('Asset Registry Real SPA -> Composed API -> PostgreSQL Jour
 
   // F003-T1 (#51, Q11): a legacy registration starts its Initial Assignment at "ไม่ทราบ".
   test('Journey F003-T1: a legacy Asset is registered with an Initial Assignment whose Effective Date is unknown, and every viewer sees it', async ({ page, context }) => {
-    await loginAs(page, context, custodianUserId);
+    await loginAs(context, custodianUserId);
     await page.goto(`${targetBaseUrl}/assets/register`);
     await page.locator('#register-location_id').selectOption({ label: 'Store Room E2E North' });
 
