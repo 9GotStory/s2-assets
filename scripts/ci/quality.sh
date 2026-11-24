@@ -8,7 +8,8 @@
 # and migration images.
 #   --quick          stop after the typecheck and the API unit tests, for the implementation loop and
 #                    .githooks/pre-commit.
-#   --base <rev>     first run `git diff --check` and scripts/check-glossary.sh against <rev>.
+#   --base <rev>     first run `git diff --check`, scripts/check-glossary.sh and scripts/check-migration-text.sh
+#                    against <rev>.
 #   --remove-images  remove the three images afterwards, as CI does.
 set -euo pipefail
 cd "$(dirname "$0")/../.."
@@ -57,6 +58,7 @@ if [[ -n $base ]]; then
   note "diff checks against $base"
   git diff --check "$base" HEAD
   scripts/check-glossary.sh "$base"
+  scripts/check-migration-text.sh "$base"
   note "diff checks against $base passed"
 fi
 

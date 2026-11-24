@@ -73,9 +73,10 @@ with `/code-review` → `/pr` → `/retro`.
 ## Checks
 
 `.github/workflows/ci.yml` defines the checks, and its `ci-gate` job names the jobs that must
-pass. On a pull request, CI also runs `git diff --check` and `scripts/check-glossary.sh` against
-the base. Before pushing, run them all locally with `scripts/ci/all.sh --base <base>`, which runs
-each job's script in `scripts/ci/`, `security-scan.sh` included, and those two checks, so that a
+pass. On a pull request, CI also runs `git diff --check`, `scripts/check-glossary.sh` and
+`scripts/check-migration-text.sh` against the base. Before pushing, run them all locally with
+`scripts/ci/all.sh --base <base>`, which runs each job's script in `scripts/ci/`,
+`security-scan.sh` included, and those three checks, so that a
 finding reaches the Product Owner with the ticket's other decisions.
 To run one test file or a typecheck, use the same scripts:
 `scripts/ci/unit.sh tests/unit/<file>`, `scripts/ci/integration.sh tests/integration/<file>`,
@@ -154,7 +155,7 @@ databases and container tooling before relying on it:
   details and never weaken or redefine accepted business semantics. PostgreSQL transaction and
   concurrency semantics that matter in production are verified against real PostgreSQL, not
   database mocks alone. A test first seen green is not done: break the code it covers and watch it
-  go red. Size verification to the scope: lint, typecheck, unit, integration,
+  go red with `scripts/dev/expect-red.sh` (`--uncovered <base>`, then `--batch`). Size verification to the scope: lint, typecheck, unit, integration,
   browser/E2E, migration, security or container checks as they apply.
 
 ## Runtimes

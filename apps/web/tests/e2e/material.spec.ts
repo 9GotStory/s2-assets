@@ -828,6 +828,8 @@ test.describe.serial('Stock Material journeys: Real SPA -> Composed API -> Postg
     await expect(page.locator(`[data-testid="source-party-note-${id}"]`)).toHaveText('ติดต่อฝ่ายขาย\nโทร 02-000-0000');
     await expect(page.locator(`[data-testid="source-party-usage-${id}"]`)).toHaveText('0 รายการ');
     await expect(section.locator('th', { hasText: 'รายการรับวัสดุที่ใช้อยู่' })).toBeVisible();
+    // Only a Source Party holds a note (#232 retro item 1).
+    await expect(section.locator('th', { hasText: 'หมายเหตุ' })).toBeVisible();
 
     // Rename fixes its spelling, telling first how many Material Receipts use it.
     await page.locator(`#source-party-rename-${id}`).click();
@@ -883,6 +885,8 @@ test.describe.serial('Stock Material journeys: Real SPA -> Composed API -> Postg
     const typeRow = page.locator('#catalog-list-source-type tbody tr', { hasText: `รับบริจาค ${tag}` });
     await expect(typeRow.locator('td').nth(1)).toHaveText('ใช้งานอยู่');
     await expect(typeRow.locator('[id^="source-type-edit-note-"]')).toHaveCount(0);
+    await expect(page.locator('#catalog-list-source-type th', { hasText: 'รายการรับวัสดุที่ใช้อยู่' })).toBeVisible();
+    await expect(page.locator('#catalog-list-source-type th', { hasText: 'หมายเหตุ' })).toHaveCount(0);
   });
 
   test('Journey F008-T1.2: a Read-only User reads the list and a Stock Material page with no action, and an Asset Custodian has no "วัสดุ" menu', async ({ page, context }) => {
