@@ -1116,6 +1116,13 @@ test.describe.serial('Material Request journeys: Real SPA -> Composed API -> Pos
 
   test('Journey F009-T8.1: a Supply Officer renames "กระดาษ A4" to "กระดาษถ่ายเอกสาร A4", reminded that a different meaning needs a new Requestable Material, finds the new name in the list and the old and new names in its history, changes its description with "แก้ไขข้อมูลอื่น", and is refused a new Request Unit while Requested Items use it', async ({ page, context }) => {
     const paperId = (await pool.query(`SELECT id FROM requestable_materials WHERE name = 'กระดาษ A4'`)).rows[0].id;
+    // An Inactive Requestable Material whose name a Rename cannot take either.
+    const { requestable_material_id: retiredId } = await new RequestableMaterialService({ db: pool }).create(
+      officerUserId,
+      { name: 'ปากกาเลิกใช้', request_unit_id: reamId },
+      { retryToken: crypto.randomUUID() }
+    );
+    await new RequestableMaterialService({ db: pool }).inactivate(officerUserId, retiredId, { expected_version: 1 }, { retryToken: crypto.randomUUID() });
     // Its Compatible Stock Materials ended, so that only the Requested Items refuse a new Request Unit (CODING_STANDARDS,
     // a refusal test): which one T7.1 leaves current turns on the order of their ids.
     const requestables = new RequestableMaterialService({ db: pool });
@@ -1150,6 +1157,10 @@ test.describe.serial('Material Request journeys: Real SPA -> Composed API -> Pos
     await page.locator('#requestable-material-rename-name').fill(other.name.toUpperCase());
     await page.locator('#requestable-material-rename-submit').click();
     await expect(page.locator('[data-testid="requestable-material-rename-name-taken"]')).toHaveText(`มีวัสดุสำหรับขอเบิกชื่อนี้อยู่แล้ว: ${other.name}`);
+    // One an Inactive Requestable Material holds is refused naming it, marked (#210 build decision 1).
+    await page.locator('#requestable-material-rename-name').fill('ปากกาเลิกใช้');
+    await page.locator('#requestable-material-rename-submit').click();
+    await expect(page.locator('[data-testid="requestable-material-rename-name-taken"]')).toHaveText('มีวัสดุสำหรับขอเบิกชื่อนี้อยู่แล้ว: ปากกาเลิกใช้ (หยุดใช้)');
     await page.locator('#requestable-material-rename-name').fill('กระดาษถ่ายเอกสาร A4');
     await page.locator('#requestable-material-rename-submit').click();
     await expect(page.getByRole('heading', { level: 1, name: 'กระดาษถ่ายเอกสาร A4' })).toBeVisible();

@@ -36,7 +36,8 @@ const noticeStyle: React.CSSProperties = { fontSize: '0.875rem', color: '#4b5563
 export const RequestableMaterialRenameForm: React.FC<RequestableMaterialEditFormProps> = ({ requestable, csrfToken, onRefresh, onSaved, onCancel, onPermissionRevoked }) => {
   const [name, setName] = useState(requestable.name);
 
-  // A name another Requestable Material holds names it, Inactive or not, with the way to its page (Q6).
+  // A name another Requestable Material holds names it with the way to its page, marked when it is Inactive (Q6, P7;
+  // #210 build decision 1, comment 7119373033).
   const nameTaken = (body: RequestableMaterialNameTaken | null) =>
     body?.code === 'DUPLICATE_NAME' ? (
       <span data-testid="requestable-material-rename-name-taken">
@@ -44,6 +45,7 @@ export const RequestableMaterialRenameForm: React.FC<RequestableMaterialEditForm
         <Link to={`/requestable-materials/${body.entry.id}`} style={{ color: '#991b1b', fontWeight: 600 }}>
           {body.entry.name}
         </Link>
+        {!body.entry.is_active && ` (${INACTIVE_LABEL})`}
       </span>
     ) : null;
 
