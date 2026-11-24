@@ -48,6 +48,7 @@ const MIGRATIONS = [
   '0031_material_requests',
   '0032_opening_balances_stock_movements',
   '0033_source_parties_source_types',
+  '0034_material_receipts',
 ] as const;
 
 describe('Database Migrations Integration', () => {

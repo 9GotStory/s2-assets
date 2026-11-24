@@ -2,19 +2,20 @@ import pg from 'pg';
 import type { ConversionSnapshot } from './base-quantity.ts';
 import { joinUnitEntry } from './catalog-list-entries.ts';
 
-// F010-T2 (#233): the module that owns stock_movements, the one table of Stock Movements (รายการเคลื่อนไหว) that
+// F010-T2 (#233), T3 (#234): the module that owns stock_movements, the one table of Stock Movements (รายการเคลื่อนไหว) that
 // Features 010 to 014 share (ADR 0003, #231 P2). Rows are only ever added: a trigger refuses every UPDATE and DELETE.
 // What they add up to is read through current-stock.ts.
 
-// The kinds 0032_opening_balances_stock_movements allows; T3 adds the Material Receipt's, and T6 and T7 write the
-// Reversals.
-export type StockMovementKind = 'OPENING_BALANCE' | 'REVERSAL';
+// The kinds 0032_opening_balances_stock_movements and 0034_material_receipts allow; T6 and T7 write the Reversals.
+export type StockMovementKind = 'OPENING_BALANCE' | 'MATERIAL_RECEIPT' | 'REVERSAL';
 
-// A Stock Movement made by an Opening Balance line, as Feature 008's quantity normalization gave it (#231 Numbers).
-export interface NewStockMovement {
+// A Stock Movement made by an Opening Balance line (T2) or a Receipt Line (T3), each kind naming its own source line,
+// as Feature 008's quantity normalization gave it (#231 Numbers).
+export type NewStockMovement = NewStockMovementFacts &
+  ({ kind: 'OPENING_BALANCE'; opening_balance_line_id: string } | { kind: 'MATERIAL_RECEIPT'; material_receipt_line_id: string });
+
+interface NewStockMovementFacts {
   stock_material_id: string;
-  kind: 'OPENING_BALANCE';
-  opening_balance_line_id: string;
   effective_date: string;
   original_quantity: string;
   original_unit_id: string;
@@ -27,14 +28,15 @@ export interface NewStockMovement {
 /** Adds the Stock Movement `movement` through `client` inside its write's transaction, and answers its id. */
 export async function recordStockMovement(client: pg.PoolClient, movement: NewStockMovement): Promise<string> {
   const res = await client.query(
-    `INSERT INTO stock_movements (stock_material_id, kind, opening_balance_line_id, effective_date, original_quantity, original_unit_id,
-                                  base_unit_id, conversion_factor, base_quantity, recorded_by)
-     VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)
+    `INSERT INTO stock_movements (stock_material_id, kind, opening_balance_line_id, material_receipt_line_id, effective_date, original_quantity,
+                                  original_unit_id, base_unit_id, conversion_factor, base_quantity, recorded_by)
+     VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)
      RETURNING id`,
     [
       movement.stock_material_id,
       movement.kind,
-      movement.opening_balance_line_id,
+      movement.kind === 'OPENING_BALANCE' ? movement.opening_balance_line_id : null,
+      movement.kind === 'MATERIAL_RECEIPT' ? movement.material_receipt_line_id : null,
       movement.effective_date,
       movement.original_quantity,
       movement.original_unit_id,
@@ -63,9 +65,21 @@ export interface StockMovementRow {
 }
 
 /** The Stock Movements of the Opening Balance lines `lineIds`, by line id, oldest first, each Unit under its name now. */
-export async function stockMovementsOfOpeningBalanceLines(runner: pg.Pool | pg.PoolClient, lineIds: string[]): Promise<Map<string, StockMovementRow[]>> {
+export const stockMovementsOfOpeningBalanceLines = (runner: pg.Pool | pg.PoolClient, lineIds: string[]): Promise<Map<string, StockMovementRow[]>> =>
+  stockMovementsOfLines(runner, 'opening_balance_line_id', lineIds);
+
+/** F010-T3 (#234): the Stock Movements of the Receipt Lines `lineIds`, by line id, oldest first, as above (story 58). */
+export const stockMovementsOfMaterialReceiptLines = (runner: pg.Pool | pg.PoolClient, lineIds: string[]): Promise<Map<string, StockMovementRow[]>> =>
+  stockMovementsOfLines(runner, 'material_receipt_line_id', lineIds);
+
+// The Stock Movements whose source line, in the column `column`, is one of `lineIds`, by line id.
+async function stockMovementsOfLines(
+  runner: pg.Pool | pg.PoolClient,
+  column: 'opening_balance_line_id' | 'material_receipt_line_id',
+  lineIds: string[]
+): Promise<Map<string, StockMovementRow[]>> {
   const res = await runner.query(
-    `SELECT sm.opening_balance_line_id, sm.id, sm.kind, sm.effective_date::text AS effective_date, trim_scale(sm.original_quantity)::text AS original_quantity,
+    `SELECT sm.${column} AS line_id, sm.id, sm.kind, sm.effective_date::text AS effective_date, trim_scale(sm.original_quantity)::text AS original_quantity,
             sm.original_unit_id, ou.name AS original_unit_name, sm.base_unit_id, bu.name AS base_unit_name,
             trim_scale(sm.conversion_factor)::text AS conversion_factor, trim_scale(sm.base_quantity)::text AS base_quantity,
             sm.recorded_by, u.username AS recorded_by_username, sm.recorded_at
@@ -73,13 +87,13 @@ export async function stockMovementsOfOpeningBalanceLines(runner: pg.Pool | pg.P
      ${joinUnitEntry('ou', 'sm.original_unit_id')}
      ${joinUnitEntry('bu', 'sm.base_unit_id')}
      LEFT JOIN users u ON u.id = sm.recorded_by
-     WHERE sm.opening_balance_line_id = ANY($1::uuid[])
+     WHERE sm.${column} = ANY($1::uuid[])
      ORDER BY sm.recorded_at ASC, sm.id ASC`,
     [lineIds]
   );
   const byLine = new Map<string, StockMovementRow[]>();
   for (const row of res.rows) {
-    const movements = byLine.get(row.opening_balance_line_id) ?? [];
+    const movements = byLine.get(row.line_id) ?? [];
     movements.push({
       id: row.id,
       kind: row.kind,
@@ -93,7 +107,7 @@ export async function stockMovementsOfOpeningBalanceLines(runner: pg.Pool | pg.P
       recorded_by_username: row.recorded_by_username ?? null,
       recorded_at: new Date(row.recorded_at).toISOString(),
     });
-    byLine.set(row.opening_balance_line_id, movements);
+    byLine.set(row.line_id, movements);
   }
   return byLine;
 }

@@ -1,12 +1,13 @@
 import pg from 'pg';
 import { bangkokDate, isCalendarDate, normalizeText } from './assignment.service.ts';
-import { normalizeQuantity, type QuantityRefusal } from './base-quantity.ts';
-import { isValidUuid } from './capability.service.ts';
+import { normalizeQuantity } from './base-quantity.ts';
 import { stockFiguresOf } from './current-stock.ts';
-import { parseDecimal } from './exact-decimal.ts';
+import { materialReceiptsInEffectOf, type InEffectMaterialReceipt } from './material-receipt-read.service.ts';
+import { openingBalancesInEffectOf } from './opening-balance-read.service.ts';
 import { openingBalanceState, type OpeningBalanceState } from './opening-balance-state.ts';
 import { commitOnce } from './retryable-write.ts';
 import { NotFoundError, StaleBeforeConflictError } from './service-errors.ts';
+import { draftQuantityOf, QUANTITY_REFUSALS, uuidOf, uuidOrNull } from './stock-line-input.ts';
 import { lockedStockMaterialsForStock, stockMaterialSummariesOf, stockMaterialUnitsOf } from './stock-material-read.service.ts';
 import { recordStockMovement } from './stock-movements.ts';
 import { ValidationError } from './validation-error.ts';
@@ -76,6 +77,9 @@ export interface ConfirmProblem {
   message: string;
   // For a Stock Material with a Stock Movement in effect from an Opening Balance line: that Opening Balance (story 40).
   in_effect_opening_balance?: { opening_balance_id: string; opening_balance_number: string };
+  // Or, for one from a Receipt Line: the Material Receipt of the lowest Receipt Number that holds one (#234 start
+  // decision 3).
+  in_effect_material_receipt?: InEffectMaterialReceipt;
 }
 
 /** A confirm refused, with every failing rule and line named (#231 Q25). Nothing is written. */
@@ -90,45 +94,6 @@ export class OpeningBalanceNotConfirmableError extends Error {
     this.problems = problems;
   }
 }
-
-// Why Feature 008's quantity normalization refuses a quantity, as a confirm names it (#177 decisions). An unknown Unit
-// or factor cannot reach it: a Stock Material keeps every Unit it ever had, and only an Inactive one lacks a factor.
-const QUANTITY_REFUSALS: Record<QuantityRefusal, string> = {
-  UNKNOWN_UNIT: 'names a Unit its Stock Material does not have',
-  UNKNOWN_CONVERSION_FACTOR: 'names a Unit without a Conversion Factor',
-  NOT_A_DECIMAL: 'must be a decimal number',
-  TOO_MANY_DECIMAL_PLACES: 'must have at most four decimal places',
-  OUT_OF_RANGE: 'is too large',
-  NOT_GREATER_THAN_ZERO: 'must be greater than 0',
-  FRACTION_IN_WHOLE_NUMBER_UNIT: 'must be a whole number in its Unit',
-  BASE_QUANTITY_TOO_MANY_DECIMAL_PLACES: 'gives a Base Quantity with more than four decimal places',
-  BASE_QUANTITY_OUT_OF_RANGE: 'gives a Base Quantity that is too large',
-  BASE_QUANTITY_NOT_WHOLE: 'gives a Base Quantity that is not whole, as its Base Unit counts in whole numbers',
-};
-
-// A quantity present on a Draft line, checked as it is typed: greater than 0, at most four decimal places, never
-// rounded (Q25). PostgreSQL stores it as a number, and the reads give it without trailing zeros.
-const draftQuantityOf = (value: string, field: string): string => {
-  const parsed = parseDecimal(value);
-  if (!parsed.ok) {
-    throw new ValidationError(`${field} ${QUANTITY_REFUSALS[parsed.reason]}`);
-  }
-  if (parsed.scaled <= 0n) {
-    throw new ValidationError(`${field} ${QUANTITY_REFUSALS.NOT_GREATER_THAN_ZERO}`);
-  }
-  return value;
-};
-
-// A UUID, in lower case.
-const uuidOf = (value: string, field: string): string => {
-  if (!isValidUuid(value)) {
-    throw new ValidationError(`${field} must be a valid UUID`);
-  }
-  return value.trim().toLowerCase();
-};
-
-// A UUID that is given, in lower case, or none.
-const uuidOrNull = (value: string | null | undefined, field: string): string | null => (value === undefined || value === null ? null : uuidOf(value, field));
 
 // A Draft's facts once validated, before any lock. The retry fingerprint covers these.
 const normalizeDraft = (input: OpeningBalanceDraftInput) => {
@@ -320,7 +285,7 @@ export class OpeningBalanceService {
         lines.map(({ stock_material_id }) => stock_material_id)
       );
       const units = new Map(await Promise.all(lines.map(async ({ stock_material_id }) => [stock_material_id, await stockMaterialUnitsOf(client, stock_material_id, { locked: true })] as const)));
-      const inEffect = await this.inEffectOpeningBalances(client, lines);
+      const inEffect = await this.inEffectHolders(client, lines);
 
       const problems: ConfirmProblem[] = [];
       const today = bangkokDate(this.clock());
@@ -337,13 +302,13 @@ export class OpeningBalanceService {
       }
       const movements = lines.map((line) => {
         const field = `lines[${line.position}]`;
-        if (inEffect.has(line.stock_material_id)) {
-          const holder = inEffect.get(line.stock_material_id);
+        const holder = inEffect.get(line.stock_material_id);
+        if (holder !== undefined) {
           const named = `${field}.stock_material_id names ${names.get(line.stock_material_id)!}, a Stock Material with a Stock Movement in effect`;
           problems.push(
-            holder === null
-              ? { field: `${field}.stock_material_id`, message: named }
-              : { field: `${field}.stock_material_id`, message: `${named}, from Opening Balance ${holder!.opening_balance_number}`, in_effect_opening_balance: holder! }
+            'opening_balance_id' in holder
+              ? { field: `${field}.stock_material_id`, message: `${named}, from Opening Balance ${holder.opening_balance_number}`, in_effect_opening_balance: holder }
+              : { field: `${field}.stock_material_id`, message: `${named}, from Material Receipt ${holder.receipt_number}`, in_effect_material_receipt: holder }
           );
         }
         if (line.unit_id === null) {
@@ -417,21 +382,25 @@ export class OpeningBalanceService {
 
   /**
    * Of the Stock Materials of `lines`, those with a Stock Movement in effect (Q28), decided by the one SQL source alone,
-   * each with the Opening Balance whose line holds it, or null when no Opening Balance line does: T3 (#234) adds the
-   * Material Receipt's Stock Movements, and its refusal names the Receipt.
+   * each with what holds it: the Opening Balance whose line points at it, or else the Material Receipt (story 40; #234
+   * start decision 3). Every Stock Movement in effect comes from one of the two in Feature 010.
    */
-  private async inEffectOpeningBalances(client: pg.PoolClient, lines: StoredLine[]): Promise<Map<string, { opening_balance_id: string; opening_balance_number: string } | null>> {
+  private async inEffectHolders(
+    client: pg.PoolClient,
+    lines: StoredLine[]
+  ): Promise<Map<string, { opening_balance_id: string; opening_balance_number: string } | InEffectMaterialReceipt>> {
     const res = await client.query(
-      `SELECT s.id AS stock_material_id, ob.id AS opening_balance_id, ob.opening_balance_number::text AS opening_balance_number
-       FROM unnest($1::uuid[]) AS s(id)
-       CROSS JOIN LATERAL ${stockFiguresOf('s.id')} f
-       LEFT JOIN opening_balance_lines l ON l.stock_material_id = s.id AND l.stock_movement_id IS NOT NULL
-       LEFT JOIN opening_balances ob ON ob.id = l.opening_balance_id
-       WHERE f.has_stock_movement_in_effect`,
+      `SELECT s.id FROM unnest($1::uuid[]) AS s(id) CROSS JOIN LATERAL ${stockFiguresOf('s.id')} f WHERE f.has_stock_movement_in_effect`,
       [lines.map(({ stock_material_id }) => stock_material_id)]
     );
+    const ids: string[] = res.rows.map(({ id }: { id: string }) => id);
+    const openingBalances = await openingBalancesInEffectOf(client, ids);
+    const receipts = await materialReceiptsInEffectOf(client, ids);
     return new Map(
-      res.rows.map((row: any) => [row.stock_material_id, row.opening_balance_id === null ? null : { opening_balance_id: row.opening_balance_id, opening_balance_number: row.opening_balance_number }])
+      ids.map((id) => {
+        const openingBalance = openingBalances.get(id);
+        return [id, openingBalance === undefined ? receipts.get(id)! : { opening_balance_id: openingBalance.opening_balance_id, opening_balance_number: openingBalance.opening_balance_number }];
+      })
     );
   }
 }

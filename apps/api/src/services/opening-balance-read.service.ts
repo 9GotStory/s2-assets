@@ -194,3 +194,26 @@ export class OpeningBalanceReadService {
     };
   }
 }
+
+// F010-T3 (#234): an Opening Balance holding a Stock Material's Stock Movement in effect, with its As-of Date (#231 Q21).
+export interface InEffectOpeningBalance {
+  opening_balance_id: string;
+  opening_balance_number: string;
+  as_of_date: string;
+}
+
+/**
+ * F010-T3 (#234): of the Stock Materials `ids`, those with an Opening Balance in effect, each with the Opening Balance
+ * whose line points at its Stock Movement in effect (MSL-04): at most one, by
+ * `opening_balance_lines_one_in_effect_per_stock_material`. A write reads it under the Stock Material lock (#231 P4).
+ */
+export async function openingBalancesInEffectOf(runner: pg.Pool | pg.PoolClient, ids: string[]): Promise<Map<string, InEffectOpeningBalance>> {
+  const res = await runner.query(
+    `SELECT l.stock_material_id, ob.id AS opening_balance_id, ob.opening_balance_number::text AS opening_balance_number, ob.as_of_date::text AS as_of_date
+     FROM opening_balance_lines l
+     JOIN opening_balances ob ON ob.id = l.opening_balance_id
+     WHERE l.stock_material_id = ANY($1::uuid[]) AND l.stock_movement_id IS NOT NULL`,
+    [ids]
+  );
+  return new Map(res.rows.map(({ stock_material_id: id, ...openingBalance }: any) => [id, openingBalance]));
+}

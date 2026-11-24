@@ -123,6 +123,17 @@ export const repositoryProxyConfig: Record<string, ProxyOptions> = {
       }
     },
   },
+  // F010-T3 (#234): the Material Receipts; the list, the Draft form and a Material Receipt's page are the SPA routes
+  // /material-receipts, /material-receipts/new, /material-receipts/:id and /material-receipts/:id/edit.
+  '/material-receipts': {
+    target: 'http://api:3000',
+    changeOrigin: true,
+    bypass: (req) => {
+      if (req.headers.accept?.includes('text/html')) {
+        return '/index.html';
+      }
+    },
+  },
   // F009-T4 (#206): the offered Requestable Materials a Requester asks for; no SPA route starts with
   // /offered-requestable-materials.
   '/offered-requestable-materials': {

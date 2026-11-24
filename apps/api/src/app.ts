@@ -27,6 +27,7 @@ import { stockMaterialRoutes } from './routes/stock-material.routes.ts';
 import { catalogListRoutes } from './routes/catalog-list.routes.ts';
 import { requestableMaterialRoutes } from './routes/requestable-material.routes.ts';
 import { materialRequestRoutes } from './routes/material-request.routes.ts';
+import { materialReceiptRoutes } from './routes/material-receipt.routes.ts';
 import { openingBalanceRoutes } from './routes/opening-balance.routes.ts';
 import { UserService, type DatabaseClient } from './services/user.service.ts';
 import { SessionService } from './services/session.service.ts';
@@ -57,6 +58,8 @@ import { CatalogListService } from './services/catalog-list.service.ts';
 import { RequestableMaterialService } from './services/requestable-material.service.ts';
 import { RequestableMaterialReadService } from './services/requestable-material-read.service.ts';
 import { MaterialRequestService } from './services/material-request.service.ts';
+import { MaterialReceiptReadService } from './services/material-receipt-read.service.ts';
+import { MaterialReceiptService } from './services/material-receipt.service.ts';
 import { OpeningBalanceReadService } from './services/opening-balance-read.service.ts';
 import { OpeningBalanceService } from './services/opening-balance.service.ts';
 import { MaterialRequestReadService } from './services/material-request-read.service.ts';
@@ -355,6 +358,12 @@ export async function buildApp(options: AppOptions = {}): Promise<FastifyInstanc
     await app.register(openingBalanceRoutes, {
       openingBalanceService: new OpeningBalanceService({ db: dbClient, clock: options.clock }),
       openingBalanceReadService: new OpeningBalanceReadService({ db: dbClient }),
+      capabilityService,
+    });
+    // F010-T3 (#234): the Material Receipts
+    await app.register(materialReceiptRoutes, {
+      materialReceiptService: new MaterialReceiptService({ db: dbClient, clock: options.clock }),
+      materialReceiptReadService: new MaterialReceiptReadService({ db: dbClient }),
       capabilityService,
     });
 

@@ -3,6 +3,7 @@ import { normalizeLine, normalizeText } from './assignment.service.ts';
 import { comparedName } from './compared-name.ts';
 import { CATALOG_LISTS, type CatalogListKind, type NamedListEntry } from './catalog-list-entries.ts';
 import { commitOnce } from './retryable-write.ts';
+import { materialReceiptUsageOf } from './material-receipt-read.service.ts';
 import { stockMaterialUsageOf } from './stock-material-read.service.ts';
 import { NotFoundError, StaleBeforeConflictError } from './service-errors.ts';
 import { ValidationError } from './validation-error.ts';
@@ -87,6 +88,17 @@ export async function selectableCatalogListEntry(client: pg.PoolClient, kind: Ca
  */
 export async function catalogListEntryOf(client: pg.PoolClient, kind: CatalogListKind, id: string): Promise<NamedListEntry> {
   const res = await client.query(`SELECT id, name FROM ${CATALOG_LISTS[kind].table} WHERE id = $1 FOR SHARE`, [id]);
+  return res.rows[0];
+}
+
+/**
+ * F010-T3 (#234): the entry `id` of the list `kind` with its name now and whether it is active, locked FOR SHARE so
+ * that an Inactive, a reactivation or a rename waits for the caller's write or is seen by it, as a Material Receipt
+ * confirm reads its Source Party and Source Type (#231 P4, Q24). A foreign key holds `id` on the list, which deletes
+ * nothing.
+ */
+export async function lockedCatalogListEntry(client: pg.PoolClient, kind: CatalogListKind, id: string): Promise<NamedListEntry & { is_active: boolean }> {
+  const res = await client.query(`SELECT id, name, is_active FROM ${CATALOG_LISTS[kind].table} WHERE id = $1 FOR SHARE`, [id]);
   return res.rows[0];
 }
 
@@ -274,9 +286,9 @@ export class CatalogListService {
   }
 
   // How many records name each entry of the list `kind`, by its id: Stock Materials for the lists of the catalog, and
-  // Material Receipts for a Source Party or a Source Type, which none names until T3 (#234) adds them (#232).
+  // Material Receipts, Drafts included, for a Source Party or a Source Type (#231 Model; #234 start decision 4).
   private async usageOf(kind: CatalogListKind): Promise<Map<string, number>> {
-    return kind === 'source-party' || kind === 'source-type' ? new Map() : stockMaterialUsageOf(this.db, kind);
+    return kind === 'source-party' || kind === 'source-type' ? materialReceiptUsageOf(this.db, kind) : stockMaterialUsageOf(this.db, kind);
   }
 
   // The answer to a write the unique index refused, naming the entry that holds the name (Q20), or `err` itself.
