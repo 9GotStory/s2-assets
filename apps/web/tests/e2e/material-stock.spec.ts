@@ -564,7 +564,7 @@ test.describe.serial('Material Stock journeys: Real SPA -> Composed API -> Postg
 
   test('Journey F010-T5.1: a Read-only User reads คงเหลือ of a Stock Material with an Opening Balance, with no write action, and the Supply Officer finds its หน่วยนับหลัก locked in แก้ไขหน่วยนับ, with the reason, and changes its อัตราแปลง', async ({ page, context }) => {
     // The facts the journey needs, made here: a Stock Material counted in ชิ้น, with แพ็ค of 12 ชิ้น, and a confirmed
-    // Opening Balance of 2 แพ็ค (24 ชิ้น).
+    // Opening Balance of 2 แพ็ค (24 ชิ้น); another one counted in ชิ้น with only a Draft Opening Balance (Q15).
     const tag = crypto.randomUUID().slice(0, 6);
     const catalog = new CatalogListService({ db: pool });
     const piece = await catalog.add(officerUserId, 'unit', { name: `ชิ้น J3 ${tag}` }, { retryToken: crypto.randomUUID() });
@@ -581,6 +581,16 @@ test.describe.serial('Material Stock journeys: Real SPA -> Composed API -> Postg
       { retryToken: crypto.randomUUID() }
     );
     await openingBalances.confirm(officerUserId, balanceId, { expected_version: 1 }, { retryToken: crypto.randomUUID() });
+    const { stock_material_id: draftedId } = await new StockMaterialService({ db: pool }).create(
+      officerUserId,
+      { name: `ยางลบดินสอ J3 ${tag}`, base_unit: { unit_id: piece.id } },
+      { retryToken: crypto.randomUUID() }
+    );
+    await openingBalances.create(
+      officerUserId,
+      { as_of_date: '2026-09-30', source: 'สมุดคุมวัสดุ', lines: [{ stock_material_id: draftedId, unit_id: piece.id, quantity: '5' }] },
+      { retryToken: crypto.randomUUID() }
+    );
     const currentStock = page.locator('[data-testid="stock-material-current-stock"]');
     const writeActions = page.locator('#stock-material-correct, #stock-material-edit-details, #stock-material-inactivate, #stock-material-edit-units');
 
@@ -608,5 +618,14 @@ test.describe.serial('Material Stock journeys: Real SPA -> Composed API -> Postg
     const row = page.locator('#stock-movement-table tbody tr').nth(0).locator('td');
     await expect(row.nth(3)).toHaveText(`2 แพ็ค J3 ${tag} × 12`);
     await expect(row.nth(4)).toHaveText(`24 ชิ้น J3 ${tag}`);
+
+    // A Stock Material with only a Draft Opening Balance has no Stock Movement: its หน่วยนับหลัก is still chosen, with
+    // no reason shown.
+    await page.goto(`${targetBaseUrl}/stock-materials/${draftedId}`);
+    await expect(currentStock).toHaveText('ยังไม่มีรายการเคลื่อนไหว');
+    await page.locator('#stock-material-edit-units').click();
+    await expect(baseUnit.locator('option:checked')).toHaveText(`ชิ้น J3 ${tag}`);
+    await expect(baseUnit).toBeEnabled();
+    await expect(page.locator('#stock-material-units-base-unit-locked')).toHaveCount(0);
   });
 });
