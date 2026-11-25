@@ -135,6 +135,7 @@ test.describe.serial('Material Stock journeys: Real SPA -> Composed API -> Postg
     // F010-T4 (#235): so does รายการเคลื่อนไหว, which offers no ปีงบประมาณ yet.
     await expect(page.locator('#stock-movement-empty')).toHaveText('ยังไม่มีรายการเคลื่อนไหว');
     await expect(page.locator('#stock-movement-fiscal-year option')).toHaveText(['ทั้งหมด']);
+    await expect(page.locator('#stock-movement-count')).toHaveCount(0);
 
     // The Supply Officer sets จำนวนขั้นต่ำ to 10 รีม.
     await page.locator('#stock-material-edit-details').click();
@@ -384,6 +385,8 @@ test.describe.serial('Material Stock journeys: Real SPA -> Composed API -> Postg
     await page.goto(`${targetBaseUrl}/material-receipts/${receiptId}`);
     await expect(page.getByRole('heading', { level: 1, name: 'รายการรับวัสดุ ร่าง' })).toBeVisible();
     await expect(page.locator('[data-testid="material-receipt-line-0"]')).toContainText(`ยางลบ J3 ${tag}`);
+    // F010-T4 (#235): a Draft with no Received Date has no ปีงบประมาณ yet.
+    await expect(page.locator('[data-testid="material-receipt-fiscal-year"]')).toHaveText('-');
     await expect(page.locator('#material-receipt-edit-action, #material-receipt-confirm-action, #material-receipt-remove-action')).toHaveCount(0);
     await expect(page.locator('[data-testid="material-receipt-total-amount"]')).toHaveCount(0);
     await page.goto(`${targetBaseUrl}/material-receipts/${receiptId}/edit`);
@@ -497,24 +500,39 @@ test.describe.serial('Material Stock journeys: Real SPA -> Composed API -> Postg
     await expect(listRows).toHaveCount(1);
     await expect(page.locator(`[data-testid="material-receipt-row-${september.id}"]`)).toBeVisible();
     await expect(page.locator(`[data-testid="material-receipt-row-${october.id}"]`)).toHaveCount(0);
+    // The state joins the Fiscal Year, which stays; ทั้งหมด takes the Fiscal Year away and keeps the state.
+    await page.locator('#material-receipt-state-filter').selectOption('received');
+    await expect(page).toHaveURL(/[?&]state=received/);
+    await expect(page).toHaveURL(/[?&]fiscal_year=2569/);
+    await expect(listRows).toHaveCount(1);
+    await page.locator('#material-receipt-fiscal-year-filter').selectOption('');
+    await expect(page).not.toHaveURL(/fiscal_year=/);
+    await expect(page).toHaveURL(/[?&]state=received/);
+    await expect(listRows).toHaveCount(2);
     // A year no Material Receipt has, from a link, finds none.
     await page.goto(`${targetBaseUrl}/material-receipts?fiscal_year=2560`);
     await expect(page.locator('#material-receipt-list-empty')).toHaveText('ไม่พบรายการรับวัสดุที่ค้นหา');
 
-    // A page at a time: 26 รับวัสดุ rows, the balance going on across the page break.
+    // A page at a time: 26 รับวัสดุ rows of ปีงบประมาณ 2570, the balance going on across the page break, and the page
+    // keeping the Fiscal Year.
     await page.goto(`${targetBaseUrl}/stock-materials/${pagedId}`);
     await expect(rows).toHaveCount(25);
     await expect(rows.nth(24).locator('td').nth(5)).toHaveText(`25 ${ream}`);
     await expect(page.locator('#stock-movement-count')).toHaveText('รายการที่ 1–25 จาก 26');
+    await page.locator('#stock-movement-fiscal-year').selectOption('2570');
+    await expect(page).toHaveURL(/[?&]fiscal_year=2570/);
+    await expect(page.locator('#stock-movement-count')).toHaveText('รายการที่ 1–25 จาก 26');
     await expect(page.locator('#stock-movement-previous')).toBeDisabled();
     await page.locator('#stock-movement-next').click();
     await expect(page).toHaveURL(/[?&]offset=25/);
+    await expect(page).toHaveURL(/[?&]fiscal_year=2570/);
     await expect(rows).toHaveCount(1);
     await expect(rows.nth(0).locator('td').nth(5)).toHaveText(`26 ${ream}`);
     await expect(page.locator('#stock-movement-count')).toHaveText('รายการที่ 26–26 จาก 26');
     await expect(page.locator('#stock-movement-next')).toBeDisabled();
     await page.locator('#stock-movement-previous').click();
     await expect(page).not.toHaveURL(/offset=/);
+    await expect(page).toHaveURL(/[?&]fiscal_year=2570/);
     await expect(rows).toHaveCount(25);
   });
 });

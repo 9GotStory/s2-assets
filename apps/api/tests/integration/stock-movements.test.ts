@@ -159,6 +159,12 @@ describe('Stock Movements of a Stock Material (Seam A - F010-T4)', () => {
         ['MATERIAL_RECEIPT', numbers[3], '4', '10'],
         ['MATERIAL_RECEIPT', numbers[4], '5', '15'],
       ]);
+      // And a page at a time picks its rows in that order.
+      const pages = [];
+      for (const offset of [0, 2, 4]) {
+        pages.push(...timeline(await movementsOf(paper.id, `limit=2&offset=${offset}`)).map((row: unknown[]) => row[1]));
+      }
+      expect(pages).toEqual(numbers);
     });
 
     // The lines of one Material Receipt share its Effective Date and its confirm's Recorded At, so their id decides,
