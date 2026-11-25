@@ -4,7 +4,16 @@ import { QueryClient, QueryClientProvider, useQuery } from '@tanstack/react-quer
 import { thaiDate } from '../components/assignmentFacts';
 import { LoanSaveForm } from '../components/LoanSaveForm';
 import { useCsrfToken } from '../components/materialQueries';
-import { INACTIVE_LABEL, MATERIAL_RECEIPT_LABEL, SOURCE_PARTY_LABEL, SOURCE_TYPE_LABEL, UNIT_LABEL } from '../components/materialFacts';
+import {
+  BASE_UNIT_LABEL,
+  CONVERSION_FACTOR_LABEL,
+  INACTIVE_LABEL,
+  MATERIAL_RECEIPT_LABEL,
+  SOURCE_PARTY_LABEL,
+  SOURCE_TYPE_LABEL,
+  STOCK_MATERIAL_LABEL,
+  UNIT_LABEL,
+} from '../components/materialFacts';
 import {
   AMOUNT_FOR_REFERENCE_LABEL,
   AMOUNT_LABEL,
@@ -13,12 +22,17 @@ import {
   lineAmount,
   MATERIAL_RECEIPT_HISTORY_KIND_LABELS,
   MATERIAL_RECEIPT_STATE_LABELS,
+  RECEIPT_CORRECTION_LABEL,
   RECEIPT_REFERENCE_LABEL,
   RECEIVED_DATE_LABEL,
   receiptNumberLine,
   UNIT_PRICE_LABEL,
+  VOID_LINE_LABEL,
+  VOIDED_LINE_LABEL,
   type MaterialReceiptDetail as ReceiptDetail,
   type ReceiptConfirmProblem,
+  type ReceiptCorrectionChange,
+  type ReceiptCorrectionFacts,
   type ReceiptListEntry,
 } from '../components/materialReceiptFacts';
 import { EDIT_DRAFT_LABEL, openingBalanceNumberLine, REMOVE_DRAFT_LABEL, STOCK_MOVEMENT_LABEL } from '../components/openingBalanceFacts';
@@ -46,6 +60,37 @@ const problemLine = (problem: ReceiptConfirmProblem): string => {
 
 // A list entry's name, marked when it is Inactive now, or "-" for none.
 const entryLine = (entry: ReceiptListEntry | null): string => (entry === null ? '-' : entry.is_active ? entry.name : `${entry.name} (${INACTIVE_LABEL})`);
+
+// F010-T6 (#237): the name of each field a Receipt Correction records a change of.
+const CORRECTION_FIELD_LABELS: Record<string, string> = {
+  received_date: RECEIVED_DATE_LABEL,
+  source_party: SOURCE_PARTY_LABEL,
+  source_type: SOURCE_TYPE_LABEL,
+  receipt_reference: RECEIPT_REFERENCE_LABEL,
+  note: 'หมายเหตุ',
+  stock_material: STOCK_MATERIAL_LABEL,
+  unit: UNIT_LABEL,
+  quantity: 'จำนวน',
+  unit_price: UNIT_PRICE_LABEL,
+  conversion_factor: CONVERSION_FACTOR_LABEL,
+  base_quantity: `จำนวน (${BASE_UNIT_LABEL})`,
+};
+
+// One changed value as "<field> <before> → <after>", a name as it was then, "-" for none.
+const changeLine = ({ field, before, after }: ReceiptCorrectionChange): string => {
+  const shown = (value: ReceiptCorrectionChange['before']): string => (value === null ? '-' : typeof value === 'object' ? value.name : field === 'received_date' ? thaiDate(value) : value);
+  return `${CORRECTION_FIELD_LABELS[field]} ${shown(before)} → ${shown(after)}`;
+};
+
+// What a CORRECTED history entry changed: each header field, then each line changed, added or voided, by its number.
+const correctionLines = (facts: ReceiptCorrectionFacts): string[] => [
+  ...facts.changes.map(changeLine),
+  ...facts.lines.map((entry) =>
+    entry.change === 'CHANGED'
+      ? `รายการที่ ${entry.position + 1}: ${entry.changes.map(changeLine).join(', ')}`
+      : `${entry.change === 'ADDED' ? 'เพิ่มรายการ' : VOID_LINE_LABEL}ที่ ${entry.position + 1}: ${entry.line.stock_material.name} ${entry.line.quantity} ${entry.line.unit.name}`
+  ),
+];
 
 const MaterialReceiptDetailContent: React.FC<{ id: string }> = ({ id }) => {
   const navigate = useNavigate();
@@ -81,8 +126,10 @@ const MaterialReceiptDetailContent: React.FC<{ id: string }> = ({ id }) => {
   const offersActions = mayManage && csrfToken !== null && action === null;
   // The open form closes once the Material Receipt is no longer a Draft.
   const acting = mayManage ? action : null;
-  // The amounts for reference only, worked out from each line and never stored (Q8).
-  const amounts = (detail?.lines ?? []).map((line) => lineAmount(line.quantity ?? '', line.unit_price ?? ''));
+  // F010-T6 (#237): a Received one is corrected, by whoever may record Material Receipts.
+  const mayCorrect = detail?.can_manage === true && detail.state === 'RECEIVED';
+  // The amounts for reference only, worked out from each line and never stored (Q8); a voided line has none.
+  const amounts = (detail?.lines ?? []).map((line) => (line.is_voided ? null : lineAmount(line.quantity ?? '', line.unit_price ?? '')));
   const total = amounts.some((amount) => amount !== null) ? amounts.reduce<bigint>((sum, amount) => sum + (amount ?? 0n), 0n) : null;
 
   return (
@@ -165,6 +212,13 @@ const MaterialReceiptDetailContent: React.FC<{ id: string }> = ({ id }) => {
                 </button>
               </div>
             )}
+            {mayCorrect && (
+              <div style={{ display: 'flex', gap: '0.5rem', flexWrap: 'wrap', marginBottom: '1.5rem' }}>
+                <Link to={`/material-receipts/${id}/correct`} id="material-receipt-correct-action" style={{ ...actionStyle, backgroundColor: '#f3f4f6', color: '#374151', border: '1px solid #d1d5db' }}>
+                  {RECEIPT_CORRECTION_LABEL}
+                </Link>
+              </div>
+            )}
 
             {acting !== null && csrfToken !== null && (
               <LoanSaveForm
@@ -243,20 +297,31 @@ const MaterialReceiptDetailContent: React.FC<{ id: string }> = ({ id }) => {
                   <tbody>
                     {detail.lines.map((line) => {
                       const movement = line.stock_movements.find((recorded) => recorded.id === line.stock_movement_id);
+                      // F010-T6 (#237): a voided line stays shown, struck through, as ยกเลิกแล้ว: its row's line-through reaches every
+                      // cell but the badge, an inline-block.
+                      const struck: React.CSSProperties = line.is_voided ? { textDecoration: 'line-through', color: '#6b7280' } : {};
                       return (
-                        <tr key={line.id} data-testid={`material-receipt-line-${line.position}`} style={{ borderBottom: '1px solid #e5e7eb' }}>
+                        <tr key={line.id} data-testid={`material-receipt-line-${line.position}`} style={{ borderBottom: '1px solid #e5e7eb', ...struck }}>
                           <td style={cellStyle}>{line.position + 1}</td>
                           <td style={cellStyle}>
                             <Link to={`/stock-materials/${line.stock_material.id}`} style={{ color: '#2563eb', textDecoration: 'underline' }}>
                               {line.stock_material.name}
                             </Link>
                             {!line.stock_material.is_active && ` (${INACTIVE_LABEL})`}
+                            {line.is_voided && (
+                              <span
+                                data-testid={`material-receipt-line-${line.position}-voided`}
+                                style={{ marginLeft: '0.5rem', padding: '0.125rem 0.5rem', backgroundColor: '#f3f4f6', color: '#4b5563', borderRadius: '9999px', fontSize: '0.75rem', fontWeight: 600, display: 'inline-block', textDecoration: 'none' }}
+                              >
+                                {VOIDED_LINE_LABEL}
+                              </span>
+                            )}
                           </td>
                           <td style={cellStyle}>{line.quantity ?? '-'}</td>
                           <td style={cellStyle}>{line.unit?.name ?? '-'}</td>
                           <td style={cellStyle}>{line.unit_price ?? '-'}</td>
                           <td style={cellStyle}>{amounts[line.position] === null ? '-' : formatAmount(amounts[line.position]!)}</td>
-                          {/* In the Base Unit, with the conversion it was recorded with (#231 Numbers). */}
+                          {/* In the Base Unit, with the conversion it was recorded with (#231 Numbers); none once voided. */}
                           <td style={cellStyle}>
                             {movement
                               ? `+${movement.base_quantity} ${movement.base_unit.name} (${movement.original_quantity} ${movement.original_unit.name} × ${movement.conversion_factor}) ณ ${thaiDate(movement.effective_date)}`
@@ -284,6 +349,14 @@ const MaterialReceiptDetailContent: React.FC<{ id: string }> = ({ id }) => {
                     <li key={entry.version} data-testid={`material-receipt-history-${entry.version}`} style={{ marginBottom: '0.5rem' }}>
                       {MATERIAL_RECEIPT_HISTORY_KIND_LABELS[entry.kind]} โดย {entry.recorded_by_username ?? '-'} เมื่อ {THAI_DATE_TIME.format(new Date(entry.recorded_at))}
                       {entry.reason !== null && <div style={{ color: '#4b5563', whiteSpace: 'pre-line' }}>เหตุผล: {entry.reason}</div>}
+                      {/* F010-T6 (#237, story 35): each value a Receipt Correction changed, as it was and as it became. */}
+                      {entry.kind === 'CORRECTED' && (
+                        <ul data-testid={`material-receipt-history-${entry.version}-changes`} style={{ margin: '0.25rem 0 0 0', paddingLeft: '1.25rem', color: '#4b5563' }}>
+                          {correctionLines(entry.facts as unknown as ReceiptCorrectionFacts).map((change, index) => (
+                            <li key={index}>{change}</li>
+                          ))}
+                        </ul>
+                      )}
                     </li>
                   ))}
                 </ol>
@@ -301,6 +374,8 @@ const MaterialReceiptDetailContent: React.FC<{ id: string }> = ({ id }) => {
  * and note, each line with its Stock Material, quantity, Unit, ราคาต่อหน่วย, its amount for reference only and the Stock
  * Movement it made, and its history; on a Draft, "แก้ไขร่าง", "ยืนยันรับวัสดุ" with every failing rule listed, and
  * "ลบร่าง" for a Supply Officer (#231 story 58, Q24, Q25).
+ * F010-T6 (#237): on a Received one, "แก้ไขรายการที่บันทึกผิด" for a Supply Officer; a voided line stays shown as
+ * ยกเลิกแล้ว, struck through; and a correction's history entry lists each value it changed, old and new (story 35).
  */
 export const MaterialReceiptDetail: React.FC = () => {
   const { id = '' } = useParams();
