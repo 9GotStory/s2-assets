@@ -8,7 +8,7 @@ import { STOCK_MOVEMENT_LABEL } from './openingBalanceFacts';
 
 // F010-T5 (#236): why a Stock Material with a Stock Movement keeps its Base Unit (#231 Q15; start decision 2, comment
 // 7157351764).
-const BASE_UNIT_LOCKED_REASON = `เปลี่ยน${BASE_UNIT_LABEL}ไม่ได้ เพราะ${STOCK_MATERIAL_LABEL}นี้มี${STOCK_MOVEMENT_LABEL}แล้ว`;
+const BASE_UNIT_FROZEN_REASON = `เปลี่ยน${BASE_UNIT_LABEL}ไม่ได้ เพราะ${STOCK_MATERIAL_LABEL}นี้มี${STOCK_MOVEMENT_LABEL}แล้ว`;
 
 export interface StockMaterialUnitsEditorProps {
   material: StockMaterialDetail;
@@ -86,7 +86,7 @@ export const StockMaterialUnitsEditor: React.FC<StockMaterialUnitsEditorProps> =
             onChange={setUnitSet}
             units={unitList}
             kept={kept}
-            baseUnitLocked={material.has_stock_movement ? BASE_UNIT_LOCKED_REASON : undefined}
+            baseUnitFrozenReason={material.has_stock_movement ? BASE_UNIT_FROZEN_REASON : undefined}
           />
           {asksMinimumStock && (
             <MinimumStockField

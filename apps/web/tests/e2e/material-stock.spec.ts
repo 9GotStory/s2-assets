@@ -569,28 +569,24 @@ test.describe.serial('Material Stock journeys: Real SPA -> Composed API -> Postg
     const catalog = new CatalogListService({ db: pool });
     const piece = await catalog.add(officerUserId, 'unit', { name: `ชิ้น J3 ${tag}` }, { retryToken: crypto.randomUUID() });
     const pack = await catalog.add(officerUserId, 'unit', { name: `แพ็ค J3 ${tag}` }, { retryToken: crypto.randomUUID() });
-    const { stock_material_id: materialId } = await new StockMaterialService({ db: pool }).create(
+    const stockMaterials = new StockMaterialService({ db: pool });
+    const openingBalances = new OpeningBalanceService({ db: pool });
+    // An Opening Balance Draft as of 2026-09-30 of one line: `quantity` in the Unit `unitId` of `stockMaterialId`.
+    const openingBalanceDraft = (stockMaterialId: string, unitId: string, quantity: string) =>
+      openingBalances.create(
+        officerUserId,
+        { as_of_date: '2026-09-30', source: 'สมุดคุมวัสดุ', lines: [{ stock_material_id: stockMaterialId, unit_id: unitId, quantity }] },
+        { retryToken: crypto.randomUUID() }
+      );
+    const { stock_material_id: materialId } = await stockMaterials.create(
       officerUserId,
       { name: `ยางลบก้อน J3 ${tag}`, base_unit: { unit_id: piece.id }, alternate_units: [{ unit_id: pack.id, conversion_factor: '12' }] },
       { retryToken: crypto.randomUUID() }
     );
-    const openingBalances = new OpeningBalanceService({ db: pool });
-    const { opening_balance_id: balanceId } = await openingBalances.create(
-      officerUserId,
-      { as_of_date: '2026-09-30', source: 'สมุดคุมวัสดุ', lines: [{ stock_material_id: materialId, unit_id: pack.id, quantity: '2' }] },
-      { retryToken: crypto.randomUUID() }
-    );
+    const { opening_balance_id: balanceId } = await openingBalanceDraft(materialId, pack.id, '2');
     await openingBalances.confirm(officerUserId, balanceId, { expected_version: 1 }, { retryToken: crypto.randomUUID() });
-    const { stock_material_id: draftedId } = await new StockMaterialService({ db: pool }).create(
-      officerUserId,
-      { name: `ยางลบดินสอ J3 ${tag}`, base_unit: { unit_id: piece.id } },
-      { retryToken: crypto.randomUUID() }
-    );
-    await openingBalances.create(
-      officerUserId,
-      { as_of_date: '2026-09-30', source: 'สมุดคุมวัสดุ', lines: [{ stock_material_id: draftedId, unit_id: piece.id, quantity: '5' }] },
-      { retryToken: crypto.randomUUID() }
-    );
+    const { stock_material_id: draftedId } = await stockMaterials.create(officerUserId, { name: `ยางลบดินสอ J3 ${tag}`, base_unit: { unit_id: piece.id } }, { retryToken: crypto.randomUUID() });
+    await openingBalanceDraft(draftedId, piece.id, '5');
     const currentStock = page.locator('[data-testid="stock-material-current-stock"]');
     const writeActions = page.locator('#stock-material-correct, #stock-material-edit-details, #stock-material-inactivate, #stock-material-edit-units');
 
@@ -606,7 +602,7 @@ test.describe.serial('Material Stock journeys: Real SPA -> Composed API -> Postg
     const baseUnit = page.locator('#stock-material-units-base-unit');
     await expect(baseUnit).toBeDisabled();
     await expect(baseUnit.locator('option:checked')).toHaveText(`ชิ้น J3 ${tag}`);
-    await expect(page.locator('#stock-material-units-base-unit-locked')).toHaveText('เปลี่ยนหน่วยนับหลักไม่ได้ เพราะวัสดุนี้มีรายการเคลื่อนไหวแล้ว');
+    await expect(page.locator('#stock-material-units-base-unit-frozen-reason')).toHaveText('เปลี่ยนหน่วยนับหลักไม่ได้ เพราะวัสดุนี้มีรายการเคลื่อนไหวแล้ว');
     await expect(baseUnit).toHaveAccessibleDescription('เปลี่ยนหน่วยนับหลักไม่ได้ เพราะวัสดุนี้มีรายการเคลื่อนไหวแล้ว');
 
     // The อัตราแปลง still changes, for the future: คงเหลือ and the ยอดตั้งต้น row keep 12 ชิ้น a แพ็ค (MC-09).
@@ -626,6 +622,6 @@ test.describe.serial('Material Stock journeys: Real SPA -> Composed API -> Postg
     await page.locator('#stock-material-edit-units').click();
     await expect(baseUnit.locator('option:checked')).toHaveText(`ชิ้น J3 ${tag}`);
     await expect(baseUnit).toBeEnabled();
-    await expect(page.locator('#stock-material-units-base-unit-locked')).toHaveCount(0);
+    await expect(page.locator('#stock-material-units-base-unit-frozen-reason')).toHaveCount(0);
   });
 });
