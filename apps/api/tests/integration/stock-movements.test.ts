@@ -77,6 +77,9 @@ describe('Stock Movements of a Stock Material (Seam A - F010-T4)', () => {
   describe('a row (MSL-05, MSL-07, Q23, P6)', () => {
     it('gives each Stock Movement its kind, Effective Date, source, Original Quantity and Unit, Conversion Snapshot, signed Base Quantity, balance after it, and who recorded it and when', async () => {
       const paper = await stocked();
+      // Another Stock Material's Stock Movement, on the same day, which neither the rows nor the balances take in.
+      const other = await stocked();
+      await receipts.received([receipts.line(other.id, other.ream, '9')], { received_date: '2025-10-15' });
       const before = new Date();
       const openingBalance = await openingBalances.confirmed([openingBalances.line(paper.id, paper.box, '3')], { as_of_date: '2025-09-01' });
       const receipt = await receipts.received([receipts.line(paper.id, paper.ream, '2.5')], { received_date: '2025-10-15' });
