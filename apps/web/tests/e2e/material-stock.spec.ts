@@ -533,6 +533,7 @@ test.describe.serial('Material Stock journeys: Real SPA -> Composed API -> Postg
     await expect(page.locator('#material-receipt-fiscal-year-filter option').last()).toHaveText('2560');
     await page.locator('#material-receipt-fiscal-year-filter').selectOption('');
     await expect(page).not.toHaveURL(/fiscal_year=/);
+    await expect(listRows.first()).toBeVisible();
     await expect(page.locator('#material-receipt-list-empty')).toHaveCount(0);
 
     // A page at a time: 26 รับวัสดุ rows of ปีงบประมาณ 2570, the balance going on across the page break, and the page

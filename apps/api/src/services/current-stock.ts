@@ -58,9 +58,11 @@ export const fiscalYearOf = (date: string): string => `(extract(year FROM ${date
 
 /**
  * F010-T4 (#235): SQL aggregating, over the rows it is grouped on, the Fiscal Years of the date expression `date`, newest
- * first, each once, as an integer array: empty, never NULL, when no row has a date (#235 start decision 2).
+ * first, each once, as an integer array. A row with no date, such as a Draft with no Received Date, gives none; no row
+ * with a date gives an empty array, never NULL (#235 start decisions 1 and 2).
  */
-export const fiscalYearsOf = (date: string): string => `coalesce(array_agg(DISTINCT ${fiscalYearOf(date)} ORDER BY ${fiscalYearOf(date)} DESC), '{}')`;
+export const fiscalYearsOf = (date: string): string =>
+  `coalesce(array_agg(DISTINCT ${fiscalYearOf(date)} ORDER BY ${fiscalYearOf(date)} DESC) FILTER (WHERE ${date} IS NOT NULL), '{}')`;
 
 /**
  * F010-T4 (#235): SQL holding when the date expression `date` falls in the Fiscal Year that the integer SQL expression

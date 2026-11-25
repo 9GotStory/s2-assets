@@ -541,7 +541,8 @@ with no Stock Movement yet, is never Low Stock.
 
 **Running Balance** (คงเหลือหลังรายการ):
 The stock right after a Stock Movement, worked out from every Stock Movement of its Stock Material up
-to it in Effective Date order. Hiding the rows of other Fiscal Years never restarts it.
+to it in Effective Date order, those of one day in the order they were recorded. Hiding the rows of
+other Fiscal Years never restarts it.
 
 **Fiscal Year** (ปีงบประมาณ):
 The period from 1 October to 30 September that a Stock Movement's Effective Date, or a Material

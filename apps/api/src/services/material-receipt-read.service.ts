@@ -183,7 +183,6 @@ export class MaterialReceiptReadService {
        years AS (
          SELECT ${fiscalYearsOf('ym.received_date')} AS fiscal_years
          FROM material_receipts ym
-         WHERE ym.received_date IS NOT NULL
        ),
        paged AS (
          SELECT * FROM filtered
