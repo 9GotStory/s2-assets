@@ -81,6 +81,8 @@ export interface ConfirmProblem {
   field: string;
   message: string;
   in_effect_opening_balance?: { opening_balance_id: string; opening_balance_number: string };
+  // F010-T3 (#234 start decision 3): or the Material Receipt holding it.
+  in_effect_material_receipt?: { material_receipt_id: string; receipt_number: string };
 }
 
 export const OPENING_BALANCE_LABEL = 'ยอดตั้งต้น';

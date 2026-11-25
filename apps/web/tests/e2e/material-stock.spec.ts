@@ -13,6 +13,8 @@ import { UserService } from '../../../api/src/services/user.service.ts';
 import { SessionService } from '../../../api/src/services/session.service.ts';
 import { StockMaterialService } from '../../../api/src/services/stock-material.service.ts';
 import { CatalogListService } from '../../../api/src/services/catalog-list.service.ts';
+import { MaterialReceiptService } from '../../../api/src/services/material-receipt.service.ts';
+import { OpeningBalanceService } from '../../../api/src/services/opening-balance.service.ts';
 import { repositoryProxyConfig } from '../../vite.config.ts';
 
 const { Pool } = pg;
@@ -26,6 +28,9 @@ const migrationFolder = path.resolve(__dirname, '../../../../packages/db/src/mig
 // as a Draft, is refused a confirm that lacks ที่มาของยอด with the rule named, completes the Draft, confirms it below the
 // Minimum Stock, and sees คงเหลือ and ต่ำกว่าขั้นต่ำ on the list, under the Low Stock filter and on the page (#231 J1,
 // MC-19, MC-20, Q13, Q14, Q22, Q25). T3 and later tickets go on with it.
+// F010-T3 (#234): Journey J2 starts: a Supply Officer drafts a Material Receipt with a new แหล่งที่มา and two lines of
+// one Stock Material in different Units, confirms it, and sees เลขที่รับ and คงเหลือ; Journey J3 starts: a Read-only
+// User reads รับวัสดุ and ยอดตั้งต้น with no write action (#231 J2, J3, Q8, Q9, Q24).
 test.describe.serial('Material Stock journeys: Real SPA -> Composed API -> PostgreSQL (Seam B)', () => {
   let container: StartedPostgreSqlContainer;
   let pool: pg.Pool;
@@ -35,6 +40,7 @@ test.describe.serial('Material Stock journeys: Real SPA -> Composed API -> Postg
   let sessionService: SessionService;
 
   let officerUserId: string;
+  let readonlyUserId: string;
   // Journey F010-T2.1's Stock Material and Draft, which Journey F010-T2.2 goes on with.
   let j1: { tag: string; name: string; ream: string; reamUnitId: string; materialId: string; draftUrl: string };
 
@@ -75,6 +81,7 @@ test.describe.serial('Material Stock journeys: Real SPA -> Composed API -> Postg
       return res.rows[0].id;
     };
     officerUserId = await createUser('officer_material_stock', 'SUPPLY_OFFICER');
+    readonlyUserId = await createUser('readonly_material_stock', 'READ_ONLY');
 
     const testProxy: Record<string, any> = {};
     for (const [route, opts] of Object.entries(repositoryProxyConfig)) {
@@ -213,5 +220,177 @@ test.describe.serial('Material Stock journeys: Real SPA -> Composed API -> Postg
     await page.goto(`${targetBaseUrl}/stock-materials/${materialId}`);
     await expect(page.locator('[data-testid="stock-material-current-stock"]')).toContainText(`7 ${ream}`);
     await expect(page.locator('[data-testid="stock-material-low-stock-badge"]')).toHaveText('ต่ำกว่าขั้นต่ำ');
+  });
+
+  test('Journey F010-T3.1: a Supply Officer drafts a Material Receipt with a new แหล่งที่มา and two lines of one Stock Material in different Units, confirms it, and sees เลขที่รับ and คงเหลือ', async ({ page, context }) => {
+    // The fact the journey needs, made here: a Stock Material counted in a whole-number Base Unit "ด้าม", with a
+    // "กล่อง" of 12 ด้าม and no Stock Movement.
+    const tag = crypto.randomUUID().slice(0, 6);
+    const name = `ปากกาน้ำเงิน J2 ${tag}`;
+    const [pen, box] = [`ด้าม ${tag}`, `กล่อง ${tag}`];
+    const catalog = new CatalogListService({ db: pool });
+    const penUnit = await catalog.add(officerUserId, 'unit', { name: pen }, { retryToken: crypto.randomUUID() });
+    const boxUnit = await catalog.add(officerUserId, 'unit', { name: box }, { retryToken: crypto.randomUUID() });
+    const { stock_material_id: materialId } = await new StockMaterialService({ db: pool }).create(
+      officerUserId,
+      { name, base_unit: { unit_id: penUnit.id, whole_number_only: true }, alternate_units: [{ unit_id: boxUnit.id, conversion_factor: '12' }] },
+      { retryToken: crypto.randomUUID() }
+    );
+    // Another Draft of it, with no แหล่งที่มา, which the list's search leaves out.
+    const { material_receipt_id: otherDraftId } = await new MaterialReceiptService({ db: pool }).create(
+      officerUserId,
+      { lines: [{ stock_material_id: materialId }] },
+      { retryToken: crypto.randomUUID() }
+    );
+    const party = `ร้านเครื่องเขียน J2 ${tag}`;
+
+    await loginAs(context, officerUserId);
+
+    // "รับวัสดุ" from the Dashboard's "วัสดุ" menu, then "เพิ่มรายการรับวัสดุ".
+    await page.goto(`${targetBaseUrl}/dashboard`);
+    await page.locator('#nav-material-receipt-list').click();
+    await expect(page.getByRole('heading', { level: 1, name: 'รายการรับวัสดุ', exact: true })).toBeVisible();
+    await page.locator('#material-receipt-add-action').click();
+    await expect(page.getByRole('heading', { level: 1, name: 'เพิ่มรายการรับวัสดุ' })).toBeVisible();
+
+    // A new แหล่งที่มา added from the form, which it then names; no วันที่รับ yet.
+    await page.locator('#material-receipt-new-source-party').fill(party);
+    await page.locator('#material-receipt-new-source-party-add').click();
+    await expect(page.locator('#material-receipt-source-party option:checked')).toHaveText(party);
+    // The form loaded for a Supply Officer: no "not allowed" line, and no total while it has no line.
+    await expect(page.locator('#material-receipt-form-not-allowed')).toHaveCount(0);
+    await expect(page.locator('[data-testid="material-receipt-total-amount"]')).toHaveCount(0);
+
+    // The Stock Material twice (Q9): 2 กล่อง at 120, then a second line, which takes the Unit no line of it holds, with
+    // no quantity yet. An amount shows once its line has both, for reference only (Q8).
+    await page.locator('#material-receipt-stock-material-search').fill(name);
+    await page.locator('#material-receipt-stock-material-search-submit').click();
+    await expect(page.locator('#material-receipt-stock-material-choices li')).toHaveCount(1);
+    await page.locator(`[data-testid="material-receipt-choose-${materialId}"]`).click();
+    await expect(page.locator('[data-testid="material-receipt-line-0"]')).toContainText(name);
+    await page.locator('#material-receipt-line-0-unit').selectOption({ label: box });
+    await page.locator('#material-receipt-line-0-quantity').fill('2');
+    await expect(page.locator('[data-testid="material-receipt-line-0-amount"]')).toHaveText('-');
+    await expect(page.locator('[data-testid="material-receipt-total-amount"]')).toHaveText('-');
+    await page.locator('#material-receipt-line-0-unit-price').fill('120');
+    await expect(page.locator('[data-testid="material-receipt-line-0-amount"]')).toHaveText('240.00');
+    await page.locator(`[data-testid="material-receipt-choose-${materialId}"]`).click();
+    await expect(page.locator('[data-testid="material-receipt-line-1"]')).toContainText(name);
+    await expect(page.locator('#material-receipt-line-1-unit option:checked')).toHaveText(pen);
+    await expect(page.locator('[data-testid="material-receipt-total-amount"]')).toHaveText('240.00');
+    await page.locator('#material-receipt-draft-submit').click();
+    await expect(page.getByRole('heading', { level: 1, name: 'รายการรับวัสดุ ร่าง' })).toBeVisible();
+    await expect(page.locator('[data-testid="material-receipt-source-party"]')).toHaveText(party);
+    await expect(page.locator('[data-testid="material-receipt-reference"]')).toHaveText('-');
+    await expect(page.locator('[data-testid="material-receipt-total-amount"]')).toHaveText('240.00');
+
+    // The confirm is refused with every rule it fails named, a line's by its number in the table (Q25).
+    await page.locator('#material-receipt-confirm-action').click();
+    await expect(page.locator('#material-receipt-edit-action')).toHaveCount(0);
+    await page.locator('#material-receipt-confirm-submit').click();
+    await expect(page.locator('[data-testid="material-receipt-confirm-problems"] li')).toHaveText(['received_date is required', 'รายการที่ 2: lines[1].quantity is required']);
+    await page.locator('#material-receipt-confirm-cancel').click();
+
+    // "แก้ไขร่าง" reads the Draft back, and วันที่รับ and 5 ด้าม at 10.5 complete it.
+    await page.locator('#material-receipt-edit-action').click();
+    await expect(page.getByRole('heading', { level: 1, name: 'แก้ไขร่าง' })).toBeVisible();
+    await expect(page.locator('#material-receipt-source-party option:checked')).toHaveText(party);
+    await expect(page.locator('#material-receipt-line-0-unit option:checked')).toHaveText(box);
+    await expect(page.locator('#material-receipt-line-0-quantity')).toHaveValue('2');
+    await expect(page.locator('#material-receipt-line-0-unit-price')).toHaveValue('120');
+    await expect(page.locator('#material-receipt-line-1-unit option:checked')).toHaveText(pen);
+    await expect(page.locator('#material-receipt-line-1-quantity')).toHaveValue('');
+    await page.locator('#material-receipt-received-date').fill('2026-10-15');
+    await page.locator('#material-receipt-line-1-unit-price').fill('10.5');
+    await expect(page.locator('[data-testid="material-receipt-line-1-amount"]')).toHaveText('-');
+    await page.locator('#material-receipt-line-1-quantity').fill('5');
+    await expect(page.locator('[data-testid="material-receipt-line-1-amount"]')).toHaveText('52.50');
+    await expect(page.locator('[data-testid="material-receipt-total-amount"]')).toHaveText('292.50');
+    await page.locator('#material-receipt-draft-submit').click();
+    await expect(page.locator('[data-testid="material-receipt-received-date"]')).toHaveText('15 ตุลาคม 2569');
+
+    // "ยืนยันรับวัสดุ": the Receipt Number is taken and each line's Stock Movement recorded in the Base Unit.
+    await page.locator('#material-receipt-confirm-action').click();
+    await page.locator('#material-receipt-confirm-submit').click();
+    const heading = page.getByRole('heading', { level: 1, name: /^รายการรับวัสดุ เลขที่รับ \d+$/ });
+    await expect(heading).toBeVisible();
+    await expect(page.locator('[data-testid="material-receipt-state"]')).toHaveText('รับแล้ว');
+    await expect(page.locator('[data-testid="material-receipt-line-0"]')).toContainText(`+24 ${pen} (2 ${box} × 12)`);
+    await expect(page.locator('[data-testid="material-receipt-line-1"]')).toContainText(`+5 ${pen} (5 ${pen} × 1)`);
+    await expect(page.locator('#material-receipt-confirm-action')).toHaveCount(0);
+    await expect(page.locator('#material-receipt-edit-action')).toHaveCount(0);
+    await expect(page.locator('#material-receipt-history li')).toHaveCount(1);
+    await expect(page.locator('#material-receipt-history li')).toContainText('ยืนยันรับวัสดุ โดย officer_material_stock');
+    const receiptNumber = (await heading.textContent())!.replace('รายการรับวัสดุ เลขที่รับ ', '');
+
+    // The list finds it by its แหล่งที่มา, Received, with its เลขที่รับ.
+    await page.goto(`${targetBaseUrl}/material-receipts?search=${encodeURIComponent(party)}`);
+    await expect(page.locator('#material-receipt-list-table tbody tr')).toHaveCount(1);
+    await expect(page.locator('#material-receipt-list-table tbody td')).toHaveText([receiptNumber, '15 ตุลาคม 2569', party, 'รับแล้ว', '2']);
+
+    // คงเหลือ: 24 + 5 = 29 ด้าม.
+    await page.goto(`${targetBaseUrl}/stock-materials/${materialId}`);
+    await expect(page.locator('[data-testid="stock-material-current-stock"]')).toContainText(`29 ${pen}`);
+
+    // The other Draft, removed from its page, leaves the list.
+    await page.goto(`${targetBaseUrl}/material-receipts/${otherDraftId}`);
+    await page.locator('#material-receipt-remove-action').click();
+    await expect(page.getByRole('heading', { level: 3, name: 'ลบร่าง' })).toBeVisible();
+    await expect(page.locator('#material-receipt-remove-submit')).toHaveText('ลบร่าง');
+    await page.locator('#material-receipt-remove-submit').click();
+    await expect(page.getByRole('heading', { level: 1, name: 'รายการรับวัสดุ', exact: true })).toBeVisible();
+    await expect(page.locator('#material-receipt-list-table')).toContainText(party);
+    await expect(page.locator(`[data-testid="material-receipt-row-${otherDraftId}"]`)).toHaveCount(0);
+  });
+
+  test('Journey F010-T3.2: a Read-only User reads รับวัสดุ and ยอดตั้งต้น from the "วัสดุ" menu, Drafts included, with no write action', async ({ page, context }) => {
+    // The facts the journey needs, made here: a Material Receipt Draft and an Opening Balance Draft of a new Stock
+    // Material.
+    const tag = crypto.randomUUID().slice(0, 6);
+    const unit = await new CatalogListService({ db: pool }).add(officerUserId, 'unit', { name: `ชิ้น J3 ${tag}` }, { retryToken: crypto.randomUUID() });
+    const { stock_material_id: materialId } = await new StockMaterialService({ db: pool }).create(
+      officerUserId,
+      { name: `ยางลบ J3 ${tag}`, base_unit: { unit_id: unit.id } },
+      { retryToken: crypto.randomUUID() }
+    );
+    const draftLines = { lines: [{ stock_material_id: materialId, unit_id: unit.id, quantity: '3' }] };
+    const { material_receipt_id: receiptId } = await new MaterialReceiptService({ db: pool }).create(officerUserId, draftLines, { retryToken: crypto.randomUUID() });
+    const { opening_balance_id: balanceId } = await new OpeningBalanceService({ db: pool }).create(officerUserId, draftLines, { retryToken: crypto.randomUUID() });
+
+    await loginAs(context, readonlyUserId);
+    await page.goto(`${targetBaseUrl}/dashboard`);
+    await page.locator('#nav-material-receipt-list').click();
+    await expect(page.getByRole('heading', { level: 1, name: 'รายการรับวัสดุ', exact: true })).toBeVisible();
+    await expect(page.locator(`[data-testid="material-receipt-row-${receiptId}"] td`)).toHaveText(['ร่าง', '-', '-', 'ร่าง', '1']);
+    await expect(page.locator('#material-receipt-add-action')).toHaveCount(0);
+    // Found by its line's Stock Material from the search box; Drafts only keeps it, Received only does not.
+    await page.locator('#material-receipt-search').fill(`ยางลบ J3 ${tag}`);
+    await page.locator('#material-receipt-search-submit').click();
+    await expect(page).toHaveURL(/[?&]search=/);
+    await expect(page.locator('#material-receipt-list-table tbody tr')).toHaveCount(1);
+    await page.locator('#material-receipt-state-filter').selectOption('draft');
+    // The state joins the search, which stays.
+    await expect(page).toHaveURL(/\?search=[^&]+&state=draft$/);
+    await expect(page.locator(`[data-testid="material-receipt-row-${receiptId}"]`)).toHaveCount(1);
+    await page.locator('#material-receipt-state-filter').selectOption('received');
+    await expect(page).toHaveURL(/[?&]state=received/);
+    await expect(page.locator('#material-receipt-list-empty')).toHaveText('ไม่พบรายการรับวัสดุที่ค้นหา');
+    await page.goto(`${targetBaseUrl}/material-receipts/${receiptId}`);
+    await expect(page.getByRole('heading', { level: 1, name: 'รายการรับวัสดุ ร่าง' })).toBeVisible();
+    await expect(page.locator('[data-testid="material-receipt-line-0"]')).toContainText(`ยางลบ J3 ${tag}`);
+    await expect(page.locator('#material-receipt-edit-action, #material-receipt-confirm-action, #material-receipt-remove-action')).toHaveCount(0);
+    await expect(page.locator('[data-testid="material-receipt-total-amount"]')).toHaveCount(0);
+    await page.goto(`${targetBaseUrl}/material-receipts/${receiptId}/edit`);
+    await expect(page.locator('#material-receipt-form-not-allowed')).toHaveText('แก้ไขได้เฉพาะร่างโดยผู้มีสิทธิ์บันทึกรายการรับวัสดุ');
+    await expect(page.locator('#material-receipt-draft-submit')).toHaveCount(0);
+
+    await page.goto(`${targetBaseUrl}/dashboard`);
+    await page.locator('#nav-opening-balance-list').click();
+    await expect(page.getByRole('heading', { level: 1, name: 'ยอดตั้งต้น', exact: true })).toBeVisible();
+    await expect(page.locator(`[data-testid="opening-balance-row-${balanceId}"]`)).toContainText('ร่าง');
+    await expect(page.locator('#opening-balance-add-action')).toHaveCount(0);
+    await page.goto(`${targetBaseUrl}/opening-balances/${balanceId}`);
+    await expect(page.getByRole('heading', { level: 1, name: 'ยอดตั้งต้น ร่าง' })).toBeVisible();
+    await expect(page.locator('#opening-balance-edit-action, #opening-balance-confirm-action, #opening-balance-remove-action')).toHaveCount(0);
   });
 });

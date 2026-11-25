@@ -5,6 +5,7 @@ import { thaiDate } from '../components/assignmentFacts';
 import { LoanSaveForm } from '../components/LoanSaveForm';
 import { useCsrfToken } from '../components/materialQueries';
 import { INACTIVE_LABEL, UNIT_LABEL } from '../components/materialFacts';
+import { receiptNumberLine } from '../components/materialReceiptFacts';
 import {
   AS_OF_DATE_LABEL,
   CONFIRM_OPENING_BALANCE_LABEL,
@@ -169,6 +170,12 @@ const OpeningBalanceDetailContent: React.FC<{ id: string }> = ({ id }) => {
                               <>
                                 {' '}
                                 (<Link to={`/opening-balances/${problem.in_effect_opening_balance.opening_balance_id}`}>{openingBalanceNumberLine(problem.in_effect_opening_balance.opening_balance_number)}</Link>)
+                              </>
+                            )}
+                            {problem.in_effect_material_receipt && (
+                              <>
+                                {' '}
+                                (<Link to={`/material-receipts/${problem.in_effect_material_receipt.material_receipt_id}`}>{receiptNumberLine(problem.in_effect_material_receipt.receipt_number)}</Link>)
                               </>
                             )}
                           </li>
