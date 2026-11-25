@@ -2,8 +2,13 @@ import React, { useState } from 'react';
 import { LoanSaveForm } from './LoanSaveForm';
 import { MinimumStockField } from './MinimumStockField';
 import { UnitSetFields, alternateRequestOf, unitNameOf, unitSetError, unitSetOf, type UnitSetValue } from './UnitSetFields';
-import { EDIT_UNITS_LABEL, MINIMUM_STOCK_LABEL, minimumStockLine, type StockMaterialDetail } from './materialFacts';
+import { BASE_UNIT_LABEL, EDIT_UNITS_LABEL, MINIMUM_STOCK_LABEL, STOCK_MATERIAL_LABEL, minimumStockLine, type StockMaterialDetail } from './materialFacts';
 import { useUnitList } from './materialQueries';
+import { STOCK_MOVEMENT_LABEL } from './openingBalanceFacts';
+
+// F010-T5 (#236): why a Stock Material with a Stock Movement keeps its Base Unit (#231 Q15; start decision 2, comment
+// 7157351764).
+const BASE_UNIT_FROZEN_REASON = `เปลี่ยน${BASE_UNIT_LABEL}ไม่ได้ เพราะ${STOCK_MATERIAL_LABEL}นี้มี${STOCK_MOVEMENT_LABEL}แล้ว`;
 
 export interface StockMaterialUnitsEditorProps {
   material: StockMaterialDetail;
@@ -21,6 +26,8 @@ export interface StockMaterialUnitsEditorProps {
  * (#175 P2, Q23). A Unit it already has is never removed, only made Inactive; changing the Base Unit clears every
  * อัตราแปลง and keeps the old Base Unit as an Alternate Unit, to get a factor or be made Inactive. F008-T6 (#182
  * decision 2): it also asks for the จำนวนขั้นต่ำ again in the new Base Unit, blank for none, when there is one.
+ * F010-T5 (#236): once the Stock Material has a Stock Movement, its หน่วยนับหลัก is shown locked, with the reason; the
+ * Alternate Units still change (MC-09, MC-21).
  */
 export const StockMaterialUnitsEditor: React.FC<StockMaterialUnitsEditorProps> = ({ material, csrfToken, onRefresh, onSaved, onCancel, onPermissionRevoked }) => {
   const [unitSet, setUnitSet] = useState<UnitSetValue>(() => unitSetOf(material.units));
@@ -73,7 +80,14 @@ export const StockMaterialUnitsEditor: React.FC<StockMaterialUnitsEditorProps> =
     >
       {(isLocked) => (
         <fieldset disabled={isLocked} style={{ border: 'none', padding: 0, margin: '0 0 1rem 0', minWidth: 0 }}>
-          <UnitSetFields idPrefix="stock-material-units" value={unitSet} onChange={setUnitSet} units={unitList} kept={kept} />
+          <UnitSetFields
+            idPrefix="stock-material-units"
+            value={unitSet}
+            onChange={setUnitSet}
+            units={unitList}
+            kept={kept}
+            baseUnitFrozenReason={material.has_stock_movement ? BASE_UNIT_FROZEN_REASON : undefined}
+          />
           {asksMinimumStock && (
             <MinimumStockField
               id="stock-material-units-minimum-stock"

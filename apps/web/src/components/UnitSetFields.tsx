@@ -106,13 +106,16 @@ export interface UnitSetFieldsProps {
   kept: ReadonlySet<string> | null;
   // A field for adding a Unit to the list, shown under the Base Unit.
   unitAdder?: React.ReactNode;
+  // F010-T5 (#236): the Base Unit freeze's reason, shown under the Base Unit, which is then not chosen; none while it
+  // can change.
+  baseUnitFrozenReason?: string;
 }
 
 /**
  * The Unit fields of the Stock Material form and of the Units editor (F008-T3, #178): หน่วยนับหลัก, and each
  * หน่วยนับอื่น with its อัตราแปลง as "1 กล่อง = 5 รีม", each with นับเป็นจำนวนเต็มเท่านั้น (#175 Q5, Q6, P2).
  */
-export const UnitSetFields: React.FC<UnitSetFieldsProps> = ({ idPrefix, value, onChange, units, kept, unitAdder }) => {
+export const UnitSetFields: React.FC<UnitSetFieldsProps> = ({ idPrefix, value, onChange, units, kept, unitAdder, baseUnitFrozenReason }) => {
   const nameOf = (unitId: string) => unitNameOf(units, unitId);
   const baseName = nameOf(value.base_unit_id);
   // A new choice is an active Unit of the list (#175 Q21); a Unit the set has already stays offered as itself.
@@ -128,7 +131,14 @@ export const UnitSetFields: React.FC<UnitSetFieldsProps> = ({ idPrefix, value, o
         <label htmlFor={`${idPrefix}-base-unit`} style={{ position: 'absolute', left: '-9999px' }}>
           {BASE_UNIT_LABEL}
         </label>
-        <select id={`${idPrefix}-base-unit`} value={value.base_unit_id} onChange={(e) => onChange(withBaseUnit(value, e.target.value, kept))} style={fieldInputStyle}>
+        <select
+          id={`${idPrefix}-base-unit`}
+          value={value.base_unit_id}
+          disabled={baseUnitFrozenReason !== undefined}
+          aria-describedby={baseUnitFrozenReason === undefined ? undefined : `${idPrefix}-base-unit-frozen-reason`}
+          onChange={(e) => onChange(withBaseUnit(value, e.target.value, kept))}
+          style={fieldInputStyle}
+        >
           <option value="">-- เลือก{BASE_UNIT_LABEL} --</option>
           {baseOptions.map((unit) => (
             <option key={unit.id} value={unit.id}>
@@ -136,6 +146,11 @@ export const UnitSetFields: React.FC<UnitSetFieldsProps> = ({ idPrefix, value, o
             </option>
           ))}
         </select>
+        {baseUnitFrozenReason !== undefined && (
+          <p id={`${idPrefix}-base-unit-frozen-reason`} style={{ margin: '0.5rem 0 0 0', fontSize: '0.8125rem', color: '#6b7280' }}>
+            {baseUnitFrozenReason}
+          </p>
+        )}
         {unitAdder}
         <label style={{ display: 'block', marginTop: '0.75rem', fontSize: '0.875rem', color: '#111827' }}>
           <input
