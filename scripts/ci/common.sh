@@ -87,11 +87,30 @@ remove_test_containers_on_exit() {
   trap 'exit 143' TERM
 }
 
+# A run in which no test ran exits NO_TEST_RAN. A -t that names no test makes vitest skip every test and
+# exit 0, and a -g that names none makes Playwright exit 1, so expect-red.sh would read the one as green
+# and the other as red (#234 retro, break M1). ran_no_test reads the run's log.
+NO_TEST_RAN=4
+ran_no_test() {
+  grep -qE '^Error: No tests found|No test files found' "$1" && return 0
+  # vitest's summary line, such as "Tests  39 skipped (39)", names no test passed or failed.
+  grep -E '^ *Tests +[0-9]' "$1" | grep -qvE 'passed|failed'
+}
+
 # Runs the API unit tests in the tooling image, built and installed beforehand: tests/unit, or the
 # vitest arguments given. Output is uncoloured, so expect-red.sh and all.sh can read the test names.
 # quality.sh and unit.sh share it; neither calls the other, because a job holds the lock above.
 api_unit_tests() {
   (($#)) || set -- tests/unit
+  local log status=0
+  log=$(mktemp)
   podman run --rm --userns=keep-id --security-opt label=disable -v "$PWD:/work" -w /work -e NO_COLOR=1 \
-    s2-assets-dev:ci pnpm --filter api exec vitest run "$@"
+    s2-assets-dev:ci pnpm --filter api exec vitest run "$@" 2>&1 | tee "$log" || status=$?
+  if ran_no_test "$log"; then
+    rm -f -- "$log"
+    note "no test ran: no test matches $*" >&2
+    return "$NO_TEST_RAN"
+  fi
+  rm -f -- "$log"
+  return "$status"
 }

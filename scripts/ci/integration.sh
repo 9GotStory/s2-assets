@@ -10,6 +10,7 @@
 #      DOCKER_HOST names no unix socket, start a private Podman service for the run and stop it
 #      afterwards;
 #   3. remove every Testcontainers container the run left behind, and fail if one remains.
+# A run in which no test ran, such as one whose -t names no test, exits 4 (common.sh, ran_no_test).
 # --remove-images also removes the two runner images afterwards, as CI does.
 set -euo pipefail
 cd "$(dirname "$0")/../.."
@@ -47,6 +48,7 @@ before=$(test_containers)
 remove_test_containers_on_exit
 
 status=0
+run_log=$(mktemp)
 podman run --rm --name "s2-assets-integration-$$" \
   --network=host --userns=keep-id --security-opt label=disable \
   -v "$PWD:/work" -v "$socket:$socket" -w /work \
@@ -56,7 +58,10 @@ podman run --rm --name "s2-assets-integration-$$" \
   -e TESTCONTAINERS_HOST_OVERRIDE=127.0.0.1 \
   -e CI=true \
   -e NO_COLOR=1 \
-  "$RUNNER_IMAGE" pnpm --filter api exec vitest run --maxWorkers="$MAX_WORKERS" "$@" || status=$?
+  "$RUNNER_IMAGE" pnpm --filter api exec vitest run --maxWorkers="$MAX_WORKERS" "$@" 2>&1 | tee "$run_log" || status=$?
+no_test=false
+ran_no_test "$run_log" && no_test=true
+rm -f -- "$run_log"
 
 failures=0
 remove_new_test_containers "$before"
@@ -71,6 +76,10 @@ if $remove_images; then
   done
 fi
 
+if $no_test; then
+  note "no test ran at $tested_commit: no test matches $*" >&2
+  exit "$NO_TEST_RAN"
+fi
 if ((status != 0)); then
   note "tests failed at $tested_commit (exit $status)" >&2
   exit "$status"
