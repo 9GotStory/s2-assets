@@ -28,6 +28,9 @@ not duplicate whole trackers or introduce a review ledger.
   When the Product Owner picks an offered option, quote the option too: it is
   the scope they agreed to.
 - Cite that record in commits, pull requests and results.
+- A decision comment records the Product Owner's decisions alone. What a review round fixed or
+  left as is goes into the pull request body, written from its commits once they exist: #235's
+  review comment named as fixed a change the fix commit never made.
 
 ## Pull requests
 

@@ -128,6 +128,14 @@ const VALIDATION_MESSAGE_ANY = {
   message: "Assert which rule refused the request by its message, not expect.any(String): a validation code holds for every rule (CODING_STANDARDS.md, #210 retro).",
 };
 
+// #235 retro: an absence check on a number, such as a Receipt Number of one or two digits, over a body that holds a
+// request id or a UUID, matches inside them by chance (CODING_STANDARDS.md, "A test of absence needs a state where the
+// thing would be there"; #80 had '090'). The check searches for a value only the broken answer can hold, such as a name.
+const ABSENCE_OF_A_NUMBER = {
+  selector: `CallExpression[callee.property.name='toContain'][callee.object.property.name='not'][callee.object.object.callee.name='expect']:matches([callee.object.object.arguments.0.property.name='body'], [callee.object.object.arguments.0.callee.object.name='JSON']) > :matches(Identifier[name=/[Nn]umber$/], MemberExpression[property.name=/[Nn]umber$/], Literal[raw=/^['"][0-9]+['"]$/])`,
+  message: 'Check absence with a value only the broken answer holds, such as a name: a number matches inside a request id or a UUID (CODING_STANDARDS.md, #80, #235 retro).',
+};
+
 // #210 retro: J2.1's Brand inserted by SQL had no history, and the maintenance page that lists it crashed.
 const E2E_BUSINESS_INSERT = {
   selector:
@@ -399,6 +407,7 @@ export default tseslint.config(
         AFTER_ALL_TIMEOUT,
         REFUSAL_LOOP_NAMES_NO_RULE,
         VALIDATION_MESSAGE_ANY,
+        ABSENCE_OF_A_NUMBER,
       ],
     },
   },
@@ -413,6 +422,7 @@ export default tseslint.config(
         AFTER_ALL_TIMEOUT,
         REFUSAL_LOOP_NAMES_NO_RULE,
         VALIDATION_MESSAGE_ANY,
+        ABSENCE_OF_A_NUMBER,
         ...REFUSAL_BODY_HALF,
       ],
     },
