@@ -10,6 +10,7 @@ import type { StockMaterialReadService } from '../services/stock-material-read.s
 import { ALTERNATE_UNITS_MAX } from '../services/stock-material-units.ts';
 import {
   STOCK_MATERIAL_NAME_MAX_LENGTH,
+  BaseUnitFrozenError,
   DuplicateCandidatesFoundError,
   type ChangeDetailsInput,
   type CorrectStockMaterialInput,
@@ -158,7 +159,8 @@ const refusalOf = (err: unknown) => {
   if (err instanceof StaleBeforeConflictError) {
     return { ...errorBody(err.statusCode, err.code, err.message), current_values: err.current_values, expected_values: err.expected_values };
   }
-  if (err instanceof RetryTokenConflictError || err instanceof NotFoundError || err instanceof ValidationError) {
+  // F010-T5 (#236): BASE_UNIT_FROZEN joins them, with its reason.
+  if (err instanceof RetryTokenConflictError || err instanceof NotFoundError || err instanceof ValidationError || err instanceof BaseUnitFrozenError) {
     return errorBody(err.statusCode, err.code, err.message);
   }
   return null;

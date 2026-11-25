@@ -3,6 +3,7 @@ import { REMARK_MAX_LENGTH, normalizeLine, normalizeText } from './assignment.se
 import { isValidUuid } from './capability.service.ts';
 import { CATALOG_LISTS, type CatalogListKind, type NamedListEntry } from './catalog-list-entries.ts';
 import { catalogListEntryOf, selectableCatalogListEntry, unselectableUnitsAmong } from './catalog-list.service.ts';
+import { stockFiguresOf } from './current-stock.ts';
 import { requestableMaterialsAskedIn } from './requestable-material-request-units.ts';
 import { commitOnce } from './retryable-write.ts';
 import { NotFoundError, StaleBeforeConflictError } from './service-errors.ts';
@@ -109,6 +110,20 @@ export class DuplicateCandidatesFoundError extends Error {
   }
 }
 
+/**
+ * F010-T5 (#236): a Units write that would change the Base Unit of a Stock Material with a Stock Movement, Reversals
+ * included, so that no past quantity is silently rebased (#231 story 53, Q15, Q28, MC-21). Nothing is written.
+ */
+export class BaseUnitFrozenError extends Error {
+  statusCode = 409;
+  code = 'BASE_UNIT_FROZEN';
+
+  constructor(baseUnitId: string) {
+    super(`base_unit.unit_id must stay ${baseUnitId}: a Stock Material with a Stock Movement keeps its Base Unit`);
+    this.name = 'BaseUnitFrozenError';
+  }
+}
+
 // A request's facts once validated, before any lock. The retry fingerprint covers these.
 interface StockMaterialFacts {
   name: string;
@@ -196,6 +211,13 @@ const normalizeFacts = (input: CreateStockMaterialInput): StockMaterialFacts => 
 // whole is decided against the Base Unit it is counted in (#175 P3).
 const minimumStockOf = (text: string | null | undefined, baseIsWhole: boolean): string | null =>
   text === undefined || text === null ? null : baseUnitAmountOf(text, 'minimum_stock', baseIsWhole);
+
+// F010-T5 (#236): whether the Stock Material has a Stock Movement, Reversals included, from the one SQL source (#231
+// P3, Q28; start decision 1, comment 7157351764).
+const hasStockMovement = async (client: pg.PoolClient, stockMaterialId: string): Promise<boolean> => {
+  const res = await client.query(`SELECT f.has_stock_movement FROM ${stockFiguresOf('$1::uuid')} f`, [stockMaterialId]);
+  return res.rows[0].has_stock_movement;
+};
 
 /**
  * The Minimum Stock a Units write leaves, or the refusal (#175 MC-20, P3; #182 decision 2). It counts the Base Unit:
@@ -441,6 +463,7 @@ export class StockMaterialService {
    * F008-T3 (#178): replaces the Stock Material's whole Unit set (#175 P2): a factor or a whole-number rule changed,
    * an Alternate Unit added, made Inactive or reactivated, or another Base Unit. No Unit is removed, and the Base
    * Unit stays changeable in Feature 008 (MC-21, Q9). F008-T6 (#182): another Base Unit takes the Minimum Stock again.
+   * F010-T5 (#236): once the Stock Material has a Stock Movement, its Base Unit no longer changes (#231 Q15, MC-21).
    */
   async replaceUnits(actorId: string, stockMaterialId: string, input: ReplaceUnitsInput, { retryToken }: { retryToken: string }): Promise<StockMaterialVersion> {
     const expectedVersion = input.expected_version;
@@ -470,6 +493,11 @@ export class StockMaterialService {
         throw new ValidationError(`alternate_units must keep the Unit ${dropped.unit_id}: a Unit of a Stock Material is never removed, only made Inactive`);
       }
       const baseUnitChanges = !stored.get(units[0].unit_id)?.is_base;
+      // F010-T5 (#236): read after the lock above, which a confirm adding a Stock Movement also takes (#231 P4), so
+      // the Base Unit change either waits for it and is refused or goes first and the confirm counts in the new one.
+      if (baseUnitChanges && (await hasStockMovement(client, stockMaterialId))) {
+        throw new BaseUnitFrozenError(before.find(({ is_base }) => is_base)!.unit_id);
+      }
       const minimumStockAfter = minimumStockAfterUnitsWrite(storedMinimumStock, minimumStock, baseUnitChanges, units[0].whole_number_only);
       if (units.length === before.length && units.every((unit) => sameSetting(stored.get(unit.unit_id)!, unit))) {
         throw new ValidationError('This Units write changes nothing');

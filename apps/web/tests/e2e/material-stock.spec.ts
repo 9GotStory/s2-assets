@@ -34,6 +34,9 @@ const migrationFolder = path.resolve(__dirname, '../../../../packages/db/src/mig
 // F010-T4 (#235): Journey J1 ends: the Supply Officer follows the Stock Material in รายการเคลื่อนไหว, its ยอดตั้งต้น
 // row and a รับวัสดุ row with the balance after each, by ปีงบประมาณ and a page at a time, and finds the Material Receipt
 // by its ปีงบประมาณ (#231 J1, stories 26, 50–52, 56, Q16, Q23; #235 start decisions 1–4).
+// F010-T5 (#236): Journey J3 ends: a Read-only User reads คงเหลือ of a Stock Material with an Opening Balance, with no
+// write action, and the Supply Officer's แก้ไขหน่วยนับ shows its หน่วยนับหลัก locked, with the reason, and still
+// changes an อัตราแปลง (#231 J3, stories 53, 54, Q15, MC-09; #236 start decision 2).
 test.describe.serial('Material Stock journeys: Real SPA -> Composed API -> PostgreSQL (Seam B)', () => {
   let container: StartedPostgreSqlContainer;
   let pool: pg.Pool;
@@ -108,7 +111,7 @@ test.describe.serial('Material Stock journeys: Real SPA -> Composed API -> Postg
     if (container) await container.stop();
   });
 
-  const { loginAs } = actorSwitch(() => sessionService, () => targetBaseUrl);
+  const { loginAs, switchActor } = actorSwitch(() => sessionService, () => targetBaseUrl);
 
   test('Journey F010-T2.1: a Supply Officer sets a Minimum Stock, saves an Opening Balance Draft without ที่มาของยอด, and is refused its confirm with the rule named', async ({ page, context }) => {
     // The fact the journey needs, made here: a Stock Material counted in a whole-number Base Unit "รีม", with a
@@ -557,5 +560,53 @@ test.describe.serial('Material Stock journeys: Real SPA -> Composed API -> Postg
     await expect(page).not.toHaveURL(/offset=/);
     await expect(page).toHaveURL(/[?&]fiscal_year=2570/);
     await expect(rows).toHaveCount(25);
+  });
+
+  test('Journey F010-T5.1: a Read-only User reads คงเหลือ of a Stock Material with an Opening Balance, with no write action, and the Supply Officer finds its หน่วยนับหลัก locked in แก้ไขหน่วยนับ, with the reason, and changes its อัตราแปลง', async ({ page, context }) => {
+    // The facts the journey needs, made here: a Stock Material counted in ชิ้น, with แพ็ค of 12 ชิ้น, and a confirmed
+    // Opening Balance of 2 แพ็ค (24 ชิ้น).
+    const tag = crypto.randomUUID().slice(0, 6);
+    const catalog = new CatalogListService({ db: pool });
+    const piece = await catalog.add(officerUserId, 'unit', { name: `ชิ้น J3 ${tag}` }, { retryToken: crypto.randomUUID() });
+    const pack = await catalog.add(officerUserId, 'unit', { name: `แพ็ค J3 ${tag}` }, { retryToken: crypto.randomUUID() });
+    const { stock_material_id: materialId } = await new StockMaterialService({ db: pool }).create(
+      officerUserId,
+      { name: `ยางลบก้อน J3 ${tag}`, base_unit: { unit_id: piece.id }, alternate_units: [{ unit_id: pack.id, conversion_factor: '12' }] },
+      { retryToken: crypto.randomUUID() }
+    );
+    const openingBalances = new OpeningBalanceService({ db: pool });
+    const { opening_balance_id: balanceId } = await openingBalances.create(
+      officerUserId,
+      { as_of_date: '2026-09-30', source: 'สมุดคุมวัสดุ', lines: [{ stock_material_id: materialId, unit_id: pack.id, quantity: '2' }] },
+      { retryToken: crypto.randomUUID() }
+    );
+    await openingBalances.confirm(officerUserId, balanceId, { expected_version: 1 }, { retryToken: crypto.randomUUID() });
+    const currentStock = page.locator('[data-testid="stock-material-current-stock"]');
+    const writeActions = page.locator('#stock-material-correct, #stock-material-edit-details, #stock-material-inactivate, #stock-material-edit-units');
+
+    await loginAs(context, readonlyUserId);
+    await page.goto(`${targetBaseUrl}/stock-materials/${materialId}`);
+    await expect(currentStock).toContainText(`24 ชิ้น J3 ${tag}`);
+    await expect(writeActions).toHaveCount(0);
+
+    await switchActor(page, context, officerUserId);
+    await page.goto(`${targetBaseUrl}/stock-materials/${materialId}`);
+    await expect(currentStock).toContainText(`24 ชิ้น J3 ${tag}`);
+    await page.locator('#stock-material-edit-units').click();
+    const baseUnit = page.locator('#stock-material-units-base-unit');
+    await expect(baseUnit).toBeDisabled();
+    await expect(baseUnit.locator('option:checked')).toHaveText(`ชิ้น J3 ${tag}`);
+    await expect(page.locator('#stock-material-units-base-unit-locked')).toHaveText('เปลี่ยนหน่วยนับหลักไม่ได้ เพราะวัสดุนี้มีรายการเคลื่อนไหวแล้ว');
+    await expect(baseUnit).toHaveAccessibleDescription('เปลี่ยนหน่วยนับหลักไม่ได้ เพราะวัสดุนี้มีรายการเคลื่อนไหวแล้ว');
+
+    // The อัตราแปลง still changes, for the future: คงเหลือ and the ยอดตั้งต้น row keep 12 ชิ้น a แพ็ค (MC-09).
+    await page.locator('#stock-material-units-alternate-0-factor').fill('10');
+    await page.locator('#stock-material-units-submit').click();
+    await expect(page.locator('#stock-material-units-form')).toHaveCount(0);
+    await expect(page.locator(`[data-testid="stock-material-unit-${pack.id}"]`)).toContainText(`1 แพ็ค J3 ${tag} = 10 ชิ้น J3 ${tag}`);
+    await expect(currentStock).toContainText(`24 ชิ้น J3 ${tag}`);
+    const row = page.locator('#stock-movement-table tbody tr').nth(0).locator('td');
+    await expect(row.nth(3)).toHaveText(`2 แพ็ค J3 ${tag} × 12`);
+    await expect(row.nth(4)).toHaveText(`24 ชิ้น J3 ${tag}`);
   });
 });
