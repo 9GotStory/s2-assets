@@ -1,7 +1,7 @@
 import pg from 'pg';
 import type { ConversionSnapshot } from './base-quantity.ts';
 import { joinUnitEntry } from './catalog-list-entries.ts';
-import { fiscalYearOf, inFiscalYear, stockLedgerOf } from './current-stock.ts';
+import { fiscalYearsOf, inFiscalYear, stockLedgerOf } from './current-stock.ts';
 import { joinMaterialReceiptOfLine } from './material-receipt-line-joins.ts';
 import { joinOpeningBalanceOfLine } from './opening-balance-line-joins.ts';
 import { joinStockMaterial } from './stock-material-joins.ts';
@@ -76,6 +76,33 @@ export const stockMovementsOfOpeningBalanceLines = (runner: pg.Pool | pg.PoolCli
 export const stockMovementsOfMaterialReceiptLines = (runner: pg.Pool | pg.PoolClient, lineIds: string[]): Promise<Map<string, StockMovementRow[]>> =>
   stockMovementsOfLines(runner, 'material_receipt_line_id', lineIds);
 
+// The columns of the Stock Movement `alias` that `stockMovementOf` reads, its Units' names and who recorded it among
+// them, from the joins of `joinStockMovementNames`.
+const stockMovementColumns = (alias: string): string =>
+  `${alias}.id, ${alias}.kind, ${alias}.effective_date::text AS effective_date, trim_scale(${alias}.original_quantity)::text AS original_quantity,
+   ${alias}.original_unit_id, ou.name AS original_unit_name, ${alias}.base_unit_id, bu.name AS base_unit_name,
+   trim_scale(${alias}.conversion_factor)::text AS conversion_factor, trim_scale(${alias}.base_quantity)::text AS base_quantity,
+   ${alias}.recorded_by, u.username AS recorded_by_username, ${alias}.recorded_at`;
+
+const joinStockMovementNames = (alias: string): string =>
+  `LEFT ${joinUnitEntry('ou', `${alias}.original_unit_id`)}
+   LEFT ${joinUnitEntry('bu', `${alias}.base_unit_id`)}
+   LEFT JOIN users u ON u.id = ${alias}.recorded_by`;
+
+const stockMovementOf = (row: any): StockMovementRow => ({
+  id: row.id,
+  kind: row.kind,
+  effective_date: row.effective_date,
+  original_quantity: row.original_quantity,
+  original_unit: { unit_id: row.original_unit_id, name: row.original_unit_name },
+  base_unit: { unit_id: row.base_unit_id, name: row.base_unit_name },
+  conversion_factor: row.conversion_factor,
+  base_quantity: row.base_quantity,
+  recorded_by: row.recorded_by,
+  recorded_by_username: row.recorded_by_username,
+  recorded_at: new Date(row.recorded_at).toISOString(),
+});
+
 // The Stock Movements whose source line, in the column `column`, is one of `lineIds`, by line id.
 async function stockMovementsOfLines(
   runner: pg.Pool | pg.PoolClient,
@@ -83,14 +110,9 @@ async function stockMovementsOfLines(
   lineIds: string[]
 ): Promise<Map<string, StockMovementRow[]>> {
   const res = await runner.query(
-    `SELECT sm.${column} AS line_id, sm.id, sm.kind, sm.effective_date::text AS effective_date, trim_scale(sm.original_quantity)::text AS original_quantity,
-            sm.original_unit_id, ou.name AS original_unit_name, sm.base_unit_id, bu.name AS base_unit_name,
-            trim_scale(sm.conversion_factor)::text AS conversion_factor, trim_scale(sm.base_quantity)::text AS base_quantity,
-            sm.recorded_by, u.username AS recorded_by_username, sm.recorded_at
+    `SELECT sm.${column} AS line_id, ${stockMovementColumns('sm')}
      FROM stock_movements sm
-     ${joinUnitEntry('ou', 'sm.original_unit_id')}
-     ${joinUnitEntry('bu', 'sm.base_unit_id')}
-     LEFT JOIN users u ON u.id = sm.recorded_by
+     ${joinStockMovementNames('sm')}
      WHERE sm.${column} = ANY($1::uuid[])
      ORDER BY sm.recorded_at ASC, sm.id ASC`,
     [lineIds]
@@ -98,19 +120,7 @@ async function stockMovementsOfLines(
   const byLine = new Map<string, StockMovementRow[]>();
   for (const row of res.rows) {
     const movements = byLine.get(row.line_id) ?? [];
-    movements.push({
-      id: row.id,
-      kind: row.kind,
-      effective_date: row.effective_date,
-      original_quantity: row.original_quantity,
-      original_unit: { unit_id: row.original_unit_id, name: row.original_unit_name },
-      base_unit: { unit_id: row.base_unit_id, name: row.base_unit_name },
-      conversion_factor: row.conversion_factor,
-      base_quantity: row.base_quantity,
-      recorded_by: row.recorded_by,
-      recorded_by_username: row.recorded_by_username ?? null,
-      recorded_at: new Date(row.recorded_at).toISOString(),
-    });
+    movements.push(stockMovementOf(row));
     byLine.set(row.line_id, movements);
   }
   return byLine;
@@ -178,21 +188,16 @@ export class StockMovementReadService {
             ledger AS (SELECT * FROM ${stockLedgerOf('$1::uuid')} timeline),
             filtered AS (SELECT * FROM ledger ${conditions.length > 0 ? `WHERE ${conditions.join(' AND ')}` : ''}),
             counted AS (SELECT count(*)::int AS total_count FROM filtered),
-            years AS (SELECT coalesce(array_agg(DISTINCT ${fiscalYearOf('effective_date')} ORDER BY ${fiscalYearOf('effective_date')} DESC), '{}') AS fiscal_years FROM ledger),
+            years AS (SELECT ${fiscalYearsOf('effective_date')} AS fiscal_years FROM ledger),
             paged AS (SELECT * FROM filtered ORDER BY position LIMIT $${values.length - 1} OFFSET $${values.length})
-       SELECT c.total_count, y.fiscal_years, p.id, p.kind, p.effective_date::text AS effective_date, trim_scale(p.original_quantity)::text AS original_quantity,
-              p.original_unit_id, ou.name AS original_unit_name, p.base_unit_id, bu.name AS base_unit_name,
-              trim_scale(p.conversion_factor)::text AS conversion_factor, trim_scale(p.base_quantity)::text AS base_quantity,
-              trim_scale(p.balance)::text AS balance, p.recorded_by, u.username AS recorded_by_username, p.recorded_at,
+       SELECT c.total_count, y.fiscal_years, ${stockMovementColumns('p')}, trim_scale(p.balance)::text AS balance,
               ob.id AS opening_balance_id, ob.opening_balance_number::text AS opening_balance_number,
               mr.id AS material_receipt_id, mr.receipt_number::text AS receipt_number
        FROM asked
        CROSS JOIN counted c
        CROSS JOIN years y
        LEFT JOIN paged p ON true
-       LEFT ${joinUnitEntry('ou', 'p.original_unit_id')}
-       LEFT ${joinUnitEntry('bu', 'p.base_unit_id')}
-       LEFT JOIN users u ON u.id = p.recorded_by
+       ${joinStockMovementNames('p')}
        ${joinOpeningBalanceOfLine('ob', 'p.opening_balance_line_id')}
        ${joinMaterialReceiptOfLine('mr', 'p.material_receipt_line_id')}
        ORDER BY p.position`,
@@ -205,22 +210,12 @@ export class StockMovementReadService {
     const items: StockLedgerRow[] = res.rows
       .filter((row: any) => row.id !== null)
       .map((row: any) => ({
-        id: row.id,
-        kind: row.kind,
-        effective_date: row.effective_date,
+        ...stockMovementOf(row),
         source:
           row.opening_balance_id !== null
             ? { kind: 'OPENING_BALANCE', id: row.opening_balance_id, number: row.opening_balance_number }
             : { kind: 'MATERIAL_RECEIPT', id: row.material_receipt_id, number: row.receipt_number },
-        original_quantity: row.original_quantity,
-        original_unit: { unit_id: row.original_unit_id, name: row.original_unit_name },
-        base_unit: { unit_id: row.base_unit_id, name: row.base_unit_name },
-        conversion_factor: row.conversion_factor,
-        base_quantity: row.base_quantity,
         balance: row.balance,
-        recorded_by: row.recorded_by,
-        recorded_by_username: row.recorded_by_username,
-        recorded_at: new Date(row.recorded_at).toISOString(),
       }));
     return {
       items,

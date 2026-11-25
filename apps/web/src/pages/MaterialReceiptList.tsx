@@ -2,6 +2,7 @@ import React, { useEffect, useState } from 'react';
 import { Link, useNavigate, useSearchParams } from 'react-router';
 import { QueryClient, QueryClientProvider, useQuery } from '@tanstack/react-query';
 import { thaiDate } from '../components/assignmentFacts';
+import { FiscalYearSelect } from '../components/FiscalYearSelect';
 import { fieldInputStyle } from '../components/ReferenceContextFields';
 import { MATERIAL_RECEIPT_LABEL, SOURCE_PARTY_LABEL, STOCK_MATERIAL_LABEL } from '../components/materialFacts';
 import {
@@ -167,22 +168,7 @@ const MaterialReceiptListContent: React.FC = () => {
                   </option>
                 ))}
               </select>
-              <label htmlFor="material-receipt-fiscal-year-filter" style={{ alignSelf: 'center', fontSize: '0.875rem', color: '#374151' }}>
-                {FISCAL_YEAR_LABEL}
-              </label>
-              <select
-                id="material-receipt-fiscal-year-filter"
-                value={fiscalYear}
-                onChange={(e) => goTo({ fiscalYear: e.target.value, offset: 0 })}
-                style={{ ...fieldInputStyle, width: 'auto', flex: '0 1 8rem' }}
-              >
-                <option value="">ทั้งหมด</option>
-                {list.fiscal_years.map((year) => (
-                  <option key={year} value={String(year)}>
-                    {year}
-                  </option>
-                ))}
-              </select>
+              <FiscalYearSelect id="material-receipt-fiscal-year-filter" value={fiscalYear} offered={list.fiscal_years} onChange={(year) => goTo({ fiscalYear: year, offset: 0 })} />
             </form>
 
             <section aria-label={MATERIAL_RECEIPT_LABEL} id="material-receipt-list-region">

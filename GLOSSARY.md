@@ -539,10 +539,14 @@ _Avoid_: balance on hand, available stock
 A Stock Material whose Current Stock is less than its Minimum Stock. One with no Minimum Stock, or
 with no Stock Movement yet, is never Low Stock.
 
+**Running Balance** (คงเหลือหลังรายการ):
+The stock right after a Stock Movement, worked out from every Stock Movement of its Stock Material up
+to it in Effective Date order. Hiding the rows of other Fiscal Years never restarts it.
+
 **Fiscal Year** (ปีงบประมาณ):
-The period from 1 October to 30 September that a Stock Movement's Effective Date falls in, named by
-the Buddhist-era year in which it ends. It is worked out, never entered, and a new one moves no
-stock.
+The period from 1 October to 30 September that a Stock Movement's Effective Date, or a Material
+Receipt's Received Date, falls in, named by the Buddhist-era year in which it ends. It is worked
+out, never entered, and a new one moves no stock.
 
 ## Roles
 

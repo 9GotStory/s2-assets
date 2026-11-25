@@ -174,9 +174,9 @@ describe('Stock Movements of a Stock Material (Seam A - F010-T4)', () => {
     // across a page break too (CODING_STANDARDS, "An order test of a paged list splits a tie across a page break").
     it('orders the Stock Movements of one confirm by id, a balance for each, across a page break', async () => {
       const paper = await withUnits(3);
-      const { number } = await receipts.received(paper.units.map((unit) => receipts.line(paper.id, unit, '1')));
+      const { id: receiptId, number } = await receipts.received(paper.units.map((unit) => receipts.line(paper.id, unit, '1')));
       const byFactor = new Map(paper.units.map((unit, i) => [unit, String(i + 1)]));
-      const lines = (await receipts.receiptOf((await receipts.listOf(`search=${number}`)).items[0].id)).lines;
+      const lines = (await receipts.receiptOf(receiptId)).lines;
       // Base Quantities 1, 2, 3 and 4 in the order of their Stock Movements' ids.
       const inIdOrder = lines
         .map((line: any) => ({ id: line.stock_movement_id, base: byFactor.get(line.unit.unit_id)! }))
@@ -244,10 +244,22 @@ describe('Stock Movements of a Stock Material (Seam A - F010-T4)', () => {
 
     it('refuses a Fiscal Year that is not a four-digit Buddhist-era year, and a page outside the list-query contract', async () => {
       const paper = await stocked();
-      for (const query of ['fiscal_year=abc', 'fiscal_year=256', 'fiscal_year=25690', 'fiscal_year=0256', 'fiscal_year=', 'limit=0', 'limit=101', 'offset=-1', 'unknown=1']) {
+      // Each query breaks one rule, and the message names that rule.
+      const refusals: [string, string][] = [
+        ['fiscal_year=abc', 'Invalid query: fiscal_year: must be a four-digit Buddhist-era year'],
+        ['fiscal_year=256', 'Invalid query: fiscal_year: must be a four-digit Buddhist-era year'],
+        ['fiscal_year=25690', 'Invalid query: fiscal_year: must be a four-digit Buddhist-era year'],
+        ['fiscal_year=0256', 'Invalid query: fiscal_year: must be a four-digit Buddhist-era year'],
+        ['fiscal_year=', 'Invalid query: fiscal_year: must be a four-digit Buddhist-era year'],
+        ['limit=0', 'Invalid query: limit: must be a canonical positive integer'],
+        ['limit=101', 'Invalid query: limit: must be between 1 and 100'],
+        ['offset=-1', 'Invalid query: offset: must be a canonical non-negative integer'],
+        ['unknown=1', 'Invalid query: query: Unrecognized key: "unknown"'],
+      ];
+      for (const [query, message] of refusals) {
         const res = await api.get(readonly, `/stock-materials/${paper.id}/stock-movements?${query}`);
         expect(res.statusCode).toBe(400);
-        expect(res.json()).toMatchObject({ code: 'VALIDATION_FAILED', message: expect.stringContaining(`Invalid query: ${query.split('=')[0] === 'unknown' ? 'query' : query.split('=')[0]}`) });
+        expect(res.json()).toMatchObject({ code: 'VALIDATION_FAILED', message });
       }
     });
   });
@@ -281,29 +293,32 @@ describe('Stock Movements of a Stock Material (Seam A - F010-T4)', () => {
       const { number } = await receipts.received([receipts.line(paper.id, paper.ream, '7')], { received_date: '2025-11-01' });
       const url = `/stock-materials/${paper.id}/stock-movements`;
       for (const reader of [officer, admin, readonly]) {
-        expect(timeline(await movementsOf(paper.id, '', reader))).toEqual([['MATERIAL_RECEIPT', number, '7', '7']]);
+        const page = await movementsOf(paper.id, '', reader);
+        expect(timeline(page)).toEqual([['MATERIAL_RECEIPT', number, '7', '7']]);
+        expect(JSON.stringify(page)).toContain(paper.reamName);
       }
       for (const actor of [requester, custodian, staff, maintainer]) {
         const res = await api.get(actor, url);
         expect(res.statusCode).toBe(403);
         expect(res.json().error).toMatchObject({ code: 'FORBIDDEN', message: 'Permission denied' });
-        expect(res.body).not.toContain(number);
+        expect(res.body).not.toContain(paper.reamName);
       }
     });
 
     // The Supply Officer holds material:manage too, so a gate on it would let them through.
     it('needs material:view itself, failing closed when the lookup fails', async () => {
       const paper = await stocked();
-      const { number } = await receipts.received([receipts.line(paper.id, paper.ream, '7')], { received_date: '2025-11-01' });
+      await receipts.received([receipts.line(paper.id, paper.ream, '7')], { received_date: '2025-11-01' });
       const url = `/stock-materials/${paper.id}/stock-movements`;
+      expect((await api.get(readonly, url)).body).toContain(paper.reamName);
       const denied = await withCapabilityAnswer(api.app, 'material:view', async () => false, () => api.get(officer, url));
       expect(denied.statusCode).toBe(403);
       expect(denied.json().error).toMatchObject({ code: 'FORBIDDEN', message: 'Permission denied' });
-      expect(denied.body).not.toContain(number);
+      expect(denied.body).not.toContain(paper.reamName);
       const failed = await withCapabilityAnswer(api.app, 'material:view', async () => { throw new Error('lookup failed'); }, () => api.get(officer, url));
       expect(failed.statusCode).toBe(500);
       expect(failed.json().error).toMatchObject({ code: 'INTERNAL_SERVER_ERROR', message: 'An unexpected internal server error occurred.' });
-      expect(failed.body).not.toContain(number);
+      expect(failed.body).not.toContain(paper.reamName);
     });
 
     it('needs a session', async () => {

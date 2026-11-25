@@ -438,6 +438,16 @@ test.describe.serial('Material Stock journeys: Real SPA -> Composed API -> Postg
     // รายการเคลื่อนไหว, oldest first: the ยอดตั้งต้น row and the รับวัสดุ row, each with the balance after it.
     const rows = page.locator('#stock-movement-table tbody tr');
     await expect(rows).toHaveCount(2);
+    // The balance after a row is คงเหลือหลังรายการ; คงเหลือ alone is the Current Stock above (#235 review decision 1).
+    await expect(page.locator('#stock-movement-table thead th')).toHaveText([
+      'วันที่มีผล',
+      'รายการ',
+      'เอกสาร',
+      'จำนวนที่บันทึก',
+      'จำนวน (หน่วยนับหลัก)',
+      'คงเหลือหลังรายการ',
+      'วันที่บันทึก',
+    ]);
     await expect(rows.nth(0).locator('td')).toHaveText([
       '30 กันยายน 2569',
       'ยอดตั้งต้น',
@@ -465,6 +475,7 @@ test.describe.serial('Material Stock journeys: Real SPA -> Composed API -> Postg
     await page.locator('#stock-movement-fiscal-year').selectOption('2570');
     await expect(page).toHaveURL(/[?&]fiscal_year=2570/);
     await expect(rows).toHaveCount(1);
+    await expect(page.locator('#stock-movement-fiscal-year option')).toHaveText(['ทั้งหมด', '2570', '2569']);
     await expect(rows.nth(0).locator('td').nth(1)).toHaveText('รับวัสดุ');
     await expect(rows.nth(0).locator('td').nth(5)).toHaveText(`17 ${ream}`);
     await page.locator('#stock-movement-fiscal-year').selectOption('2569');
@@ -475,15 +486,21 @@ test.describe.serial('Material Stock journeys: Real SPA -> Composed API -> Postg
     await page.locator('#stock-movement-fiscal-year').selectOption('');
     await expect(page).not.toHaveURL(/fiscal_year=/);
     await expect(rows).toHaveCount(2);
-    // A year it does not have, from a link.
+    // A year it does not have, from a link: the select shows it among the others, and ทั้งหมด takes it away.
     await page.goto(`${targetBaseUrl}/stock-materials/${materialId}?fiscal_year=2560`);
     await expect(page.locator('#stock-movement-empty')).toHaveText('ไม่พบรายการเคลื่อนไหวในปีงบประมาณ 2560');
+    await expect(page.locator('#stock-movement-fiscal-year')).toHaveValue('2560');
+    await expect(page.locator('#stock-movement-fiscal-year option')).toHaveText(['ทั้งหมด', '2570', '2569', '2560']);
+    await page.locator('#stock-movement-fiscal-year').selectOption('');
+    await expect(page).not.toHaveURL(/fiscal_year=/);
+    await expect(rows).toHaveCount(2);
 
     // The ยอดตั้งต้น row's number opens its Opening Balance; the รับวัสดุ row's its Material Receipt, with ปีงบประมาณ.
     await page.goto(`${targetBaseUrl}/stock-materials/${materialId}`);
     await rows.nth(0).getByRole('link').click();
     await expect(page.getByRole('heading', { level: 1, name: /^ยอดตั้งต้น เลขที่ยอดตั้งต้น \d+$/ })).toBeVisible();
     await page.goBack();
+    await expect(page).toHaveURL(new RegExp(`/stock-materials/${materialId}$`));
     await rows.nth(1).getByRole('link').click();
     await expect(page.getByRole('heading', { level: 1, name: `รายการรับวัสดุ เลขที่รับ ${october.number}` })).toBeVisible();
     await expect(page.locator('[data-testid="material-receipt-fiscal-year"]')).toHaveText('2570');
@@ -512,6 +529,11 @@ test.describe.serial('Material Stock journeys: Real SPA -> Composed API -> Postg
     // A year no Material Receipt has, from a link, finds none.
     await page.goto(`${targetBaseUrl}/material-receipts?fiscal_year=2560`);
     await expect(page.locator('#material-receipt-list-empty')).toHaveText('ไม่พบรายการรับวัสดุที่ค้นหา');
+    await expect(page.locator('#material-receipt-fiscal-year-filter')).toHaveValue('2560');
+    await expect(page.locator('#material-receipt-fiscal-year-filter option').last()).toHaveText('2560');
+    await page.locator('#material-receipt-fiscal-year-filter').selectOption('');
+    await expect(page).not.toHaveURL(/fiscal_year=/);
+    await expect(page.locator('#material-receipt-list-empty')).toHaveCount(0);
 
     // A page at a time: 26 รับวัสดุ rows of ปีงบประมาณ 2570, the balance going on across the page break, and the page
     // keeping the Fiscal Year.

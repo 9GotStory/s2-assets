@@ -57,8 +57,15 @@ export const stockLedgerOf = (stockMaterialId: string): string =>
 export const fiscalYearOf = (date: string): string => `(extract(year FROM ${date})::int + CASE WHEN extract(month FROM ${date}) >= 10 THEN 544 ELSE 543 END)`;
 
 /**
+ * F010-T4 (#235): SQL aggregating, over the rows it is grouped on, the Fiscal Years of the date expression `date`, newest
+ * first, each once, as an integer array: empty, never NULL, when no row has a date (#235 start decision 2).
+ */
+export const fiscalYearsOf = (date: string): string => `coalesce(array_agg(DISTINCT ${fiscalYearOf(date)} ORDER BY ${fiscalYearOf(date)} DESC), '{}')`;
+
+/**
  * F010-T4 (#235): SQL holding when the date expression `date` falls in the Fiscal Year that the integer SQL expression
- * `fiscalYear` names, as a range of dates, so an index on the date serves it (#231 P3).
+ * `fiscalYear` names, written as the range of dates from its 1 October to the next (#231 P3), the same period as
+ * `fiscalYearOf`.
  */
 export const inFiscalYear = (date: string, fiscalYear: string): string =>
   `(${date} >= make_date(${fiscalYear} - 544, 10, 1) AND ${date} < make_date(${fiscalYear} - 543, 10, 1))`;

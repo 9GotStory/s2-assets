@@ -683,7 +683,7 @@ describe('Material Receipt (Seam A - F010-T3)', () => {
       for (const year of ['abc', '256', '25690', '0256', '']) {
         const refused = await api.get(readonly, `/material-receipts?fiscal_year=${year}`);
         expect(refused.statusCode).toBe(400);
-        expect(refused.json()).toMatchObject({ code: 'VALIDATION_FAILED', message: expect.stringContaining('Invalid query: fiscal_year') });
+        expect(refused.json()).toMatchObject({ code: 'VALIDATION_FAILED', message: 'Invalid query: fiscal_year: must be a four-digit Buddhist-era year' });
       }
     });
   });

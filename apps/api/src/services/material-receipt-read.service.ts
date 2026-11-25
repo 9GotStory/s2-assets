@@ -1,7 +1,7 @@
 import pg from 'pg';
 import { containsPattern } from './asset-lookups.ts';
 import { joinCatalogListEntry, joinUnitEntry, type NamedListEntry } from './catalog-list-entries.ts';
-import { fiscalYearOf, inFiscalYear } from './current-stock.ts';
+import { fiscalYearOf, fiscalYearsOf, inFiscalYear } from './current-stock.ts';
 import { materialReceiptState, type MaterialReceiptState } from './material-receipt-state.ts';
 import { joinStockMaterial } from './stock-material-joins.ts';
 import { stockMovementsOfMaterialReceiptLines, type StockMovementRow } from './stock-movements.ts';
@@ -181,7 +181,7 @@ export class MaterialReceiptReadService {
        ),
        counted AS (SELECT count(*)::int AS total_count FROM filtered),
        years AS (
-         SELECT coalesce(array_agg(DISTINCT ${fiscalYearOf('ym.received_date')} ORDER BY ${fiscalYearOf('ym.received_date')} DESC), '{}') AS fiscal_years
+         SELECT ${fiscalYearsOf('ym.received_date')} AS fiscal_years
          FROM material_receipts ym
          WHERE ym.received_date IS NOT NULL
        ),

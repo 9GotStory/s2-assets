@@ -2,10 +2,10 @@ import React from 'react';
 import { Link, useSearchParams } from 'react-router';
 import { useQuery } from '@tanstack/react-query';
 import { thaiDate } from './assignmentFacts';
-import { fieldInputStyle } from './ReferenceContextFields';
-import { BASE_UNIT_LABEL, CURRENT_STOCK_LABEL, NO_STOCK_MOVEMENT_LABEL } from './materialFacts';
+import { FiscalYearSelect } from './FiscalYearSelect';
+import { BASE_UNIT_LABEL, NO_STOCK_MOVEMENT_LABEL } from './materialFacts';
 import { STOCK_MOVEMENT_LABEL } from './openingBalanceFacts';
-import { EFFECTIVE_DATE_LABEL, RECORDED_AT_LABEL, STOCK_MOVEMENT_KIND_LABELS, STOCK_MOVEMENT_SOURCES, type StockLedger } from './stockMovementFacts';
+import { EFFECTIVE_DATE_LABEL, RECORDED_AT_LABEL, RUNNING_BALANCE_LABEL, STOCK_MOVEMENT_KIND_LABELS, STOCK_MOVEMENT_SOURCES, type StockLedger } from './stockMovementFacts';
 import { FISCAL_YEAR_LABEL } from './verificationFacts';
 
 const PAGE_SIZE = 25;
@@ -80,22 +80,7 @@ export const StockMovementTable: React.FC<{ stockMaterialId: string }> = ({ stoc
       {ledger && (
         <>
           <div style={{ display: 'flex', gap: '0.5rem', alignItems: 'center', marginBottom: '0.75rem' }}>
-            <label htmlFor="stock-movement-fiscal-year" style={{ fontSize: '0.875rem', color: '#374151' }}>
-              {FISCAL_YEAR_LABEL}
-            </label>
-            <select
-              id="stock-movement-fiscal-year"
-              value={fiscalYear}
-              onChange={(e) => goTo({ fiscalYear: e.target.value, offset: 0 })}
-              style={{ ...fieldInputStyle, width: 'auto', flex: '0 1 10rem' }}
-            >
-              <option value="">ทั้งหมด</option>
-              {ledger.fiscal_years.map((year) => (
-                <option key={year} value={String(year)}>
-                  {year}
-                </option>
-              ))}
-            </select>
+            <FiscalYearSelect id="stock-movement-fiscal-year" value={fiscalYear} offered={ledger.fiscal_years} onChange={(year) => goTo({ fiscalYear: year, offset: 0 })} />
           </div>
 
           {ledger.items.length === 0 ? (
@@ -112,7 +97,7 @@ export const StockMovementTable: React.FC<{ stockMaterialId: string }> = ({ stoc
                     <th style={headStyle}>เอกสาร</th>
                     <th style={headStyle}>จำนวนที่บันทึก</th>
                     <th style={headStyle}>จำนวน ({BASE_UNIT_LABEL})</th>
-                    <th style={headStyle}>{CURRENT_STOCK_LABEL}</th>
+                    <th style={headStyle}>{RUNNING_BALANCE_LABEL}</th>
                     <th style={headStyle}>{RECORDED_AT_LABEL}</th>
                   </tr>
                 </thead>

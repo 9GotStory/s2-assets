@@ -42,6 +42,8 @@ export interface StockLedger {
 
 export const EFFECTIVE_DATE_LABEL = 'วันที่มีผล';
 export const RECORDED_AT_LABEL = 'วันที่บันทึก';
+// The Running Balance, the stock right after a row; คงเหลือ alone is the Current Stock (#235 review decision 1).
+export const RUNNING_BALANCE_LABEL = 'คงเหลือหลังรายการ';
 export const REVERSAL_LABEL = 'กลับรายการ';
 
 export const STOCK_MOVEMENT_KIND_LABELS: Record<StockMovementKind, string> = {
