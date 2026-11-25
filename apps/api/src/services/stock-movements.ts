@@ -10,7 +10,8 @@ import { joinStockMaterial } from './stock-material-joins.ts';
 // Features 010 to 014 share (ADR 0003, #231 P2). Rows are only ever added: a trigger refuses every UPDATE and DELETE.
 // What they add up to is read through current-stock.ts.
 
-// The kinds 0032_opening_balances_stock_movements and 0034_material_receipts allow; T6 and T7 write the Reversals.
+// The kinds 0032_opening_balances_stock_movements and 0034_material_receipts allow; T6 and T7 write the Reversals
+// through `reverseStockMovement`.
 export type StockMovementKind = 'OPENING_BALANCE' | 'MATERIAL_RECEIPT' | 'REVERSAL';
 
 // A Stock Movement made by an Opening Balance line (T2) or a Receipt Line (T3), each kind naming its own source line,
@@ -51,6 +52,46 @@ export async function recordStockMovement(client: pg.PoolClient, movement: NewSt
     ]
   );
   return res.rows[0].id;
+}
+
+/**
+ * F010-T6 (#237): adds, through `client` inside its write's transaction, the Reversal (กลับรายการ) of the Stock Movement
+ * `stockMovementId`, recorded by `recordedBy`, and answers its id. It takes the movement back in full on its Effective
+ * Date, with its source line, Original Quantity and Conversion Snapshot (ADR 0003; #231 P2, P9). The unique reference
+ * refuses a second Reversal of one Stock Movement, and the reversal check refuses a Reversal of a Reversal.
+ */
+export async function reverseStockMovement(client: pg.PoolClient, stockMovementId: string, recordedBy: string): Promise<string> {
+  const res = await client.query(
+    `INSERT INTO stock_movements (stock_material_id, kind, opening_balance_line_id, material_receipt_line_id, reverses_stock_movement_id, effective_date,
+                                  original_quantity, original_unit_id, base_unit_id, conversion_factor, base_quantity, recorded_by)
+     SELECT stock_material_id, 'REVERSAL', opening_balance_line_id, material_receipt_line_id, id, effective_date,
+            original_quantity, original_unit_id, base_unit_id, conversion_factor, -base_quantity, $2
+     FROM stock_movements WHERE id = $1
+     RETURNING id`,
+    [stockMovementId, recordedBy]
+  );
+  return res.rows[0].id;
+}
+
+// F010-T6 (#237): what a correction reads of a line's Stock Movement in effect: its Conversion Snapshot and Base Quantity.
+export interface StockMovementInEffect {
+  conversion_snapshot: ConversionSnapshot;
+  base_quantity: string;
+}
+
+/** F010-T6 (#237): the Stock Movements `ids`, by id, as a correction of their source lines reads them (#231 Q29). */
+export async function stockMovementsInEffectOf(runner: pg.Pool | pg.PoolClient, ids: string[]): Promise<Map<string, StockMovementInEffect>> {
+  const res = await runner.query(
+    `SELECT id, original_unit_id, base_unit_id, trim_scale(conversion_factor)::text AS conversion_factor, trim_scale(base_quantity)::text AS base_quantity
+     FROM stock_movements WHERE id = ANY($1::uuid[])`,
+    [ids]
+  );
+  return new Map(
+    res.rows.map((row: any) => [
+      row.id,
+      { conversion_snapshot: { unit_id: row.original_unit_id, base_unit_id: row.base_unit_id, conversion_factor: row.conversion_factor }, base_quantity: row.base_quantity },
+    ])
+  );
 }
 
 // A Stock Movement as a source's page shows it (#231 story 58).
@@ -103,7 +144,8 @@ const stockMovementOf = (row: any): StockMovementRow => ({
   recorded_at: new Date(row.recorded_at).toISOString(),
 });
 
-// The Stock Movements whose source line, in the column `column`, is one of `lineIds`, by line id.
+// The Stock Movements whose source line, in the column `column`, is one of `lineIds`, by line id, in the order they
+// were recorded, a Reversal before the new Stock Movement of the same correction (#237 build decision 5).
 async function stockMovementsOfLines(
   runner: pg.Pool | pg.PoolClient,
   column: 'opening_balance_line_id' | 'material_receipt_line_id',
@@ -114,7 +156,7 @@ async function stockMovementsOfLines(
      FROM stock_movements sm
      ${joinStockMovementNames('sm')}
      WHERE sm.${column} = ANY($1::uuid[])
-     ORDER BY sm.recorded_at ASC, sm.id ASC`,
+     ORDER BY sm.recorded_at ASC, sm.kind <> 'REVERSAL', sm.id ASC`,
     [lineIds]
   );
   const byLine = new Map<string, StockMovementRow[]>();

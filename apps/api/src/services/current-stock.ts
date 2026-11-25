@@ -40,14 +40,23 @@ export const lowStock = (figures: string, minimumStock: string): string =>
  * - `balance`: the sum of the Base Quantities up to and including it, the stock right after it (#231 P3);
  * - `position`: its place in the business timeline, from 1.
  * Both follow the timeline: Effective Date, then Recorded At, then id (MSL-07, MSL-12), so a backdated fact takes its
- * place by its Effective Date. The window spans every Stock Movement of the Stock Material, so a filter over the rows
- * keeps each balance the whole ledger's: the ledger never restarts at a new year (MSL-09; #235 start decision 4).
+ * place by its Effective Date. F010-T6 (#237 build decision 5): at one Effective Date and Recorded At, as a Receipt
+ * Correction records them, a Reversal comes before any other kind, so the balance between it and its new Stock
+ * Movement is always the stock taken back. The window spans every Stock Movement of the Stock Material, so a filter
+ * over the rows keeps each balance the whole ledger's: the ledger never restarts at a new year (MSL-09; #235 start
+ * decision 4).
  */
 export const stockLedgerOf = (stockMaterialId: string): string =>
   `(SELECT sl.*, sum(sl.base_quantity) OVER timeline AS balance, row_number() OVER timeline AS position
     FROM stock_movements sl
     WHERE sl.stock_material_id = ${stockMaterialId}
-    WINDOW timeline AS (ORDER BY sl.effective_date, sl.recorded_at, sl.id))`;
+    WINDOW timeline AS (ORDER BY ${stockMovementOrder('sl')}))`;
+
+/**
+ * F010-T6 (#237): the order of the Stock Movements joined as `movement` in the business timeline, as an ORDER BY list:
+ * Effective Date, Recorded At, a Reversal before any other kind (build decision 5), then id.
+ */
+export const stockMovementOrder = (movement: string): string => `${movement}.effective_date, ${movement}.recorded_at, ${movement}.kind <> 'REVERSAL', ${movement}.id`;
 
 /**
  * F010-T4 (#235): SQL giving, as an integer, the Fiscal Year (ปีงบประมาณ) of the date expression `date`: the period from
