@@ -19,6 +19,14 @@ export const pageQueryFields = {
     .optional(),
 };
 
+// F010-T4 (#235): a Fiscal Year (ปีงบประมาณ) to filter a list by, a four-digit Buddhist-era year as the Verification
+// Round's (#231 P3).
+export const fiscalYearQueryField = z
+  .string()
+  .regex(/^[1-9]\d{3}$/, 'must be a four-digit Buddhist-era year')
+  .transform(Number)
+  .optional();
+
 // The answer to a list query that does not parse, naming each field it failed on.
 export const invalidQueryBody = (error: z.ZodError) =>
   errorBody(400, 'VALIDATION_FAILED', `Invalid query: ${error.issues.map((issue) => `${issue.path.join('.') || 'query'}: ${issue.message}`).join(', ')}`);

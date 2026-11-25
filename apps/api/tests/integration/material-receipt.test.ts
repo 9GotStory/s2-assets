@@ -576,7 +576,7 @@ describe('Material Receipt (Seam A - F010-T3)', () => {
       const all = await listOf(`search=${encodeURIComponent(tag)}`);
       expect(all).toMatchObject({ total_count: 3, has_more: false, limit: 25, offset: 0, can_manage: false });
       expect(all.items).toEqual([
-        { id: byMaterial.id, receipt_number: byMaterial.number, received_date: '2026-11-01', source_party: null, state: 'RECEIVED', line_count: 2, created_at: expect.any(String) },
+        { id: byMaterial.id, receipt_number: byMaterial.number, received_date: '2026-11-01', fiscal_year: 2570, source_party: null, state: 'RECEIVED', line_count: 2, created_at: expect.any(String) },
         expect.objectContaining({ id: byReference, receipt_number: null, state: 'DRAFT', line_count: 0 }),
         expect.objectContaining({ id: byParty, source_party: { id: party, name: `ร้าน ${tag}` }, state: 'DRAFT' }),
       ]);
@@ -607,6 +607,84 @@ describe('Material Receipt (Seam A - F010-T3)', () => {
       const refused = await api.get(readonly, '/material-receipts?state=voided');
       expect(refused.statusCode).toBe(400);
       expect(refused.json()).toMatchObject({ code: 'VALIDATION_FAILED', message: expect.stringContaining('state') });
+    });
+  });
+
+  // F010-T4 (#235): ปีงบประมาณ, worked out from the Received Date, Drafts included (MSL-09–MSL-11, Q16, P3; #235 start
+  // decisions 1 and 2).
+  describe('the Fiscal Year (story 26, story 56)', () => {
+    it('shows the Fiscal Year of each Received Date, 1 October to 30 September named by the Buddhist-era year it ends in, a Draft\'s too, on the list and the page', async () => {
+      const tag = crypto.randomUUID().slice(0, 8).replace(/\d/g, 'p');
+      const paper = await stocked();
+      const lastOf2568 = await received([line(paper.id, paper.ream, '1')], { received_date: '2025-09-30', receipt_reference: `ปี ${tag}` });
+      const firstOf2569 = await draft({ received_date: '2025-10-01', receipt_reference: `ปี ${tag}`, lines: [] });
+      const lastOf2569 = await received([line(paper.id, paper.ream, '1')], { received_date: '2026-09-30', receipt_reference: `ปี ${tag}` });
+      const firstOf2570 = await draft({ received_date: '2026-10-01', receipt_reference: `ปี ${tag}`, lines: [] });
+      const undated = await draft({ receipt_reference: `ปี ${tag}`, lines: [] });
+
+      const rows = (await listOf(`search=${encodeURIComponent(`ปี ${tag}`)}`)).items.map(({ id, fiscal_year }: { id: string; fiscal_year: number | null }) => [id, fiscal_year]);
+      expect(rows).toEqual([
+        [undated, null],
+        [firstOf2570, 2570],
+        [lastOf2569.id, 2569],
+        [firstOf2569, 2569],
+        [lastOf2568.id, 2568],
+      ]);
+      for (const [id, fiscalYear] of [
+        [lastOf2568.id, 2568],
+        [firstOf2569, 2569],
+        [lastOf2569.id, 2569],
+        [firstOf2570, 2570],
+        [undated, null],
+      ] as const) {
+        expect((await receiptOf(id)).fiscal_year).toBe(fiscalYear);
+      }
+    });
+
+    it('filters by Fiscal Year as a range of Received Dates, with the state and the search, leaving out a Draft with no Received Date', async () => {
+      const tag = crypto.randomUUID().slice(0, 8).replace(/\d/g, 'q');
+      const paper = await stocked();
+      const lastOf2568 = await received([line(paper.id, paper.ream, '1')], { received_date: '2025-09-30', receipt_reference: `กรองปี ${tag}` });
+      const firstOf2569 = await draft({ received_date: '2025-10-01', receipt_reference: `กรองปี ${tag}`, lines: [] });
+      const lastOf2569 = await received([line(paper.id, paper.ream, '1')], { received_date: '2026-09-30', receipt_reference: `กรองปี ${tag}` });
+      const firstOf2570 = await draft({ received_date: '2026-10-01', receipt_reference: `กรองปี ${tag}`, lines: [] });
+      await draft({ receipt_reference: `กรองปี ${tag}`, lines: [] });
+
+      const idsOf = async (query: string) => {
+        const list = await listOf(`search=${encodeURIComponent(`กรองปี ${tag}`)}&${query}`);
+        expect(list.total_count).toBe(list.items.length);
+        return list.items.map(({ id }: { id: string }) => id);
+      };
+      expect(await idsOf('fiscal_year=2568')).toEqual([lastOf2568.id]);
+      expect(await idsOf('fiscal_year=2569')).toEqual([lastOf2569.id, firstOf2569]);
+      expect(await idsOf('fiscal_year=2570')).toEqual([firstOf2570]);
+      expect(await idsOf('fiscal_year=2567')).toEqual([]);
+      expect(await idsOf('fiscal_year=2569&state=draft')).toEqual([firstOf2569]);
+      expect(await idsOf('fiscal_year=2569&state=received')).toEqual([lastOf2569.id]);
+    });
+
+    it('offers each Fiscal Year that a Material Receipt has, newest first, whatever the filters', async () => {
+      const tag = crypto.randomUUID().slice(0, 8).replace(/\d/g, 'r');
+      // Only these two Drafts are dated in 2565 (1 October 2021 to 30 September 2022).
+      await draft({ received_date: '2021-10-01', receipt_reference: `เสนอปี ${tag}`, lines: [] });
+      await draft({ received_date: '2022-09-30', receipt_reference: `เสนอปี ${tag}`, lines: [] });
+      await draft({ receipt_reference: `เสนอปี ${tag}`, lines: [] });
+      const { fiscal_years: years }: { fiscal_years: number[] } = await listOf();
+      // 2565 twice above, 2570 from Received Material Receipts of 2026-11-01, and no year for the Draft with none.
+      expect(years).toEqual([...new Set(years)].sort((a: number, b: number) => b - a));
+      expect(years).toEqual(expect.arrayContaining([2570, 2565]));
+      expect(years.every((year: unknown) => Number.isInteger(year))).toBe(true);
+      for (const query of [`search=${encodeURIComponent(`เสนอปี ${tag}`)}`, 'state=received', 'fiscal_year=2565&limit=1']) {
+        expect((await listOf(query)).fiscal_years).toEqual(years);
+      }
+    });
+
+    it('refuses a Fiscal Year that is not a four-digit Buddhist-era year', async () => {
+      for (const year of ['abc', '256', '25690', '0256', '']) {
+        const refused = await api.get(readonly, `/material-receipts?fiscal_year=${year}`);
+        expect(refused.statusCode).toBe(400);
+        expect(refused.json()).toMatchObject({ code: 'VALIDATION_FAILED', message: 'Invalid query: fiscal_year: must be a four-digit Buddhist-era year' });
+      }
     });
   });
 

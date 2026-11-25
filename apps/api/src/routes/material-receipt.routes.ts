@@ -1,7 +1,7 @@
 import type { FastifyPluginAsync } from 'fastify';
 import { z } from 'zod';
 import { requireCapability } from '../middleware/authorization.ts';
-import { invalidQueryBody, pageQueryFields } from './list-query.ts';
+import { fiscalYearQueryField, invalidQueryBody, pageQueryFields } from './list-query.ts';
 import { errorBody, parseWrite } from './write-request.ts';
 import { isValidUuid, type CapabilityService } from '../services/capability.service.ts';
 import { hasDisallowedControlChars } from '../services/control-characters.ts';
@@ -62,6 +62,8 @@ const MaterialReceiptListQuerySchema = z
       .refine((text) => text.length <= 500, 'must be at most 500 characters')
       .optional(),
     state: z.enum(['all', 'draft', 'received']).optional(),
+    // F010-T4 (#235): a Fiscal Year (ปีงบประมาณ) of the Received Date.
+    fiscal_year: fiscalYearQueryField,
     ...pageQueryFields,
   })
   .strict();
@@ -104,7 +106,7 @@ export const materialReceiptRoutes: FastifyPluginAsync<MaterialReceiptRoutesOpti
    * GET /material-receipts
    * The Material Receipts, newest first, a page at a time, by state and found by text in the Receipt Number, the Receipt
    * Reference, the Source Party name or a line's Stock Material name, Drafts included (P8), with `can_manage` for
-   * "เพิ่มรายการรับวัสดุ".
+   * "เพิ่มรายการรับวัสดุ"; by Fiscal Year, with the Fiscal Years they have (F010-T4).
    * Protected: requires 'material:view' capability (Supply Officer, Administrator, Read-only User)
    */
   fastify.get('/material-receipts', { preHandler: [requireCapability('material:view')] }, async (request, reply) => {
@@ -113,8 +115,8 @@ export const materialReceiptRoutes: FastifyPluginAsync<MaterialReceiptRoutesOpti
     if (!parsed.success) {
       return reply.status(400).send(invalidQueryBody(parsed.error));
     }
-    const { limit = 25, offset = 0, search, state = 'all' } = parsed.data;
-    const list = await materialReceiptReadService.list({ search, limit, offset, ...(state === 'all' ? {} : { state: STATE_FILTERS[state] }) });
+    const { limit = 25, offset = 0, search, state = 'all', fiscal_year: fiscalYear } = parsed.data;
+    const list = await materialReceiptReadService.list({ search, fiscalYear, limit, offset, ...(state === 'all' ? {} : { state: STATE_FILTERS[state] }) });
     const canManage = await capabilityService.hasCapability(request.user!.id, 'material:manage');
     return reply.status(200).send({ ...list, can_manage: canManage });
   });

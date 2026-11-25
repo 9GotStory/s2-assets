@@ -22,6 +22,7 @@ import {
   type ReceiptListEntry,
 } from '../components/materialReceiptFacts';
 import { EDIT_DRAFT_LABEL, openingBalanceNumberLine, REMOVE_DRAFT_LABEL, STOCK_MOVEMENT_LABEL } from '../components/openingBalanceFacts';
+import { FISCAL_YEAR_LABEL } from '../components/verificationFacts';
 
 const THAI_DATE_TIME = new Intl.DateTimeFormat('th-TH', { dateStyle: 'long', timeStyle: 'short', timeZone: 'Asia/Bangkok' });
 
@@ -126,6 +127,9 @@ const MaterialReceiptDetailContent: React.FC<{ id: string }> = ({ id }) => {
             <dl style={{ display: 'grid', gridTemplateColumns: 'max-content 1fr', gap: '0.5rem 1.5rem', fontSize: '0.875rem', margin: '0 0 1.5rem 0' }}>
               <dt style={{ fontWeight: 500, color: '#4b5563' }}>{RECEIVED_DATE_LABEL}</dt>
               <dd data-testid="material-receipt-received-date" style={{ margin: 0 }}>{detail.received_date === null ? '-' : thaiDate(detail.received_date)}</dd>
+              {/* F010-T4 (#235, #231 story 26): ปีงบประมาณ, worked out from the Received Date. */}
+              <dt style={{ fontWeight: 500, color: '#4b5563' }}>{FISCAL_YEAR_LABEL}</dt>
+              <dd data-testid="material-receipt-fiscal-year" style={{ margin: 0 }}>{detail.fiscal_year ?? '-'}</dd>
               <dt style={{ fontWeight: 500, color: '#4b5563' }}>{SOURCE_PARTY_LABEL}</dt>
               <dd data-testid="material-receipt-source-party" style={{ margin: 0 }}>{entryLine(detail.source_party)}</dd>
               <dt style={{ fontWeight: 500, color: '#4b5563' }}>{SOURCE_TYPE_LABEL}</dt>

@@ -5,6 +5,7 @@ import { StockMaterialCorrectionForm } from '../components/StockMaterialCorrecti
 import { StockMaterialDetailsEditor } from '../components/StockMaterialDetailsEditor';
 import { StockMaterialStatusForm } from '../components/StockMaterialStatusForm';
 import { StockMaterialUnitsEditor } from '../components/StockMaterialUnitsEditor';
+import { StockMovementTable } from '../components/StockMovementTable';
 import { useCsrfToken } from '../components/materialQueries';
 import {
   ACTIVE_LABEL,
@@ -365,6 +366,8 @@ const StockMaterialDetailContent: React.FC<{ id: string }> = ({ id }) => {
               </table>
             </div>
 
+            <StockMovementTable stockMaterialId={detail.id} />
+
             <h2 style={sectionHeadingStyle}>ประวัติ</h2>
             <ol id="stock-material-history" style={{ listStyle: 'none', padding: 0, margin: 0 }}>
               {detail.history.map((entry) => (
@@ -380,7 +383,8 @@ const StockMaterialDetailContent: React.FC<{ id: string }> = ({ id }) => {
 
 /**
  * A Stock Material's page (F008-T1, T3, T4, T5, T6, T7): every field with its Material Correction, the editor of its
- * other details and "หยุดใช้" or "เปิดใช้อีกครั้ง", its Units with their editor, and its history (#175 Q13, Q15, Q18).
+ * other details and "หยุดใช้" or "เปิดใช้อีกครั้ง", its Units with their editor, and its history (#175 Q13, Q15, Q18);
+ * its คงเหลือ (F010-T2) and its รายการเคลื่อนไหว (F010-T4, #231 Q23).
  */
 export const StockMaterialDetail: React.FC = () => {
   const { id = '' } = useParams<{ id: string }>();

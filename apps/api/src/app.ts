@@ -28,6 +28,7 @@ import { catalogListRoutes } from './routes/catalog-list.routes.ts';
 import { requestableMaterialRoutes } from './routes/requestable-material.routes.ts';
 import { materialRequestRoutes } from './routes/material-request.routes.ts';
 import { materialReceiptRoutes } from './routes/material-receipt.routes.ts';
+import { stockMovementRoutes } from './routes/stock-movement.routes.ts';
 import { openingBalanceRoutes } from './routes/opening-balance.routes.ts';
 import { UserService, type DatabaseClient } from './services/user.service.ts';
 import { SessionService } from './services/session.service.ts';
@@ -59,6 +60,7 @@ import { RequestableMaterialService } from './services/requestable-material.serv
 import { RequestableMaterialReadService } from './services/requestable-material-read.service.ts';
 import { MaterialRequestService } from './services/material-request.service.ts';
 import { MaterialReceiptReadService } from './services/material-receipt-read.service.ts';
+import { StockMovementReadService } from './services/stock-movements.ts';
 import { MaterialReceiptService } from './services/material-receipt.service.ts';
 import { OpeningBalanceReadService } from './services/opening-balance-read.service.ts';
 import { OpeningBalanceService } from './services/opening-balance.service.ts';
@@ -365,6 +367,10 @@ export async function buildApp(options: AppOptions = {}): Promise<FastifyInstanc
       materialReceiptService: new MaterialReceiptService({ db: dbClient, clock: options.clock }),
       materialReceiptReadService: new MaterialReceiptReadService({ db: dbClient }),
       capabilityService,
+    });
+    // F010-T4 (#235): a Stock Material's Stock Movements
+    await app.register(stockMovementRoutes, {
+      stockMovementReadService: new StockMovementReadService({ db: dbClient }),
     });
 
     // Acquisition routes mounted under /acquisitions
