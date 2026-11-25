@@ -1,6 +1,7 @@
 import pg from 'pg';
 import { containsPattern } from './asset-lookups.ts';
 import { joinCatalogListEntry, joinUnitEntry, type NamedListEntry } from './catalog-list-entries.ts';
+import { fiscalYearOf, inFiscalYear } from './current-stock.ts';
 import { materialReceiptState, type MaterialReceiptState } from './material-receipt-state.ts';
 import { joinStockMaterial } from './stock-material-joins.ts';
 import { stockMovementsOfMaterialReceiptLines, type StockMovementRow } from './stock-movements.ts';
@@ -11,6 +12,9 @@ export interface MaterialReceiptRow {
   // A bigint as a string of digits, or none while Draft (P1).
   receipt_number: string | null;
   received_date: string | null;
+  // F010-T4 (#235): the Fiscal Year (ปีงบประมาณ) of the Received Date, a Draft's too, or none without one (start
+  // decision 1).
+  fiscal_year: number | null;
   // The Source Party under its name now, or none.
   source_party: NamedListEntry | null;
   state: MaterialReceiptState;
@@ -22,6 +26,8 @@ export interface MaterialReceiptListFilters {
   // Text found in the Receipt Number, the Receipt Reference, the Source Party name or a line's Stock Material name.
   search?: string;
   state?: MaterialReceiptState;
+  // F010-T4 (#235): only those whose Received Date falls in this Fiscal Year.
+  fiscalYear?: number;
   limit: number;
   offset: number;
 }
@@ -32,6 +38,9 @@ export interface MaterialReceiptList {
   offset: number;
   total_count: number;
   has_more: boolean;
+  // F010-T4 (#235): each Fiscal Year that a Material Receipt's Received Date falls in, newest first, whatever the
+  // filters (start decision 2).
+  fiscal_years: number[];
 }
 
 // A list entry a Material Receipt names, under its name now.
@@ -71,6 +80,8 @@ export interface MaterialReceiptDetail {
   id: string;
   receipt_number: string | null;
   received_date: string | null;
+  // F010-T4 (#235): as on the list.
+  fiscal_year: number | null;
   source_party: ReceiptListEntry | null;
   source_type: ReceiptListEntry | null;
   receipt_reference: string | null;
@@ -153,11 +164,15 @@ export class MaterialReceiptReadService {
         OR EXISTS (SELECT 1 FROM material_receipt_lines sl ${joinStockMaterial('sm', 'sl.stock_material_id')}
                    WHERE sl.material_receipt_id = mr.id AND sm.name ILIKE ${pattern} ESCAPE '\\'))`);
     }
+    if (filters.fiscalYear !== undefined) {
+      params.push(filters.fiscalYear);
+      conditions.push(inFiscalYear('mr.received_date', `$${params.length}::int`));
+    }
     const values = [...params, filters.limit, filters.offset];
-    // The count joins the page, so a page past the end still says how many pass.
+    // The count and the Fiscal Years join the page, so a page past the end still says how many pass.
     const res = await this.db.query(
       `WITH filtered AS (
-         SELECT mr.id, mr.receipt_number::text AS receipt_number, mr.received_date::text AS received_date,
+         SELECT mr.id, mr.receipt_number::text AS receipt_number, mr.received_date::text AS received_date, ${fiscalYearOf('mr.received_date')} AS fiscal_year,
                 sp.id AS source_party_id, sp.name AS source_party_name, ${materialReceiptState('mr')} AS state, mr.created_at,
                 (SELECT count(*)::int FROM material_receipt_lines cl WHERE cl.material_receipt_id = mr.id) AS line_count
          FROM material_receipts mr
@@ -165,13 +180,19 @@ export class MaterialReceiptReadService {
          ${conditions.length > 0 ? `WHERE ${conditions.join(' AND ')}` : ''}
        ),
        counted AS (SELECT count(*)::int AS total_count FROM filtered),
+       years AS (
+         SELECT coalesce(array_agg(DISTINCT ${fiscalYearOf('ym.received_date')} ORDER BY ${fiscalYearOf('ym.received_date')} DESC), '{}') AS fiscal_years
+         FROM material_receipts ym
+         WHERE ym.received_date IS NOT NULL
+       ),
        paged AS (
          SELECT * FROM filtered
          ORDER BY created_at DESC, id DESC
          LIMIT $${values.length - 1} OFFSET $${values.length}
        )
-       SELECT p.*, c.total_count
+       SELECT p.*, c.total_count, y.fiscal_years
        FROM counted c
+       CROSS JOIN years y
        LEFT JOIN paged p ON true
        ORDER BY p.created_at DESC, p.id DESC`,
       values
@@ -184,18 +205,26 @@ export class MaterialReceiptReadService {
         id: row.id,
         receipt_number: row.receipt_number,
         received_date: row.received_date,
+        fiscal_year: row.fiscal_year,
         source_party: row.source_party_id === null ? null : { id: row.source_party_id, name: row.source_party_name },
         state: row.state,
         line_count: row.line_count,
         created_at: new Date(row.created_at).toISOString(),
       }));
-    return { items, limit: filters.limit, offset: filters.offset, total_count: totalCount, has_more: filters.offset + items.length < totalCount };
+    return {
+      items,
+      limit: filters.limit,
+      offset: filters.offset,
+      total_count: totalCount,
+      has_more: filters.offset + items.length < totalCount,
+      fiscal_years: res.rows[0].fiscal_years,
+    };
   }
 
   /** A Material Receipt with its lines, their Stock Movements and its history, or null when there is none. */
   async read(id: string): Promise<MaterialReceiptDetail | null> {
     const res = await this.db.query(
-      `SELECT mr.id, mr.receipt_number::text AS receipt_number, mr.received_date::text AS received_date,
+      `SELECT mr.id, mr.receipt_number::text AS receipt_number, mr.received_date::text AS received_date, ${fiscalYearOf('mr.received_date')} AS fiscal_year,
               sp.id AS source_party_id, sp.name AS source_party_name, sp.is_active AS source_party_is_active,
               st.id AS source_type_id, st.name AS source_type_name, st.is_active AS source_type_is_active,
               mr.receipt_reference, mr.note, ${materialReceiptState('mr')} AS state, mr.version,
@@ -239,6 +268,7 @@ export class MaterialReceiptReadService {
       id: row.id,
       receipt_number: row.receipt_number,
       received_date: row.received_date,
+      fiscal_year: row.fiscal_year,
       source_party: receiptEntryOf(row, 'source_party'),
       source_type: receiptEntryOf(row, 'source_type'),
       receipt_reference: row.receipt_reference,

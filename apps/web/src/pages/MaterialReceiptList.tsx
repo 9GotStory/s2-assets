@@ -12,10 +12,11 @@ import {
   RECEIVED_DATE_LABEL,
   type MaterialReceiptList as ReceiptList,
 } from '../components/materialReceiptFacts';
+import { FISCAL_YEAR_LABEL } from '../components/verificationFacts';
 
 const PAGE_SIZE = 25;
 
-// #231 story 56: ทั้งหมด by default, ร่าง or รับแล้ว; the Fiscal Year filter comes with T4 (#235).
+// #231 story 56: ทั้งหมด by default, ร่าง or รับแล้ว. F010-T4 (#235) adds the Fiscal Year filter.
 const STATE_FILTERS = [
   { value: 'all', label: 'ทั้งหมด' },
   { value: 'draft', label: MATERIAL_RECEIPT_STATE_LABELS.DRAFT },
@@ -32,19 +33,23 @@ const pageButtonStyle: React.CSSProperties = { padding: '0.375rem 0.875rem', bac
 
 const MaterialReceiptListContent: React.FC = () => {
   const navigate = useNavigate();
-  // The search, the state and the page live in the URL, so a reload or a link keeps them.
+  // The search, the state, the Fiscal Year and the page live in the URL, so a reload or a link keeps them.
   const [params, setParams] = useSearchParams();
   const search = params.get('search') ?? '';
   const state = STATE_FILTERS.some((filter) => filter.value === params.get('state')) ? params.get('state')! : 'all';
+  const fiscalYear = params.get('fiscal_year') ?? '';
   const offset = Math.max(0, Number(params.get('offset')) || 0);
   const [searchInput, setSearchInput] = useState(search);
 
   const receipts = useQuery<ReceiptList, Error & { status?: number }>({
-    queryKey: ['material-receipts', search, state, offset],
+    queryKey: ['material-receipts', search, state, fiscalYear, offset],
     queryFn: async ({ signal }) => {
       const query = new URLSearchParams({ limit: String(PAGE_SIZE), offset: String(offset), state });
       if (search.trim() !== '') {
         query.set('search', search.trim());
+      }
+      if (fiscalYear !== '') {
+        query.set('fiscal_year', fiscalYear);
       }
       const res = await fetch(`/material-receipts?${query}`, { credentials: 'include', signal });
       if (!res.ok) {
@@ -67,7 +72,7 @@ const MaterialReceiptListContent: React.FC = () => {
   const list = receipts.isError ? undefined : receipts.data;
   const isForbidden = receipts.error?.status === 403;
 
-  const goTo = (next: { search?: string; state?: string; offset?: number }) => {
+  const goTo = (next: { search?: string; state?: string; fiscalYear?: string; offset?: number }) => {
     const query = new URLSearchParams();
     const nextSearch = (next.search ?? search).trim();
     if (nextSearch !== '') {
@@ -76,6 +81,10 @@ const MaterialReceiptListContent: React.FC = () => {
     const nextState = next.state ?? state;
     if (nextState !== 'all') {
       query.set('state', nextState);
+    }
+    const nextYear = next.fiscalYear ?? fiscalYear;
+    if (nextYear !== '') {
+      query.set('fiscal_year', nextYear);
     }
     if (next.offset) {
       query.set('offset', String(next.offset));
@@ -158,6 +167,22 @@ const MaterialReceiptListContent: React.FC = () => {
                   </option>
                 ))}
               </select>
+              <label htmlFor="material-receipt-fiscal-year-filter" style={{ alignSelf: 'center', fontSize: '0.875rem', color: '#374151' }}>
+                {FISCAL_YEAR_LABEL}
+              </label>
+              <select
+                id="material-receipt-fiscal-year-filter"
+                value={fiscalYear}
+                onChange={(e) => goTo({ fiscalYear: e.target.value, offset: 0 })}
+                style={{ ...fieldInputStyle, width: 'auto', flex: '0 1 8rem' }}
+              >
+                <option value="">ทั้งหมด</option>
+                {list.fiscal_years.map((year) => (
+                  <option key={year} value={String(year)}>
+                    {year}
+                  </option>
+                ))}
+              </select>
             </form>
 
             <section aria-label={MATERIAL_RECEIPT_LABEL} id="material-receipt-list-region">
@@ -166,7 +191,7 @@ const MaterialReceiptListContent: React.FC = () => {
                   id="material-receipt-list-empty"
                   style={{ padding: '3rem 1rem', textAlign: 'center', backgroundColor: '#f9fafb', borderRadius: '6px', border: '1px dashed #d1d5db', color: '#6b7280', fontSize: '0.9375rem' }}
                 >
-                  {search.trim() === '' && state === 'all' ? `ยังไม่มี${MATERIAL_RECEIPT_LABEL}` : `ไม่พบ${MATERIAL_RECEIPT_LABEL}ที่ค้นหา`}
+                  {search.trim() === '' && state === 'all' && fiscalYear === '' ? `ยังไม่มี${MATERIAL_RECEIPT_LABEL}` : `ไม่พบ${MATERIAL_RECEIPT_LABEL}ที่ค้นหา`}
                 </div>
               ) : (
                 <div style={{ overflowX: 'auto' }}>
@@ -175,6 +200,7 @@ const MaterialReceiptListContent: React.FC = () => {
                       <tr style={{ backgroundColor: '#f9fafb', borderBottom: '2px solid #e5e7eb' }}>
                         <th style={headStyle}>{RECEIPT_NUMBER_LABEL}</th>
                         <th style={headStyle}>{RECEIVED_DATE_LABEL}</th>
+                        <th style={headStyle}>{FISCAL_YEAR_LABEL}</th>
                         <th style={headStyle}>{SOURCE_PARTY_LABEL}</th>
                         <th style={headStyle}>สถานะ</th>
                         <th style={headStyle}>จำนวนรายการ</th>
@@ -189,6 +215,7 @@ const MaterialReceiptListContent: React.FC = () => {
                             </Link>
                           </td>
                           <td style={cellStyle}>{receipt.received_date === null ? '-' : thaiDate(receipt.received_date)}</td>
+                          <td style={cellStyle}>{receipt.fiscal_year ?? '-'}</td>
                           <td style={cellStyle}>{receipt.source_party?.name ?? '-'}</td>
                           <td style={cellStyle}>{MATERIAL_RECEIPT_STATE_LABELS[receipt.state]}</td>
                           <td style={cellStyle}>{receipt.line_count}</td>

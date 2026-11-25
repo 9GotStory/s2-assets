@@ -31,6 +31,9 @@ const migrationFolder = path.resolve(__dirname, '../../../../packages/db/src/mig
 // F010-T3 (#234): Journey J2 starts: a Supply Officer drafts a Material Receipt with a new แหล่งที่มา and two lines of
 // one Stock Material in different Units, confirms it, and sees เลขที่รับ and คงเหลือ; Journey J3 starts: a Read-only
 // User reads รับวัสดุ and ยอดตั้งต้น with no write action (#231 J2, J3, Q8, Q9, Q24).
+// F010-T4 (#235): Journey J1 ends: the Supply Officer follows the Stock Material in รายการเคลื่อนไหว, its ยอดตั้งต้น
+// row and a รับวัสดุ row with the balance after each, by ปีงบประมาณ and a page at a time, and finds the Material Receipt
+// by its ปีงบประมาณ (#231 J1, stories 26, 50–52, 56, Q16, Q23; #235 start decisions 1–4).
 test.describe.serial('Material Stock journeys: Real SPA -> Composed API -> PostgreSQL (Seam B)', () => {
   let container: StartedPostgreSqlContainer;
   let pool: pg.Pool;
@@ -42,7 +45,7 @@ test.describe.serial('Material Stock journeys: Real SPA -> Composed API -> Postg
   let officerUserId: string;
   let readonlyUserId: string;
   // Journey F010-T2.1's Stock Material and Draft, which Journey F010-T2.2 goes on with.
-  let j1: { tag: string; name: string; ream: string; reamUnitId: string; materialId: string; draftUrl: string };
+  let j1: { tag: string; name: string; ream: string; reamUnitId: string; boxUnitId: string; materialId: string; draftUrl: string };
 
   test.beforeAll(async () => {
     test.setTimeout(120_000);
@@ -129,6 +132,9 @@ test.describe.serial('Material Stock journeys: Real SPA -> Composed API -> Postg
     await page.goto(`${targetBaseUrl}/stock-materials/${materialId}`);
     await expect(page.getByRole('heading', { level: 1, name })).toBeVisible();
     await expect(page.locator('[data-testid="stock-material-current-stock"]')).toHaveText('ยังไม่มีรายการเคลื่อนไหว');
+    // F010-T4 (#235): so does รายการเคลื่อนไหว, which offers no ปีงบประมาณ yet.
+    await expect(page.locator('#stock-movement-empty')).toHaveText('ยังไม่มีรายการเคลื่อนไหว');
+    await expect(page.locator('#stock-movement-fiscal-year option')).toHaveText(['ทั้งหมด']);
 
     // The Supply Officer sets จำนวนขั้นต่ำ to 10 รีม.
     await page.locator('#stock-material-edit-details').click();
@@ -166,7 +172,7 @@ test.describe.serial('Material Stock journeys: Real SPA -> Composed API -> Postg
     await expect(problems).toHaveText(['source is required', 'รายการที่ 1: lines[0].quantity is required']);
     await page.locator('#opening-balance-confirm-cancel').click();
     await expect(page.getByRole('heading', { level: 1, name: 'ยอดตั้งต้น ร่าง' })).toBeVisible();
-    j1 = { tag, name, ream, reamUnitId: reamUnit.id, materialId, draftUrl: page.url() };
+    j1 = { tag, name, ream, reamUnitId: reamUnit.id, boxUnitId: boxUnit.id, materialId, draftUrl: page.url() };
   });
 
   test('Journey F010-T2.2: the Supply Officer completes the Draft, confirms it below the Minimum Stock, and sees คงเหลือ and ต่ำกว่าขั้นต่ำ on the list, the Low Stock filter and the page', async ({ page, context }) => {
@@ -326,7 +332,7 @@ test.describe.serial('Material Stock journeys: Real SPA -> Composed API -> Postg
     // The list finds it by its แหล่งที่มา, Received, with its เลขที่รับ.
     await page.goto(`${targetBaseUrl}/material-receipts?search=${encodeURIComponent(party)}`);
     await expect(page.locator('#material-receipt-list-table tbody tr')).toHaveCount(1);
-    await expect(page.locator('#material-receipt-list-table tbody td')).toHaveText([receiptNumber, '15 ตุลาคม 2569', party, 'รับแล้ว', '2']);
+    await expect(page.locator('#material-receipt-list-table tbody td')).toHaveText([receiptNumber, '15 ตุลาคม 2569', '2570', party, 'รับแล้ว', '2']);
 
     // คงเหลือ: 24 + 5 = 29 ด้าม.
     await page.goto(`${targetBaseUrl}/stock-materials/${materialId}`);
@@ -361,7 +367,7 @@ test.describe.serial('Material Stock journeys: Real SPA -> Composed API -> Postg
     await page.goto(`${targetBaseUrl}/dashboard`);
     await page.locator('#nav-material-receipt-list').click();
     await expect(page.getByRole('heading', { level: 1, name: 'รายการรับวัสดุ', exact: true })).toBeVisible();
-    await expect(page.locator(`[data-testid="material-receipt-row-${receiptId}"] td`)).toHaveText(['ร่าง', '-', '-', 'ร่าง', '1']);
+    await expect(page.locator(`[data-testid="material-receipt-row-${receiptId}"] td`)).toHaveText(['ร่าง', '-', '-', '-', 'ร่าง', '1']);
     await expect(page.locator('#material-receipt-add-action')).toHaveCount(0);
     // Found by its line's Stock Material from the search box; Drafts only keeps it, Received only does not.
     await page.locator('#material-receipt-search').fill(`ยางลบ J3 ${tag}`);
@@ -392,5 +398,123 @@ test.describe.serial('Material Stock journeys: Real SPA -> Composed API -> Postg
     await page.goto(`${targetBaseUrl}/opening-balances/${balanceId}`);
     await expect(page.getByRole('heading', { level: 1, name: 'ยอดตั้งต้น ร่าง' })).toBeVisible();
     await expect(page.locator('#opening-balance-edit-action, #opening-balance-confirm-action, #opening-balance-remove-action')).toHaveCount(0);
+  });
+
+  test('Journey F010-T4.1: the Supply Officer follows the Stock Material in รายการเคลื่อนไหว, its ยอดตั้งต้น and a รับวัสดุ row with the balance after each, by ปีงบประมาณ and a page at a time, and finds the Material Receipt by its ปีงบประมาณ', async ({ page, context }) => {
+    test.setTimeout(60_000);
+    const { tag, ream, reamUnitId, boxUnitId, materialId } = j1;
+    const receipts = new MaterialReceiptService({ db: pool });
+    const receive = async (stockMaterialId: string, receivedDate: string, unitId: string, quantity: string, reference = `ใบส่งของ J1 ${tag}`) => {
+      const { material_receipt_id: id } = await receipts.create(
+        officerUserId,
+        { received_date: receivedDate, receipt_reference: reference, lines: [{ stock_material_id: stockMaterialId, unit_id: unitId, quantity }] },
+        { retryToken: crypto.randomUUID() }
+      );
+      const { receipt_number: number } = await receipts.confirm(officerUserId, id, { expected_version: 1 }, { retryToken: crypto.randomUUID() });
+      return { id, number };
+    };
+    // The facts the journey needs, made here: J1's Stock Material, whose Opening Balance of 7 รีม is as of 2026-09-30
+    // (ปีงบประมาณ 2569), receives 2 กล่อง of 5 รีม on 2026-10-01 (ปีงบประมาณ 2570); another Stock Material, found by
+    // the same Receipt Reference, receives 1 รีม on 2026-09-30 (ปีงบประมาณ 2569); a third receives 1 รีม 26 times, one
+    // page and a row.
+    const stockMaterials = new StockMaterialService({ db: pool });
+    const { stock_material_id: otherId } = await stockMaterials.create(officerUserId, { name: `ยางลบ J1 ${tag}`, base_unit: { unit_id: reamUnitId }, explicit_continuation: true }, { retryToken: crypto.randomUUID() });
+    const { stock_material_id: pagedId } = await stockMaterials.create(officerUserId, { name: `ดินสอ J1 ${tag}`, base_unit: { unit_id: reamUnitId }, explicit_continuation: true }, { retryToken: crypto.randomUUID() });
+    const october = await receive(materialId, '2026-10-01', boxUnitId, '2');
+    const september = await receive(otherId, '2026-09-30', reamUnitId, '1');
+    for (let i = 0; i < 26; i++) {
+      await receive(pagedId, '2026-10-02', reamUnitId, '1', `ใบส่งของดินสอ ${tag}`);
+    }
+
+    await loginAs(context, officerUserId);
+    await page.goto(`${targetBaseUrl}/stock-materials/${materialId}`);
+    // คงเหลือ 7 + 10 = 17 รีม, no longer below the Minimum Stock of 10 (MC-20).
+    await expect(page.locator('[data-testid="stock-material-current-stock"]')).toContainText(`17 ${ream}`);
+    await expect(page.locator('[data-testid="stock-material-low-stock-badge"]')).toHaveCount(0);
+
+    // รายการเคลื่อนไหว, oldest first: the ยอดตั้งต้น row and the รับวัสดุ row, each with the balance after it.
+    const rows = page.locator('#stock-movement-table tbody tr');
+    await expect(rows).toHaveCount(2);
+    await expect(rows.nth(0).locator('td')).toHaveText([
+      '30 กันยายน 2569',
+      'ยอดตั้งต้น',
+      /^เลขที่ยอดตั้งต้น \d+$/,
+      `7 ${ream} × 1`,
+      `7 ${ream}`,
+      `7 ${ream}`,
+      /โดย officer_material_stock$/,
+    ]);
+    await expect(rows.nth(1).locator('td')).toHaveText([
+      '1 ตุลาคม 2569',
+      'รับวัสดุ',
+      `เลขที่รับ ${october.number}`,
+      `2 กล่อง ${tag} × 5`,
+      `10 ${ream}`,
+      `17 ${ream}`,
+      /โดย officer_material_stock$/,
+    ]);
+    await expect(page.locator('#stock-movement-count')).toHaveText('รายการที่ 1–2 จาก 2');
+    await expect(page.locator('#stock-movement-previous')).toBeDisabled();
+    await expect(page.locator('#stock-movement-next')).toBeDisabled();
+
+    // ปีงบประมาณ offers the years it has, newest first; each keeps the whole ledger's balance (#235 start decision 4).
+    await expect(page.locator('#stock-movement-fiscal-year option')).toHaveText(['ทั้งหมด', '2570', '2569']);
+    await page.locator('#stock-movement-fiscal-year').selectOption('2570');
+    await expect(page).toHaveURL(/[?&]fiscal_year=2570/);
+    await expect(rows).toHaveCount(1);
+    await expect(rows.nth(0).locator('td').nth(1)).toHaveText('รับวัสดุ');
+    await expect(rows.nth(0).locator('td').nth(5)).toHaveText(`17 ${ream}`);
+    await page.locator('#stock-movement-fiscal-year').selectOption('2569');
+    await expect(page).toHaveURL(/[?&]fiscal_year=2569/);
+    await expect(rows).toHaveCount(1);
+    await expect(rows.nth(0).locator('td').nth(1)).toHaveText('ยอดตั้งต้น');
+    await expect(rows.nth(0).locator('td').nth(5)).toHaveText(`7 ${ream}`);
+    await page.locator('#stock-movement-fiscal-year').selectOption('');
+    await expect(page).not.toHaveURL(/fiscal_year=/);
+    await expect(rows).toHaveCount(2);
+    // A year it does not have, from a link.
+    await page.goto(`${targetBaseUrl}/stock-materials/${materialId}?fiscal_year=2560`);
+    await expect(page.locator('#stock-movement-empty')).toHaveText('ไม่พบรายการเคลื่อนไหวในปีงบประมาณ 2560');
+
+    // The ยอดตั้งต้น row's number opens its Opening Balance; the รับวัสดุ row's its Material Receipt, with ปีงบประมาณ.
+    await page.goto(`${targetBaseUrl}/stock-materials/${materialId}`);
+    await rows.nth(0).getByRole('link').click();
+    await expect(page.getByRole('heading', { level: 1, name: /^ยอดตั้งต้น เลขที่ยอดตั้งต้น \d+$/ })).toBeVisible();
+    await page.goBack();
+    await rows.nth(1).getByRole('link').click();
+    await expect(page.getByRole('heading', { level: 1, name: `รายการรับวัสดุ เลขที่รับ ${october.number}` })).toBeVisible();
+    await expect(page.locator('[data-testid="material-receipt-fiscal-year"]')).toHaveText('2570');
+
+    // The รับวัสดุ list shows ปีงบประมาณ and filters by it, leaving out the other year.
+    await page.goto(`${targetBaseUrl}/material-receipts?search=${encodeURIComponent(`ใบส่งของ J1 ${tag}`)}`);
+    const listRows = page.locator('#material-receipt-list-table tbody tr');
+    await expect(listRows).toHaveCount(2);
+    await expect(page.locator(`[data-testid="material-receipt-row-${october.id}"] td`).nth(2)).toHaveText('2570');
+    await expect(page.locator(`[data-testid="material-receipt-row-${september.id}"] td`).nth(2)).toHaveText('2569');
+    await page.locator('#material-receipt-fiscal-year-filter').selectOption('2569');
+    await expect(page).toHaveURL(/[?&]fiscal_year=2569/);
+    await expect(page).toHaveURL(/[?&]search=/);
+    await expect(listRows).toHaveCount(1);
+    await expect(page.locator(`[data-testid="material-receipt-row-${september.id}"]`)).toBeVisible();
+    await expect(page.locator(`[data-testid="material-receipt-row-${october.id}"]`)).toHaveCount(0);
+    // A year no Material Receipt has, from a link, finds none.
+    await page.goto(`${targetBaseUrl}/material-receipts?fiscal_year=2560`);
+    await expect(page.locator('#material-receipt-list-empty')).toHaveText('ไม่พบรายการรับวัสดุที่ค้นหา');
+
+    // A page at a time: 26 รับวัสดุ rows, the balance going on across the page break.
+    await page.goto(`${targetBaseUrl}/stock-materials/${pagedId}`);
+    await expect(rows).toHaveCount(25);
+    await expect(rows.nth(24).locator('td').nth(5)).toHaveText(`25 ${ream}`);
+    await expect(page.locator('#stock-movement-count')).toHaveText('รายการที่ 1–25 จาก 26');
+    await expect(page.locator('#stock-movement-previous')).toBeDisabled();
+    await page.locator('#stock-movement-next').click();
+    await expect(page).toHaveURL(/[?&]offset=25/);
+    await expect(rows).toHaveCount(1);
+    await expect(rows.nth(0).locator('td').nth(5)).toHaveText(`26 ${ream}`);
+    await expect(page.locator('#stock-movement-count')).toHaveText('รายการที่ 26–26 จาก 26');
+    await expect(page.locator('#stock-movement-next')).toBeDisabled();
+    await page.locator('#stock-movement-previous').click();
+    await expect(page).not.toHaveURL(/offset=/);
+    await expect(rows).toHaveCount(25);
   });
 });

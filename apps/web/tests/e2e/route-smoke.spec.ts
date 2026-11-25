@@ -75,6 +75,7 @@ const SMOKE: Record<string, { url: (f: Fixtures) => string; heading: (f: Fixture
   '/stock-materials/new': { skip: 'a write: material:manage' },
   // F008-T8 (#183): every catalog viewer reads the Brand, Material Category and Unit lists; keeping them is material:manage.
   '/stock-materials/lists': { url: () => '/stock-materials/lists', heading: () => 'ยี่ห้อ หมวดวัสดุ หน่วยนับ แหล่งที่มา และวิธีได้มา' },
+  // F010-T4 (#235): its page reads its รายการเคลื่อนไหว too, which every read below checks.
   '/stock-materials/:id': { url: (f) => `/stock-materials/${f.stockMaterialId}`, heading: (f) => f.stockMaterialName },
   // F009-T1 (#203): every catalog viewer reads the Requestable Materials; creating one is material:manage.
   '/requestable-materials': { url: () => '/requestable-materials', heading: () => 'วัสดุสำหรับขอเบิก' },

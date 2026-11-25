@@ -17,6 +17,8 @@ export interface MaterialReceiptRow {
   // A bigint as digits, or none while Draft.
   receipt_number: string | null;
   received_date: string | null;
+  // F010-T4 (#235): the ปีงบประมาณ of the Received Date, or none without one.
+  fiscal_year: number | null;
   source_party: { id: string; name: string } | null;
   state: MaterialReceiptState;
   line_count: number;
@@ -29,6 +31,8 @@ export interface MaterialReceiptList {
   offset: number;
   total_count: number;
   has_more: boolean;
+  // F010-T4 (#235): each ปีงบประมาณ a Material Receipt has, newest first.
+  fiscal_years: number[];
   can_manage: boolean;
 }
 
@@ -58,6 +62,7 @@ export interface MaterialReceiptDetail {
   id: string;
   receipt_number: string | null;
   received_date: string | null;
+  fiscal_year: number | null;
   source_party: ReceiptListEntry | null;
   source_type: ReceiptListEntry | null;
   receipt_reference: string | null;
