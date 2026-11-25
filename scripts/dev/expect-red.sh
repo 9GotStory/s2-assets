@@ -20,7 +20,9 @@
 #
 # <old text> must occur exactly once in <file> and is replaced as literal text, not a pattern. The file
 # is restored however the run ends, Ctrl-C included. Exits 0 when the test command fails (red) and 1
-# when it passes (the test did not notice the break); 2 for a usage error.
+# when it passes (the test did not notice the break); 2 for a usage error, or when the test command ran
+# no test. The scripts in scripts/ci exit 4 for that: a -t or -g that names no test would otherwise pass
+# in vitest, skipping every test, and fail in Playwright, which reads as red (#234 retro, break M1).
 #
 # A break that takes several edits, such as moving a read ahead of a lock and using its result later,
 # gives one <file> <old text> <new text> triple per edit before the --. They apply in order, each to the
@@ -32,7 +34,7 @@
 # failing test. <breaks.json> is an array of {"name", "file", "old", "new", "test": [command, args...]},
 # or of {"name", "edits": [{"file", "old", "new"}, ...], "test"} for a break of several edits; write a
 # line break inside old or new as \n. Exits 0 when every break is red, 1 when one stayed green,
-# and 2 when one could not be applied.
+# and 2 when one could not be applied or ran no test.
 #
 # A break that must turn several tests red, such as a read moved ahead of a lock that three order tests
 # cover, lists them in "red": [<part of each test's name>, ...]. The break is red only when every one of
@@ -51,7 +53,8 @@
 # tree included) that holds a branch (if, throw, &&, ||, ??, or a ? : choice), when no break in
 # <breaks.json> edits it: a break covers a line when a line of its old text, at least 8 characters, is
 # part of it, or it is part of that line; a throw right under a covered if goes with it. Run it before --batch, and give each line it lists a break or
-# a reason it has none. It also lists each break whose old text, its edits applied in order, does not occur
+# a reason it has none. A page's line has a reason only when no journey can reach it: a Seam A test covers the
+# API, not what the page does itself, such as sending a filter or removing a Draft from its page (#234 retro). It also lists each break whose old text, its edits applied in order, does not occur
 # exactly once, which --batch would answer with ERROR. Exits 0 when every such line is covered and every old text
 # occurs once, and 1 otherwise. In F009-T2 (#204) a plan
 # of 83 breaks missed the Brand, the Model, a blank search and the loading line of a picker, and only
@@ -202,8 +205,14 @@ EOF
 
 broken=${files[*]}
 note "broke $broken; running: $*"
-if "$@"; then
+status=0
+"$@" || status=$?
+if ((status == 0)); then
   note "GREEN: the test command passed with $broken broken, so it does not cover this change"
   exit 1
+fi
+if ((status == 4)); then
+  note "ERROR: the test command ran no test, so it cannot see the break: check its -t or -g; $broken restored"
+  exit 2
 fi
 note "RED: the test command failed with $broken broken; $broken restored"

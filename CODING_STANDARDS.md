@@ -27,6 +27,11 @@ offered it, and a 404 came from a URL no route serves. Neither test could fail.
 A test that a value is absent searches for the whole value, such as the full phone number. In
 F004-T6 (#80), `not.toContain('090')` over JSON that holds UUIDs failed whenever a UUID held "090".
 
+A journey asserts absence after a step that shows the page holds the data deciding it, such as a row
+or a value from the read: just after the heading, `toHaveCount(0)` passes before the data arrives. A
+search or filter step needs a row it leaves out. In F010-T3 (#234), a search over a list of one row
+and two absence asserts made right after the heading all stayed green with their code broken.
+
 ## A refusal test sends a request only its rule refuses
 
 Each refused request breaks the rule under test and nothing else, so the test goes red when that
@@ -207,8 +212,11 @@ existing feature stays beside that feature's journeys, as Journey T7.17 does in 
 In application code, SQL on an existing table stays in the module that owns the table, as
 `assignment.service.ts` owns `assignment_changes`; the feature's own file holds its rules and calls
 that module. A read of another module's table goes through that module's read functions too, as
-`loan-read.service.ts` reads Repair Outcomes through `latestRepairOutcomesOf` (#100). For the Loan,
-Repair and Retirement tables, the guards in `eslint.config.mjs` hold this for SQL text that names the table.
+`loan-read.service.ts` reads Repair Outcomes through `latestRepairOutcomesOf` (#100). The guards in
+`eslint.config.mjs` hold this for SQL text that names an owned table, and for a catalog list table named
+through `CATALOG_LISTS[kind].table`. A migration that adds a table adds its guards there, with
+`apiRuleOwning` for the owner's files: the Source Party and Source Type tables went unguarded from
+F010-T1 (#232) until the #234 retro.
 
 When a rule must join another module's table in SQL, as a list filter does, the owning module exports
 the SQL fragment from a leaf file named after its concept, and that fragment counts as one of its read

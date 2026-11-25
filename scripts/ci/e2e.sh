@@ -12,7 +12,8 @@
 # repository's node_modules hold the tooling image's Alpine builds and the browser runner is glibc.
 # The copy keeps its root node_modules between runs, so the install is quick. Each run empties the
 # rest of it, so the results of a failed run are copied to
-# ~/.cache/s2-assets-e2e-failures/<commit>-<UTC>, which keeps the last three.
+# ~/.cache/s2-assets-e2e-failures/<commit>-<UTC>, which keeps the last three. A run in which no journey ran,
+# such as one whose -g names none, exits 4 (common.sh, ran_no_test).
 set -euo pipefail
 cd "$(dirname "$0")/../.."
 # shellcheck source=scripts/ci/common.sh
@@ -75,6 +76,7 @@ if $auth; then
 fi
 
 note "running $*"
+run_log=$(mktemp)
 podman run --rm --network=host --ipc=host --security-opt label=disable \
   -v "$WORKSPACE:/work" -v "$socket:$socket" -w /work \
   -e DOCKER_HOST="unix://$socket" \
@@ -82,8 +84,11 @@ podman run --rm --network=host --ipc=host --security-opt label=disable \
   -e TESTCONTAINERS_HOST_OVERRIDE=127.0.0.1 \
   -e CI=true \
   -e NO_COLOR=1 \
-  "$IMAGE" pnpm --filter web exec playwright test "$@" --output test-results/journeys \
+  "$IMAGE" pnpm --filter web exec playwright test "$@" --output test-results/journeys 2>&1 | tee "$run_log" \
   || status=1
+no_test=false
+ran_no_test "$run_log" && no_test=true
+rm -f -- "$run_log"
 
 failures=0
 remove_new_test_containers "$before"
@@ -124,6 +129,10 @@ keep_failed_results() {
   print_timeouts "$kept" || true
 }
 
+if $no_test; then
+  note "no journey ran at $tested_commit: none matches $*" >&2
+  exit "$NO_TEST_RAN"
+fi
 if ((status != 0)); then
   keep_failed_results || note "journeys failed at $tested_commit; no results were kept" >&2
   exit "$status"
