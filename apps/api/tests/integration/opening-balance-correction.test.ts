@@ -197,6 +197,28 @@ describe('Opening Balance correction and void (Seam A - F010-T7)', () => {
         ['3 × 1 = 3', '-3', '3 × 1 = 3'],
       ]);
       expect(balance.lines[0].stock_movements.map(({ effective_date: date }: any) => date)).toEqual(['2026-09-30', '2026-09-30', '2026-10-15']);
+      // Each line moved by the date alone records its Conversion Factor and Base Quantity, unchanged (#237 review decision 1).
+      expect(balance.history[1].facts.changes).toEqual([{ field: 'as_of_date', before: '2026-09-30', after: '2026-10-15' }]);
+      expect(balance.history[1].facts.lines).toEqual([
+        {
+          change: 'CHANGED',
+          line_id: balance.lines[0].id,
+          position: 0,
+          changes: [
+            { field: 'conversion_factor', before: '5', after: '5' },
+            { field: 'base_quantity', before: '10', after: '10' },
+          ],
+        },
+        {
+          change: 'CHANGED',
+          line_id: balance.lines[1].id,
+          position: 1,
+          changes: [
+            { field: 'conversion_factor', before: '1', after: '1' },
+            { field: 'base_quantity', before: '3', after: '3' },
+          ],
+        },
+      ]);
     });
 
     it("adds a Stock Movement for a new line, at today's factor, after the lines there are", async () => {

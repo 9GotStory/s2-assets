@@ -196,6 +196,21 @@ describe('Opening Balance correction and void write order (Seam A - F010-T7)', (
       expect(res.statusCode).toBe(409);
       expect(res.json()).toMatchObject({ ...VOIDED, current_values: { version: 3, state: 'VOIDED' }, expected_values: { version: 3 } });
     });
+
+    // A Draft write reads the state under the lock too (#238 review): it expects the version the void leaves, so only
+    // the state read after the void decides, and the refusal names it.
+    it('replaces a Draft only after a void, then refuses it as not a Draft, voided at the version the void leaves', async () => {
+      const { paper, id } = await ready();
+      const [voided, res] = await behind('opening_balances', id, () => voidOpeningBalance(id, 2), () => replaceDraft(id, { ...complete([line(paper.id, paper.box, '3')]), expected_version: 3 }));
+      expectOk(voided);
+      expect(res.statusCode).toBe(409);
+      expect(res.json()).toMatchObject({
+        code: 'NOT_DRAFT',
+        message: 'The Opening Balance is confirmed: only a Draft can be replaced, removed or confirmed',
+        current_values: { version: 3, state: 'VOIDED' },
+        expected_values: { version: 3 },
+      });
+    });
   });
 
   describe('a correction behind a write of a Stock Material it names (rows 15–18)', () => {

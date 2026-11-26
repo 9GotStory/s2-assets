@@ -239,7 +239,7 @@ const MaterialReceiptDetailContent: React.FC<{ id: string }> = ({ id }) => {
               </div>
             )}
 
-            {/* F010-T7 (#238): the void of the whole Material Receipt, with a reason (story 43). */}
+            {/* F010-T7 (#238): the void of the whole Material Receipt, with a reason (story 33). */}
             {voidOpen && csrfToken !== null && (
               <LoanSaveForm
                 idPrefix="material-receipt-void"

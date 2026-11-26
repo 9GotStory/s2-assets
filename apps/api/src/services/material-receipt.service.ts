@@ -359,14 +359,16 @@ const insertLines = async (client: pg.PoolClient, id: string, facts: DraftFacts)
 
 /**
  * Locks the Material Receipt `id` FOR UPDATE, so its replace, remove and confirm take turns (#231 P4), and refuses it
- * when there is none, when its version is not `expectedVersion`, or when it is no longer a Draft, in that order.
+ * when there is none, when its version is not `expectedVersion`, or when it is no longer a Draft, in that order. The
+ * state reads the lines too (F010-T7, #238): a statement that waited on the lock rereads only the locked row, so the
+ * state is read in a statement of its own after it, as the lock of a correction does.
  */
 const lockedDraft = async (client: pg.PoolClient, id: string, expectedVersion: number): Promise<CurrentState> => {
-  const res = await client.query(`SELECT version, ${materialReceiptState('material_receipts')} AS state FROM material_receipts WHERE id = $1 FOR UPDATE`, [id]);
-  const current: CurrentState | undefined = res.rows[0];
-  if (!current) {
+  const locked = await client.query('SELECT 1 FROM material_receipts WHERE id = $1 FOR UPDATE', [id]);
+  if (locked.rowCount === 0) {
     throw new NotFoundError('Material Receipt not found');
   }
+  const current: CurrentState = (await client.query(`SELECT version, ${materialReceiptState('material_receipts')} AS state FROM material_receipts WHERE id = $1`, [id])).rows[0];
   if (current.version !== expectedVersion) {
     throw new StaleBeforeConflictError('The Material Receipt changed since it was read', current, { version: expectedVersion });
   }

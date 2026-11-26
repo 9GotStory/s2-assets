@@ -197,6 +197,26 @@ describe('Material Receipt void write order (Seam A - F010-T7)', () => {
       expect(res.json()).toMatchObject({ ...VOIDED, current_values: { version: 3, state: 'VOIDED' }, expected_values: { version: 3 } });
     });
 
+    // A Draft write reads the state under the lock too (#238 review): it expects the version the void leaves, so only
+    // the state read after the void decides, and the refusal names it.
+    it('replaces a Draft only after a void, then refuses it as not a Draft, voided at the version the void leaves', async () => {
+      const { paper, id } = await ready();
+      const [voided, res] = await whileHolding(
+        'material_receipts',
+        id,
+        () => [voidReceipt(id, 2), untilWaiting('material_receipts').then(() => replaceDraft(id, { ...complete([line(paper.id, paper.box, '3')]), expected_version: 3 }))],
+        () => untilWaiting('material_receipts', 2)
+      );
+      expect(voided.statusCode).toBe(200);
+      expect(res.statusCode).toBe(409);
+      expect(res.json()).toMatchObject({
+        code: 'NOT_DRAFT',
+        message: 'The Material Receipt is Received: only a Draft can be replaced, removed or confirmed',
+        current_values: { version: 3, state: 'VOIDED' },
+        expected_values: { version: 3 },
+      });
+    });
+
     it("confirms an Opening Balance only after a void reverses its Stock Material's only Stock Movement in effect, then confirms it (Q28)", async () => {
       const { paper, id } = await ready();
       const opening = await openingBalances.draft(openingBalances.complete([openingBalances.line(paper.id, paper.ream, '7')]));

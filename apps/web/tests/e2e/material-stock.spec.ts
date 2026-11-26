@@ -1171,6 +1171,7 @@ test.describe.serial('Material Stock journeys: Real SPA -> Composed API -> Postg
     await page.locator('#opening-balance-line-1-quantity').fill('2');
     await page.locator('#opening-balance-correction-reason').fill('ลืมนับแฟ้ม และนับเมื่อ 29 ก.ย.');
     await submit.click();
+    await expect(page).toHaveURL(`${targetBaseUrl}/opening-balances/${openingId}`);
     await expect(page.locator('[data-testid="opening-balance-as-of-date"]')).toHaveText('29 กันยายน 2569');
     await expect(page.locator('[data-testid="opening-balance-line-0"]')).toContainText(`+7 ${ream} (7 ${ream} × 1) ณ 29 กันยายน 2569`);
     await expect(page.locator('[data-testid="opening-balance-line-1"]')).toContainText(`+10 ${ream} (2 ${box} × 5) ณ 29 กันยายน 2569`);
@@ -1194,6 +1195,7 @@ test.describe.serial('Material Stock journeys: Real SPA -> Composed API -> Postg
       { retryToken: crypto.randomUUID() }
     );
     await page.locator('#opening-balance-correct-action').click();
+    await expect(page).toHaveURL(`${targetBaseUrl}/opening-balances/${openingId}/correct`);
     const folderFactor = page.locator('[data-testid="opening-balance-line-1-factor"]');
     await expect(folderFactor).toHaveText(`อัตราแปลง 1 ${box} = 5 ${ream}`);
     await page.locator('#opening-balance-line-1-recalculate').check();
@@ -1241,6 +1243,7 @@ test.describe.serial('Material Stock journeys: Real SPA -> Composed API -> Postg
     await expect(page.locator('[data-testid="opening-balance-line-1"]')).toHaveCSS('text-decoration-line', 'none');
     await expect(page.locator('[data-testid="opening-balance-line-0-factor"]')).toHaveCount(0);
     await submit.click();
+    await expect(page).toHaveURL(`${targetBaseUrl}/opening-balances/${openingId}`);
     await expect(page.locator('[data-testid="opening-balance-line-0-voided"]')).toHaveText('ยกเลิกแล้ว');
     await expect(page.locator('[data-testid="opening-balance-line-0"]')).toHaveCSS('text-decoration-line', 'line-through');
     await expect(page.locator('[data-testid="opening-balance-line-1"]')).toHaveCSS('text-decoration-line', 'none');
@@ -1267,6 +1270,7 @@ test.describe.serial('Material Stock journeys: Real SPA -> Composed API -> Postg
     await other.locator('#opening-balance-note').fill('ตรวจนับแล้ว');
     await other.locator('#opening-balance-correction-reason').fill('เพิ่มหมายเหตุ');
     await other.locator('#opening-balance-correction-submit').click();
+    await expect(other).toHaveURL(`${targetBaseUrl}/opening-balances/${openingId}`);
     await expect(other.locator('[data-testid="opening-balance-state"]')).toBeVisible();
     await other.close();
     await page.locator('#opening-balance-line-0-change-material').click();
