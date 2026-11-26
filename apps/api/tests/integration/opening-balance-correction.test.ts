@@ -125,6 +125,8 @@ describe('Opening Balance correction and void (Seam A - F010-T7)', () => {
 
       const answer = await corrected(id, (payload) => {
         payload.lines[0].quantity = '3';
+        // A correction that voids no line may leave voided_line_ids out.
+        delete payload.voided_line_ids;
       }, otherOfficer);
 
       expect(answer).toEqual({ opening_balance_id: id, version: 3 });
@@ -157,7 +159,8 @@ describe('Opening Balance correction and void (Seam A - F010-T7)', () => {
       const paper = await stocked();
       const pens = await stocked();
       const glue = await stocked();
-      const fresh = await stocked();
+      // The Stock Material line 2 moves to counts in glue's own Units, so only its Stock Material changes.
+      const fresh = { id: await created({ name: `กระดาษ ${crypto.randomUUID().slice(0, 8)}`, base_unit: { unit_id: glue.ream, whole_number_only: true }, alternate_units: [{ unit_id: glue.box, conversion_factor: '5' }] }) };
       const { id } = await confirmed([line(paper.id, paper.box, '2'), line(pens.id, pens.box, '2'), line(glue.id, glue.box, '1')]);
       await boxChanged(pens.id, { conversion_factor: '12' });
       await boxChanged(glue.id, { conversion_factor: '6' });
@@ -165,7 +168,7 @@ describe('Opening Balance correction and void (Seam A - F010-T7)', () => {
       await corrected(id, (payload) => {
         Object.assign(payload.lines[0], { unit_id: paper.ream, quantity: '7' });
         payload.lines[1].recalculate = true;
-        Object.assign(payload.lines[2], { stock_material_id: fresh.id, unit_id: fresh.box, quantity: '1' });
+        payload.lines[2].stock_material_id = fresh.id;
       });
 
       const [unitChanged, recalculated, moved] = (await openingBalanceOf(id)).lines;
@@ -492,20 +495,34 @@ describe('Opening Balance correction and void (Seam A - F010-T7)', () => {
       const paper = await stocked();
       const pens = await stocked();
       const glue = await stocked();
-      const { id } = await confirmed([line(paper.id, paper.ream, '10'), line(pens.id, pens.box, '1')]);
+      // Tape counts its กล่อง in fractions until the กล่อง becomes whole-number.
+      const tapeBox = await unitNamed(`กล่อง ${crypto.randomUUID().slice(0, 6)}`);
+      const tape = {
+        id: await created({
+          name: `เทป ${crypto.randomUUID().slice(0, 8)}`,
+          base_unit: { unit_id: await unitNamed(`รีม ${crypto.randomUUID().slice(0, 6)}`), whole_number_only: true },
+          alternate_units: [{ unit_id: tapeBox, conversion_factor: '5', whole_number_only: false }],
+        }),
+        box: tapeBox,
+      };
+      const { id } = await confirmed([line(paper.id, paper.ream, '10'), line(pens.id, pens.box, '1'), line(tape.id, tape.box, '1.4')]);
       await boxChanged(paper.id, { is_active: false });
       await boxChanged(pens.id, { is_active: false });
+      await boxChanged(tape.id, { whole_number_only: true });
       await expectRefused(
         id,
         (payload) => {
           Object.assign(payload.lines[0], { unit_id: paper.box, quantity: '2' });
           payload.lines[1].recalculate = true;
+          // Recalculated alone, a fraction recorded before its Unit became whole-number is refused too.
+          payload.lines[2].recalculate = true;
           payload.lines.push(line(glue.id, glue.ream, '1.5'));
         },
         notCorrectable([
           { field: 'lines[0].unit_id', message: 'lines[0].unit_id names a Unit that is not active on its Stock Material' },
           { field: 'lines[1].unit_id', message: 'lines[1].unit_id names a Unit that is not active on its Stock Material' },
           { field: 'lines[2].quantity', message: 'lines[2].quantity must be a whole number in its Unit' },
+          { field: 'lines[3].quantity', message: 'lines[3].quantity must be a whole number in its Unit' },
         ])
       );
     });
@@ -644,10 +661,18 @@ describe('Opening Balance correction and void (Seam A - F010-T7)', () => {
       }, invalid('lines[1].line_id repeats lines[0]'));
       await expectRefused(id, (payload) => {
         payload.lines = [line(pens.id, pens.ream, '1')];
+        payload.voided_line_ids = [before.lines[0].id, before.lines[0].id];
+      }, invalid('voided_line_ids[1] repeats voided_line_ids[0]'));
+      await expectRefused(id, (payload) => {
+        payload.lines = [line(pens.id, pens.ream, '1')];
       }, invalid('lines must keep or void the line at position 0'));
       await expectRefused(id, (payload) => {
         payload.voided_line_ids = [payload.lines[0].line_id];
       }, invalid('voided_line_ids[0] names lines[0], which the correction keeps'));
+      // A line voided before is neither kept nor voided again.
+      await corrected(id, (payload) => {
+        payload.note = 'ตรวจนับแล้ว';
+      });
     });
 
     it('names a Stock Material or Unit that does not exist, a repeated Stock Material, and a malformed field', async () => {
