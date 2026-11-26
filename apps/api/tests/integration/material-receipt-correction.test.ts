@@ -605,22 +605,27 @@ describe('Receipt Correction (Seam A - F010-T6)', () => {
       );
     });
 
-    it('refuses a quantity a Unit counts only in whole numbers, on a quantity-only fix, a Unit change and a new line', async () => {
+    it('refuses a quantity a Unit counts only in whole numbers, on a quantity-only fix, a Unit change, a recalculate and a new line', async () => {
       const paper = await stocked();
       const pens = await stocked();
       const glue = await stocked();
-      const { id } = await received([line(paper.id, paper.ream, '10'), line(pens.id, pens.box, '1')]);
+      await boxChanged(glue.id, { whole_number_only: false });
+      const { id } = await received([line(paper.id, paper.ream, '10'), line(pens.id, pens.box, '1'), line(glue.id, glue.box, '1.2')]);
+      // The glue's กล่อง has since been counted only in whole numbers: a recalculate finds its 1.2 กล่อง refused.
+      await boxChanged(glue.id, { whole_number_only: true });
       await expectRefused(
         id,
         (payload) => {
           payload.lines[0].quantity = '1.5';
           Object.assign(payload.lines[1], { unit_id: pens.ream, quantity: '2.5' });
+          payload.lines[2].recalculate = true;
           payload.lines.push(line(glue.id, glue.ream, '0.5'));
         },
         notCorrectable([
           { field: 'lines[0].quantity', message: 'lines[0].quantity must be a whole number in its Unit' },
           { field: 'lines[1].quantity', message: 'lines[1].quantity must be a whole number in its Unit' },
           { field: 'lines[2].quantity', message: 'lines[2].quantity must be a whole number in its Unit' },
+          { field: 'lines[3].quantity', message: 'lines[3].quantity must be a whole number in its Unit' },
         ])
       );
     });
@@ -918,6 +923,8 @@ describe('Receipt Correction (Seam A - F010-T6)', () => {
         { receipt_reference: 'ใบ 2' },
         { note: 'อื่น' },
         { lines: [base.lines[0]], voided_line_ids: [lines[1].id] },
+        // voided_line_ids alone: an id no line holds, which only the work after the token's check refuses.
+        { voided_line_ids: [crypto.randomUUID()] },
         kept({ line_id: null }),
         kept({ stock_material_id: (await stocked()).id }),
         kept({ unit_id: paper.box }),
@@ -933,7 +940,8 @@ describe('Receipt Correction (Seam A - F010-T6)', () => {
         expect(res.statusCode).toBe(409);
         expect(res.json()).toMatchObject({ code: 'RETRY_TOKEN_PAYLOAD_MISMATCH', message: 'Retry token reused with different payload is rejected without writes' });
       };
-      expectMismatch(await correct(other, { ...base, lines: [{ ...base.lines[0], line_id: (await receiptOf(other)).lines[0].id }] }, token));
+      // The same request, to another Material Receipt.
+      expectMismatch(await correct(other, base, token));
       expectMismatch(await correct(id, { ...base, expected_version: 3 }, token));
       for (const change of changes) {
         expectMismatch(await correct(id, { ...base, ...change }, token));

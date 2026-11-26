@@ -368,7 +368,7 @@ const MaterialReceiptFormContent: React.FC<{ id: string | null; correcting: bool
               id === null
                 ? undefined
                 : // The form reads the Material Receipt again once the new read is in: cleared first, it would read back
-                  // the one it holds (F010-T6, #237).
+                  // the one it holds; a read that fails leaves the form as it is (F010-T6, #237).
                   async () => {
                     const fresh = await existing.refetch();
                     if (fresh.isSuccess) {

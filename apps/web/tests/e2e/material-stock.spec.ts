@@ -760,14 +760,19 @@ test.describe.serial('Material Stock journeys: Real SPA -> Composed API -> Postg
     await page.goto(`${targetBaseUrl}/material-receipts/${receiptId}/correct`);
     await expect(page.locator('#material-receipt-line-1-quantity')).toHaveValue('6');
     const voidLine = page.locator('#material-receipt-line-1-void');
+    const total = page.locator('[data-testid="material-receipt-total-amount"]');
+    await page.locator('#material-receipt-line-1-unit-price').fill('10');
+    await expect(total).toHaveText('300.00');
     await expect(voidLine).toHaveCSS('background-color', 'rgb(254, 226, 226)');
     await expect(voidLine).toHaveCSS('color', 'rgb(153, 27, 27)');
     await voidLine.click();
     await expect(voidLine).toHaveText('ไม่ยกเลิก');
+    await expect(total).toHaveText('240.00');
     await expect(voidLine).toHaveCSS('background-color', 'rgb(243, 244, 246)');
     await expect(voidLine).toHaveCSS('color', 'rgb(55, 65, 81)');
     await voidLine.click();
     await expect(voidLine).toHaveText('ยกเลิกรายการ');
+    await expect(total).toHaveText('300.00');
     // Meanwhile another Supply Officer notes the count.
     const other = await context.newPage();
     await other.goto(`${targetBaseUrl}/material-receipts/${receiptId}/correct`);
@@ -793,6 +798,14 @@ test.describe.serial('Material Stock journeys: Real SPA -> Composed API -> Postg
     };
     await voidRedo();
     await expect(formError).toContainText('มีผู้แก้ไขรายการรับวัสดุนี้ไปแล้ว กรุณาโหลดใหม่');
+    // A reload whose read fails says so and keeps what was typed; the next one reads the newer Material Receipt.
+    const receiptRead = new RegExp(`/material-receipts/${receiptId}$`);
+    await page.route(receiptRead, (route: any) => (route.request().resourceType() === 'fetch' ? route.fulfill({ status: 500, body: '{}' }) : route.continue()));
+    await page.locator('#material-receipt-correction-reload').click();
+    await expect(formError).toContainText('ไม่สามารถดึงข้อมูลล่าสุดได้ กรุณาลองใหม่อีกครั้ง');
+    await expect(page.locator('#material-receipt-reference')).toHaveValue('ใบส่งของ 7');
+    await expect(voidLine).toHaveText('ไม่ยกเลิก');
+    await page.unroute(receiptRead);
     await page.locator('#material-receipt-correction-reload').click();
     await expect(page.locator('#material-receipt-note')).toHaveValue('ตรวจนับแล้ว');
     await expect(voidLine).toHaveText('ยกเลิกรายการ');
@@ -890,6 +903,12 @@ test.describe.serial('Material Stock journeys: Real SPA -> Composed API -> Postg
     await expect(page.locator('#material-receipt-stock-material-search')).toHaveCount(0);
     await page.locator('#material-receipt-line-0-change-material').click();
     await expect(searchLabel).toHaveText('เปลี่ยนวัสดุของรายการที่ 1');
+    // Chosen again, its own Stock Material keeps the line's Unit: the line's own pair is free to it.
+    await page.locator('#material-receipt-stock-material-search').fill(`ยางลบ J2 0 ${tag}`);
+    await page.locator('#material-receipt-stock-material-search-submit').click();
+    await page.locator('[data-testid^="material-receipt-choose-"]').click();
+    await expect(page.locator('#material-receipt-line-0-unit option:checked')).toHaveText(pen);
+    await expect(page.locator('#material-receipt-line-0-change-material')).toHaveText('เปลี่ยนวัสดุ');
 
     // A Read-only User reads it with no "แก้ไขรายการที่บันทึกผิด", and the form refuses them.
     await switchActor(page, context, readonlyUserId);
