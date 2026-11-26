@@ -4,6 +4,7 @@ import { QueryClient, QueryClientProvider, useQuery } from '@tanstack/react-quer
 import { thaiDate } from '../components/assignmentFacts';
 import { LoanSaveForm } from '../components/LoanSaveForm';
 import { useCsrfToken } from '../components/materialQueries';
+import { fieldInputStyle, fieldLabelStyle } from '../components/ReferenceContextFields';
 import {
   BASE_UNIT_LABEL,
   CONVERSION_FACTOR_LABEL,
@@ -84,7 +85,7 @@ const changeLine = ({ field, before, after }: ReceiptCorrectionChange): string =
 
 // What a CORRECTED history entry changed: each header field, then each line changed, added or voided, by its number.
 const correctionLines = (facts: ReceiptCorrectionFacts): string[] => [
-  ...facts.changes.map(changeLine),
+  ...(facts.changes ?? []).map(changeLine),
   ...facts.lines.map((entry) =>
     entry.change === 'CHANGED'
       ? `รายการที่ ${entry.position + 1}: ${entry.changes.map(changeLine).join(', ')}`
@@ -95,6 +96,9 @@ const correctionLines = (facts: ReceiptCorrectionFacts): string[] => [
 const MaterialReceiptDetailContent: React.FC<{ id: string }> = ({ id }) => {
   const navigate = useNavigate();
   const [action, setAction] = useState<Action | null>(null);
+  // F010-T7 (#238): whether the void (ยกเลิกรายการ) is open, and the reason typed in it.
+  const [voiding, setVoiding] = useState(false);
+  const [reason, setReason] = useState('');
 
   const receipt = useQuery<ReceiptDetail, Error & { status?: number }>({
     queryKey: ['material-receipt', id],
@@ -120,14 +124,16 @@ const MaterialReceiptDetailContent: React.FC<{ id: string }> = ({ id }) => {
   const detail = receipt.isError ? undefined : receipt.data;
   const isForbidden = receipt.error?.status === 403 || receipt.error?.status === 404 || receipt.error?.status === 400;
   const mayManage = detail?.can_manage === true && detail.state === 'DRAFT';
+  // F010-T6 (#237): a Received one is corrected, by whoever may record Material Receipts; F010-T7 (#238): or voided.
+  const mayCorrect = detail?.can_manage === true && detail.state === 'RECEIVED';
   // Each action waits for the token: a request sent without it is refused as if the grant were gone (#135).
-  const session = useCsrfToken(mayManage);
+  const session = useCsrfToken(mayManage || mayCorrect);
   const csrfToken = session.data ?? null;
   const offersActions = mayManage && csrfToken !== null && action === null;
   // The open form closes once the Material Receipt is no longer a Draft.
   const acting = mayManage ? action : null;
-  // F010-T6 (#237): a Received one is corrected, by whoever may record Material Receipts.
-  const mayCorrect = detail?.can_manage === true && detail.state === 'RECEIVED';
+  // F010-T7 (#238): the void closes once the Material Receipt is no longer Received.
+  const voidOpen = mayCorrect && voiding;
   // The amounts for reference only, worked out from each line and never stored (Q8); a voided line has none.
   const amounts = (detail?.lines ?? []).map((line) => (line.is_voided ? null : lineAmount(line.quantity ?? '', line.unit_price ?? '')));
   const total = amounts.some((amount) => amount !== null) ? amounts.reduce<bigint>((sum, amount) => sum + (amount ?? 0n), 0n) : null;
@@ -217,7 +223,63 @@ const MaterialReceiptDetailContent: React.FC<{ id: string }> = ({ id }) => {
                 <Link to={`/material-receipts/${id}/correct`} id="material-receipt-correct-action" style={{ ...actionStyle, backgroundColor: '#f3f4f6', color: '#374151', border: '1px solid #d1d5db' }}>
                   {RECEIPT_CORRECTION_LABEL}
                 </Link>
+                {!voiding && (
+                  <button
+                    type="button"
+                    id="material-receipt-void-action"
+                    onClick={() => {
+                      setReason('');
+                      setVoiding(true);
+                    }}
+                    style={{ ...actionStyle, backgroundColor: '#fee2e2', color: '#991b1b' }}
+                  >
+                    {VOID_LINE_LABEL}
+                  </button>
+                )}
               </div>
+            )}
+
+            {/* F010-T7 (#238): the void of the whole Material Receipt, with a reason (story 43). */}
+            {voidOpen && csrfToken !== null && (
+              <LoanSaveForm
+                idPrefix="material-receipt-void"
+                heading={VOID_LINE_LABEL}
+                saveUrl={`/material-receipts/${encodeURIComponent(id)}/void`}
+                csrfToken={csrfToken}
+                requestError={() => (reason.trim() === '' ? 'กรุณากรอกเหตุผลที่ยกเลิก' : null)}
+                requestBody={() => ({ expected_version: detail.version, reason })}
+                refusedList={() => null}
+                forbiddenMessage={`คุณไม่มีสิทธิ์บันทึก${MATERIAL_RECEIPT_LABEL}`}
+                refusedMessage={`ไม่สามารถ${VOID_LINE_LABEL}ได้`}
+                staleMessage={`มีผู้แก้ไข${MATERIAL_RECEIPT_LABEL}นี้ไปแล้ว กรุณาโหลดใหม่`}
+                submitLabel={VOID_LINE_LABEL}
+                onRefresh={async () => (await receipt.refetch()).isSuccess}
+                onSaved={async () => {
+                  setVoiding(false);
+                  await receipt.refetch();
+                }}
+                onCancel={() => setVoiding(false)}
+                onPermissionRevoked={() => void receipt.refetch()}
+              >
+                {(isLocked) => (
+                  <fieldset disabled={isLocked} style={{ border: 'none', padding: 0, margin: '0 0 1rem 0', minWidth: 0 }}>
+                    <p data-testid="material-receipt-void-notice" style={{ fontSize: '0.875rem', color: '#4b5563', margin: '0 0 0.75rem 0' }}>
+                      ระบบจะบันทึกกลับรายการของทุกรายการ โดยไม่ลบรายการเดิม {MATERIAL_RECEIPT_LABEL}นี้จะแสดงเป็น{VOIDED_LINE_LABEL} และแก้ไขอีกไม่ได้
+                    </p>
+                    <label htmlFor="material-receipt-void-reason" style={fieldLabelStyle}>
+                      เหตุผลที่ยกเลิก
+                    </label>
+                    <textarea
+                      id="material-receipt-void-reason"
+                      value={reason}
+                      maxLength={2000}
+                      rows={3}
+                      onChange={(e) => setReason(e.target.value)}
+                      style={fieldInputStyle}
+                    />
+                  </fieldset>
+                )}
+              </LoanSaveForm>
             )}
 
             {acting !== null && csrfToken !== null && (
@@ -349,8 +411,9 @@ const MaterialReceiptDetailContent: React.FC<{ id: string }> = ({ id }) => {
                     <li key={entry.version} data-testid={`material-receipt-history-${entry.version}`} style={{ marginBottom: '0.5rem' }}>
                       {MATERIAL_RECEIPT_HISTORY_KIND_LABELS[entry.kind]} โดย {entry.recorded_by_username ?? '-'} เมื่อ {THAI_DATE_TIME.format(new Date(entry.recorded_at))}
                       {entry.reason !== null && <div style={{ color: '#4b5563', whiteSpace: 'pre-line' }}>เหตุผล: {entry.reason}</div>}
-                      {/* F010-T6 (#237, story 35): each value a Receipt Correction changed, as it was and as it became. */}
-                      {entry.kind === 'CORRECTED' && (
+                      {/* F010-T6 (#237, story 35): each value a Receipt Correction changed, as it was and as it became;
+                          F010-T7 (#238): each line the void of the whole Material Receipt voided. */}
+                      {(entry.kind === 'CORRECTED' || entry.kind === 'VOIDED') && (
                         <ul data-testid={`material-receipt-history-${entry.version}-changes`} style={{ margin: '0.25rem 0 0 0', paddingLeft: '1.25rem', color: '#4b5563' }}>
                           {correctionLines(entry.facts as unknown as ReceiptCorrectionFacts).map((change, index) => (
                             <li key={index}>{change}</li>

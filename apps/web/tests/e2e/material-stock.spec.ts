@@ -41,6 +41,11 @@ const migrationFolder = path.resolve(__dirname, '../../../../packages/db/src/mig
 // กลับรายการ and the new row in รายการเคลื่อนไหว and the change in the history; คำนวณใหม่ด้วยอัตราแปลงปัจจุบัน shows
 // today's อัตราแปลง before save; a refused save names the line; a voided line stays shown as ยกเลิกแล้ว (#231 J2, Q18,
 // Q25, Q29, story 35).
+// F010-T7 (#238; start decision 1, comment 7184458771): J2 goes on: the Supply Officer voids J2's Material Receipt whole
+// with a reason: every line shows ยกเลิกแล้ว, กลับรายการ comes in รายการเคลื่อนไหว, and the list shows and filters it
+// as ยกเลิกแล้ว. J1 goes on: the Supply Officer corrects J1's Opening Balance: a fix refused for its Material Receipt in
+// effect (Q28) or a ยอด ณ วันที่ on or after it (Q21), a ยอด ณ วันที่ before it with a line added, a quantity fix and a
+// line voided, then the void of the whole Opening Balance (#231 J1, J2, Q20, Q21, Q28, stories 35, 43).
 test.describe.serial('Material Stock journeys: Real SPA -> Composed API -> PostgreSQL (Seam B)', () => {
   let container: StartedPostgreSqlContainer;
   let pool: pg.Pool;
@@ -203,6 +208,12 @@ test.describe.serial('Material Stock journeys: Real SPA -> Composed API -> Postg
     await expect(page.getByRole('heading', { level: 1, name: 'แก้ไขร่าง' })).toBeVisible();
     await expect(page.locator('#opening-balance-line-0-unit option:checked')).toHaveText(`กล่อง ${tag}`);
     await expect(page.locator('#opening-balance-line-0-quantity')).toHaveValue('');
+    // F010-T7 (#238): a Draft's form numbers no line and offers no อัตราแปลง, เปลี่ยนวัสดุ, ยกเลิกรายการ or reason.
+    await expect(page.locator('[data-testid="opening-balance-line-0"]')).not.toContainText('1. ');
+    await expect(page.locator('#opening-balance-line-0-change-material')).toHaveCount(0);
+    await expect(page.locator('#opening-balance-line-0-void')).toHaveCount(0);
+    await expect(page.locator('#opening-balance-line-0-remove')).toBeVisible();
+    await expect(page.locator('#opening-balance-correction-reason')).toHaveCount(0);
     // Meanwhile a second tab saves the Draft with a หมายเหตุ, so the save on what was read first is refused as stale.
     const other = await context.newPage();
     await other.goto(`${draftUrl}/edit`);
@@ -944,5 +955,396 @@ test.describe.serial('Material Stock journeys: Real SPA -> Composed API -> Postg
     await expect(page.locator('#material-receipt-correct-action')).toHaveCount(0);
     await page.goto(`${targetBaseUrl}/material-receipts/${receiptId}/correct`);
     await expect(page.locator('#material-receipt-form-not-allowed')).toHaveText('แก้ไขรายการที่บันทึกผิดได้เฉพาะรายการรับวัสดุที่รับแล้ว โดยผู้มีสิทธิ์บันทึกรายการรับวัสดุ');
+  });
+
+
+  test('Journey F010-T7.1: the Supply Officer voids J2’s Material Receipt whole with a reason: every line shows ยกเลิกแล้ว, กลับรายการ comes in รายการเคลื่อนไหว, and the list shows and filters it as ยกเลิกแล้ว', async ({ page, context }) => {
+    test.setTimeout(60_000);
+    const { pen, box, receiptId, receiptNumber } = j2;
+    // Journey F010-T6.1 left J2's Material Receipt with its two lines of pencils, 2 กล่อง and 1 ด้าม, as of
+    // 2026-10-21, its ด้าม line voided; the pencils' Opening Balance holds 3 ด้าม, 16 ด้าม in all.
+    const { stock_material_id: pencilId, name: pencils } = (
+      await pool.query('SELECT l.stock_material_id, sm.name FROM material_receipt_lines l JOIN stock_materials sm ON sm.id = l.stock_material_id WHERE l.material_receipt_id = $1 AND l.position = 0', [receiptId])
+    ).rows[0];
+    // Another Material Receipt still Received, which a Read-only User finds with no ยกเลิกรายการ.
+    const { id: receivedId } = (await pool.query('SELECT id FROM material_receipts WHERE confirmed_at IS NOT NULL AND id <> $1 ORDER BY receipt_number DESC LIMIT 1', [receiptId])).rows[0];
+    const submit = page.locator('#material-receipt-void-submit');
+    const voidAction = page.locator('#material-receipt-void-action');
+    const history = page.locator('#material-receipt-history > li');
+
+    await loginAs(context, officerUserId);
+    await page.goto(`${targetBaseUrl}/material-receipts/${receiptId}`);
+    await expect(page.locator('[data-testid="material-receipt-state"]')).toHaveText('รับแล้ว');
+    await expect(page.locator('#material-receipt-void-reason')).toHaveCount(0);
+    await voidAction.click();
+    await expect(page.getByRole('heading', { level: 3, name: 'ยกเลิกรายการ' })).toBeVisible();
+    await expect(voidAction).toHaveCount(0);
+    await expect(page.locator('[data-testid="material-receipt-void-notice"]')).toHaveText(
+      'ระบบจะบันทึกกลับรายการของทุกรายการ โดยไม่ลบรายการเดิม รายการรับวัสดุนี้จะแสดงเป็นยกเลิกแล้ว และแก้ไขอีกไม่ได้'
+    );
+    // A void needs a reason; one cancelled leaves the Material Receipt as it was.
+    await submit.click();
+    await expect(page.locator('[data-testid="material-receipt-void-form-error"]')).toContainText('กรุณากรอกเหตุผลที่ยกเลิก');
+    await page.locator('#material-receipt-void-cancel').click();
+    await expect(page.locator('#material-receipt-void-reason')).toHaveCount(0);
+    await voidAction.click();
+    await expect(page.locator('#material-receipt-void-reason')).toHaveValue('');
+    await page.locator('#material-receipt-void-reason').fill('ใบนี้บันทึกซ้ำ');
+    // Meanwhile another Supply Officer voids it: the void on what was read first is refused as stale, and the reload
+    // closes it on the Material Receipt now ยกเลิกแล้ว.
+    const other = await context.newPage();
+    await other.goto(`${targetBaseUrl}/material-receipts/${receiptId}`);
+    await other.locator('#material-receipt-void-action').click();
+    await other.locator('#material-receipt-void-reason').fill('ไม่ได้รับจริง ใบนี้บันทึกซ้ำ');
+    await other.locator('#material-receipt-void-submit').click();
+    await expect(other.locator('[data-testid="material-receipt-state"]')).toHaveText('ยกเลิกแล้ว');
+    await other.close();
+    await submit.click();
+    await expect(page.locator('[data-testid="material-receipt-void-form-error"]')).toContainText('มีผู้แก้ไขรายการรับวัสดุนี้ไปแล้ว กรุณาโหลดใหม่');
+    await page.locator('#material-receipt-void-reload').click();
+    await expect(page.locator('[data-testid="material-receipt-state"]')).toHaveText('ยกเลิกแล้ว');
+    await expect(page.locator('#material-receipt-void-reason')).toHaveCount(0);
+
+    // Every line stays shown, struck through, as ยกเลิกแล้ว; no action is left, and the history names each line the
+    // void voided, with the reason.
+    for (const position of [0, 1, 2]) {
+      await expect(page.locator(`[data-testid="material-receipt-line-${position}-voided"]`)).toHaveText('ยกเลิกแล้ว');
+      await expect(page.locator(`[data-testid="material-receipt-line-${position}"]`)).toHaveCSS('text-decoration-line', 'line-through');
+    }
+    await expect(page.locator('#material-receipt-correct-action')).toHaveCount(0);
+    await expect(voidAction).toHaveCount(0);
+    await expect(history).toHaveCount(6);
+    await expect(history.nth(5)).toContainText('ยกเลิกรายการ โดย officer_material_stock');
+    await expect(history.nth(5)).toContainText('เหตุผล: ไม่ได้รับจริง ใบนี้บันทึกซ้ำ');
+    await expect(history.nth(5).locator('ul li')).toHaveText([`ยกเลิกรายการที่ 1: ${pencils} 2 ${box}`, `ยกเลิกรายการที่ 3: ${pencils} 1 ${pen}`]);
+    await expect(history.nth(4).locator('ul li')).toHaveCount(3);
+
+    // รายการเคลื่อนไหว keeps each line's Stock Movement and shows its กลับรายการ, from the Material Receipt: 16 - 12 - 1
+    // = 3 ด้าม, the Opening Balance's.
+    await page.goto(`${targetBaseUrl}/stock-materials/${pencilId}`);
+    await expect(page.locator('[data-testid="stock-material-current-stock"]')).toContainText(`3 ${pen}`);
+    const rows = page.locator('#stock-movement-table tbody tr');
+    await expect(rows).toHaveCount(5);
+    for (const index of [3, 4]) {
+      await expect(rows.nth(index).locator('td').nth(1)).toHaveText('กลับรายการ');
+      await expect(rows.nth(index).locator('td').nth(2)).toHaveText(`เลขที่รับ ${receiptNumber}`);
+    }
+    await expect(rows.nth(4).locator('td').nth(5)).toHaveText(`3 ${pen}`);
+
+    // The list shows it as ยกเลิกแล้ว, and its filter finds it there and not under รับแล้ว: found by the pencils, which
+    // no other Material Receipt holds (its number, 1, is part of many).
+    await page.goto(`${targetBaseUrl}/material-receipts`);
+    await page.locator('#material-receipt-search').fill(pencils);
+    await page.locator('#material-receipt-search-submit').click();
+    await expect(page).toHaveURL(/[?&]search=/);
+    const row = page.locator(`[data-testid="material-receipt-row-${receiptId}"]`);
+    await expect(row.locator('td').nth(4)).toHaveText('ยกเลิกแล้ว');
+    await page.locator('#material-receipt-state-filter').selectOption({ label: 'ยกเลิกแล้ว' });
+    await expect(page).toHaveURL(/[?&]state=voided$/);
+    await expect(row).toBeVisible();
+    await page.locator('#material-receipt-state-filter').selectOption('received');
+    await expect(page).toHaveURL(/[?&]state=received$/);
+    await expect(row).toHaveCount(0);
+
+    // A Read-only User finds no ยกเลิกรายการ on a Material Receipt still Received.
+    await switchActor(page, context, readonlyUserId);
+    await page.goto(`${targetBaseUrl}/material-receipts/${receivedId}`);
+    await expect(page.locator('[data-testid="material-receipt-state"]')).toHaveText('รับแล้ว');
+    await expect(voidAction).toHaveCount(0);
+  });
+
+  test('Journey F010-T7.2: the Supply Officer corrects J1’s Opening Balance: refused for its Material Receipt in effect, then ยอด ณ วันที่ and a line added, a Unit and quantity fix and a line voided, each in the history; then voids it whole', async ({ page, context }) => {
+    test.setTimeout(150_000);
+    const { tag, name, ream, reamUnitId, boxUnitId, materialId, draftUrl } = j1;
+    const box = `กล่อง ${tag}`;
+    const openingId = new URL(draftUrl).pathname.split('/').pop()!;
+    // Journey F010-T4.1 left J1's Opening Balance of 7 รีม as of 2026-09-30 and a Material Receipt of 2 กล่อง of 5 รีม
+    // on 2026-10-01 of its Stock Material: 17 รีม. Facts made here: folders, counted in รีม with a กล่อง of 5, with no
+    // Stock Movement; tape, in another Opening Balance; and an Opening Balance of 50 lines.
+    const { id: receiptId, receipt_number: receiptNumber } = (
+      await pool.query(
+        'SELECT mr.id, mr.receipt_number::text FROM material_receipt_lines l JOIN material_receipts mr ON mr.id = l.material_receipt_id WHERE l.stock_material_id = $1 AND l.stock_movement_id IS NOT NULL',
+        [materialId]
+      )
+    ).rows[0];
+    const stockMaterials = new StockMaterialService({ db: pool });
+    const openingBalances = new OpeningBalanceService({ db: pool });
+    const created = async (materialName: string) =>
+      (
+        await stockMaterials.create(
+          officerUserId,
+          { name: materialName, base_unit: { unit_id: reamUnitId }, alternate_units: [{ unit_id: boxUnitId, conversion_factor: '5' }] },
+          { retryToken: crypto.randomUUID() }
+        )
+      ).stock_material_id;
+    const confirmedBalance = async (materialIds: string[]) => {
+      const { opening_balance_id: id } = await openingBalances.create(
+        officerUserId,
+        { as_of_date: '2026-09-30', source: 'สมุดคุมวัสดุ', lines: materialIds.map((stockMaterialId) => ({ stock_material_id: stockMaterialId, unit_id: reamUnitId, quantity: '1' })) },
+        { retryToken: crypto.randomUUID() }
+      );
+      const { opening_balance_number: number } = await openingBalances.confirm(officerUserId, id, { expected_version: 1 }, { retryToken: crypto.randomUUID() });
+      return { id, number };
+    };
+    const folders = `แฟ้ม J1 ${tag}`;
+    const folderId = await created(folders);
+    const tape = `เทปใส J1 ${tag}`;
+    const tapeId = await created(tape);
+    const tapeBalance = await confirmedBalance([tapeId]);
+    const fullIds = [];
+    for (let i = 0; i < 50; i++) {
+      fullIds.push(await created(`ซองจดหมาย J1 ${i} ${tag}`));
+    }
+    const { id: fullId } = await confirmedBalance(fullIds);
+    const pens = `ปากกาลูกลื่น J1 ${tag}`;
+
+    const submit = page.locator('#opening-balance-correction-submit');
+    const formError = page.locator('[data-testid="opening-balance-correction-form-error"]');
+    const problems = page.locator('[data-testid="opening-balance-correction-problems"] li');
+    const searchLabel = page.locator('label[for="opening-balance-stock-material-search"]');
+    const history = page.locator('#opening-balance-history > li');
+    const search = async (text: string) => {
+      await page.locator('#opening-balance-stock-material-search').fill(text);
+      await page.locator('#opening-balance-stock-material-search-submit').click();
+    };
+
+    await loginAs(context, officerUserId);
+    await page.goto(`${targetBaseUrl}/opening-balances/${openingId}`);
+    await expect(page.locator('[data-testid="opening-balance-state"]')).toHaveText('ยืนยันแล้ว');
+    await page.locator('#opening-balance-correct-action').click();
+    await expect(page).toHaveURL(`${targetBaseUrl}/opening-balances/${openingId}/correct`);
+    await expect(page.getByRole('heading', { level: 1, name: 'แก้ไขรายการที่บันทึกผิด' })).toBeVisible();
+    // The form reads the Opening Balance back whole, its line with the อัตราแปลง it was recorded at.
+    await expect(page.locator('#opening-balance-as-of-date')).toHaveValue('2026-09-30');
+    await expect(page.locator('#opening-balance-source')).toHaveValue('สมุดคุมวัสดุ ปีงบประมาณ 2569');
+    await expect(page.locator('#opening-balance-line-0-quantity')).toHaveValue('7');
+    await expect(page.locator('[data-testid="opening-balance-line-0"]')).toContainText(`1. ${name}`);
+    await expect(page.locator('[data-testid="opening-balance-line-0-factor"]')).toHaveText(`อัตราแปลง 1 ${ream} = 1 ${ream}`);
+    await expect(page.getByRole('heading', { level: 2, name: 'รายการ (1/50)' })).toBeVisible();
+    await expect(submit).toHaveText('บันทึกการแก้ไข');
+
+    // A save needs every quantity and a reason. A quantity fix is refused while its Material Receipt is in effect, and
+    // a new line of tape while another Opening Balance holds it (Q28); a blank ที่มาของยอด too (Q13): each line named by
+    // its number, with the record that holds it.
+    await page.locator('#opening-balance-line-0-quantity').fill('8');
+    await page.locator('#opening-balance-source').fill('');
+    await search(tape);
+    await expect(page.locator(`[data-testid="opening-balance-choose-${tapeId}"]`)).toHaveText('เพิ่ม');
+    await page.locator(`[data-testid="opening-balance-choose-${tapeId}"]`).click();
+    await expect(page.locator('[data-testid="opening-balance-line-1"]')).toContainText(`2. ${tape}`);
+    await expect(page.locator('#opening-balance-line-1-unit option:checked')).toHaveText(ream);
+    await expect(page.locator('#opening-balance-line-1-void')).toHaveCount(0);
+    await expect(page.locator(`[data-testid="opening-balance-choose-${tapeId}"]`)).toBeDisabled();
+    await submit.click();
+    await expect(formError).toContainText('กรุณาเลือกหน่วยนับและกรอกจำนวนให้ครบทุกรายการ');
+    await page.locator('#opening-balance-line-1-quantity').fill('1');
+    await submit.click();
+    await expect(formError).toContainText('กรุณากรอกเหตุผลที่แก้ไข');
+    await page.locator('#opening-balance-correction-reason').fill('นับใหม่ได้ 8 รีม');
+    await submit.click();
+    await expect(problems).toHaveText([
+      'source is required',
+      `รายการที่ 1: lines[0].stock_material_id names ${name}, a Stock Material with a Stock Movement in effect, from Material Receipt ${receiptNumber} (เลขที่รับ ${receiptNumber})`,
+      `รายการที่ 2: lines[1].stock_material_id names ${tape}, a Stock Material with a Stock Movement in effect, from Opening Balance ${tapeBalance.number} (เลขที่ยอดตั้งต้น ${tapeBalance.number})`,
+    ]);
+    await expect(problems.nth(1).getByRole('link')).toHaveAttribute('href', `/material-receipts/${receiptId}`);
+    await expect(problems.nth(2).getByRole('link')).toHaveAttribute('href', `/opening-balances/${tapeBalance.id}`);
+    // A ยอด ณ วันที่ on or after the Material Receipt is refused too (Q21).
+    await page.locator('#opening-balance-line-1-remove').click();
+    await expect(page.locator('[data-testid="opening-balance-line-1"]')).toHaveCount(0);
+    await page.locator('#opening-balance-source').fill('สมุดคุมวัสดุ ปีงบประมาณ 2569');
+    await page.locator('#opening-balance-line-0-quantity').fill('7');
+    await page.locator('#opening-balance-as-of-date').fill('2026-10-01');
+    await submit.click();
+    await expect(problems).toHaveText([
+      `รายการที่ 1: lines[0].stock_material_id names ${name}, whose Material Receipt ${receiptNumber} of 2026-10-01 is in effect: as_of_date must be before it (เลขที่รับ ${receiptNumber})`,
+    ]);
+
+    // ยอด ณ วันที่ before it saves, with the folders added at today's อัตราแปลง: every line moves to that date.
+    await page.locator('#opening-balance-as-of-date').fill('2026-09-29');
+    await search(folders);
+    await page.locator(`[data-testid="opening-balance-choose-${folderId}"]`).click();
+    await expect(page.locator('[data-testid="opening-balance-line-1"]')).toContainText(`2. ${folders}`);
+    await expect(page.locator('#opening-balance-line-1-recalculate')).toHaveCount(0);
+    await page.locator('#opening-balance-line-1-unit').selectOption({ label: box });
+    await expect(page.locator('[data-testid="opening-balance-line-1-factor"]')).toHaveText(`อัตราแปลง 1 ${box} = 5 ${ream}`);
+    await page.locator('#opening-balance-line-1-quantity').fill('2');
+    await page.locator('#opening-balance-correction-reason').fill('ลืมนับแฟ้ม และนับเมื่อ 29 ก.ย.');
+    await submit.click();
+    await expect(page.locator('[data-testid="opening-balance-as-of-date"]')).toHaveText('29 กันยายน 2569');
+    await expect(page.locator('[data-testid="opening-balance-line-0"]')).toContainText(`+7 ${ream} (7 ${ream} × 1) ณ 29 กันยายน 2569`);
+    await expect(page.locator('[data-testid="opening-balance-line-1"]')).toContainText(`+10 ${ream} (2 ${box} × 5) ณ 29 กันยายน 2569`);
+    await expect(history.last()).toContainText('แก้ไขรายการที่บันทึกผิด โดย officer_material_stock');
+    await expect(history.last()).toContainText('เหตุผล: ลืมนับแฟ้ม และนับเมื่อ 29 ก.ย.');
+    // J1's line, moved by the date alone, records its อัตราแปลง and Base Quantity unchanged (#237 review decision 1).
+    await expect(history.last().locator('ul li')).toHaveText([
+      'ยอด ณ วันที่ 30 กันยายน 2569 → 29 กันยายน 2569',
+      'รายการที่ 1: อัตราแปลง 1 → 1, จำนวน (หน่วยนับหลัก) 7 → 7',
+      `เพิ่มรายการที่ 2: ${folders} 2 ${box}`,
+    ]);
+    await expect(history.first().locator('ul')).toHaveCount(0);
+
+    // The folders' กล่อง has since been given 6 รีม. In the next correction the line keeps its 5 until recalculated
+    // (Q29); a Unit change takes that Unit's today; with no Unit, none, and the save asks for one.
+    const { version: folderVersion } = (await pool.query('SELECT version FROM stock_materials WHERE id = $1', [folderId])).rows[0];
+    await stockMaterials.replaceUnits(
+      officerUserId,
+      folderId,
+      { expected_version: folderVersion, base_unit: { unit_id: reamUnitId, whole_number_only: false }, alternate_units: [{ unit_id: boxUnitId, conversion_factor: '6', whole_number_only: false, is_active: true }] },
+      { retryToken: crypto.randomUUID() }
+    );
+    await page.locator('#opening-balance-correct-action').click();
+    const folderFactor = page.locator('[data-testid="opening-balance-line-1-factor"]');
+    await expect(folderFactor).toHaveText(`อัตราแปลง 1 ${box} = 5 ${ream}`);
+    await page.locator('#opening-balance-line-1-recalculate').check();
+    await expect(folderFactor).toHaveText(`อัตราแปลง 1 ${box} = 6 ${ream}`);
+    await page.locator('#opening-balance-line-1-recalculate').uncheck();
+    await expect(folderFactor).toHaveText(`อัตราแปลง 1 ${box} = 5 ${ream}`);
+    // "เปลี่ยนวัสดุ" turns the search to that line, and back: J1's Stock Material, held by another line, stays
+    // disabled, while the line's own may be chosen again.
+    const changeMaterial = page.locator('#opening-balance-line-1-change-material');
+    await expect(changeMaterial).toHaveText('เปลี่ยนวัสดุ');
+    await expect(searchLabel).toHaveText('เพิ่มวัสดุ');
+    await changeMaterial.click();
+    await expect(changeMaterial).toHaveText('ไม่เปลี่ยน');
+    await expect(searchLabel).toHaveText('เปลี่ยนวัสดุของรายการที่ 2');
+    await search(`${name}`);
+    await expect(page.locator(`[data-testid="opening-balance-choose-${materialId}"]`)).toBeDisabled();
+    await search(folders);
+    await expect(page.locator(`[data-testid="opening-balance-choose-${folderId}"]`)).toHaveText('เลือก');
+    await expect(page.locator(`[data-testid="opening-balance-choose-${folderId}"]`)).toBeEnabled();
+    await changeMaterial.click();
+    await expect(changeMaterial).toHaveText('เปลี่ยนวัสดุ');
+    await expect(searchLabel).toHaveText('เพิ่มวัสดุ');
+    await expect(page.locator(`[data-testid="opening-balance-choose-${folderId}"]`)).toBeDisabled();
+    await page.locator('#opening-balance-line-1-unit').selectOption('');
+    await expect(folderFactor).toHaveCount(0);
+    await page.locator('#opening-balance-correction-reason').fill('แฟ้มนับเป็นรีม ได้ 15 รีม กระดาษนับซ้ำกับที่รับ');
+    await submit.click();
+    await expect(formError).toContainText('กรุณาเลือกหน่วยนับและกรอกจำนวนให้ครบทุกรายการ');
+    await page.locator('#opening-balance-line-1-unit').selectOption({ label: ream });
+    await expect(folderFactor).toHaveText(`อัตราแปลง 1 ${ream} = 1 ${ream}`);
+    await expect(page.locator('#opening-balance-line-1-recalculate')).toHaveCount(0);
+    await page.locator('#opening-balance-line-1-quantity').fill('15');
+    await page.locator('#opening-balance-line-1-note').fill('ชั้นบน');
+    // J1's line counted what its Material Receipt brought: voided, it needs no quantity and shows no อัตราแปลง.
+    const voidLine = page.locator('#opening-balance-line-0-void');
+    await expect(voidLine).toHaveText('ยกเลิกรายการ');
+    await expect(voidLine).toHaveCSS('background-color', 'rgb(254, 226, 226)');
+    await expect(voidLine).toHaveCSS('color', 'rgb(153, 27, 27)');
+    await page.locator('#opening-balance-line-0-quantity').fill('');
+    await voidLine.click();
+    await expect(voidLine).toHaveText('ไม่ยกเลิก');
+    await expect(voidLine).toHaveCSS('background-color', 'rgb(243, 244, 246)');
+    await expect(voidLine).toHaveCSS('color', 'rgb(55, 65, 81)');
+    await expect(page.locator('[data-testid="opening-balance-line-0"]')).toHaveCSS('text-decoration-line', 'line-through');
+    await expect(page.locator('[data-testid="opening-balance-line-1"]')).toHaveCSS('text-decoration-line', 'none');
+    await expect(page.locator('[data-testid="opening-balance-line-0-factor"]')).toHaveCount(0);
+    await submit.click();
+    await expect(page.locator('[data-testid="opening-balance-line-0-voided"]')).toHaveText('ยกเลิกแล้ว');
+    await expect(page.locator('[data-testid="opening-balance-line-0"]')).toHaveCSS('text-decoration-line', 'line-through');
+    await expect(page.locator('[data-testid="opening-balance-line-1"]')).toHaveCSS('text-decoration-line', 'none');
+    await expect(page.locator('[data-testid="opening-balance-line-1-voided"]')).toHaveCount(0);
+    await expect(page.locator('[data-testid="opening-balance-line-1"]')).toContainText(`+15 ${ream} (15 ${ream} × 1)`);
+    await expect(history.last().locator('ul li')).toHaveText([
+      `รายการที่ 2: หน่วยนับ ${box} → ${ream}, จำนวน 2 → 15, หมายเหตุ - → ชั้นบน, อัตราแปลง 5 → 1, จำนวน (หน่วยนับหลัก) 10 → 15`,
+      `ยกเลิกรายการที่ 1: ${name} 7 ${ream}`,
+    ]);
+    await page.goto(`${targetBaseUrl}/stock-materials/${materialId}`);
+    await expect(page.locator('[data-testid="stock-material-current-stock"]')).toContainText(`10 ${ream}`);
+
+    // The voided line stays in the form, struck through, and counts toward the 50 lines; a line's Stock Material
+    // replaced takes its first Unit at today's อัตราแปลง, and a line added comes after every line, the voided one
+    // included. Meanwhile another Supply Officer notes the count: the save on what was read first is refused as stale,
+    // and the reload reads the newer Opening Balance.
+    await page.goto(`${targetBaseUrl}/opening-balances/${openingId}/correct`);
+    await expect(page.locator('[data-testid="opening-balance-voided-line-0"]')).toHaveText(`1. ${name} 7 ${ream} (ยกเลิกแล้ว)`);
+    await expect(page.locator('[data-testid="opening-balance-line-0"]')).toContainText(`2. ${folders}`);
+    await expect(page.getByRole('heading', { level: 2, name: 'รายการ (2/50)' })).toBeVisible();
+    const other = await context.newPage();
+    await other.goto(`${targetBaseUrl}/opening-balances/${openingId}/correct`);
+    await expect(other.locator('#opening-balance-line-0-quantity')).toHaveValue('15');
+    await other.locator('#opening-balance-note').fill('ตรวจนับแล้ว');
+    await other.locator('#opening-balance-correction-reason').fill('เพิ่มหมายเหตุ');
+    await other.locator('#opening-balance-correction-submit').click();
+    await expect(other.locator('[data-testid="opening-balance-state"]')).toBeVisible();
+    await other.close();
+    await page.locator('#opening-balance-line-0-change-material').click();
+    await search(`J1 ${tag}`);
+    await expect(page.locator(`[data-testid="opening-balance-choose-${materialId}"]`)).toBeDisabled();
+    await page.locator(`[data-testid="opening-balance-choose-${tapeId}"]`).click();
+    await expect(page.locator('[data-testid="opening-balance-line-0"]')).toContainText(`2. ${tape}`);
+    await expect(page.locator('#opening-balance-line-0-unit option:checked')).toHaveText(ream);
+    await expect(page.locator('#opening-balance-line-0-recalculate')).toHaveCount(0);
+    await expect(page.getByRole('heading', { level: 2, name: 'รายการ (2/50)' })).toBeVisible();
+    await search(pens);
+    await page.locator('[data-testid^="opening-balance-choose-"]').click();
+    await expect(page.locator('[data-testid="opening-balance-line-1"]')).toContainText(`3. ${pens}`);
+    await page.locator('#opening-balance-line-1-quantity').fill('1');
+    await page.locator('#opening-balance-correction-reason').fill('เป็นเทปใส และปากกาลืมนับ');
+    await submit.click();
+    await expect(formError).toContainText('มีผู้แก้ไขยอดตั้งต้นนี้ไปแล้ว กรุณาโหลดใหม่');
+    await page.locator('#opening-balance-correction-reload').click();
+    await expect(page.locator('#opening-balance-note')).toHaveValue('ตรวจนับแล้ว');
+    await expect(page.locator('[data-testid="opening-balance-line-0"]')).toContainText(`2. ${folders}`);
+    await expect(page.locator('[data-testid="opening-balance-line-1"]')).toHaveCount(0);
+
+    // At 50 lines no line is added, but a line's Stock Material may still be changed.
+    await page.goto(`${targetBaseUrl}/opening-balances/${fullId}/correct`);
+    await expect(page.locator('#opening-balance-line-49-quantity')).toHaveValue('1');
+    await expect(page.getByRole('heading', { level: 2, name: 'รายการ (50/50)' })).toBeVisible();
+    await expect(page.locator('#opening-balance-stock-material-search')).toHaveCount(0);
+    await page.locator('#opening-balance-line-0-change-material').click();
+    await expect(searchLabel).toHaveText('เปลี่ยนวัสดุของรายการที่ 1');
+
+    // The void of the whole Opening Balance needs a reason; then every line is ยกเลิกแล้ว, and the list shows and
+    // filters it so. Meanwhile another Supply Officer voids it first: the reload closes the void on it.
+    await page.goto(`${targetBaseUrl}/opening-balances/${openingId}`);
+    const voidAction = page.locator('#opening-balance-void-action');
+    await expect(page.locator('#opening-balance-void-reason')).toHaveCount(0);
+    await voidAction.click();
+    await expect(voidAction).toHaveCount(0);
+    await expect(page.locator('[data-testid="opening-balance-void-notice"]')).toHaveText(
+      'ระบบจะบันทึกกลับรายการของทุกรายการ โดยไม่ลบรายการเดิม ยอดตั้งต้นนี้จะแสดงเป็นยกเลิกแล้ว และแก้ไขอีกไม่ได้'
+    );
+    await page.locator('#opening-balance-void-submit').click();
+    await expect(page.locator('[data-testid="opening-balance-void-form-error"]')).toContainText('กรุณากรอกเหตุผลที่ยกเลิก');
+    await page.locator('#opening-balance-void-reason').fill('นับซ้ำ');
+    const voider = await context.newPage();
+    await voider.goto(`${targetBaseUrl}/opening-balances/${openingId}`);
+    await voider.locator('#opening-balance-void-action').click();
+    await voider.locator('#opening-balance-void-reason').fill('นับซ้ำกับการตรวจนับครั้งใหม่ทั้งใบ');
+    await voider.locator('#opening-balance-void-submit').click();
+    await expect(voider.locator('[data-testid="opening-balance-state"]')).toHaveText('ยกเลิกแล้ว');
+    await voider.close();
+    await page.locator('#opening-balance-void-submit').click();
+    await expect(page.locator('[data-testid="opening-balance-void-form-error"]')).toContainText('มีผู้แก้ไขยอดตั้งต้นนี้ไปแล้ว กรุณาโหลดใหม่');
+    await page.locator('#opening-balance-void-reload').click();
+    await expect(page.locator('[data-testid="opening-balance-state"]')).toHaveText('ยกเลิกแล้ว');
+    await expect(page.locator('#opening-balance-void-reason')).toHaveCount(0);
+    await expect(page.locator('[data-testid="opening-balance-line-1-voided"]')).toHaveText('ยกเลิกแล้ว');
+    await expect(page.locator('#opening-balance-correct-action')).toHaveCount(0);
+    await expect(voidAction).toHaveCount(0);
+    await expect(history.last()).toContainText('ยกเลิกรายการ โดย officer_material_stock');
+    await expect(history.last()).toContainText('เหตุผล: นับซ้ำกับการตรวจนับครั้งใหม่ทั้งใบ');
+    await expect(history.last().locator('ul li')).toHaveText([`ยกเลิกรายการที่ 2: ${folders} 15 ${ream}`]);
+    await page.goto(`${targetBaseUrl}/stock-materials/${folderId}`);
+    await expect(page.locator('[data-testid="stock-material-current-stock"]')).toContainText(`0 ${ream}`);
+    await page.goto(`${targetBaseUrl}/opening-balances`);
+    await page.locator('#opening-balance-state-filter').selectOption({ label: 'ยกเลิกแล้ว' });
+    await expect(page).toHaveURL(/[?&]state=voided$/);
+    await expect(page.locator(`[data-testid="opening-balance-row-${openingId}"]`)).toContainText('ยกเลิกแล้ว');
+    await page.locator('#opening-balance-state-filter').selectOption('confirmed');
+    await expect(page).toHaveURL(/[?&]state=confirmed$/);
+    await expect(page.locator(`[data-testid="opening-balance-row-${openingId}"]`)).toHaveCount(0);
+
+    // A Read-only User reads a confirmed one with no action, and the correction form refuses them.
+    await switchActor(page, context, readonlyUserId);
+    await page.goto(`${targetBaseUrl}/opening-balances/${tapeBalance.id}`);
+    await expect(page.locator('[data-testid="opening-balance-state"]')).toHaveText('ยืนยันแล้ว');
+    await expect(page.locator('#opening-balance-correct-action')).toHaveCount(0);
+    await expect(voidAction).toHaveCount(0);
+    await page.goto(`${targetBaseUrl}/opening-balances/${tapeBalance.id}/correct`);
+    await expect(page.locator('#opening-balance-form-not-allowed')).toHaveText('แก้ไขรายการที่บันทึกผิดได้เฉพาะยอดตั้งต้นที่ยืนยันแล้ว โดยผู้มีสิทธิ์บันทึกยอดตั้งต้น');
   });
 });

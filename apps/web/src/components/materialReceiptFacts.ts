@@ -2,7 +2,8 @@
 // Stock; #231 Q4–Q11, Q24, Q25).
 import type { LineStockMovement } from './openingBalanceFacts';
 
-export type MaterialReceiptState = 'DRAFT' | 'RECEIVED';
+// F010-T7 (#238): a Received one whose whole Material Receipt is voided (ยกเลิกรายการ) is ยกเลิกแล้ว.
+export type MaterialReceiptState = 'DRAFT' | 'RECEIVED' | 'VOIDED';
 
 // An entry of the Source Party or Source Type list under its name now.
 export interface ReceiptListEntry {
@@ -102,6 +103,7 @@ export const AMOUNT_FOR_REFERENCE_LABEL = 'ใช้เพื่ออ้าง�
 export const MATERIAL_RECEIPT_STATE_LABELS: Record<MaterialReceiptState, string> = {
   DRAFT: 'ร่าง',
   RECEIVED: 'รับแล้ว',
+  VOIDED: 'ยกเลิกแล้ว',
 };
 
 // F010-T6 (#237): a Receipt Correction (แก้ไขรายการที่บันทึกผิด), the voiding of one of its lines (ยกเลิกรายการ), which
@@ -137,9 +139,10 @@ export interface ReceiptCorrectionLineFacts {
 }
 
 // The facts of a CORRECTED history entry: each header field it changed, then each line it changed, added or voided.
+// F010-T7 (#238): a VOIDED one, the void of the whole Material Receipt, holds each line it voided and no change.
 export interface ReceiptCorrectionFacts {
   receipt_number: string;
-  changes: ReceiptCorrectionChange[];
+  changes?: ReceiptCorrectionChange[];
   lines: (
     | { change: 'CHANGED'; line_id: string; position: number; changes: ReceiptCorrectionChange[] }
     | { change: 'ADDED' | 'VOIDED'; line_id: string; position: number; line: ReceiptCorrectionLineFacts }

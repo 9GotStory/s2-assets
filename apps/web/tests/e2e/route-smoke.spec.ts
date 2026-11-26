@@ -44,6 +44,7 @@ interface Fixtures {
   materialRequestId: string;
   requestNumber: string;
   openingBalanceId: string;
+  confirmedBalanceId: string;
   materialReceiptId: string;
   receivedReceiptId: string;
 }
@@ -93,6 +94,7 @@ const SMOKE: Record<string, { url: (f: Fixtures) => string; heading: (f: Fixture
   '/opening-balances/new': { url: () => '/opening-balances/new', heading: () => 'เพิ่มยอดตั้งต้น' },
   '/opening-balances/:id': { url: (f) => `/opening-balances/${f.openingBalanceId}`, heading: () => 'ยอดตั้งต้น ร่าง' },
   '/opening-balances/:id/edit': { url: (f) => `/opening-balances/${f.openingBalanceId}/edit`, heading: () => 'แก้ไขร่าง' },
+  '/opening-balances/:id/correct': { url: (f) => `/opening-balances/${f.confirmedBalanceId}/correct`, heading: () => 'แก้ไขรายการที่บันทึกผิด' },
   // F010-T3 (#234): every catalog viewer reads the Material Receipts; the Supply Officer role reaches the Draft form.
   '/material-receipts': { url: () => '/material-receipts', heading: () => 'รายการรับวัสดุ' },
   '/material-receipts/new': { url: () => '/material-receipts/new', heading: () => 'เพิ่มรายการรับวัสดุ' },
@@ -217,6 +219,15 @@ test.describe.serial('Route smoke: Real SPA -> Composed API -> PostgreSQL (Seam 
       { lines: [{ stock_material_id: stockMaterialId, unit_id: unit.id, quantity: '3' }] },
       { retryToken: crypto.randomUUID() }
     );
+    // F010-T7 (#238): a confirmed Opening Balance, which the correction form reads back whole, as of a date before the
+    // Received Material Receipt below (Q21).
+    const balances = new OpeningBalanceService({ db: pool });
+    const { opening_balance_id: confirmedBalanceId } = await balances.create(
+      officerUserId,
+      { as_of_date: '2026-01-01', source: 'สมุดคุมวัสดุ', lines: [{ stock_material_id: stockMaterialId, unit_id: unit.id, quantity: '1' }] },
+      { retryToken: crypto.randomUUID() }
+    );
+    await balances.confirm(officerUserId, confirmedBalanceId, { expected_version: 1 }, { retryToken: crypto.randomUUID() });
     // A Material Receipt Draft with one line, so the edit form reads its Stock Material's Units.
     const { material_receipt_id: materialReceiptId } = await new MaterialReceiptService({ db: pool }).create(
       officerUserId,
@@ -245,6 +256,7 @@ test.describe.serial('Route smoke: Real SPA -> Composed API -> PostgreSQL (Seam 
       materialRequestId,
       requestNumber,
       openingBalanceId,
+      confirmedBalanceId,
       materialReceiptId,
       receivedReceiptId,
     };

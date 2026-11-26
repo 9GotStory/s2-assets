@@ -47,8 +47,8 @@ export interface BalanceCorrectionReads extends StockLineReads<RecordedStockLine
   // effect of it, if any.
   openingBalances: Map<string, InEffectOpeningBalance>;
   receipts: Map<string, InEffectMaterialReceipt>;
-  // On an As-of Date change, of each Stock Material a line sends: the earliest Material Receipt in effect dated on or
-  // before the new As-of Date.
+  // Of each Stock Material a line sends: the earliest Material Receipt in effect dated on or before the As-of Date as
+  // sent. While the As-of Date stays, a line the correction leaves as it was has none: Q21 kept each after it.
   receiptsOnOrBefore: Map<string, DatedMaterialReceipt>;
   // Today in Asia/Bangkok.
   today: string;
@@ -124,7 +124,7 @@ export function planBalanceCorrection(facts: BalanceCorrectionFacts, reads: Bala
     }
     // Q21: a line moved only by the As-of Date stays before every Material Receipt in effect of its Stock Material.
     const receipt = reads.receiptsOnOrBefore.get(line.stock_material_id);
-    if (dateChanged && receipt !== undefined) {
+    if (receipt !== undefined) {
       const { material_receipt_id: materialReceiptId, receipt_number: number } = receipt;
       problems.push({
         field,

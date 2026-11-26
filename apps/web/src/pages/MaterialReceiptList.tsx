@@ -22,6 +22,8 @@ const STATE_FILTERS = [
   { value: 'all', label: 'ทั้งหมด' },
   { value: 'draft', label: MATERIAL_RECEIPT_STATE_LABELS.DRAFT },
   { value: 'received', label: MATERIAL_RECEIPT_STATE_LABELS.RECEIVED },
+  // F010-T7 (#238)
+  { value: 'voided', label: MATERIAL_RECEIPT_STATE_LABELS.VOIDED },
 ];
 
 const LOAD_ERRORS: Record<number, string> = {

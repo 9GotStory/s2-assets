@@ -634,7 +634,7 @@ export class OpeningBalanceService {
           movements,
           openingBalances: await openingBalancesInEffectOf(client, sentIds),
           receipts: await materialReceiptsInEffectOf(client, sentIds),
-          receiptsOnOrBefore: facts.as_of_date === header.as_of_date ? new Map() : await materialReceiptsInEffectOnOrBefore(client, sentIds, facts.as_of_date),
+          receiptsOnOrBefore: await materialReceiptsInEffectOnOrBefore(client, sentIds, facts.as_of_date),
           today: bangkokDate(this.clock()),
         },
         Array.from({ length: added }, () => crypto.randomUUID())
