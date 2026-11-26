@@ -875,7 +875,7 @@ describe('Receipt Correction (Seam A - F010-T6)', () => {
       expect(notReceived.statusCode).toBe(409);
       expect(notReceived.json()).toMatchObject({
         code: 'NOT_RECEIVED',
-        message: 'The Material Receipt is a Draft: only a Received one can be corrected',
+        message: 'The Material Receipt is a Draft: only a Received one can be corrected or voided',
         current_values: { version: 1, state: 'DRAFT' },
         expected_values: { version: 1 },
       });

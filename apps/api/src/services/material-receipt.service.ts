@@ -5,7 +5,8 @@ import { normalizeQuantity } from './base-quantity.ts';
 import { catalogListHolds, lockedCatalogListEntry } from './catalog-list.service.ts';
 import { CATALOG_LISTS } from './catalog-list-entries.ts';
 import { formatDecimal, parseDecimal } from './exact-decimal.ts';
-import { planCorrection, type CorrectionFacts, type ListEntryRead, type RecordedLine } from './material-receipt-correction.ts';
+import { lineFactsOf, planCorrection, type CorrectionFacts, type ListEntryRead, type RecordedLine } from './material-receipt-correction.ts';
+import { stockOf } from './stock-line-correction.ts';
 import { materialReceiptState, type MaterialReceiptState } from './material-receipt-state.ts';
 import { openingBalancesInEffectOf, type InEffectOpeningBalance } from './opening-balance-read.service.ts';
 import { commitOnce } from './retryable-write.ts';
@@ -77,6 +78,11 @@ export interface MaterialReceiptCorrectionInput extends ExpectedVersionInput {
 // #231 P7: a correction's reason is at most 2000 characters.
 export const RECEIPT_CORRECTION_REASON_MAX_LENGTH = 2000;
 
+// F010-T7 (#238): the void of a whole Material Receipt: a reason and the version the request read (#231 P5).
+export interface MaterialReceiptVoidInput extends ExpectedVersionInput {
+  reason: string;
+}
+
 // What a create or a replace answers: the Material Receipt and the version a later write expects.
 export interface MaterialReceiptVersion {
   material_receipt_id: string;
@@ -114,7 +120,7 @@ export interface ReceiptConfirmProblem {
   in_effect_opening_balance?: InEffectOpeningBalance;
 }
 
-/** F010-T6 (#237): a correction of a Material Receipt that is still a Draft, at the version it has (start comment 7163337923). */
+/** F010-T6 (#237): a correction (F010-T7, #238: or a void) of a Material Receipt that is still a Draft, at the version it has (start comment 7163337923). */
 export class MaterialReceiptNotReceivedError extends Error {
   statusCode = 409;
   code = 'NOT_RECEIVED';
@@ -122,8 +128,26 @@ export class MaterialReceiptNotReceivedError extends Error {
   expected_values: { version: number };
 
   constructor(currentValues: CurrentState, expectedValues: { version: number }) {
-    super('The Material Receipt is a Draft: only a Received one can be corrected');
+    super('The Material Receipt is a Draft: only a Received one can be corrected or voided');
     this.name = 'MaterialReceiptNotReceivedError';
+    this.current_values = currentValues;
+    this.expected_values = expectedValues;
+  }
+}
+
+/**
+ * F010-T7 (#238): a correction or a void of a Material Receipt voided as a whole, at the version it has: it takes neither
+ * again (start comment 7184458771).
+ */
+export class MaterialReceiptVoidedError extends Error {
+  statusCode = 409;
+  code = 'VOIDED';
+  current_values: CurrentState;
+  expected_values: { version: number };
+
+  constructor(currentValues: CurrentState, expectedValues: { version: number }) {
+    super('The Material Receipt is voided: it can be neither corrected nor voided again');
+    this.name = 'MaterialReceiptVoidedError';
     this.current_values = currentValues;
     this.expected_values = expectedValues;
   }
@@ -356,21 +380,26 @@ const lockedDraft = async (client: pg.PoolClient, id: string, expectedVersion: n
 };
 
 /**
- * F010-T6 (#237): locks the Material Receipt `id` FOR UPDATE, as `lockedDraft` does, so its corrections take turns
- * (#231 P4), and refuses it when there is none, when its version is not `expectedVersion`, or when it is still a Draft,
- * in that order.
+ * F010-T6 (#237): locks the Material Receipt `id` FOR UPDATE, as `lockedDraft` does, so its corrections and its void
+ * take turns (#231 P4), and refuses it when there is none, when its version is not `expectedVersion`, when it is still a
+ * Draft, or (F010-T7, #238) when it is voided, in that order.
  */
 const lockedReceived = async (client: pg.PoolClient, id: string, expectedVersion: number): Promise<void> => {
-  const res = await client.query(`SELECT version, ${materialReceiptState('material_receipts')} AS state FROM material_receipts WHERE id = $1 FOR UPDATE`, [id]);
-  const current: CurrentState | undefined = res.rows[0];
-  if (!current) {
+  const locked = await client.query('SELECT 1 FROM material_receipts WHERE id = $1 FOR UPDATE', [id]);
+  if (locked.rowCount === 0) {
     throw new NotFoundError('Material Receipt not found');
   }
+  // The state reads the lines too. A statement that waited on the lock rereads only the locked row and still sees the
+  // lines as they were when it began, so the state is read in a statement of its own, after the lock (F010-T7, #238).
+  const current: CurrentState = (await client.query(`SELECT version, ${materialReceiptState('material_receipts')} AS state FROM material_receipts WHERE id = $1`, [id])).rows[0];
   if (current.version !== expectedVersion) {
     throw new StaleBeforeConflictError('The Material Receipt changed since it was read', current, { version: expectedVersion });
   }
-  if (current.state !== 'RECEIVED') {
+  if (current.state === 'DRAFT') {
     throw new MaterialReceiptNotReceivedError(current, { version: expectedVersion });
+  }
+  if (current.state === 'VOIDED') {
+    throw new MaterialReceiptVoidedError(current, { version: expectedVersion });
   }
 };
 
@@ -746,6 +775,65 @@ export class MaterialReceiptService {
         version,
         JSON.stringify(plan.history),
         facts.reason,
+        actorId,
+      ]);
+      return { material_receipt_id: id, version };
+    });
+  }
+
+  /**
+   * F010-T7 (#238): voids the whole Received Material Receipt `id` that never happened (ยกเลิกรายการ), with a reason, at
+   * the version the request read (#231 Q18, P5). Under the lock order (P4) it adds a Reversal of each line's Stock
+   * Movement in effect, recorded by the voider at the one moment of the void (P9), marks every line voided, and records
+   * the history entry "voided" with the reason and each line as it is voided, names as they are now (#175 P6). It then
+   * reads ยกเลิกแล้ว and takes no correction or void again.
+   */
+  async void(actorId: string, id: string, input: MaterialReceiptVoidInput, { retryToken }: { retryToken: string }): Promise<MaterialReceiptVersion> {
+    const reason = normalizeText(input.reason, 'reason', RECEIPT_CORRECTION_REASON_MAX_LENGTH, '');
+    if (reason === null) {
+      throw new ValidationError('reason must not be blank');
+    }
+    const payload = { material_receipt_id: id, expected_version: input.expected_version, reason };
+    return commitOnce(this.db, { actorId, operation: 'material-receipt:void', retryToken, payload, explicitContinuation: false }, async (client) => {
+      // 1. The Material Receipt, its number and its lines in effect: a Received one has at least one.
+      await lockedReceived(client, id, input.expected_version);
+      const { receipt_number: receiptNumber } = (await client.query('SELECT receipt_number::text AS receipt_number FROM material_receipts WHERE id = $1', [id])).rows[0];
+      const lines: RecordedLine[] = (
+        await client.query(
+          `SELECT id, position, stock_material_id, unit_id, trim_scale(quantity)::text AS quantity, trim_scale(unit_price)::text AS unit_price, note,
+                  is_voided, stock_movement_id
+           FROM material_receipt_lines WHERE material_receipt_id = $1 AND NOT is_voided ORDER BY position`,
+          [id]
+        )
+      ).rows;
+      // 2. Their Stock Materials, by id; 3. their Units' list entries, each read in a statement after the lock.
+      const materialIds = [...new Set(lines.map(({ stock_material_id: materialId }) => materialId))];
+      const names = await lockedStockMaterialsForStock(client, materialIds);
+      const units = new Map(await Promise.all(materialIds.map(async (materialId) => [materialId, await stockMaterialUnitsOf(client, materialId, { locked: true })] as const)));
+      const movements = await stockMovementsInEffectOf(
+        client,
+        lines.map(({ stock_movement_id: movementId }) => movementId!)
+      );
+
+      for (const { stock_movement_id: movementId } of lines) {
+        await reverseStockMovement(client, movementId!, actorId);
+      }
+      await client.query('UPDATE material_receipt_lines SET stock_movement_id = NULL, is_voided = true WHERE material_receipt_id = $1 AND NOT is_voided', [id]);
+      const { version } = (await client.query('UPDATE material_receipts SET version = version + 1 WHERE id = $1 RETURNING version', [id])).rows[0];
+      const history = {
+        receipt_number: receiptNumber,
+        lines: lines.map((line) => ({
+          change: 'VOIDED',
+          line_id: line.id,
+          position: line.position,
+          line: lineFactsOf({ names, units }, line, stockOf(movements.get(line.stock_movement_id!)!)),
+        })),
+      };
+      await client.query(`INSERT INTO material_receipt_history (material_receipt_id, version, kind, facts, reason, recorded_by) VALUES ($1, $2, 'VOIDED', $3, $4, $5)`, [
+        id,
+        version,
+        JSON.stringify(history),
+        reason,
         actorId,
       ]);
       return { material_receipt_id: id, version };

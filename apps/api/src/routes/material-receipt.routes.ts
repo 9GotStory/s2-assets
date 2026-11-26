@@ -12,6 +12,7 @@ import {
   MaterialReceiptNotCorrectableError,
   MaterialReceiptNotDraftError,
   MaterialReceiptNotReceivedError,
+  MaterialReceiptVoidedError,
   type MaterialReceiptService,
 } from '../services/material-receipt.service.ts';
 import { NotFoundError, RetryTokenConflictError, StaleBeforeConflictError } from '../services/service-errors.ts';
@@ -84,9 +85,12 @@ const CorrectSchema = z
   })
   .strict();
 
-// #231 story 56: ร่าง, รับแล้ว or ทั้งหมด, and a search over the Receipt Number, the Receipt Reference (free text, so tab
+// F010-T7 (#238; #231 P5): the void of a whole Material Receipt sends a reason and the version it read.
+const VoidSchema = z.object({ expected_version: z.number().int().positive(), reason: z.string(), retry_token: z.string().optional() }).strict();
+
+// #231 story 56: ร่าง, รับแล้ว, ยกเลิกแล้ว (F010-T7) or ทั้งหมด, and a search over the Receipt Number, the Receipt Reference (free text, so tab
 // and line breaks are kept inside it, CODING_STANDARDS), the Source Party name and the lines' Stock Material names.
-const STATE_FILTERS = { draft: 'DRAFT', received: 'RECEIVED' } as const;
+const STATE_FILTERS = { draft: 'DRAFT', received: 'RECEIVED', voided: 'VOIDED' } as const;
 const MaterialReceiptListQuerySchema = z
   .object({
     search: z
@@ -96,7 +100,7 @@ const MaterialReceiptListQuerySchema = z
       .refine((text) => text.length > 0, 'must not be blank')
       .refine((text) => text.length <= 500, 'must be at most 500 characters')
       .optional(),
-    state: z.enum(['all', 'draft', 'received']).optional(),
+    state: z.enum(['all', 'draft', 'received', 'voided']).optional(),
     // F010-T4 (#235): a Fiscal Year (ปีงบประมาณ) of the Received Date.
     fiscal_year: fiscalYearQueryField,
     ...pageQueryFields,
@@ -108,7 +112,7 @@ const refusalOf = (err: unknown) => {
   if (err instanceof MaterialReceiptNotConfirmableError || err instanceof MaterialReceiptNotCorrectableError) {
     return { ...errorBody(err.statusCode, err.code, err.message), problems: err.problems };
   }
-  if (err instanceof StaleBeforeConflictError || err instanceof MaterialReceiptNotDraftError || err instanceof MaterialReceiptNotReceivedError) {
+  if (err instanceof StaleBeforeConflictError || err instanceof MaterialReceiptNotDraftError || err instanceof MaterialReceiptNotReceivedError || err instanceof MaterialReceiptVoidedError) {
     return { ...errorBody(err.statusCode, err.code, err.message), current_values: err.current_values, expected_values: err.expected_values };
   }
   if (err instanceof RetryTokenConflictError || err instanceof NotFoundError || err instanceof ValidationError) {
@@ -266,6 +270,26 @@ export const materialReceiptRoutes: FastifyPluginAsync<MaterialReceiptRoutesOpti
     }
     const { retry_token: _retryToken, ...input } = write.data;
     const answer = await answered(200, () => materialReceiptService.correct(request.user!.id, id.trim().toLowerCase(), input, { retryToken: write.retryToken }));
+    return reply.status(answer.statusCode).send(answer.body);
+  });
+
+  /**
+   * POST /material-receipts/:id/void
+   * F010-T7 (#238): voids the whole Received Material Receipt ("ยกเลิกรายการ"), with a reason, at the version the request
+   * read: every line's Stock Movement in effect is reversed, and it stays shown as ยกเลิกแล้ว.
+   * Protected: requires 'material:manage' capability (Supply Officer)
+   */
+  fastify.post('/material-receipts/:id/void', { preHandler: [requireCapability('material:manage')] }, async (request, reply) => {
+    const { id } = request.params as { id: string };
+    if (!isValidUuid(id)) {
+      return reply.status(400).send(INVALID_ID);
+    }
+    const write = parseWrite(VoidSchema, request);
+    if ('refusal' in write) {
+      return reply.status(400).send(write.refusal);
+    }
+    const { retry_token: _retryToken, ...input } = write.data;
+    const answer = await answered(200, () => materialReceiptService.void(request.user!.id, id.trim().toLowerCase(), input, { retryToken: write.retryToken }));
     return reply.status(answer.statusCode).send(answer.body);
   });
 };
