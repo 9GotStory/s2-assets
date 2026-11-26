@@ -37,6 +37,10 @@ const migrationFolder = path.resolve(__dirname, '../../../../packages/db/src/mig
 // F010-T5 (#236): Journey J3 ends: a Read-only User reads คงเหลือ of a Stock Material with an Opening Balance, with no
 // write action, and the Supply Officer's แก้ไขหน่วยนับ shows its หน่วยนับหลัก locked, with the reason, and still
 // changes an อัตราแปลง (#231 J3, stories 53, 54, Q15, MC-09; #236 start decision 2).
+// F010-T6 (#237): Journey J2 ends: the Supply Officer corrects J2's Material Receipt with a reason: a quantity fix shows
+// กลับรายการ and the new row in รายการเคลื่อนไหว and the change in the history; คำนวณใหม่ด้วยอัตราแปลงปัจจุบัน shows
+// today's อัตราแปลง before save; a refused save names the line; a voided line stays shown as ยกเลิกแล้ว (#231 J2, Q18,
+// Q25, Q29, story 35).
 test.describe.serial('Material Stock journeys: Real SPA -> Composed API -> PostgreSQL (Seam B)', () => {
   let container: StartedPostgreSqlContainer;
   let pool: pg.Pool;
@@ -49,6 +53,8 @@ test.describe.serial('Material Stock journeys: Real SPA -> Composed API -> Postg
   let readonlyUserId: string;
   // Journey F010-T2.1's Stock Material and Draft, which Journey F010-T2.2 goes on with.
   let j1: { tag: string; name: string; ream: string; reamUnitId: string; boxUnitId: string; materialId: string; draftUrl: string };
+  // Journey F010-T3.1's Stock Material and Material Receipt, which Journey F010-T6.1 corrects.
+  let j2: { name: string; pen: string; box: string; penUnitId: string; boxUnitId: string; materialId: string; receiptId: string; receiptNumber: string };
 
   test.beforeAll(async () => {
     test.setTimeout(120_000);
@@ -278,6 +284,12 @@ test.describe.serial('Material Stock journeys: Real SPA -> Composed API -> Postg
     await expect(page.locator('#material-receipt-stock-material-choices li')).toHaveCount(1);
     await page.locator(`[data-testid="material-receipt-choose-${materialId}"]`).click();
     await expect(page.locator('[data-testid="material-receipt-line-0"]')).toContainText(name);
+    // F010-T6 (#237): a Draft's form numbers no line, shows no อัตราแปลง and asks no reason; a line is removed.
+    await expect(page.locator('[data-testid="material-receipt-line-0"]')).not.toContainText(`1. ${name}`);
+    await expect(page.locator('#material-receipt-line-0-change-material')).toHaveCount(0);
+    await expect(page.locator('#material-receipt-line-0-remove')).toBeVisible();
+    await expect(page.locator('#material-receipt-correction-reason')).toHaveCount(0);
+    await expect(page.locator('#material-receipt-draft-submit')).toHaveText('บันทึกร่าง');
     await page.locator('#material-receipt-line-0-unit').selectOption({ label: box });
     await page.locator('#material-receipt-line-0-quantity').fill('2');
     await expect(page.locator('[data-testid="material-receipt-line-0-amount"]')).toHaveText('-');
@@ -293,6 +305,8 @@ test.describe.serial('Material Stock journeys: Real SPA -> Composed API -> Postg
     await expect(page.locator('[data-testid="material-receipt-source-party"]')).toHaveText(party);
     await expect(page.locator('[data-testid="material-receipt-reference"]')).toHaveText('-');
     await expect(page.locator('[data-testid="material-receipt-total-amount"]')).toHaveText('240.00');
+    // A Draft is edited, never corrected (F010-T6, #237).
+    await expect(page.locator('#material-receipt-correct-action')).toHaveCount(0);
 
     // The confirm is refused with every rule it fails named, a line's by its number in the table (Q25).
     await page.locator('#material-receipt-confirm-action').click();
@@ -310,6 +324,9 @@ test.describe.serial('Material Stock journeys: Real SPA -> Composed API -> Postg
     await expect(page.locator('#material-receipt-line-0-unit-price')).toHaveValue('120');
     await expect(page.locator('#material-receipt-line-1-unit option:checked')).toHaveText(pen);
     await expect(page.locator('#material-receipt-line-1-quantity')).toHaveValue('');
+    await expect(page.locator('#material-receipt-line-1-unit-price')).toHaveValue('');
+    await expect(page.locator('#material-receipt-line-0-note')).toHaveValue('');
+    await expect(page.locator('#material-receipt-line-0-void')).toHaveCount(0);
     await page.locator('#material-receipt-received-date').fill('2026-10-15');
     await page.locator('#material-receipt-line-1-unit-price').fill('10.5');
     await expect(page.locator('[data-testid="material-receipt-line-1-amount"]')).toHaveText('-');
@@ -332,6 +349,7 @@ test.describe.serial('Material Stock journeys: Real SPA -> Composed API -> Postg
     await expect(page.locator('#material-receipt-history li')).toHaveCount(1);
     await expect(page.locator('#material-receipt-history li')).toContainText('ยืนยันรับวัสดุ โดย officer_material_stock');
     const receiptNumber = (await heading.textContent())!.replace('รายการรับวัสดุ เลขที่รับ ', '');
+    j2 = { name, pen, box, penUnitId: penUnit.id, boxUnitId: boxUnit.id, materialId, receiptId: new URL(page.url()).pathname.split('/').pop()!, receiptNumber };
 
     // The list finds it by its แหล่งที่มา, Received, with its เลขที่รับ.
     await page.goto(`${targetBaseUrl}/material-receipts?search=${encodeURIComponent(party)}`);
@@ -623,5 +641,282 @@ test.describe.serial('Material Stock journeys: Real SPA -> Composed API -> Postg
     await expect(baseUnit.locator('option:checked')).toHaveText(`ชิ้น J3 ${tag}`);
     await expect(baseUnit).toBeEnabled();
     await expect(page.locator('#stock-material-units-base-unit-frozen-reason')).toHaveCount(0);
+  });
+
+  test('Journey F010-T6.1: the Supply Officer corrects J2’s Material Receipt with a reason: the quantity fix shows กลับรายการ and the new row in รายการเคลื่อนไหว and the change in the history; a voided line stays shown as ยกเลิกแล้ว; a Stock Material change and a new line take today’s อัตราแปลง', async ({ page, context }) => {
+    test.setTimeout(120_000);
+    const { name, pen, box, penUnitId, boxUnitId, materialId, receiptId, receiptNumber } = j2;
+    const tag = crypto.randomUUID().slice(0, 6);
+    // The facts the journey needs, made here: J2's กล่อง has since been given 10 ด้าม for the 12 it was received at;
+    // pencils are counted in ด้าม, with a กล่อง of 6, and their Opening Balance is as of 2026-10-20; a Material Receipt
+    // holds 50 lines.
+    const stockMaterials = new StockMaterialService({ db: pool });
+    const { version } = (await pool.query('SELECT version FROM stock_materials WHERE id = $1', [materialId])).rows[0];
+    await stockMaterials.replaceUnits(
+      officerUserId,
+      materialId,
+      { expected_version: version, base_unit: { unit_id: penUnitId, whole_number_only: true }, alternate_units: [{ unit_id: boxUnitId, conversion_factor: '10', whole_number_only: false, is_active: true }] },
+      { retryToken: crypto.randomUUID() }
+    );
+    const pencils = `ดินสอ J2 ${tag}`;
+    const { stock_material_id: pencilId } = await stockMaterials.create(
+      officerUserId,
+      { name: pencils, base_unit: { unit_id: penUnitId, whole_number_only: true }, alternate_units: [{ unit_id: boxUnitId, conversion_factor: '6' }] },
+      { retryToken: crypto.randomUUID() }
+    );
+    const openingBalances = new OpeningBalanceService({ db: pool });
+    const { opening_balance_id: openingId } = await openingBalances.create(
+      officerUserId,
+      { as_of_date: '2026-10-20', source: 'สมุดคุมวัสดุ', lines: [{ stock_material_id: pencilId, unit_id: penUnitId, quantity: '3' }] },
+      { retryToken: crypto.randomUUID() }
+    );
+    const { opening_balance_number: openingNumber } = await openingBalances.confirm(officerUserId, openingId, { expected_version: 1 }, { retryToken: crypto.randomUUID() });
+    const fullLines = [];
+    for (let i = 0; i < 25; i++) {
+      const { stock_material_id: eraserId } = await stockMaterials.create(
+        officerUserId,
+        { name: `ยางลบ J2 ${i} ${tag}`, base_unit: { unit_id: penUnitId }, alternate_units: [{ unit_id: boxUnitId, conversion_factor: '12' }] },
+        { retryToken: crypto.randomUUID() }
+      );
+      fullLines.push({ stock_material_id: eraserId, unit_id: penUnitId, quantity: '1' }, { stock_material_id: eraserId, unit_id: boxUnitId, quantity: '1' });
+    }
+    const receipts = new MaterialReceiptService({ db: pool });
+    const { material_receipt_id: fullId } = await receipts.create(officerUserId, { received_date: '2026-10-15', lines: fullLines }, { retryToken: crypto.randomUUID() });
+    await receipts.confirm(officerUserId, fullId, { expected_version: 1 }, { retryToken: crypto.randomUUID() });
+
+    const submit = page.locator('#material-receipt-correction-submit');
+    const formError = page.locator('[data-testid="material-receipt-correction-form-error"]');
+    const problems = page.locator('[data-testid="material-receipt-correction-problems"] li');
+    const searchLabel = page.locator('label[for="material-receipt-stock-material-search"]');
+    const history = page.locator('#material-receipt-history > li');
+
+    await loginAs(context, officerUserId);
+    await page.goto(`${targetBaseUrl}/material-receipts/${receiptId}`);
+    await page.locator('#material-receipt-correct-action').click();
+    await expect(page).toHaveURL(`${targetBaseUrl}/material-receipts/${receiptId}/correct`);
+    await expect(page.getByRole('heading', { level: 1, name: 'แก้ไขรายการที่บันทึกผิด' })).toBeVisible();
+
+    // The form reads the Material Receipt back whole, each line with the อัตราแปลง it was recorded at.
+    await expect(page.locator('#material-receipt-received-date')).toHaveValue('2026-10-15');
+    await expect(page.locator('#material-receipt-line-0-quantity')).toHaveValue('2');
+    await expect(page.locator('#material-receipt-line-1-quantity')).toHaveValue('5');
+    await expect(page.locator('[data-testid="material-receipt-line-0"]')).toContainText(`1. ${name}`);
+    await expect(submit).toHaveText('บันทึกการแก้ไข');
+    const boxFactor = page.locator('[data-testid="material-receipt-line-0-factor"]');
+    await expect(boxFactor).toHaveText(`อัตราแปลง 1 ${box} = 12 ${pen}`);
+    await expect(page.locator('[data-testid="material-receipt-line-1-factor"]')).toHaveText(`อัตราแปลง 1 ${pen} = 1 ${pen}`);
+    // A Unit change shows that Unit's อัตราแปลง today; with no Unit, none, and the save asks for one.
+    await page.locator('#material-receipt-line-0-unit').selectOption({ label: pen });
+    await expect(boxFactor).toHaveText(`อัตราแปลง 1 ${pen} = 1 ${pen}`);
+    await expect(page.locator('#material-receipt-line-0-recalculate')).toHaveCount(0);
+    await page.locator('#material-receipt-line-0-unit').selectOption('');
+    await expect(boxFactor).toHaveCount(0);
+    await submit.click();
+    await expect(formError).toContainText('กรุณาเลือกหน่วยนับและกรอกจำนวนให้ครบทุกรายการ');
+    await page.locator('#material-receipt-line-0-unit').selectOption({ label: box });
+    await expect(boxFactor).toHaveText(`อัตราแปลง 1 ${box} = 12 ${pen}`);
+    // คำนวณใหม่ด้วยอัตราแปลงปัจจุบัน shows today's อัตราแปลง before save (Q29); unticked, the line keeps its own.
+    await page.locator('#material-receipt-line-0-recalculate').check();
+    await expect(boxFactor).toHaveText(`อัตราแปลง 1 ${box} = 10 ${pen}`);
+    await page.locator('#material-receipt-line-0-recalculate').uncheck();
+    await expect(boxFactor).toHaveText(`อัตราแปลง 1 ${box} = 12 ${pen}`);
+
+    // A save needs every quantity and a reason; a fraction of the whole-number ด้าม and a วันที่รับ to come are refused,
+    // the line named by its number (Q25).
+    await page.locator('#material-receipt-line-1-quantity').fill('');
+    await submit.click();
+    await expect(formError).toContainText('กรุณาเลือกหน่วยนับและกรอกจำนวนให้ครบทุกรายการ');
+    await page.locator('#material-receipt-line-1-quantity').fill('5.5');
+    await submit.click();
+    await expect(formError).toContainText('กรุณากรอกเหตุผลที่แก้ไข');
+    await page.locator('#material-receipt-correction-reason').fill('นับปากกาผิด');
+    await page.locator('#material-receipt-received-date').fill('2099-01-01');
+    await submit.click();
+    await expect(problems).toHaveText(['รายการที่ 2: lines[1].quantity must be a whole number in its Unit', /^received_date must not be after today \(\d{4}-\d{2}-\d{2}, Asia\/Bangkok\)$/]);
+
+    // 6 ด้าม on วันที่รับ as it was saves it: the line's new Stock Movement, and the change in the history with the
+    // reason.
+    await page.locator('#material-receipt-received-date').fill('2026-10-15');
+    await page.locator('#material-receipt-line-1-quantity').fill('6');
+    await submit.click();
+    await expect(page.getByRole('heading', { level: 1, name: `รายการรับวัสดุ เลขที่รับ ${receiptNumber}` })).toBeVisible();
+    await expect(page.locator('[data-testid="material-receipt-line-1"]')).toContainText(`+6 ${pen} (6 ${pen} × 1)`);
+    await expect(page.locator('[data-testid="material-receipt-line-0"]')).toContainText(`+24 ${pen} (2 ${box} × 12)`);
+    await expect(history).toHaveCount(2);
+    await expect(history.nth(1)).toContainText('แก้ไขรายการที่บันทึกผิด โดย officer_material_stock');
+    await expect(history.nth(1)).toContainText('เหตุผล: นับปากกาผิด');
+    await expect(history.nth(1).locator('ul li')).toHaveText([`รายการที่ 2: จำนวน 5 → 6, อัตราแปลง 1 → 1, จำนวน (หน่วยนับหลัก) 5 → 6`]);
+    await expect(history.nth(0).locator('ul')).toHaveCount(0);
+
+    // รายการเคลื่อนไหว keeps the 5 ด้าม, then shows its กลับรายการ and the new row, each from the Material Receipt:
+    // 24 + 5 - 5 + 6 = 30 ด้าม.
+    await page.goto(`${targetBaseUrl}/stock-materials/${materialId}`);
+    await expect(page.locator('[data-testid="stock-material-current-stock"]')).toContainText(`30 ${pen}`);
+    const rows = page.locator('#stock-movement-table tbody tr');
+    await expect(rows).toHaveCount(4);
+    await expect(rows.nth(2).locator('td')).toHaveText(['15 ตุลาคม 2569', 'กลับรายการ', `เลขที่รับ ${receiptNumber}`, `5 ${pen} × 1`, `-5 ${pen}`, `24 ${pen}`, /โดย officer_material_stock$/]);
+    await expect(rows.nth(3).locator('td')).toHaveText(['15 ตุลาคม 2569', 'รับวัสดุ', `เลขที่รับ ${receiptNumber}`, `6 ${pen} × 1`, `6 ${pen}`, `30 ${pen}`, /โดย officer_material_stock$/]);
+
+    // ยกเลิกรายการ, and undone; a line voided needs no quantity, shows no อัตราแปลง and no amount.
+    await page.goto(`${targetBaseUrl}/material-receipts/${receiptId}/correct`);
+    await expect(page.locator('#material-receipt-line-1-quantity')).toHaveValue('6');
+    const voidLine = page.locator('#material-receipt-line-1-void');
+    const total = page.locator('[data-testid="material-receipt-total-amount"]');
+    await page.locator('#material-receipt-line-1-unit-price').fill('10');
+    await expect(total).toHaveText('300.00');
+    await expect(voidLine).toHaveCSS('background-color', 'rgb(254, 226, 226)');
+    await expect(voidLine).toHaveCSS('color', 'rgb(153, 27, 27)');
+    await voidLine.click();
+    await expect(voidLine).toHaveText('ไม่ยกเลิก');
+    await expect(total).toHaveText('240.00');
+    await expect(voidLine).toHaveCSS('background-color', 'rgb(243, 244, 246)');
+    await expect(voidLine).toHaveCSS('color', 'rgb(55, 65, 81)');
+    await voidLine.click();
+    await expect(voidLine).toHaveText('ยกเลิกรายการ');
+    await expect(total).toHaveText('300.00');
+    // Meanwhile another Supply Officer notes the count.
+    const other = await context.newPage();
+    await other.goto(`${targetBaseUrl}/material-receipts/${receiptId}/correct`);
+    await expect(other.locator('#material-receipt-line-1-quantity')).toHaveValue('6');
+    await other.locator('#material-receipt-note').fill('ตรวจนับแล้ว');
+    await other.locator('#material-receipt-correction-reason').fill('เพิ่มหมายเหตุ');
+    await other.locator('#material-receipt-correction-submit').click();
+    await expect(other.locator('[data-testid="material-receipt-received-date"]')).toBeVisible();
+    await other.close();
+    // The ด้าม line, which was pencils, never pens: voided, it stays shown as ยกเลิกแล้ว (and its delivery note found
+    // since goes in เอกสารอ้างอิง, which had none). The save on what was read first is refused as stale, and reloads.
+    const voidRedo = async () => {
+      await page.locator('#material-receipt-line-1-quantity').fill('');
+      await voidLine.click();
+      await expect(voidLine).toHaveText('ไม่ยกเลิก');
+      await expect(page.locator('[data-testid="material-receipt-line-1"]')).toHaveCSS('text-decoration-line', 'line-through');
+      await expect(page.locator('[data-testid="material-receipt-line-0"]')).toHaveCSS('text-decoration-line', 'none');
+      await expect(page.locator('[data-testid="material-receipt-line-1-factor"]')).toHaveCount(0);
+      await expect(page.locator('[data-testid="material-receipt-total-amount"]')).toHaveText('240.00');
+      await page.locator('#material-receipt-reference').fill('ใบส่งของ 7');
+      await page.locator('#material-receipt-correction-reason').fill('เป็นดินสอ ไม่ใช่ปากกา');
+      await submit.click();
+    };
+    await voidRedo();
+    await expect(formError).toContainText('มีผู้แก้ไขรายการรับวัสดุนี้ไปแล้ว กรุณาโหลดใหม่');
+    // A reload whose read fails says so and keeps what was typed; the next one reads the newer Material Receipt.
+    const receiptRead = new RegExp(`/material-receipts/${receiptId}$`);
+    await page.route(receiptRead, (route: any) => (route.request().resourceType() === 'fetch' ? route.fulfill({ status: 500, body: '{}' }) : route.continue()));
+    await page.locator('#material-receipt-correction-reload').click();
+    await expect(formError).toContainText('ไม่สามารถดึงข้อมูลล่าสุดได้ กรุณาลองใหม่อีกครั้ง');
+    await expect(page.locator('#material-receipt-reference')).toHaveValue('ใบส่งของ 7');
+    await expect(voidLine).toHaveText('ไม่ยกเลิก');
+    await page.unroute(receiptRead);
+    await page.locator('#material-receipt-correction-reload').click();
+    await expect(page.locator('#material-receipt-note')).toHaveValue('ตรวจนับแล้ว');
+    await expect(voidLine).toHaveText('ยกเลิกรายการ');
+    await expect(page.locator('#material-receipt-line-1-quantity')).toHaveValue('6');
+    await voidRedo();
+    await expect(page.locator('[data-testid="material-receipt-line-1-voided"]')).toHaveText('ยกเลิกแล้ว');
+    await expect(page.locator('[data-testid="material-receipt-line-1"]')).toHaveCSS('text-decoration-line', 'line-through');
+    await expect(page.locator('[data-testid="material-receipt-line-0"]')).toHaveCSS('text-decoration-line', 'none');
+    await expect(page.locator('[data-testid="material-receipt-line-1"]')).toContainText(name);
+    await expect(page.locator('[data-testid="material-receipt-line-1"]')).not.toContainText('+6');
+    await expect(page.locator('[data-testid="material-receipt-total-amount"]')).toHaveText('240.00');
+    await expect(history.nth(2).locator('ul li')).toHaveText(['หมายเหตุ - → ตรวจนับแล้ว']);
+    await expect(history.nth(3).locator('ul li')).toHaveText(['เอกสารอ้างอิง - → ใบส่งของ 7', `ยกเลิกรายการที่ 2: ${name} 6 ${pen}`]);
+    await page.goto(`${targetBaseUrl}/stock-materials/${materialId}`);
+    await expect(page.locator('[data-testid="stock-material-current-stock"]')).toContainText(`24 ${pen}`);
+
+    // The 2 กล่อง were pencils too, and one more ด้าม of pencils came; วันที่รับ was 2026-10-21.
+    await page.goto(`${targetBaseUrl}/material-receipts/${receiptId}/correct`);
+    // The voided line stays shown, struck through, and counts toward the 50 lines.
+    await expect(page.locator('[data-testid="material-receipt-voided-line-1"]')).toHaveText(`2. ${name} 6 ${pen} (ยกเลิกแล้ว)`);
+    await expect(page.locator('[data-testid="material-receipt-line-0"]')).toContainText(`1. ${name}`);
+    await expect(page.getByRole('heading', { level: 2, name: 'รายการ (2/50)' })).toBeVisible();
+    // A new line takes today's อัตราแปลง of the first Unit no line holds, a voided one included, numbered after them
+    // all; with none left, none, and the save asks for one; it is removed, never voided.
+    await expect(searchLabel).toHaveText('เพิ่มวัสดุ');
+    await page.locator('#material-receipt-stock-material-search').fill(pencils);
+    await page.locator('#material-receipt-stock-material-search-submit').click();
+    await expect(page.locator(`[data-testid="material-receipt-choose-${pencilId}"]`)).toHaveText('เพิ่ม');
+    await page.locator(`[data-testid="material-receipt-choose-${pencilId}"]`).click();
+    await expect(page.locator('[data-testid="material-receipt-line-1"]')).toContainText(`3. ${pencils}`);
+    await expect(page.locator('#material-receipt-line-1-unit option:checked')).toHaveText(pen);
+    await expect(page.locator('[data-testid="material-receipt-line-1-factor"]')).toHaveText(`อัตราแปลง 1 ${pen} = 1 ${pen}`);
+    await expect(page.locator('#material-receipt-line-1-void')).toHaveCount(0);
+    await page.locator('#material-receipt-line-1-quantity').fill('1');
+    await page.locator('#material-receipt-stock-material-search').fill(name);
+    await page.locator('#material-receipt-stock-material-search-submit').click();
+    await page.locator(`[data-testid="material-receipt-choose-${materialId}"]`).click();
+    await expect(page.locator('[data-testid="material-receipt-line-2"]')).toContainText(`4. ${name}`);
+    await expect(page.locator('#material-receipt-line-2-unit option:checked')).toHaveText('-');
+    await expect(page.locator('[data-testid="material-receipt-line-2-factor"]')).toHaveCount(0);
+    await page.locator('#material-receipt-line-2-quantity').fill('1');
+    await submit.click();
+    await expect(formError).toContainText('กรุณาเลือกหน่วยนับและกรอกจำนวนให้ครบทุกรายการ');
+    await page.locator('#material-receipt-line-2-remove').click();
+    await expect(page.locator('[data-testid="material-receipt-line-2"]')).toHaveCount(0);
+    await expect(page.getByRole('heading', { level: 2, name: 'รายการ (3/50)' })).toBeVisible();
+    // "เปลี่ยนวัสดุ" turns the search to that line, and back; the line takes the pencils' free กล่อง at today's
+    // อัตราแปลง, and the line of pencils already there keeps its ด้าม.
+    const changeMaterial = page.locator('#material-receipt-line-0-change-material');
+    await expect(changeMaterial).toHaveText('เปลี่ยนวัสดุ');
+    await changeMaterial.click();
+    await expect(changeMaterial).toHaveText('ไม่เปลี่ยน');
+    await expect(searchLabel).toHaveText('เปลี่ยนวัสดุของรายการที่ 1');
+    await changeMaterial.click();
+    await expect(changeMaterial).toHaveText('เปลี่ยนวัสดุ');
+    await expect(searchLabel).toHaveText('เพิ่มวัสดุ');
+    await changeMaterial.click();
+    await page.locator('#material-receipt-stock-material-search').fill(pencils);
+    await page.locator('#material-receipt-stock-material-search-submit').click();
+    await expect(page.locator(`[data-testid="material-receipt-choose-${pencilId}"]`)).toHaveText('เลือก');
+    await page.locator(`[data-testid="material-receipt-choose-${pencilId}"]`).click();
+    await expect(page.locator('[data-testid="material-receipt-line-0"]')).toContainText(`1. ${pencils}`);
+    await expect(page.locator('#material-receipt-line-0-unit option:checked')).toHaveText(box);
+    await expect(page.locator('#material-receipt-line-0-quantity')).toHaveValue('2');
+    await expect(page.locator('#material-receipt-line-0-recalculate')).toHaveCount(0);
+    await expect(boxFactor).toHaveText(`อัตราแปลง 1 ${box} = 6 ${pen}`);
+    await expect(page.locator('#material-receipt-line-1-unit option:checked')).toHaveText(pen);
+    await expect(searchLabel).toHaveText('เพิ่มวัสดุ');
+    await page.locator('#material-receipt-correction-reason').fill('เป็นดินสอ และดินสอมาเพิ่ม');
+    // The As-of Date rule names each line by its number, with its Opening Balance (Q21, Q25).
+    await submit.click();
+    const asOf = (index: number) =>
+      `lines[${index}].stock_material_id names ${pencils}, whose Opening Balance ${openingNumber} is as of 2026-10-20: received_date must be after it (เลขที่ยอดตั้งต้น ${openingNumber})`;
+    await expect(problems).toHaveText([`รายการที่ 1: ${asOf(0)}`, `รายการที่ 3: ${asOf(1)}`]);
+    await expect(problems.first().getByRole('link')).toHaveAttribute('href', `/opening-balances/${openingId}`);
+    // วันที่รับ 2026-10-21 saves it: every line moves to that date.
+    await page.locator('#material-receipt-received-date').fill('2026-10-21');
+    await submit.click();
+    await expect(page.locator('[data-testid="material-receipt-received-date"]')).toHaveText('21 ตุลาคม 2569');
+    await expect(page.locator('[data-testid="material-receipt-line-0"]')).toContainText(pencils);
+    await expect(page.locator('[data-testid="material-receipt-line-0"]')).toContainText(`+12 ${pen} (2 ${box} × 6) ณ 21 ตุลาคม 2569`);
+    await expect(page.locator('[data-testid="material-receipt-line-2"]')).toContainText(`+1 ${pen} (1 ${pen} × 1) ณ 21 ตุลาคม 2569`);
+    await expect(history.nth(4).locator('ul li')).toHaveText([
+      'วันที่รับ 15 ตุลาคม 2569 → 21 ตุลาคม 2569',
+      `รายการที่ 1: วัสดุ ${name} → ${pencils}, อัตราแปลง 12 → 6, จำนวน (หน่วยนับหลัก) 24 → 12`,
+      `เพิ่มรายการที่ 3: ${pencils} 1 ${pen}`,
+    ]);
+    await page.goto(`${targetBaseUrl}/stock-materials/${pencilId}`);
+    await expect(page.locator('[data-testid="stock-material-current-stock"]')).toContainText(`16 ${pen}`);
+
+    // At 50 lines no line is added, but a line's Stock Material may still be changed.
+    await page.goto(`${targetBaseUrl}/material-receipts/${fullId}/correct`);
+    await expect(page.locator('#material-receipt-line-49-quantity')).toHaveValue('1');
+    await expect(page.getByRole('heading', { level: 2, name: 'รายการ (50/50)' })).toBeVisible();
+    await expect(page.locator('#material-receipt-stock-material-search')).toHaveCount(0);
+    await page.locator('#material-receipt-line-0-change-material').click();
+    await expect(searchLabel).toHaveText('เปลี่ยนวัสดุของรายการที่ 1');
+    // Chosen again, its own Stock Material keeps the line's Unit: the line's own pair is free to it.
+    await page.locator('#material-receipt-stock-material-search').fill(`ยางลบ J2 0 ${tag}`);
+    await page.locator('#material-receipt-stock-material-search-submit').click();
+    await page.locator('[data-testid^="material-receipt-choose-"]').click();
+    await expect(page.locator('#material-receipt-line-0-unit option:checked')).toHaveText(pen);
+    await expect(page.locator('#material-receipt-line-0-change-material')).toHaveText('เปลี่ยนวัสดุ');
+
+    // A Read-only User reads it with no "แก้ไขรายการที่บันทึกผิด", and the form refuses them.
+    await switchActor(page, context, readonlyUserId);
+    await page.goto(`${targetBaseUrl}/material-receipts/${receiptId}`);
+    await expect(page.locator('[data-testid="material-receipt-line-1-voided"]')).toHaveText('ยกเลิกแล้ว');
+    await expect(page.locator('#material-receipt-correct-action')).toHaveCount(0);
+    await page.goto(`${targetBaseUrl}/material-receipts/${receiptId}/correct`);
+    await expect(page.locator('#material-receipt-form-not-allowed')).toHaveText('แก้ไขรายการที่บันทึกผิดได้เฉพาะรายการรับวัสดุที่รับแล้ว โดยผู้มีสิทธิ์บันทึกรายการรับวัสดุ');
   });
 });

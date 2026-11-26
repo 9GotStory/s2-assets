@@ -458,6 +458,11 @@ export const routes: RouteObject[] = [
     path: '/material-receipts/:id/edit',
     element: <MaterialReceiptForm />,
   },
+  // F010-T6 (#237): "แก้ไขรายการที่บันทึกผิด", the Receipt Correction of a Received Material Receipt
+  {
+    path: '/material-receipts/:id/correct',
+    element: <MaterialReceiptForm correcting />,
+  },
 ];
 
 export const router = createBrowserRouter(routes);

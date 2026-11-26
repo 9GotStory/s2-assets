@@ -9,7 +9,9 @@ import type { MaterialReceiptReadService } from '../services/material-receipt-re
 import {
   MAX_RECEIPT_LINES,
   MaterialReceiptNotConfirmableError,
+  MaterialReceiptNotCorrectableError,
   MaterialReceiptNotDraftError,
+  MaterialReceiptNotReceivedError,
   type MaterialReceiptService,
 } from '../services/material-receipt.service.ts';
 import { NotFoundError, RetryTokenConflictError, StaleBeforeConflictError } from '../services/service-errors.ts';
@@ -49,6 +51,39 @@ const CreateDraftSchema = z.object(draftFields).strict();
 const ReplaceDraftSchema = z.object({ ...draftFields, expected_version: z.number().int().positive() }).strict();
 const ExpectedVersionSchema = z.object({ expected_version: z.number().int().positive(), retry_token: z.string().optional() }).strict();
 
+// F010-T6 (#237; #231 P5): a Receipt Correction sends the whole Material Receipt as it should be: its header, each
+// recorded line by its id and each new line without one, the lines it voids, a reason and the version it read. The
+// service checks each field and names it when refused.
+const CorrectSchema = z
+  .object({
+    expected_version: z.number().int().positive(),
+    received_date: z.string(),
+    source_party_id: z.string().nullable().optional(),
+    source_type_id: z.string().nullable().optional(),
+    receipt_reference: z.string().nullable().optional(),
+    note: z.string().nullable().optional(),
+    lines: z
+      .array(
+        z
+          .object({
+            line_id: z.string().nullable().optional(),
+            stock_material_id: z.string(),
+            unit_id: z.string(),
+            quantity: z.string(),
+            unit_price: z.string().nullable().optional(),
+            note: z.string().nullable().optional(),
+            recalculate: z.boolean().optional(),
+          })
+          .strict()
+      )
+      // One over the cap reaches the service, which names it.
+      .max(MAX_RECEIPT_LINES + 1),
+    voided_line_ids: z.array(z.string()).max(MAX_RECEIPT_LINES).optional(),
+    reason: z.string(),
+    retry_token: z.string().optional(),
+  })
+  .strict();
+
 // #231 story 56: ร่าง, รับแล้ว or ทั้งหมด, and a search over the Receipt Number, the Receipt Reference (free text, so tab
 // and line breaks are kept inside it, CODING_STANDARDS), the Source Party name and the lines' Stock Material names.
 const STATE_FILTERS = { draft: 'DRAFT', received: 'RECEIVED' } as const;
@@ -70,10 +105,10 @@ const MaterialReceiptListQuerySchema = z
 
 // The answer to a refused write, or null for an error that is not a refusal.
 const refusalOf = (err: unknown) => {
-  if (err instanceof MaterialReceiptNotConfirmableError) {
+  if (err instanceof MaterialReceiptNotConfirmableError || err instanceof MaterialReceiptNotCorrectableError) {
     return { ...errorBody(err.statusCode, err.code, err.message), problems: err.problems };
   }
-  if (err instanceof StaleBeforeConflictError || err instanceof MaterialReceiptNotDraftError) {
+  if (err instanceof StaleBeforeConflictError || err instanceof MaterialReceiptNotDraftError || err instanceof MaterialReceiptNotReceivedError) {
     return { ...errorBody(err.statusCode, err.code, err.message), current_values: err.current_values, expected_values: err.expected_values };
   }
   if (err instanceof RetryTokenConflictError || err instanceof NotFoundError || err instanceof ValidationError) {
@@ -210,6 +245,27 @@ export const materialReceiptRoutes: FastifyPluginAsync<MaterialReceiptRoutesOpti
     }
     const { retry_token: _retryToken, ...input } = write.data;
     const answer = await answered(200, () => materialReceiptService.confirm(request.user!.id, id.trim().toLowerCase(), input, { retryToken: write.retryToken }));
+    return reply.status(answer.statusCode).send(answer.body);
+  });
+
+  /**
+   * POST /material-receipts/:id/correct
+   * F010-T6 (#237): a Receipt Correction ("แก้ไขรายการที่บันทึกผิด") of a Received Material Receipt, with a reason, at the
+   * version the request read: each fix that changes stock adds a Reversal and, where something did happen, a new Stock
+   * Movement.
+   * Protected: requires 'material:manage' capability (Supply Officer)
+   */
+  fastify.post('/material-receipts/:id/correct', { preHandler: [requireCapability('material:manage')] }, async (request, reply) => {
+    const { id } = request.params as { id: string };
+    if (!isValidUuid(id)) {
+      return reply.status(400).send(INVALID_ID);
+    }
+    const write = parseWrite(CorrectSchema, request);
+    if ('refusal' in write) {
+      return reply.status(400).send(write.refusal);
+    }
+    const { retry_token: _retryToken, ...input } = write.data;
+    const answer = await answered(200, () => materialReceiptService.correct(request.user!.id, id.trim().toLowerCase(), input, { retryToken: write.retryToken }));
     return reply.status(answer.statusCode).send(answer.body);
   });
 };

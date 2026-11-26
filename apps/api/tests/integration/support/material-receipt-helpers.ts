@@ -50,6 +50,33 @@ export function materialReceiptHelpers(context: () => { api: ApiHarness; officer
     return { id, number: res.json().receipt_number };
   };
 
+  // F010-T6 (#237): a Receipt Correction (แก้ไขรายการที่บันทึกผิด) of the Material Receipt `id` with `payload`.
+  const correct = (id: string, payload: Record<string, unknown>, token: string = crypto.randomUUID(), actor: Actor = context().officer) =>
+    context().api.post(actor, `/material-receipts/${id}/correct`, payload, { 'x-retry-token': token });
+
+  // The correction that sends the Material Receipt `receipt` as its page read it, every line not voided kept, with the
+  // reason `reason`: a test changes what it fixes.
+  const correctionAsRead = (receipt: any, reason = 'บันทึกผิด') => ({
+    expected_version: receipt.version,
+    received_date: receipt.received_date,
+    source_party_id: receipt.source_party?.id ?? null,
+    source_type_id: receipt.source_type?.id ?? null,
+    receipt_reference: receipt.receipt_reference,
+    note: receipt.note,
+    lines: receipt.lines
+      .filter((kept: { is_voided: boolean }) => !kept.is_voided)
+      .map((kept: any) => ({
+        line_id: kept.id,
+        stock_material_id: kept.stock_material.id,
+        unit_id: kept.unit.unit_id,
+        quantity: kept.quantity,
+        unit_price: kept.unit_price,
+        note: kept.note,
+      })),
+    voided_line_ids: [] as string[],
+    reason,
+  });
+
   const listOf = async (query = '', actor: Actor = context().reader) => {
     const res = await context().api.get(actor, `/material-receipts?${query}`);
     expect(res.statusCode).toBe(200);
@@ -80,5 +107,5 @@ export function materialReceiptHelpers(context: () => { api: ApiHarness; officer
     return context().api.post(context().officer, `${LIST_PATHS[list]}/${id}/${action}`, { expected_version: version, ...extra }, { 'x-retry-token': crypto.randomUUID() });
   };
 
-  return { createDraft, draft, line, complete, receiptOf, replaceDraft, removeDraft, confirm, received, listOf, entryNamed, entryOf, entryWrite };
+  return { createDraft, draft, line, complete, receiptOf, replaceDraft, removeDraft, confirm, received, correct, correctionAsRead, listOf, entryNamed, entryOf, entryWrite };
 }

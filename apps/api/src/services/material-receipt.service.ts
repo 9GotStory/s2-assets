@@ -1,16 +1,18 @@
+import * as crypto from 'node:crypto';
 import pg from 'pg';
 import { bangkokDate, isCalendarDate, normalizeText } from './assignment.service.ts';
 import { normalizeQuantity } from './base-quantity.ts';
 import { catalogListHolds, lockedCatalogListEntry } from './catalog-list.service.ts';
 import { CATALOG_LISTS } from './catalog-list-entries.ts';
-import { parseDecimal } from './exact-decimal.ts';
+import { formatDecimal, parseDecimal } from './exact-decimal.ts';
+import { planCorrection, type CorrectionFacts, type ListEntryRead, type RecordedLine } from './material-receipt-correction.ts';
 import { materialReceiptState, type MaterialReceiptState } from './material-receipt-state.ts';
 import { openingBalancesInEffectOf, type InEffectOpeningBalance } from './opening-balance-read.service.ts';
 import { commitOnce } from './retryable-write.ts';
 import { NotFoundError, StaleBeforeConflictError } from './service-errors.ts';
-import { draftQuantityOf, QUANTITY_REFUSALS, uuidOf, uuidOrNull } from './stock-line-input.ts';
+import { draftQuantityOf, pairKey, QUANTITY_REFUSALS, uuidOf, uuidOrNull } from './stock-line-input.ts';
 import { lockedStockMaterialsForStock, stockMaterialSummariesOf, stockMaterialUnitsOf } from './stock-material-read.service.ts';
-import { recordStockMovement } from './stock-movements.ts';
+import { recordStockMovement, reverseStockMovement, stockMovementsInEffectOf } from './stock-movements.ts';
 import { ValidationError } from './validation-error.ts';
 
 // #231 Q9, P7: a Material Receipt holds 0 to 50 Receipt Lines; its Receipt Reference is at most 500 characters, its
@@ -47,6 +49,34 @@ export interface ExpectedVersionInput {
   expected_version: number;
 }
 
+// F010-T6 (#237): a line of a Receipt Correction: a recorded line by its id, or a new one without (#231 P5).
+export interface ReceiptCorrectionLineInput {
+  line_id?: string | null;
+  stock_material_id: string;
+  unit_id: string;
+  quantity: string;
+  unit_price?: string | null;
+  note?: string | null;
+  // คำนวณใหม่ด้วยอัตราแปลงปัจจุบัน (Q29).
+  recalculate?: boolean;
+}
+
+// F010-T6 (#237): the whole Material Receipt as it should be: its header, every line not voided kept in `lines` or
+// named in `voided_line_ids`, new lines, a reason and the version the request read (#231 P5).
+export interface MaterialReceiptCorrectionInput extends ExpectedVersionInput {
+  received_date: string;
+  source_party_id?: string | null;
+  source_type_id?: string | null;
+  receipt_reference?: string | null;
+  note?: string | null;
+  lines: ReceiptCorrectionLineInput[];
+  voided_line_ids?: string[];
+  reason: string;
+}
+
+// #231 P7: a correction's reason is at most 2000 characters.
+export const RECEIPT_CORRECTION_REASON_MAX_LENGTH = 2000;
+
 // What a create or a replace answers: the Material Receipt and the version a later write expects.
 export interface MaterialReceiptVersion {
   material_receipt_id: string;
@@ -82,6 +112,34 @@ export interface ReceiptConfirmProblem {
   message: string;
   // For a line whose Stock Material has an Opening Balance in effect as of the Received Date or later (Q21).
   in_effect_opening_balance?: InEffectOpeningBalance;
+}
+
+/** F010-T6 (#237): a correction of a Material Receipt that is still a Draft, at the version it has (start comment 7163337923). */
+export class MaterialReceiptNotReceivedError extends Error {
+  statusCode = 409;
+  code = 'NOT_RECEIVED';
+  current_values: CurrentState;
+  expected_values: { version: number };
+
+  constructor(currentValues: CurrentState, expectedValues: { version: number }) {
+    super('The Material Receipt is a Draft: only a Received one can be corrected');
+    this.name = 'MaterialReceiptNotReceivedError';
+    this.current_values = currentValues;
+    this.expected_values = expectedValues;
+  }
+}
+
+/** F010-T6 (#237): a correction refused, with every failing rule and line named, as a confirm is (Q25). Nothing is written. */
+export class MaterialReceiptNotCorrectableError extends Error {
+  statusCode = 409;
+  code = 'NOT_CORRECTABLE';
+  problems: ReceiptConfirmProblem[];
+
+  constructor(problems: ReceiptConfirmProblem[]) {
+    super(`The Material Receipt cannot be corrected: ${problems.map(({ message }) => message).join('; ')}`);
+    this.name = 'MaterialReceiptNotCorrectableError';
+    this.problems = problems;
+  }
 }
 
 /** A confirm refused, with every failing rule and line named (#231 Q25). Nothing is written. */
@@ -130,7 +188,7 @@ const normalizeDraft = (input: MaterialReceiptDraftInput) => {
     // A Stock Material twice only in different Units (Q9); a line without its Unit yet names no pair (#234 start
     // decision 1).
     if (unitId !== null) {
-      const pair = `${stockMaterialId} ${unitId}`;
+      const pair = pairKey({ stock_material_id: stockMaterialId, unit_id: unitId });
       const earlier = pairs.get(pair);
       if (earlier !== undefined) {
         throw new ValidationError(`${field}.unit_id repeats the Stock Material and Unit of lines[${earlier}]`);
@@ -156,6 +214,76 @@ const normalizeDraft = (input: MaterialReceiptDraftInput) => {
 };
 
 type DraftFacts = ReturnType<typeof normalizeDraft>;
+
+// A decimal string already checked, written as PostgreSQL reads it back, so that "3.0" and "3" compare equal.
+const asStored = (value: string): string => formatDecimal((parseDecimal(value) as { scaled: bigint }).scaled);
+
+// F010-T6 (#237): a correction's facts once validated, before any lock. The retry fingerprint covers these.
+const normalizeCorrection = (input: MaterialReceiptCorrectionInput): CorrectionFacts => {
+  const reason = normalizeText(input.reason, 'reason', RECEIPT_CORRECTION_REASON_MAX_LENGTH, '');
+  if (reason === null) {
+    throw new ValidationError('reason must not be blank');
+  }
+  if (!isCalendarDate(input.received_date)) {
+    throw new ValidationError('received_date must be a date (YYYY-MM-DD)');
+  }
+  const lineIds = new Map<string, number>();
+  const pairs = new Map<string, number>();
+  const lines = input.lines.map((line, index) => {
+    const field = `lines[${index}]`;
+    const lineId = uuidOrNull(line.line_id, `${field}.line_id`);
+    if (lineId !== null) {
+      const earlier = lineIds.get(lineId);
+      if (earlier !== undefined) {
+        throw new ValidationError(`${field}.line_id repeats lines[${earlier}]`);
+      }
+      lineIds.set(lineId, index);
+    }
+    const stockMaterialId = uuidOf(line.stock_material_id, `${field}.stock_material_id`);
+    const unitId = uuidOf(line.unit_id, `${field}.unit_id`);
+    // A Stock Material twice only in different Units (Q9).
+    const pair = pairKey({ stock_material_id: stockMaterialId, unit_id: unitId });
+    const earlier = pairs.get(pair);
+    if (earlier !== undefined) {
+      throw new ValidationError(`${field}.unit_id repeats the Stock Material and Unit of lines[${earlier}]`);
+    }
+    pairs.set(pair, index);
+    return {
+      line_id: lineId,
+      stock_material_id: stockMaterialId,
+      unit_id: unitId,
+      quantity: asStored(draftQuantityOf(line.quantity, `${field}.quantity`)),
+      unit_price: line.unit_price === undefined || line.unit_price === null ? null : asStored(unitPriceOf(line.unit_price, `${field}.unit_price`)),
+      note: normalizeText(line.note, `${field}.note`, RECEIPT_LINE_NOTE_MAX_LENGTH, ''),
+      recalculate: line.recalculate === true,
+    };
+  });
+  const voidedIds = new Map<string, number>();
+  const voidedLineIds = (input.voided_line_ids ?? []).map((value, index) => {
+    const field = `voided_line_ids[${index}]`;
+    const lineId = uuidOf(value, field);
+    const kept = lineIds.get(lineId);
+    if (kept !== undefined) {
+      throw new ValidationError(`${field} names lines[${kept}], which the correction keeps`);
+    }
+    const earlier = voidedIds.get(lineId);
+    if (earlier !== undefined) {
+      throw new ValidationError(`${field} repeats voided_line_ids[${earlier}]`);
+    }
+    voidedIds.set(lineId, index);
+    return lineId;
+  });
+  return {
+    received_date: input.received_date,
+    source_party_id: uuidOrNull(input.source_party_id, 'source_party_id'),
+    source_type_id: uuidOrNull(input.source_type_id, 'source_type_id'),
+    receipt_reference: normalizeText(input.receipt_reference, 'receipt_reference', RECEIPT_REFERENCE_MAX_LENGTH, ''),
+    note: normalizeText(input.note, 'note', MATERIAL_RECEIPT_NOTE_MAX_LENGTH, ''),
+    lines,
+    voided_line_ids: voidedLineIds,
+    reason,
+  };
+};
 
 // The lists a Material Receipt names, by the field that names an entry of each.
 const RECEIPT_LISTS = [
@@ -225,6 +353,25 @@ const lockedDraft = async (client: pg.PoolClient, id: string, expectedVersion: n
     throw new MaterialReceiptNotDraftError(current, { version: expectedVersion });
   }
   return current;
+};
+
+/**
+ * F010-T6 (#237): locks the Material Receipt `id` FOR UPDATE, as `lockedDraft` does, so its corrections take turns
+ * (#231 P4), and refuses it when there is none, when its version is not `expectedVersion`, or when it is still a Draft,
+ * in that order.
+ */
+const lockedReceived = async (client: pg.PoolClient, id: string, expectedVersion: number): Promise<void> => {
+  const res = await client.query(`SELECT version, ${materialReceiptState('material_receipts')} AS state FROM material_receipts WHERE id = $1 FOR UPDATE`, [id]);
+  const current: CurrentState | undefined = res.rows[0];
+  if (!current) {
+    throw new NotFoundError('Material Receipt not found');
+  }
+  if (current.version !== expectedVersion) {
+    throw new StaleBeforeConflictError('The Material Receipt changed since it was read', current, { version: expectedVersion });
+  }
+  if (current.state !== 'RECEIVED') {
+    throw new MaterialReceiptNotReceivedError(current, { version: expectedVersion });
+  }
 };
 
 // A stored Draft line, as a confirm reads it.
@@ -427,6 +574,181 @@ export class MaterialReceiptService {
         actorId,
       ]);
       return { material_receipt_id: id, receipt_number: number, version };
+    });
+  }
+
+  /**
+   * F010-T6 (#237): a Receipt Correction (แก้ไขรายการที่บันทึกผิด) of the Received Material Receipt `id`: the whole
+   * Material Receipt as it should be, with a reason, at the version the request read (#231 P5). Under the lock order
+   * (P4) it adds, for each line whose stock effect changes, a Reversal of its Stock Movement in effect and a new Stock
+   * Movement, and for each line it voids only the Reversal, each recorded by the corrector at the one moment of the
+   * correction (P9); then the history entry "corrected". Paperwork fixes move no stock (MRC-08, MRC-11); a correction
+   * that changes nothing is refused (story 36). What it does is worked out in material-receipt-correction.ts.
+   */
+  async correct(actorId: string, id: string, input: MaterialReceiptCorrectionInput, { retryToken }: { retryToken: string }): Promise<MaterialReceiptVersion> {
+    const facts = normalizeCorrection(input);
+    const payload = { material_receipt_id: id, expected_version: input.expected_version, ...facts };
+    return commitOnce(this.db, { actorId, operation: 'material-receipt:correct', retryToken, payload, explicitContinuation: false }, async (client) => {
+      // 1. The Material Receipt, its header and lines.
+      await lockedReceived(client, id, input.expected_version);
+      const header = (
+        await client.query(
+          `SELECT receipt_number::text AS receipt_number, received_date::text AS received_date, source_party_id, source_type_id, receipt_reference, note
+           FROM material_receipts WHERE id = $1`,
+          [id]
+        )
+      ).rows[0];
+      const recordedLines: RecordedLine[] = (
+        await client.query(
+          `SELECT id, position, stock_material_id, unit_id, trim_scale(quantity)::text AS quantity, trim_scale(unit_price)::text AS unit_price, note,
+                  is_voided, stock_movement_id
+           FROM material_receipt_lines WHERE material_receipt_id = $1 ORDER BY position`,
+          [id]
+        )
+      ).rows;
+      const byId = new Map(recordedLines.map((line) => [line.id, line]));
+      // A recorded line not voided, named by `field`.
+      const recordedLine = (lineId: string, field: string): RecordedLine => {
+        const line = byId.get(lineId);
+        if (line === undefined) {
+          throw new ValidationError(`${field} must name a Receipt Line of this Material Receipt`);
+        }
+        if (line.is_voided) {
+          throw new ValidationError(`${field} names a Receipt Line already voided`);
+        }
+        return line;
+      };
+      const recorded = facts.lines.map((line, index) => (line.line_id === null ? undefined : recordedLine(line.line_id, `lines[${index}].line_id`)));
+      const voided = facts.voided_line_ids.map((lineId, index) => recordedLine(lineId, `voided_line_ids[${index}]`));
+      const named = new Set<string | null>([...facts.lines.map(({ line_id: lineId }) => lineId), ...facts.voided_line_ids]);
+      const missing = recordedLines.find((line) => !line.is_voided && !named.has(line.id));
+      if (missing !== undefined) {
+        throw new ValidationError(`lines must keep or void the Receipt Line at position ${missing.position}`);
+      }
+      // Start decision 2: voiding the whole Material Receipt is its own write.
+      if (facts.lines.length === 0) {
+        throw new ValidationError('lines must keep at least one line not voided: void the whole Material Receipt instead');
+      }
+      const added = facts.lines.filter(({ line_id: lineId }) => lineId === null).length;
+      if (recordedLines.length + added > MAX_RECEIPT_LINES) {
+        throw new ValidationError(`lines must hold at most ${MAX_RECEIPT_LINES} lines, voided ones included`);
+      }
+
+      // 2. Every Stock Material its lines name before and after, by id; 3. their Units' list entries, then the Source
+      // Party and Source Type it changes, each read in a statement after the lock.
+      const materialIds = [...new Set([...recordedLines.filter(({ is_voided: isVoided }) => !isVoided), ...facts.lines].map(({ stock_material_id: materialId }) => materialId))];
+      const names = await lockedStockMaterialsForStock(client, materialIds);
+      facts.lines.forEach((line, index) => {
+        if (!names.has(line.stock_material_id)) {
+          throw new ValidationError(`lines[${index}].stock_material_id must name a Stock Material`);
+        }
+      });
+      const units = new Map(await Promise.all(materialIds.map(async (materialId) => [materialId, await stockMaterialUnitsOf(client, materialId, { locked: true })] as const)));
+      facts.lines.forEach((line, index) => {
+        if (!units.get(line.stock_material_id)!.some(({ unit_id: unitId }) => unitId === line.unit_id)) {
+          throw new ValidationError(`lines[${index}].unit_id must name a Unit of its Stock Material`);
+        }
+      });
+      const listRead = async (field: 'source_party_id' | 'source_type_id', kind: 'source-party' | 'source-type') => {
+        if (facts[field] === header[field]) {
+          return null;
+        }
+        const entryOf = async (entryId: string | null): Promise<ListEntryRead | null> => (entryId === null ? null : lockedCatalogListEntry(client, kind, entryId));
+        const after = await entryOf(facts[field]);
+        if (facts[field] !== null && after === null) {
+          throw new ValidationError(`${field} must name a ${CATALOG_LISTS[kind].concept}`);
+        }
+        return { before: await entryOf(header[field]), after };
+      };
+      const sourceParty = await listRead('source_party_id', 'source-party');
+      const sourceType = await listRead('source_type_id', 'source-type');
+      const openingBalances = await openingBalancesInEffectOf(client, materialIds);
+      const movements = await stockMovementsInEffectOf(
+        client,
+        recordedLines.filter(({ is_voided: isVoided }) => !isVoided).map(({ stock_movement_id: movementId }) => movementId!)
+      );
+
+      const plan = planCorrection(
+        facts,
+        { header, recorded, voided, voidedBefore: recordedLines.filter(({ is_voided: isVoided }) => isVoided), nextPosition: recordedLines.length, names, units, openingBalances, movements, sourceParty, sourceType, today: bangkokDate(this.clock()) },
+        Array.from({ length: added }, () => crypto.randomUUID())
+      );
+      if (plan.problems.length > 0) {
+        throw new MaterialReceiptNotCorrectableError(plan.problems);
+      }
+      if (plan.history === null) {
+        throw new ValidationError('This Receipt Correction changes nothing');
+      }
+
+      const updated = await client.query(
+        `UPDATE material_receipts SET received_date = $2, source_party_id = $3, source_type_id = $4, receipt_reference = $5, note = $6, version = version + 1
+         WHERE id = $1 RETURNING version`,
+        [id, facts.received_date, facts.source_party_id, facts.source_type_id, facts.receipt_reference, facts.note]
+      );
+      const { version } = updated.rows[0];
+      // The Reversals, of each line whose stock effect changes and each line voided.
+      const moved = plan.kept.filter(({ movement }) => movement !== null);
+      for (const { stock_movement_id: movementId } of [...moved.map(({ recorded: line }) => line), ...plan.voided]) {
+        await reverseStockMovement(client, movementId!, actorId);
+      }
+      // A line that moves lets go of its Stock Movement and its Unit first, so that two lines may trade Units (Q9).
+      await client.query('UPDATE material_receipt_lines SET stock_movement_id = NULL, unit_id = NULL WHERE id = ANY($1::uuid[])', [moved.map(({ recorded: line }) => line.id)]);
+      await client.query('UPDATE material_receipt_lines SET stock_movement_id = NULL, is_voided = true WHERE id = ANY($1::uuid[])', [plan.voided.map((line) => line.id)]);
+      await client.query(
+        `UPDATE material_receipt_lines l
+         SET stock_material_id = kept.stock_material_id, unit_id = kept.unit_id, quantity = kept.quantity, unit_price = kept.unit_price, note = kept.note
+         FROM unnest($1::uuid[], $2::uuid[], $3::uuid[], $4::numeric[], $5::numeric[], $6::text[]) AS kept(id, stock_material_id, unit_id, quantity, unit_price, note)
+         WHERE l.id = kept.id`,
+        [
+          plan.kept.map(({ recorded: line }) => line.id),
+          plan.kept.map(({ line }) => line.stock_material_id),
+          plan.kept.map(({ line }) => line.unit_id),
+          plan.kept.map(({ line }) => line.quantity),
+          plan.kept.map(({ line }) => line.unit_price),
+          plan.kept.map(({ line }) => line.note),
+        ]
+      );
+      await client.query(
+        `INSERT INTO material_receipt_lines (id, material_receipt_id, position, stock_material_id, unit_id, quantity, unit_price, note)
+         SELECT line.id, $1, line.position, line.stock_material_id, line.unit_id, line.quantity, line.unit_price, line.note
+         FROM unnest($2::uuid[], $3::smallint[], $4::uuid[], $5::uuid[], $6::numeric[], $7::numeric[], $8::text[]) AS line(id, position, stock_material_id, unit_id, quantity, unit_price, note)`,
+        [
+          id,
+          plan.added.map((line) => line.id),
+          plan.added.map(({ position }) => position),
+          plan.added.map(({ line }) => line.stock_material_id),
+          plan.added.map(({ line }) => line.unit_id),
+          plan.added.map(({ line }) => line.quantity),
+          plan.added.map(({ line }) => line.unit_price),
+          plan.added.map(({ line }) => line.note),
+        ]
+      );
+      // The new Stock Movements, on the Received Date as corrected.
+      for (const { lineId, stockMaterialId, movement } of [
+        ...moved.map(({ recorded: line, line: sent, movement }) => ({ lineId: line.id, stockMaterialId: sent.stock_material_id, movement: movement! })),
+        ...plan.added.map(({ id: lineId, line, movement }) => ({ lineId, stockMaterialId: line.stock_material_id, movement })),
+      ]) {
+        const movementId = await recordStockMovement(client, {
+          stock_material_id: stockMaterialId,
+          kind: 'MATERIAL_RECEIPT',
+          material_receipt_line_id: lineId,
+          effective_date: facts.received_date,
+          original_quantity: movement.original_quantity,
+          original_unit_id: movement.original_unit_id,
+          conversion_snapshot: movement.conversion_snapshot,
+          base_quantity: movement.base_quantity,
+          recorded_by: actorId,
+        });
+        await client.query('UPDATE material_receipt_lines SET stock_movement_id = $2 WHERE id = $1', [lineId, movementId]);
+      }
+      await client.query(`INSERT INTO material_receipt_history (material_receipt_id, version, kind, facts, reason, recorded_by) VALUES ($1, $2, 'CORRECTED', $3, $4, $5)`, [
+        id,
+        version,
+        JSON.stringify(plan.history),
+        facts.reason,
+        actorId,
+      ]);
+      return { material_receipt_id: id, version };
     });
   }
 }

@@ -45,6 +45,7 @@ interface Fixtures {
   requestNumber: string;
   openingBalanceId: string;
   materialReceiptId: string;
+  receivedReceiptId: string;
 }
 
 // Each route of router.tsx: the page a Read-only User who is also a Requester and a Supply Officer opens and its
@@ -97,6 +98,7 @@ const SMOKE: Record<string, { url: (f: Fixtures) => string; heading: (f: Fixture
   '/material-receipts/new': { url: () => '/material-receipts/new', heading: () => 'เพิ่มรายการรับวัสดุ' },
   '/material-receipts/:id': { url: (f) => `/material-receipts/${f.materialReceiptId}`, heading: () => 'รายการรับวัสดุ ร่าง' },
   '/material-receipts/:id/edit': { url: (f) => `/material-receipts/${f.materialReceiptId}/edit`, heading: () => 'แก้ไขร่าง' },
+  '/material-receipts/:id/correct': { url: (f) => `/material-receipts/${f.receivedReceiptId}/correct`, heading: () => 'แก้ไขรายการที่บันทึกผิด' },
 };
 
 // The paths router.tsx declares, read from its text: importing it builds a browser router, which needs a window.
@@ -221,6 +223,14 @@ test.describe.serial('Route smoke: Real SPA -> Composed API -> PostgreSQL (Seam 
       { lines: [{ stock_material_id: stockMaterialId, unit_id: unit.id, quantity: '3' }] },
       { retryToken: crypto.randomUUID() }
     );
+    // F010-T6 (#237): a Received Material Receipt, which the Receipt Correction form reads back whole.
+    const receipts = new MaterialReceiptService({ db: pool });
+    const { material_receipt_id: receivedReceiptId } = await receipts.create(
+      officerUserId,
+      { received_date: '2026-01-15', lines: [{ stock_material_id: stockMaterialId, unit_id: unit.id, quantity: '2' }] },
+      { retryToken: crypto.randomUUID() }
+    );
+    await receipts.confirm(officerUserId, receivedReceiptId, { expected_version: 1 }, { retryToken: crypto.randomUUID() });
     fixtures = {
       assetId: asset.id,
       assetName,
@@ -236,6 +246,7 @@ test.describe.serial('Route smoke: Real SPA -> Composed API -> PostgreSQL (Seam 
       requestNumber,
       openingBalanceId,
       materialReceiptId,
+      receivedReceiptId,
     };
 
     const testProxy: Record<string, any> = {};

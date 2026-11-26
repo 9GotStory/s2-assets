@@ -78,7 +78,7 @@ export interface MaterialReceiptDetail {
   can_manage: boolean;
 }
 
-// A confirm refused, each failing rule named by its field (#231 Q25).
+// A confirm or a Receipt Correction refused, each failing rule named by its field (#231 Q25).
 export interface ReceiptConfirmProblem {
   field: string;
   message: string;
@@ -104,11 +104,47 @@ export const MATERIAL_RECEIPT_STATE_LABELS: Record<MaterialReceiptState, string>
   RECEIVED: 'รับแล้ว',
 };
 
+// F010-T6 (#237): a Receipt Correction (แก้ไขรายการที่บันทึกผิด), the voiding of one of its lines (ยกเลิกรายการ), which
+// then stays shown as ยกเลิกแล้ว, and a line's recalculation at today's Conversion Factor (GLOSSARY.md, Receipt
+// Correction).
+export const RECEIPT_CORRECTION_LABEL = 'แก้ไขรายการที่บันทึกผิด';
+export const VOID_LINE_LABEL = 'ยกเลิกรายการ';
+export const VOIDED_LINE_LABEL = 'ยกเลิกแล้ว';
+export const RECALCULATE_LABEL = 'คำนวณใหม่ด้วยอัตราแปลงปัจจุบัน';
+
 export const MATERIAL_RECEIPT_HISTORY_KIND_LABELS: Record<MaterialReceiptHistoryEntry['kind'], string> = {
   CONFIRMED: CONFIRM_RECEIPT_LABEL,
-  CORRECTED: 'แก้ไขรายการที่บันทึกผิด',
-  VOIDED: 'ยกเลิกรายการ',
+  CORRECTED: RECEIPT_CORRECTION_LABEL,
+  VOIDED: VOID_LINE_LABEL,
 };
+
+// F010-T6 (#237): a value a Receipt Correction changed, as it was and as it became; a name as it was then.
+export interface ReceiptCorrectionChange {
+  field: string;
+  before: string | { id: string; name: string } | null;
+  after: string | { id: string; name: string } | null;
+}
+
+// A line a Receipt Correction added or voided, as it was then.
+export interface ReceiptCorrectionLineFacts {
+  stock_material: { id: string; name: string };
+  unit: { id: string; name: string };
+  quantity: string;
+  unit_price: string | null;
+  note: string | null;
+  conversion_factor: string;
+  base_quantity: string;
+}
+
+// The facts of a CORRECTED history entry: each header field it changed, then each line it changed, added or voided.
+export interface ReceiptCorrectionFacts {
+  receipt_number: string;
+  changes: ReceiptCorrectionChange[];
+  lines: (
+    | { change: 'CHANGED'; line_id: string; position: number; changes: ReceiptCorrectionChange[] }
+    | { change: 'ADDED' | 'VOIDED'; line_id: string; position: number; line: ReceiptCorrectionLineFacts }
+  )[];
+}
 
 /** "เลขที่รับ <n>", or "-" while Draft. */
 export const receiptNumberLine = (number: string | null): string => (number === null ? '-' : `${RECEIPT_NUMBER_LABEL} ${number}`);
