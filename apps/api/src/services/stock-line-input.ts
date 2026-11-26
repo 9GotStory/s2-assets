@@ -1,6 +1,6 @@
 import type { QuantityRefusal } from './base-quantity.ts';
 import { isValidUuid } from './capability.service.ts';
-import { parseDecimal } from './exact-decimal.ts';
+import { formatDecimal, parseDecimal } from './exact-decimal.ts';
 import { ValidationError } from './validation-error.ts';
 
 // F010-T3 (#234): what a Draft line of a stock record checks as it is typed, shared by the Opening Balance (T2) and the
@@ -40,6 +40,12 @@ export const draftQuantityOf = (value: string, field: string): string => {
   }
   return value;
 };
+
+/**
+ * F010-T6 (#237): a decimal string already checked, written as PostgreSQL reads it back, so a correction compares equal
+ * values as equal. F010-T7 (#238): the Opening Balance correction uses it too.
+ */
+export const asStored = (value: string): string => formatDecimal((parseDecimal(value) as { scaled: bigint }).scaled);
 
 /** A UUID, in lower case. */
 export const uuidOf = (value: string, field: string): string => {

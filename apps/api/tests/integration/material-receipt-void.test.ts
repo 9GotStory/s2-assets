@@ -131,10 +131,13 @@ describe('Material Receipt void (Seam A - F010-T7)', () => {
           ],
         },
       });
-      const [entry] = (await listOf(`search=${number}`)).items;
+      const entry = (await listOf(`search=${number}`)).items.find(({ id: listed }: any) => listed === id);
       expect(entry).toMatchObject({ id, state: 'VOIDED', line_count: 2 });
-      expect((await listOf(`search=${number}&state=voided`)).items.map(({ id: listed }: any) => listed)).toEqual([id]);
-      expect((await listOf(`search=${number}&state=received`)).items).toEqual([]);
+      // A search by number finds every number holding its digits, so the filters are read by state and by id.
+      const voidedOnes = (await listOf(`search=${number}&state=voided`)).items;
+      expect(voidedOnes.map(({ id: listed }: any) => listed)).toContain(id);
+      expect(voidedOnes.every(({ state }: any) => state === 'VOIDED')).toBe(true);
+      expect((await listOf(`search=${number}&state=received`)).items.map(({ id: listed }: any) => listed)).not.toContain(id);
     });
 
     it('reverses each line’s Stock Movement in effect after a correction, never one already reversed, and leaves a line voided before as it was', async () => {

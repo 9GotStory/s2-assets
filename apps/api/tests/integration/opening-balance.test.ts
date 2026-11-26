@@ -504,7 +504,7 @@ describe('Opening Balance (Seam A - F010-T2)', () => {
       expect((await listOf(`search=${encodeURIComponent(tag)}&state=confirmed`)).items.map(({ id }: any) => id)).toEqual([second.id]);
       expect((await listOf(`search=${third.number}&state=confirmed`)).items.map(({ id }: any) => id)).toContain(third.id);
       expect((await listOf(`search=${encodeURIComponent(tag)}`, officer)).can_manage).toBe(true);
-      const refused = await api.get(readonly, '/opening-balances?state=voided');
+      const refused = await api.get(readonly, '/opening-balances?state=cancelled');
       expect(refused.statusCode).toBe(400);
       expect(refused.json()).toMatchObject({ code: 'VALIDATION_FAILED', message: expect.stringContaining('state') });
     });

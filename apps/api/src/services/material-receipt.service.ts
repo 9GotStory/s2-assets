@@ -4,14 +4,14 @@ import { bangkokDate, isCalendarDate, normalizeText } from './assignment.service
 import { normalizeQuantity } from './base-quantity.ts';
 import { catalogListHolds, lockedCatalogListEntry } from './catalog-list.service.ts';
 import { CATALOG_LISTS } from './catalog-list-entries.ts';
-import { formatDecimal, parseDecimal } from './exact-decimal.ts';
+import { parseDecimal } from './exact-decimal.ts';
 import { lineFactsOf, planCorrection, type CorrectionFacts, type ListEntryRead, type RecordedLine } from './material-receipt-correction.ts';
 import { stockOf } from './stock-line-correction.ts';
 import { materialReceiptState, type MaterialReceiptState } from './material-receipt-state.ts';
 import { openingBalancesInEffectOf, type InEffectOpeningBalance } from './opening-balance-read.service.ts';
 import { commitOnce } from './retryable-write.ts';
 import { NotFoundError, StaleBeforeConflictError } from './service-errors.ts';
-import { draftQuantityOf, pairKey, QUANTITY_REFUSALS, uuidOf, uuidOrNull } from './stock-line-input.ts';
+import { asStored, draftQuantityOf, pairKey, QUANTITY_REFUSALS, uuidOf, uuidOrNull } from './stock-line-input.ts';
 import { lockedStockMaterialsForStock, stockMaterialSummariesOf, stockMaterialUnitsOf } from './stock-material-read.service.ts';
 import { recordStockMovement, reverseStockMovement, stockMovementsInEffectOf } from './stock-movements.ts';
 import { ValidationError } from './validation-error.ts';
@@ -238,9 +238,6 @@ const normalizeDraft = (input: MaterialReceiptDraftInput) => {
 };
 
 type DraftFacts = ReturnType<typeof normalizeDraft>;
-
-// A decimal string already checked, written as PostgreSQL reads it back, so that "3.0" and "3" compare equal.
-const asStored = (value: string): string => formatDecimal((parseDecimal(value) as { scaled: bigint }).scaled);
 
 // F010-T6 (#237): a correction's facts once validated, before any lock. The retry fingerprint covers these.
 const normalizeCorrection = (input: MaterialReceiptCorrectionInput): CorrectionFacts => {

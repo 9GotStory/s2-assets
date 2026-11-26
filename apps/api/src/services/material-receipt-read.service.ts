@@ -128,6 +128,28 @@ export async function materialReceiptsInEffectOf(runner: pg.Pool | pg.PoolClient
   return new Map(res.rows.map(({ stock_material_id: id, ...receipt }: any) => [id, receipt]));
 }
 
+// F010-T7 (#238): a Material Receipt holding a Stock Material's Stock Movement in effect, with its Received Date.
+export interface DatedMaterialReceipt extends InEffectMaterialReceipt {
+  received_date: string;
+}
+
+/**
+ * F010-T7 (#238): of the Stock Materials `ids`, those with a Stock Movement in effect from a Material Receipt dated on or
+ * before `date`, each with the earliest such Material Receipt, the lowest Receipt Number first on one date. An Opening
+ * Balance correction refuses an As-of Date that one would not come after (#231 Q21; start comment 7184458771).
+ */
+export async function materialReceiptsInEffectOnOrBefore(runner: pg.Pool | pg.PoolClient, ids: string[], date: string): Promise<Map<string, DatedMaterialReceipt>> {
+  const res = await runner.query(
+    `SELECT DISTINCT ON (l.stock_material_id) l.stock_material_id, mr.id AS material_receipt_id, mr.receipt_number::text AS receipt_number, mr.received_date::text AS received_date
+     FROM material_receipt_lines l
+     JOIN material_receipts mr ON mr.id = l.material_receipt_id
+     WHERE l.stock_material_id = ANY($1::uuid[]) AND l.stock_movement_id IS NOT NULL AND mr.received_date <= $2::date
+     ORDER BY l.stock_material_id, mr.received_date, mr.receipt_number`,
+    [ids, date]
+  );
+  return new Map(res.rows.map(({ stock_material_id: id, ...receipt }: any) => [id, receipt]));
+}
+
 // The column of material_receipts that names an entry of each list a Material Receipt names.
 const USAGE_COLUMNS = { 'source-party': 'source_party_id', 'source-type': 'source_type_id' } as const;
 

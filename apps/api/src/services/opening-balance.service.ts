@@ -1,15 +1,18 @@
+import * as crypto from 'node:crypto';
 import pg from 'pg';
 import { bangkokDate, isCalendarDate, normalizeText } from './assignment.service.ts';
 import { normalizeQuantity } from './base-quantity.ts';
 import { stockFiguresOf } from './current-stock.ts';
-import { materialReceiptsInEffectOf, type InEffectMaterialReceipt } from './material-receipt-read.service.ts';
+import { materialReceiptsInEffectOf, materialReceiptsInEffectOnOrBefore, type InEffectMaterialReceipt } from './material-receipt-read.service.ts';
+import { balanceLineFactsOf, planBalanceCorrection, type BalanceCorrectionFacts } from './opening-balance-correction.ts';
 import { openingBalancesInEffectOf } from './opening-balance-read.service.ts';
 import { openingBalanceState, type OpeningBalanceState } from './opening-balance-state.ts';
 import { commitOnce } from './retryable-write.ts';
 import { NotFoundError, StaleBeforeConflictError } from './service-errors.ts';
-import { draftQuantityOf, QUANTITY_REFUSALS, uuidOf, uuidOrNull } from './stock-line-input.ts';
+import { stockOf, type RecordedStockLine } from './stock-line-correction.ts';
+import { asStored, draftQuantityOf, QUANTITY_REFUSALS, uuidOf, uuidOrNull } from './stock-line-input.ts';
 import { lockedStockMaterialsForStock, stockMaterialSummariesOf, stockMaterialUnitsOf } from './stock-material-read.service.ts';
-import { recordStockMovement } from './stock-movements.ts';
+import { recordStockMovement, reverseStockMovement, stockMovementsInEffectOf } from './stock-movements.ts';
 import { ValidationError } from './validation-error.ts';
 
 // #231 Q25, P7: an Opening Balance holds 0 to 50 lines; its source is at most 500 characters, its note at most 2000,
@@ -42,6 +45,36 @@ export interface ReplaceDraftInput extends OpeningBalanceDraftInput {
 export interface ExpectedVersionInput {
   expected_version: number;
 }
+
+// F010-T7 (#238): a line of an Opening Balance correction: a recorded line by its id, or a new one without (#231 P5).
+export interface OpeningBalanceCorrectionLineInput {
+  line_id?: string | null;
+  stock_material_id: string;
+  unit_id: string;
+  quantity: string;
+  note?: string | null;
+  // คำนวณใหม่ด้วยอัตราแปลงปัจจุบัน (Q29).
+  recalculate?: boolean;
+}
+
+// F010-T7 (#238): the whole Opening Balance as it should be: its header, every line not voided kept in `lines` or named
+// in `voided_line_ids`, new lines, a reason and the version the request read (#231 P5; start comment 7184458771).
+export interface OpeningBalanceCorrectionInput extends ExpectedVersionInput {
+  as_of_date: string;
+  source?: string | null;
+  note?: string | null;
+  lines: OpeningBalanceCorrectionLineInput[];
+  voided_line_ids?: string[];
+  reason: string;
+}
+
+// F010-T7 (#238): the void of a whole Opening Balance: a reason and the version the request read.
+export interface OpeningBalanceVoidInput extends ExpectedVersionInput {
+  reason: string;
+}
+
+// #231 P7: a correction's or a void's reason is at most 2000 characters.
+export const OPENING_BALANCE_REASON_MAX_LENGTH = 2000;
 
 // What a create or a replace answers: the Opening Balance and the version a later write expects.
 export interface OpeningBalanceVersion {
@@ -80,6 +113,49 @@ export interface ConfirmProblem {
   // Or, for one from a Receipt Line: the Material Receipt of the lowest Receipt Number that holds one (#234 start
   // decision 3).
   in_effect_material_receipt?: InEffectMaterialReceipt;
+}
+
+/** F010-T7 (#238): a correction or a void of an Opening Balance that is still a Draft, at the version it has. */
+export class OpeningBalanceNotConfirmedError extends Error {
+  statusCode = 409;
+  code = 'NOT_CONFIRMED';
+  current_values: CurrentState;
+  expected_values: { version: number };
+
+  constructor(currentValues: CurrentState, expectedValues: { version: number }) {
+    super('The Opening Balance is a Draft: only a confirmed one can be corrected or voided');
+    this.name = 'OpeningBalanceNotConfirmedError';
+    this.current_values = currentValues;
+    this.expected_values = expectedValues;
+  }
+}
+
+/** F010-T7 (#238): a correction or a void of an Opening Balance voided as a whole, at the version it has. */
+export class OpeningBalanceVoidedError extends Error {
+  statusCode = 409;
+  code = 'VOIDED';
+  current_values: CurrentState;
+  expected_values: { version: number };
+
+  constructor(currentValues: CurrentState, expectedValues: { version: number }) {
+    super('The Opening Balance is voided: it can be neither corrected nor voided again');
+    this.name = 'OpeningBalanceVoidedError';
+    this.current_values = currentValues;
+    this.expected_values = expectedValues;
+  }
+}
+
+/** F010-T7 (#238): a correction refused, with every failing rule and line named, as a confirm is (Q25). Nothing is written. */
+export class OpeningBalanceNotCorrectableError extends Error {
+  statusCode = 409;
+  code = 'NOT_CORRECTABLE';
+  problems: ConfirmProblem[];
+
+  constructor(problems: ConfirmProblem[]) {
+    super(`The Opening Balance cannot be corrected: ${problems.map(({ message }) => message).join('; ')}`);
+    this.name = 'OpeningBalanceNotCorrectableError';
+    this.problems = problems;
+  }
 }
 
 /** A confirm refused, with every failing rule and line named (#231 Q25). Nothing is written. */
@@ -134,6 +210,75 @@ const normalizeDraft = (input: OpeningBalanceDraftInput) => {
 
 type DraftFacts = ReturnType<typeof normalizeDraft>;
 
+// F010-T7 (#238): a reason, checked before any lock: nonblank, at most 2000 characters.
+const reasonOf = (value: string): string => {
+  const reason = normalizeText(value, 'reason', OPENING_BALANCE_REASON_MAX_LENGTH, '');
+  if (reason === null) {
+    throw new ValidationError('reason must not be blank');
+  }
+  return reason;
+};
+
+// F010-T7 (#238): a correction's facts once validated, before any lock, as a Receipt Correction's are (T6). The retry
+// fingerprint covers these.
+const normalizeCorrection = (input: OpeningBalanceCorrectionInput): BalanceCorrectionFacts => {
+  const reason = reasonOf(input.reason);
+  if (!isCalendarDate(input.as_of_date)) {
+    throw new ValidationError('as_of_date must be a date (YYYY-MM-DD)');
+  }
+  const lineIds = new Map<string, number>();
+  const materials = new Map<string, number>();
+  const lines = input.lines.map((line, index) => {
+    const field = `lines[${index}]`;
+    const lineId = uuidOrNull(line.line_id, `${field}.line_id`);
+    if (lineId !== null) {
+      const earlier = lineIds.get(lineId);
+      if (earlier !== undefined) {
+        throw new ValidationError(`${field}.line_id repeats lines[${earlier}]`);
+      }
+      lineIds.set(lineId, index);
+    }
+    // Each Stock Material once (Q13, story 42).
+    const stockMaterialId = uuidOf(line.stock_material_id, `${field}.stock_material_id`);
+    const earlier = materials.get(stockMaterialId);
+    if (earlier !== undefined) {
+      throw new ValidationError(`${field}.stock_material_id repeats the Stock Material of lines[${earlier}]`);
+    }
+    materials.set(stockMaterialId, index);
+    return {
+      line_id: lineId,
+      stock_material_id: stockMaterialId,
+      unit_id: uuidOf(line.unit_id, `${field}.unit_id`),
+      quantity: asStored(draftQuantityOf(line.quantity, `${field}.quantity`)),
+      note: normalizeText(line.note, `${field}.note`, OPENING_BALANCE_LINE_NOTE_MAX_LENGTH, ''),
+      recalculate: line.recalculate === true,
+    };
+  });
+  const voidedIds = new Map<string, number>();
+  const voidedLineIds = (input.voided_line_ids ?? []).map((value, index) => {
+    const field = `voided_line_ids[${index}]`;
+    const lineId = uuidOf(value, field);
+    const kept = lineIds.get(lineId);
+    if (kept !== undefined) {
+      throw new ValidationError(`${field} names lines[${kept}], which the correction keeps`);
+    }
+    const earlier = voidedIds.get(lineId);
+    if (earlier !== undefined) {
+      throw new ValidationError(`${field} repeats voided_line_ids[${earlier}]`);
+    }
+    voidedIds.set(lineId, index);
+    return lineId;
+  });
+  return {
+    as_of_date: input.as_of_date,
+    source: normalizeText(input.source, 'source', OPENING_BALANCE_SOURCE_MAX_LENGTH, ''),
+    note: normalizeText(input.note, 'note', OPENING_BALANCE_NOTE_MAX_LENGTH, ''),
+    lines,
+    voided_line_ids: voidedLineIds,
+    reason,
+  };
+};
+
 // Refuses a Draft line naming no Stock Material, or a Unit its Stock Material does not have; an Inactive Unit waits
 // for confirm, since it can be made active again first (#233 start decision 1).
 const refuseUnknownChoices = async (client: pg.PoolClient, facts: DraftFacts): Promise<void> => {
@@ -186,6 +331,33 @@ const lockedDraft = async (client: pg.PoolClient, id: string, expectedVersion: n
   }
   return current;
 };
+
+/**
+ * F010-T7 (#238): locks the Opening Balance `id` FOR UPDATE, as `lockedDraft` does, so its corrections and its void take
+ * turns (#231 P4), and refuses it when there is none, when its version is not `expectedVersion`, when it is still a
+ * Draft, or when it is voided, in that order. The state reads the lines too, and a statement that waited on the lock
+ * still sees them as they were when it began, so it is read in a statement of its own, after the lock.
+ */
+const lockedConfirmed = async (client: pg.PoolClient, id: string, expectedVersion: number): Promise<void> => {
+  const locked = await client.query('SELECT 1 FROM opening_balances WHERE id = $1 FOR UPDATE', [id]);
+  if (locked.rowCount === 0) {
+    throw new NotFoundError('Opening Balance not found');
+  }
+  const current: CurrentState = (await client.query(`SELECT version, ${openingBalanceState('opening_balances')} AS state FROM opening_balances WHERE id = $1`, [id])).rows[0];
+  if (current.version !== expectedVersion) {
+    throw new StaleBeforeConflictError('The Opening Balance changed since it was read', current, { version: expectedVersion });
+  }
+  if (current.state === 'DRAFT') {
+    throw new OpeningBalanceNotConfirmedError(current, { version: expectedVersion });
+  }
+  if (current.state === 'VOIDED') {
+    throw new OpeningBalanceVoidedError(current, { version: expectedVersion });
+  }
+};
+
+// F010-T7 (#238): a confirmed line, as a correction and a void read it.
+const RECORDED_LINES = `SELECT id, position, stock_material_id, unit_id, trim_scale(quantity)::text AS quantity, note, is_voided, stock_movement_id
+                        FROM opening_balance_lines WHERE opening_balance_id = $1`;
 
 // A stored Draft line, as a confirm reads it.
 interface StoredLine {
@@ -377,6 +549,220 @@ export class OpeningBalanceService {
         actorId,
       ]);
       return { opening_balance_id: id, opening_balance_number: number, version };
+    });
+  }
+
+  /**
+   * F010-T7 (#238): a correction (แก้ไขรายการที่บันทึกผิด) of the confirmed Opening Balance `id`: the whole Opening
+   * Balance as it should be, with a reason, at the version the request read, the same way as a Receipt Correction (T6;
+   * #231 Q20, P5). Under the lock order (P4) it adds, for each line whose stock effect changes, a Reversal of its Stock
+   * Movement in effect and a new Stock Movement on the As-of Date as corrected, and for each line it voids only the
+   * Reversal, each recorded by the corrector at the one moment of the correction (P9); then the history entry
+   * "corrected". A correction that changes nothing is refused (story 36). What it does is worked out in
+   * opening-balance-correction.ts.
+   */
+  async correct(actorId: string, id: string, input: OpeningBalanceCorrectionInput, { retryToken }: { retryToken: string }): Promise<OpeningBalanceVersion> {
+    const facts = normalizeCorrection(input);
+    const payload = { opening_balance_id: id, expected_version: input.expected_version, ...facts };
+    return commitOnce(this.db, { actorId, operation: 'opening-balance:correct', retryToken, payload, explicitContinuation: false }, async (client) => {
+      // 1. The Opening Balance, its header and lines.
+      await lockedConfirmed(client, id, input.expected_version);
+      const header = (
+        await client.query('SELECT opening_balance_number::text AS opening_balance_number, as_of_date::text AS as_of_date, source, note FROM opening_balances WHERE id = $1', [id])
+      ).rows[0];
+      const recordedLines: RecordedStockLine[] = (await client.query(`${RECORDED_LINES} ORDER BY position`, [id])).rows;
+      const byId = new Map(recordedLines.map((line) => [line.id, line]));
+      // A recorded line not voided, named by `field`.
+      const recordedLine = (lineId: string, field: string): RecordedStockLine => {
+        const line = byId.get(lineId);
+        if (line === undefined) {
+          throw new ValidationError(`${field} must name a line of this Opening Balance`);
+        }
+        if (line.is_voided) {
+          throw new ValidationError(`${field} names a line already voided`);
+        }
+        return line;
+      };
+      const recorded = facts.lines.map((line, index) => (line.line_id === null ? undefined : recordedLine(line.line_id, `lines[${index}].line_id`)));
+      const voided = facts.voided_line_ids.map((lineId, index) => recordedLine(lineId, `voided_line_ids[${index}]`));
+      const named = new Set<string | null>([...facts.lines.map(({ line_id: lineId }) => lineId), ...facts.voided_line_ids]);
+      const missing = recordedLines.find((line) => !line.is_voided && !named.has(line.id));
+      if (missing !== undefined) {
+        throw new ValidationError(`lines must keep or void the line at position ${missing.position}`);
+      }
+      // #237 start decision 2, as T6: voiding the whole Opening Balance is its own write.
+      if (facts.lines.length === 0) {
+        throw new ValidationError('lines must keep at least one line not voided: void the whole Opening Balance instead');
+      }
+      const added = facts.lines.filter(({ line_id: lineId }) => lineId === null).length;
+      if (recordedLines.length + added > MAX_OPENING_BALANCE_LINES) {
+        throw new ValidationError(`lines must hold at most ${MAX_OPENING_BALANCE_LINES} lines, voided ones included`);
+      }
+
+      // 2. Every Stock Material its lines name before and after, by id; 3. their Units' list entries, each read in a
+      // statement after the lock; then what holds a Stock Movement in effect of the Stock Materials it sends.
+      const kept = recordedLines.filter(({ is_voided: isVoided }) => !isVoided);
+      const materialIds = [...new Set([...kept, ...facts.lines].map(({ stock_material_id: materialId }) => materialId))];
+      const names = await lockedStockMaterialsForStock(client, materialIds);
+      facts.lines.forEach((line, index) => {
+        if (!names.has(line.stock_material_id)) {
+          throw new ValidationError(`lines[${index}].stock_material_id must name a Stock Material`);
+        }
+      });
+      const units = new Map(await Promise.all(materialIds.map(async (materialId) => [materialId, await stockMaterialUnitsOf(client, materialId, { locked: true })] as const)));
+      facts.lines.forEach((line, index) => {
+        if (!units.get(line.stock_material_id)!.some(({ unit_id: unitId }) => unitId === line.unit_id)) {
+          throw new ValidationError(`lines[${index}].unit_id must name a Unit of its Stock Material`);
+        }
+      });
+      const sentIds = facts.lines.map(({ stock_material_id: materialId }) => materialId);
+      const movements = await stockMovementsInEffectOf(
+        client,
+        kept.map(({ stock_movement_id: movementId }) => movementId!)
+      );
+      const plan = planBalanceCorrection(
+        facts,
+        {
+          id,
+          header,
+          recordedLines,
+          recorded,
+          voided,
+          nextPosition: recordedLines.length,
+          names,
+          units,
+          movements,
+          openingBalances: await openingBalancesInEffectOf(client, sentIds),
+          receipts: await materialReceiptsInEffectOf(client, sentIds),
+          receiptsOnOrBefore: facts.as_of_date === header.as_of_date ? new Map() : await materialReceiptsInEffectOnOrBefore(client, sentIds, facts.as_of_date),
+          today: bangkokDate(this.clock()),
+        },
+        Array.from({ length: added }, () => crypto.randomUUID())
+      );
+      if (plan.problems.length > 0) {
+        throw new OpeningBalanceNotCorrectableError(plan.problems);
+      }
+      if (plan.history === null) {
+        throw new ValidationError('This correction changes nothing');
+      }
+
+      const { version } = (
+        await client.query('UPDATE opening_balances SET as_of_date = $2, source = $3, note = $4, version = version + 1 WHERE id = $1 RETURNING version', [
+          id,
+          facts.as_of_date,
+          facts.source,
+          facts.note,
+        ])
+      ).rows[0];
+      // The Reversals, of each line whose stock effect changes and each line voided.
+      const moved = plan.kept.filter(({ movement }) => movement !== null);
+      for (const { stock_movement_id: movementId } of [...moved.map(({ recorded: line }) => line), ...plan.voided]) {
+        await reverseStockMovement(client, movementId!, actorId);
+      }
+      await client.query('UPDATE opening_balance_lines SET stock_movement_id = NULL WHERE id = ANY($1::uuid[])', [moved.map(({ recorded: line }) => line.id)]);
+      await client.query('UPDATE opening_balance_lines SET stock_movement_id = NULL, is_voided = true WHERE id = ANY($1::uuid[])', [plan.voided.map((line) => line.id)]);
+      await client.query(
+        `UPDATE opening_balance_lines l
+         SET stock_material_id = kept.stock_material_id, unit_id = kept.unit_id, quantity = kept.quantity, note = kept.note
+         FROM unnest($1::uuid[], $2::uuid[], $3::uuid[], $4::numeric[], $5::text[]) AS kept(id, stock_material_id, unit_id, quantity, note)
+         WHERE l.id = kept.id`,
+        [
+          plan.kept.map(({ recorded: line }) => line.id),
+          plan.kept.map(({ line }) => line.stock_material_id),
+          plan.kept.map(({ line }) => line.unit_id),
+          plan.kept.map(({ line }) => line.quantity),
+          plan.kept.map(({ line }) => line.note),
+        ]
+      );
+      await client.query(
+        `INSERT INTO opening_balance_lines (id, opening_balance_id, position, stock_material_id, unit_id, quantity, note)
+         SELECT line.id, $1, line.position, line.stock_material_id, line.unit_id, line.quantity, line.note
+         FROM unnest($2::uuid[], $3::smallint[], $4::uuid[], $5::uuid[], $6::numeric[], $7::text[]) AS line(id, position, stock_material_id, unit_id, quantity, note)`,
+        [
+          id,
+          plan.added.map((line) => line.id),
+          plan.added.map(({ position }) => position),
+          plan.added.map(({ line }) => line.stock_material_id),
+          plan.added.map(({ line }) => line.unit_id),
+          plan.added.map(({ line }) => line.quantity),
+          plan.added.map(({ line }) => line.note),
+        ]
+      );
+      // The new Stock Movements, on the As-of Date as corrected.
+      for (const { lineId, stockMaterialId, movement } of [
+        ...moved.map(({ recorded: line, line: sent, movement }) => ({ lineId: line.id, stockMaterialId: sent.stock_material_id, movement: movement! })),
+        ...plan.added.map(({ id: lineId, line, movement }) => ({ lineId, stockMaterialId: line.stock_material_id, movement })),
+      ]) {
+        const movementId = await recordStockMovement(client, {
+          stock_material_id: stockMaterialId,
+          kind: 'OPENING_BALANCE',
+          opening_balance_line_id: lineId,
+          effective_date: facts.as_of_date,
+          original_quantity: movement.original_quantity,
+          original_unit_id: movement.original_unit_id,
+          conversion_snapshot: movement.conversion_snapshot,
+          base_quantity: movement.base_quantity,
+          recorded_by: actorId,
+        });
+        await client.query('UPDATE opening_balance_lines SET stock_movement_id = $2 WHERE id = $1', [lineId, movementId]);
+      }
+      await client.query(`INSERT INTO opening_balance_history (opening_balance_id, version, kind, facts, reason, recorded_by) VALUES ($1, $2, 'CORRECTED', $3, $4, $5)`, [
+        id,
+        version,
+        JSON.stringify(plan.history),
+        facts.reason,
+        actorId,
+      ]);
+      return { opening_balance_id: id, version };
+    });
+  }
+
+  /**
+   * F010-T7 (#238): voids the whole confirmed Opening Balance `id` (ยกเลิกรายการ), with a reason, at the version the
+   * request read, as a Material Receipt is voided: a Reversal of each line's Stock Movement in effect, recorded by the
+   * voider at one moment (P9), every line voided, and the history entry "voided" with the reason and each line as it is
+   * voided. Each of its Stock Materials can then take a new Opening Balance while it has no other Stock Movement in
+   * effect (story 43).
+   */
+  async void(actorId: string, id: string, input: OpeningBalanceVoidInput, { retryToken }: { retryToken: string }): Promise<OpeningBalanceVersion> {
+    const reason = reasonOf(input.reason);
+    const payload = { opening_balance_id: id, expected_version: input.expected_version, reason };
+    return commitOnce(this.db, { actorId, operation: 'opening-balance:void', retryToken, payload, explicitContinuation: false }, async (client) => {
+      // 1. The Opening Balance, its number and its lines in effect: a confirmed one has at least one.
+      await lockedConfirmed(client, id, input.expected_version);
+      const { opening_balance_number: number } = (await client.query('SELECT opening_balance_number::text AS opening_balance_number FROM opening_balances WHERE id = $1', [id])).rows[0];
+      const lines: RecordedStockLine[] = (await client.query(`${RECORDED_LINES} AND NOT is_voided ORDER BY position`, [id])).rows;
+      // 2. Their Stock Materials, by id; 3. their Units' list entries, each read in a statement after the lock.
+      const materialIds = lines.map(({ stock_material_id: materialId }) => materialId);
+      const names = await lockedStockMaterialsForStock(client, materialIds);
+      const units = new Map(await Promise.all(materialIds.map(async (materialId) => [materialId, await stockMaterialUnitsOf(client, materialId, { locked: true })] as const)));
+      const movements = await stockMovementsInEffectOf(
+        client,
+        lines.map(({ stock_movement_id: movementId }) => movementId!)
+      );
+
+      for (const { stock_movement_id: movementId } of lines) {
+        await reverseStockMovement(client, movementId!, actorId);
+      }
+      await client.query('UPDATE opening_balance_lines SET stock_movement_id = NULL, is_voided = true WHERE opening_balance_id = $1 AND NOT is_voided', [id]);
+      const { version } = (await client.query('UPDATE opening_balances SET version = version + 1 WHERE id = $1 RETURNING version', [id])).rows[0];
+      const history = {
+        opening_balance_number: number,
+        lines: lines.map((line) => ({
+          change: 'VOIDED',
+          line_id: line.id,
+          position: line.position,
+          line: balanceLineFactsOf({ names, units }, line, stockOf(movements.get(line.stock_movement_id!)!)),
+        })),
+      };
+      await client.query(`INSERT INTO opening_balance_history (opening_balance_id, version, kind, facts, reason, recorded_by) VALUES ($1, $2, 'VOIDED', $3, $4, $5)`, [
+        id,
+        version,
+        JSON.stringify(history),
+        reason,
+        actorId,
+      ]);
+      return { opening_balance_id: id, version };
     });
   }
 
