@@ -185,9 +185,14 @@ const OpeningBalanceFormContent: React.FC<{ id: string | null }> = ({ id }) => {
             onRefresh={
               id === null
                 ? undefined
-                : async () => {
-                    setVersion(null);
-                    return (await existing.refetch()).isSuccess;
+                : // The form reads the Draft again once the new read is in: cleared first, it would read back the one it
+                  // holds; a read that fails leaves the form as it is (#237 retro).
+                  async () => {
+                    const fresh = await existing.refetch();
+                    if (fresh.isSuccess) {
+                      setVersion(null);
+                    }
+                    return fresh.isSuccess;
                   }
             }
             onSaved={async (body) => {

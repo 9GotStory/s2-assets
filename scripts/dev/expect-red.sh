@@ -28,13 +28,18 @@
 # gives one <file> <old text> <new text> triple per edit before the --. They apply in order, each to the
 # file as the earlier ones left it, and every file named is restored.
 #
-#   scripts/dev/expect-red.sh --batch <breaks.json>
+#   scripts/dev/expect-red.sh --batch <breaks.json> [--only <regex>] [--part <k>/<n>]
 #
 # runs several breaks in turn, each as above, and ends with a table of RED or STAYED GREEN and the first
 # failing test. <breaks.json> is an array of {"name", "file", "old", "new", "test": [command, args...]},
 # or of {"name", "edits": [{"file", "old", "new"}, ...], "test"} for a break of several edits; write a
 # line break inside old or new as \n. Exits 0 when every break is red, 1 when one stayed green,
 # and 2 when one could not be applied or ran no test.
+#
+# --only keeps the breaks whose name the regular expression matches, and --part k/n then runs the k-th of
+# n runs of consecutive breaks, so a batch runs in parts or again from where a stopped one left off. Run a
+# batch longer than 10 minutes as parts, each a foreground call of its own: left in the background, a
+# batch of 220 breaks was stopped at break 173 by Claude Code's low-memory reaper (#237 retro).
 #
 # A break that must turn several tests red, such as a read moved ahead of a lock that three order tests
 # cover, lists them in "red": [<part of each test's name>, ...]. The break is red only when every one of
@@ -121,14 +126,42 @@ EOF
 fi
 
 if [[ ${1-} == --batch ]]; then
-  if (($# != 2)) || [[ ! -f $2 ]]; then
-    note 'usage: expect-red.sh --batch <breaks.json>'
+  if (($# < 2)) || [[ ! -f $2 ]]; then
+    note 'usage: expect-red.sh --batch <breaks.json> [--only <regex>] [--part <k>/<n>]'
     exit 2
   fi
-  exec python3 -I - "$0" "$2" <<'EOF'
+  scripts/dev/memory-note.sh expect-red.sh
+  exec python3 -I - "$0" "${@:2}" <<'EOF'
 import json, re, subprocess, sys
-script, batch = sys.argv[1:]
+script, batch, *options = sys.argv[1:]
+
+def usage(why):
+    print(f'expect-red.sh: {why}; usage: expect-red.sh --batch <breaks.json> [--only <regex>] [--part <k>/<n>]', file=sys.stderr)
+    sys.exit(2)
+
+chosen = {}
+while options:
+    if len(options) < 2 or options[0] not in ('--only', '--part') or options[0] in chosen:
+        usage(f'cannot read the options {" ".join(options)}')
+    flag, value, *options = options
+    chosen[flag] = value
 breaks = json.load(open(batch, encoding='utf-8'))
+listed = len(breaks)
+if '--only' in chosen:
+    try:
+        only = re.compile(chosen['--only'])
+    except re.error as error:
+        usage(f'--only {chosen["--only"]} is not a regular expression ({error})')
+    breaks = [b for b in breaks if only.search(b['name'])]
+if '--part' in chosen:
+    part = re.fullmatch(r'([1-9][0-9]*)/([1-9][0-9]*)', chosen['--part'])
+    if part is None or int(part[1]) > int(part[2]):
+        usage(f'--part {chosen["--part"]} is not k/n with k from 1 to n')
+    k, n, kept = int(part[1]), int(part[2]), len(breaks)
+    breaks = breaks[(k - 1) * kept // n:k * kept // n]
+if not breaks:
+    usage(f'the options select none of the {listed} breaks')
+print(f"expect-red.sh: running {len(breaks)} of the {listed} breaks: {breaks[0]['name']} to {breaks[-1]['name']}", file=sys.stderr, flush=True)
 rows, worst = [], 0
 for b in breaks:
     edits = b.get('edits') or [{'file': b['file'], 'old': b['old'], 'new': b['new']}]

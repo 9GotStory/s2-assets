@@ -27,6 +27,7 @@ while (($#)); do
     *) echo "all.sh: unknown argument: $1" >&2; exit 2 ;;
   esac
 done
+scripts/dev/memory-note.sh all.sh
 log_dir=$(mktemp -d -t s2-assets-ci.XXXXXX)
 
 # HEAD, and the tree that `git add -A` would commit on it, staged in a scratch index. Prints nothing
