@@ -203,10 +203,36 @@ test.describe.serial('Material Stock journeys: Real SPA -> Composed API -> Postg
     await expect(page.getByRole('heading', { level: 1, name: 'แก้ไขร่าง' })).toBeVisible();
     await expect(page.locator('#opening-balance-line-0-unit option:checked')).toHaveText(`กล่อง ${tag}`);
     await expect(page.locator('#opening-balance-line-0-quantity')).toHaveValue('');
-    await page.locator('#opening-balance-source').fill('สมุดคุมวัสดุ ปีงบประมาณ 2569');
-    await page.locator('#opening-balance-line-0-unit').selectOption({ label: ream });
-    await page.locator('#opening-balance-line-0-quantity').fill('7');
-    await page.locator('#opening-balance-draft-submit').click();
+    // Meanwhile a second tab saves the Draft with a หมายเหตุ, so the save on what was read first is refused as stale.
+    const other = await context.newPage();
+    await other.goto(`${draftUrl}/edit`);
+    await expect(other.locator('#opening-balance-line-0-unit option:checked')).toHaveText(`กล่อง ${tag}`);
+    await other.locator('#opening-balance-note').fill('นับเมื่อ 30 ก.ย.');
+    await other.locator('#opening-balance-draft-submit').click();
+    await expect(other.getByRole('heading', { level: 1, name: 'ยอดตั้งต้น ร่าง' })).toBeVisible();
+    await other.close();
+    const completeDraft = async () => {
+      await page.locator('#opening-balance-source').fill('สมุดคุมวัสดุ ปีงบประมาณ 2569');
+      await page.locator('#opening-balance-line-0-unit').selectOption({ label: ream });
+      await page.locator('#opening-balance-line-0-quantity').fill('7');
+      await page.locator('#opening-balance-draft-submit').click();
+    };
+    await completeDraft();
+    const formError = page.locator('[data-testid="opening-balance-draft-form-error"]');
+    await expect(formError).toContainText('มีผู้แก้ไขร่างนี้ไปแล้ว กรุณาโหลดใหม่');
+    // A reload whose read fails says so and keeps what was typed; the next one reads the newer Draft (#237 retro).
+    const draftRead = new RegExp(`${new URL(draftUrl).pathname}$`);
+    await page.route(draftRead, (route: any) => (route.request().resourceType() === 'fetch' ? route.fulfill({ status: 500, body: '{}' }) : route.continue()));
+    await page.locator('#opening-balance-draft-reload').click();
+    await expect(formError).toContainText('ไม่สามารถดึงข้อมูลล่าสุดได้ กรุณาลองใหม่อีกครั้ง');
+    await expect(page.locator('#opening-balance-source')).toHaveValue('สมุดคุมวัสดุ ปีงบประมาณ 2569');
+    await expect(page.locator('#opening-balance-note')).toHaveValue('');
+    await page.unroute(draftRead);
+    await page.locator('#opening-balance-draft-reload').click();
+    await expect(page.locator('#opening-balance-note')).toHaveValue('นับเมื่อ 30 ก.ย.');
+    await expect(page.locator('#opening-balance-source')).toHaveValue('');
+    await expect(page.locator('#opening-balance-line-0-unit option:checked')).toHaveText(`กล่อง ${tag}`);
+    await completeDraft();
     await expect(page.locator('[data-testid="opening-balance-source"]')).toHaveText('สมุดคุมวัสดุ ปีงบประมาณ 2569');
 
     // "ยืนยันยอดตั้งต้น": the number is taken and the line's Stock Movement recorded in the Base Unit.

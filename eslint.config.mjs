@@ -384,6 +384,12 @@ export default tseslint.config(
           selector: "Property[key.name='placeholderData'] > :matches(ArrowFunctionExpression[params.length=1], Identifier[name='keepPreviousData'])",
           message: 'Keep placeholder data only after comparing previousQuery: these values may belong to another key (#76).',
         },
+        {
+          // #237 retro: a form loads its query's data into its fields while its version is null, so a version cleared
+          // before the refetch loads back the data it already holds, and the refetch that lands after it loads nothing.
+          selector: "ExpressionStatement[expression.callee.name=/^set\\w*Version$/] ~ :has(CallExpression[callee.property.name='refetch'])",
+          message: 'Clear the version once the refetch has succeeded: cleared before it, the form reloads the data it holds (#237 retro).',
+        },
       ],
     },
   },
