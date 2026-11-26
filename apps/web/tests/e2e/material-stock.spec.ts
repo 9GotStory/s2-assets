@@ -693,6 +693,7 @@ test.describe.serial('Material Stock journeys: Real SPA -> Composed API -> Postg
     await loginAs(context, officerUserId);
     await page.goto(`${targetBaseUrl}/material-receipts/${receiptId}`);
     await page.locator('#material-receipt-correct-action').click();
+    await expect(page).toHaveURL(`${targetBaseUrl}/material-receipts/${receiptId}/correct`);
     await expect(page.getByRole('heading', { level: 1, name: 'แก้ไขรายการที่บันทึกผิด' })).toBeVisible();
 
     // The form reads the Material Receipt back whole, each line with the อัตราแปลง it was recorded at.
@@ -744,7 +745,7 @@ test.describe.serial('Material Stock journeys: Real SPA -> Composed API -> Postg
     await expect(history).toHaveCount(2);
     await expect(history.nth(1)).toContainText('แก้ไขรายการที่บันทึกผิด โดย officer_material_stock');
     await expect(history.nth(1)).toContainText('เหตุผล: นับปากกาผิด');
-    await expect(history.nth(1).locator('ul li')).toHaveText([`รายการที่ 2: จำนวน 5 → 6, จำนวน (หน่วยนับหลัก) 5 → 6`]);
+    await expect(history.nth(1).locator('ul li')).toHaveText([`รายการที่ 2: จำนวน 5 → 6, อัตราแปลง 1 → 1, จำนวน (หน่วยนับหลัก) 5 → 6`]);
     await expect(history.nth(0).locator('ul')).toHaveCount(0);
 
     // รายการเคลื่อนไหว keeps the 5 ด้าม, then shows its กลับรายการ and the new row, each from the Material Receipt:

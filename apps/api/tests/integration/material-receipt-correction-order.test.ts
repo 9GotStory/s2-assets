@@ -261,6 +261,98 @@ describe('Receipt Correction write order (Seam A - F010-T6)', () => {
     });
   });
 
+  // Rows 9 and 10 hold for a name the correction replaces or voids as well as one it adds (CODING_STANDARDS, the
+  // paragraph on a name a history entry records as it was then; review round 1).
+  describe('a correction behind a rename of a name it replaces or voids (rows 9–10)', () => {
+    // The correction `payload` of `id`, behind a Material Correction that renames `material`: the new name.
+    const behindRename = async (material: { id: string }, id: string, payload: any): Promise<string> => {
+      const renamed = `ชื่อใหม่ ${crypto.randomUUID().slice(0, 6)}`;
+      const page = await materialOf(material.id);
+      const [corrected, res] = await whileHolding(
+        'stock_materials',
+        material.id,
+        () => [
+          materials.correct(material.id, { expected_version: page.version, name: renamed, brand_id: null, model: null, specification: null, reason: 'สะกดผิด', explicit_continuation: true }),
+          untilWaiting('stock_materials').then(() => correct(id, payload)),
+        ],
+        () => untilWaiting('stock_materials', 2)
+      );
+      expect(corrected.statusCode).toBe(200);
+      expect(res.statusCode).toBe(200);
+      return renamed;
+    };
+    // The correction `payload` of `id`, behind a rename of the Unit `unitId`: the new name.
+    const behindUnitRename = async (unitId: string, id: string, payload: any): Promise<string> => {
+      const renamed = `ลัง ${crypto.randomUUID().slice(0, 6)}`;
+      const [res] = await whileWriting(
+        { sql: 'UPDATE units SET name = $2, version = version + 1 WHERE id = $1', params: [unitId, renamed] },
+        () => [correct(id, payload)],
+        () => untilWaiting('units', 1, 'FOR SHARE')
+      );
+      expect(res.statusCode).toBe(200);
+      return renamed;
+    };
+    // A Received Material Receipt of 2 กล่อง of paper and 1 รีม of pens, and the correction that voids the pens.
+    const voidingPens = async () => {
+      const paper = await stocked();
+      const pens = await stocked();
+      const { id } = await received([line(paper.id, paper.box, '2'), line(pens.id, pens.ream, '1')]);
+      const payload = correctionAsRead(await receiptOf(id));
+      payload.voided_line_ids = [payload.lines[1].line_id];
+      payload.lines = [payload.lines[0]];
+      return { pens, id, payload };
+    };
+
+    it('changes the Stock Material of a line only after a Material Correction renames the one it replaces, then records that new name (#175 P6)', async () => {
+      const { paper, id, payload } = await ready();
+      const pens = await stocked();
+      Object.assign(payload.lines[0], { stock_material_id: pens.id, unit_id: pens.box });
+      const renamed = await behindRename(paper, id, payload);
+      expect((await receiptOf(id)).history[1].facts.lines[0].changes[0]).toEqual({ field: 'stock_material', before: { id: paper.id, name: renamed }, after: { id: pens.id, name: pens.name } });
+    });
+
+    it('changes the Unit of a line only after the Unit it replaces is renamed, then records that new name (#175 P6)', async () => {
+      const { paper, id, payload } = await ready();
+      payload.lines[0].unit_id = paper.ream;
+      const renamed = await behindUnitRename(paper.box, id, payload);
+      expect((await receiptOf(id)).history[1].facts.lines[0].changes[0]).toMatchObject({ field: 'unit', before: { id: paper.box, name: renamed }, after: { id: paper.ream } });
+    });
+
+    it('voids a line only after a Material Correction renames its Stock Material, then records the new name (#175 P6)', async () => {
+      const { pens, id, payload } = await voidingPens();
+      const renamed = await behindRename(pens, id, payload);
+      expect((await receiptOf(id)).history[1].facts.lines[0].line.stock_material).toEqual({ id: pens.id, name: renamed });
+    });
+
+    it('voids a line only after its Unit is renamed, then records the new name (#175 P6)', async () => {
+      const { pens, id, payload } = await voidingPens();
+      const renamed = await behindUnitRename(pens.ream, id, payload);
+      expect((await receiptOf(id)).history[1].facts.lines[0].line.unit).toEqual({ id: pens.ream, name: renamed });
+    });
+  });
+
+  // The ticket's order test of a correction against another correction of the same Stock Material: one of another
+  // Material Receipt holds its lock, so the second waits, and คงเหลือ counts both.
+  describe('a correction behind a correction of another Material Receipt of its Stock Material', () => {
+    it('corrects a line only after a correction of another Material Receipt of its Stock Material, and both count', async () => {
+      const { paper, id, payload } = await ready();
+      const { id: other } = await received([line(paper.id, paper.box, '1')]);
+      const otherPayload = correctionAsRead(await receiptOf(other));
+      payload.lines[0].quantity = '3';
+      otherPayload.lines[0].quantity = '4';
+      const [first, second] = await whileHolding(
+        'stock_materials',
+        paper.id,
+        () => [correct(other, otherPayload), untilWaiting('stock_materials').then(() => correct(id, payload))],
+        () => untilWaiting('stock_materials', 2)
+      );
+      expect(first.statusCode).toBe(200);
+      expect(second.statusCode).toBe(200);
+      // 3 and 4 กล่อง of 5 รีม.
+      expect((await materialOf(paper.id)).current_stock).toBe('35');
+    });
+  });
+
   // Rows 12–19: the Inactive, the reactivation and the rename of a Source Party or a Source Type each change their own
   // row, which a correction locks FOR SHARE when it changes that list's entry: the held statement is that write's change
   // (CODING_STANDARDS, the paragraph on a read that locks the row of its fact).

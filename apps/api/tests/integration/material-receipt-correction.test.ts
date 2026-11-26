@@ -292,6 +292,15 @@ describe('Receipt Correction (Seam A - F010-T6)', () => {
       ]);
       expect((await materialOf(paper.id)).current_stock).toBe('10');
       expect((await materialOf(pens.id)).current_stock).toBe('3');
+      // Each line moved records its Conversion Factor and Base Quantity, unchanged (review decision 1, 7180557100).
+      const kept = (factor: string, base: string) => [
+        { field: 'conversion_factor', before: factor, after: factor },
+        { field: 'base_quantity', before: base, after: base },
+      ];
+      expect(receipt.history[1].facts.lines).toEqual([
+        { change: 'CHANGED', line_id: receipt.lines[0].id, position: 0, changes: kept('5', '10') },
+        { change: 'CHANGED', line_id: receipt.lines[1].id, position: 1, changes: kept('1', '3') },
+      ]);
     });
 
     it("adds a Stock Movement for a new line, at today's factor, after the lines recorded", async () => {
@@ -517,6 +526,8 @@ describe('Receipt Correction (Seam A - F010-T6)', () => {
             changes: [
               { field: 'quantity', before: '2', after: '3' },
               { field: 'unit_price', before: '100', after: '90' },
+              // A line that moves records its Conversion Factor, kept here, too (review decision 1, 7180557100).
+              { field: 'conversion_factor', before: '5', after: '5' },
               { field: 'base_quantity', before: '10', after: '15' },
             ],
           },
@@ -714,19 +725,23 @@ describe('Receipt Correction (Seam A - F010-T6)', () => {
       );
     });
 
-    it('refuses a line added in, or changed to, the Stock Material and Unit of a voided line (start decision 1)', async () => {
+    it('refuses a line added in, or changed to, the Stock Material and Unit of a voided line, naming each (start decision 1; review decision 2)', async () => {
       const paper = await stocked();
       const pens = await stocked();
       const { id } = await received([line(paper.id, paper.box, '2'), line(pens.id, pens.ream, '3'), line(paper.id, paper.ream, '1')]);
       const lines = (await receiptOf(id)).lines;
+      const repeats = (index: number, position: number) => ({
+        field: `lines[${index}].unit_id`,
+        message: `lines[${index}].unit_id repeats the Stock Material and Unit of the voided Receipt Line at position ${position}`,
+      });
       await expectRefused(
         id,
         (payload) => {
-          payload.lines.splice(0, 1);
-          payload.voided_line_ids = [lines[0].id];
-          payload.lines.push(line(paper.id, paper.box, '2'));
+          payload.lines.splice(0, 2);
+          payload.voided_line_ids = [lines[0].id, lines[1].id];
+          payload.lines.push(line(paper.id, paper.box, '2'), line(pens.id, pens.ream, '3'));
         },
-        invalid('lines[2].unit_id repeats the Stock Material and Unit of the voided Receipt Line at position 0')
+        notCorrectable([repeats(1, 0), repeats(2, 1)])
       );
       await corrected(id, (payload) => {
         payload.lines.splice(0, 1);
@@ -737,7 +752,7 @@ describe('Receipt Correction (Seam A - F010-T6)', () => {
         (payload) => {
           payload.lines[1].unit_id = paper.box;
         },
-        invalid('lines[1].unit_id repeats the Stock Material and Unit of the voided Receipt Line at position 0')
+        notCorrectable([repeats(1, 0)])
       );
     });
 

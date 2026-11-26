@@ -1,7 +1,7 @@
 import { normalizeQuantity, type NormalizedQuantity } from './base-quantity.ts';
 import type { ReceiptConfirmProblem } from './material-receipt.service.ts';
 import type { InEffectOpeningBalance } from './opening-balance-read.service.ts';
-import { QUANTITY_REFUSALS } from './stock-line-input.ts';
+import { pairKey, QUANTITY_REFUSALS } from './stock-line-input.ts';
 import type { StockMaterialUnit } from './stock-material-read.service.ts';
 import type { StockMovementInEffect } from './stock-movements.ts';
 
@@ -70,8 +70,9 @@ export interface CorrectionReads {
   header: RecordedHeader;
   // For each line the correction sends, its recorded line, or undefined for a new one.
   recorded: (RecordedLine | undefined)[];
-  // The recorded lines it voids, in the order `voided_line_ids` names them.
+  // The recorded lines it voids, in the order `voided_line_ids` names them, and the lines voided before it.
   voided: RecordedLine[];
+  voidedBefore: RecordedLine[];
   // The position the first new line takes.
   nextPosition: number;
   // Of every Stock Material its lines name before and after: its name, its Units, its Opening Balance in effect.
@@ -161,6 +162,16 @@ export function planCorrection(facts: CorrectionFacts, reads: CorrectionReads, n
     return result;
   };
 
+  // A voided line keeps its Stock Material and Unit pair: no line takes it again (start decision 1; review decision 2,
+  // 7180557100).
+  const voidedPairs = new Map([...reads.voidedBefore, ...reads.voided].map((line) => [pairKey(line), line]));
+  facts.lines.forEach((line, index) => {
+    const holder = voidedPairs.get(pairKey(line));
+    if (holder !== undefined) {
+      problems.push({ field: `lines[${index}].unit_id`, message: `lines[${index}].unit_id repeats the Stock Material and Unit of the voided Receipt Line at position ${holder.position}` });
+    }
+  });
+
   const kept: KeptLine[] = [];
   const added: AddedLine[] = [];
   const lineEntries: Record<string, unknown>[] = [];
@@ -197,8 +208,10 @@ export function planCorrection(facts: CorrectionFacts, reads: CorrectionReads, n
     kept.push({ recorded, line, movement });
     const before = lineFactsOf(reads, recorded, stockOf(inEffect));
     const after = lineFactsOf(reads, line, stockOf(movement ?? inEffect));
+    // A line that moves records its Conversion Factor and Base Quantity before and after, an unchanged one included
+    // (start reading 7163337923; review decision 1, 7180557100).
     const changes = (Object.keys(before) as (keyof LineFacts)[])
-      .filter((key) => JSON.stringify(before[key]) !== JSON.stringify(after[key]))
+      .filter((key) => (movement !== null && (key === 'conversion_factor' || key === 'base_quantity')) || JSON.stringify(before[key]) !== JSON.stringify(after[key]))
       .map((key) => ({ field: key, before: before[key], after: after[key] }));
     if (changes.length > 0) {
       lineEntries.push({ change: 'CHANGED', line_id: recorded.id, position: recorded.position, changes });

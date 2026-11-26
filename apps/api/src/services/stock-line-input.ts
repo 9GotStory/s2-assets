@@ -22,6 +22,10 @@ export const QUANTITY_REFUSALS: Record<QuantityRefusal, string> = {
   BASE_QUANTITY_NOT_WHOLE: 'gives a Base Quantity that is not whole, as its Base Unit counts in whole numbers',
 };
 
+// A Stock Material and Unit pair as one key: a stock record holds each pair once (Q9), and a Material Receipt's voided
+// line keeps its own (#237 start decision 1).
+export const pairKey = (line: { stock_material_id: string; unit_id: string }): string => `${line.stock_material_id} ${line.unit_id}`;
+
 /**
  * A quantity present on a Draft line, checked as it is typed: greater than 0, at most four decimal places, never
  * rounded (Q25). PostgreSQL stores it as a number, and the reads give it without trailing zeros.

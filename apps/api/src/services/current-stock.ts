@@ -50,13 +50,7 @@ export const stockLedgerOf = (stockMaterialId: string): string =>
   `(SELECT sl.*, sum(sl.base_quantity) OVER timeline AS balance, row_number() OVER timeline AS position
     FROM stock_movements sl
     WHERE sl.stock_material_id = ${stockMaterialId}
-    WINDOW timeline AS (ORDER BY ${stockMovementOrder('sl')}))`;
-
-/**
- * F010-T6 (#237): the order of the Stock Movements joined as `movement` in the business timeline, as an ORDER BY list:
- * Effective Date, Recorded At, a Reversal before any other kind (build decision 5), then id.
- */
-export const stockMovementOrder = (movement: string): string => `${movement}.effective_date, ${movement}.recorded_at, ${movement}.kind <> 'REVERSAL', ${movement}.id`;
+    WINDOW timeline AS (ORDER BY sl.effective_date, sl.recorded_at, sl.kind <> 'REVERSAL', sl.id))`;
 
 /**
  * F010-T4 (#235): SQL giving, as an integer, the Fiscal Year (ปีงบประมาณ) of the date expression `date`: the period from

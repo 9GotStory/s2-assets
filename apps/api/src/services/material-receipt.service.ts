@@ -10,7 +10,7 @@ import { materialReceiptState, type MaterialReceiptState } from './material-rece
 import { openingBalancesInEffectOf, type InEffectOpeningBalance } from './opening-balance-read.service.ts';
 import { commitOnce } from './retryable-write.ts';
 import { NotFoundError, StaleBeforeConflictError } from './service-errors.ts';
-import { draftQuantityOf, QUANTITY_REFUSALS, uuidOf, uuidOrNull } from './stock-line-input.ts';
+import { draftQuantityOf, pairKey, QUANTITY_REFUSALS, uuidOf, uuidOrNull } from './stock-line-input.ts';
 import { lockedStockMaterialsForStock, stockMaterialSummariesOf, stockMaterialUnitsOf } from './stock-material-read.service.ts';
 import { recordStockMovement, reverseStockMovement, stockMovementsInEffectOf } from './stock-movements.ts';
 import { ValidationError } from './validation-error.ts';
@@ -188,7 +188,7 @@ const normalizeDraft = (input: MaterialReceiptDraftInput) => {
     // A Stock Material twice only in different Units (Q9); a line without its Unit yet names no pair (#234 start
     // decision 1).
     if (unitId !== null) {
-      const pair = `${stockMaterialId} ${unitId}`;
+      const pair = pairKey({ stock_material_id: stockMaterialId, unit_id: unitId });
       const earlier = pairs.get(pair);
       if (earlier !== undefined) {
         throw new ValidationError(`${field}.unit_id repeats the Stock Material and Unit of lines[${earlier}]`);
@@ -242,7 +242,7 @@ const normalizeCorrection = (input: MaterialReceiptCorrectionInput): CorrectionF
     const stockMaterialId = uuidOf(line.stock_material_id, `${field}.stock_material_id`);
     const unitId = uuidOf(line.unit_id, `${field}.unit_id`);
     // A Stock Material twice only in different Units (Q9).
-    const pair = `${stockMaterialId} ${unitId}`;
+    const pair = pairKey({ stock_material_id: stockMaterialId, unit_id: unitId });
     const earlier = pairs.get(pair);
     if (earlier !== undefined) {
       throw new ValidationError(`${field}.unit_id repeats the Stock Material and Unit of lines[${earlier}]`);
@@ -633,14 +633,6 @@ export class MaterialReceiptService {
       if (recordedLines.length + added > MAX_RECEIPT_LINES) {
         throw new ValidationError(`lines must hold at most ${MAX_RECEIPT_LINES} lines, voided ones included`);
       }
-      // Start decision 1: a voided line keeps its Stock Material and Unit pair.
-      const voidedPairs = new Map([...recordedLines.filter(({ is_voided: isVoided }) => isVoided), ...voided].map((line) => [`${line.stock_material_id} ${line.unit_id}`, line]));
-      facts.lines.forEach((line, index) => {
-        const holder = voidedPairs.get(`${line.stock_material_id} ${line.unit_id}`);
-        if (holder !== undefined) {
-          throw new ValidationError(`lines[${index}].unit_id repeats the Stock Material and Unit of the voided Receipt Line at position ${holder.position}`);
-        }
-      });
 
       // 2. Every Stock Material its lines name before and after, by id; 3. their Units' list entries, then the Source
       // Party and Source Type it changes, each read in a statement after the lock.
@@ -678,7 +670,7 @@ export class MaterialReceiptService {
 
       const plan = planCorrection(
         facts,
-        { header, recorded, voided, nextPosition: recordedLines.length, names, units, openingBalances, movements, sourceParty, sourceType, today: bangkokDate(this.clock()) },
+        { header, recorded, voided, voidedBefore: recordedLines.filter(({ is_voided: isVoided }) => isVoided), nextPosition: recordedLines.length, names, units, openingBalances, movements, sourceParty, sourceType, today: bangkokDate(this.clock()) },
         Array.from({ length: added }, () => crypto.randomUUID())
       );
       if (plan.problems.length > 0) {
