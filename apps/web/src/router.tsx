@@ -441,6 +441,11 @@ export const routes: RouteObject[] = [
     path: '/opening-balances/:id/edit',
     element: <OpeningBalanceForm />,
   },
+  // F010-T7 (#238): "แก้ไขรายการที่บันทึกผิด", the correction of a confirmed Opening Balance
+  {
+    path: '/opening-balances/:id/correct',
+    element: <OpeningBalanceForm correcting />,
+  },
   // F010-T3 (#234): "รับวัสดุ", the Material Receipt Draft form and each Material Receipt's page
   {
     path: '/material-receipts',

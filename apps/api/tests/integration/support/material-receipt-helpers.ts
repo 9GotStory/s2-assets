@@ -77,6 +77,10 @@ export function materialReceiptHelpers(context: () => { api: ApiHarness; officer
     reason,
   });
 
+  // F010-T7 (#238): the void of the whole Material Receipt `id` (ยกเลิกรายการ) at `version`, with the reason `reason`.
+  const voidReceipt = (id: string, version: number, reason = 'ไม่ได้รับจริง', token: string = crypto.randomUUID(), actor: Actor = context().officer) =>
+    context().api.post(actor, `/material-receipts/${id}/void`, { expected_version: version, reason }, { 'x-retry-token': token });
+
   const listOf = async (query = '', actor: Actor = context().reader) => {
     const res = await context().api.get(actor, `/material-receipts?${query}`);
     expect(res.statusCode).toBe(200);
@@ -107,5 +111,5 @@ export function materialReceiptHelpers(context: () => { api: ApiHarness; officer
     return context().api.post(context().officer, `${LIST_PATHS[list]}/${id}/${action}`, { expected_version: version, ...extra }, { 'x-retry-token': crypto.randomUUID() });
   };
 
-  return { createDraft, draft, line, complete, receiptOf, replaceDraft, removeDraft, confirm, received, correct, correctionAsRead, listOf, entryNamed, entryOf, entryWrite };
+  return { createDraft, draft, line, complete, receiptOf, replaceDraft, removeDraft, confirm, received, correct, correctionAsRead, voidReceipt, listOf, entryNamed, entryOf, entryWrite };
 }

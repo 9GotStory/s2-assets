@@ -1,7 +1,8 @@
 // F010-T2 (#233): what the Opening Balance (ยอดตั้งต้น) pages show and send, and their labels (GLOSSARY.md, Material
 // Stock; #231 Q13, Q20, Q24, Q25).
 
-export type OpeningBalanceState = 'DRAFT' | 'CONFIRMED';
+// F010-T7 (#238): a confirmed one whose whole Opening Balance is voided (ยกเลิกรายการ) is ยกเลิกแล้ว.
+export type OpeningBalanceState = 'DRAFT' | 'CONFIRMED' | 'VOIDED';
 
 // One row of the Opening Balance list.
 export interface OpeningBalanceRow {
@@ -76,6 +77,34 @@ export interface OpeningBalanceDetail {
   can_manage: boolean;
 }
 
+// F010-T7 (#238): a value a correction changed, as it was and as it became; a name as it was then.
+export interface BalanceCorrectionChange {
+  field: string;
+  before: string | { id: string; name: string } | null;
+  after: string | { id: string; name: string } | null;
+}
+
+// A line a correction added or voided, as it was then.
+export interface BalanceCorrectionLineFacts {
+  stock_material: { id: string; name: string };
+  unit: { id: string; name: string };
+  quantity: string;
+  note: string | null;
+  conversion_factor: string;
+  base_quantity: string;
+}
+
+// The facts of a CORRECTED history entry: each header field it changed, then each line it changed, added or voided;
+// a VOIDED one, the void of the whole Opening Balance, holds each line it voided and no change.
+export interface BalanceCorrectionFacts {
+  opening_balance_number: string;
+  changes?: BalanceCorrectionChange[];
+  lines: (
+    | { change: 'CHANGED'; line_id: string; position: number; changes: BalanceCorrectionChange[] }
+    | { change: 'ADDED' | 'VOIDED'; line_id: string; position: number; line: BalanceCorrectionLineFacts }
+  )[];
+}
+
 // A confirm refused, each failing rule named by its field (#231 Q25).
 export interface ConfirmProblem {
   field: string;
@@ -104,6 +133,7 @@ export const REMOVE_DRAFT_LABEL = 'ลบร่าง';
 export const OPENING_BALANCE_STATE_LABELS: Record<OpeningBalanceState, string> = {
   DRAFT: 'ร่าง',
   CONFIRMED: 'ยืนยันแล้ว',
+  VOIDED: 'ยกเลิกแล้ว',
 };
 
 export const OPENING_BALANCE_HISTORY_KIND_LABELS: Record<OpeningBalanceHistoryEntry['kind'], string> = {

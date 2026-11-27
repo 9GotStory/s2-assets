@@ -4,8 +4,9 @@ import { QueryClient, QueryClientProvider, useQuery } from '@tanstack/react-quer
 import { thaiDate } from '../components/assignmentFacts';
 import { LoanSaveForm } from '../components/LoanSaveForm';
 import { useCsrfToken } from '../components/materialQueries';
-import { INACTIVE_LABEL, UNIT_LABEL } from '../components/materialFacts';
-import { receiptNumberLine } from '../components/materialReceiptFacts';
+import { BASE_UNIT_LABEL, CONVERSION_FACTOR_LABEL, INACTIVE_LABEL, STOCK_MATERIAL_LABEL, UNIT_LABEL } from '../components/materialFacts';
+import { RECEIPT_CORRECTION_LABEL, receiptNumberLine, VOID_LINE_LABEL, VOIDED_LINE_LABEL } from '../components/materialReceiptFacts';
+import { fieldInputStyle, fieldLabelStyle } from '../components/ReferenceContextFields';
 import {
   AS_OF_DATE_LABEL,
   CONFIRM_OPENING_BALANCE_LABEL,
@@ -17,6 +18,8 @@ import {
   REMOVE_DRAFT_LABEL,
   STOCK_MOVEMENT_LABEL,
   openingBalanceNumberLine,
+  type BalanceCorrectionChange,
+  type BalanceCorrectionFacts,
   type ConfirmProblem,
   type OpeningBalanceDetail as BalanceDetail,
 } from '../components/openingBalanceFacts';
@@ -35,6 +38,35 @@ const actionStyle: React.CSSProperties = { padding: '0.5rem 1.25rem', borderRadi
 
 type Action = 'confirm' | 'remove';
 
+// F010-T7 (#238): the name of each field a correction records a change of.
+const CORRECTION_FIELD_LABELS: Record<string, string> = {
+  as_of_date: AS_OF_DATE_LABEL,
+  source: OPENING_BALANCE_SOURCE_LABEL,
+  note: 'หมายเหตุ',
+  stock_material: STOCK_MATERIAL_LABEL,
+  unit: UNIT_LABEL,
+  quantity: 'จำนวน',
+  conversion_factor: CONVERSION_FACTOR_LABEL,
+  base_quantity: `จำนวน (${BASE_UNIT_LABEL})`,
+};
+
+// One changed value as "<field> <before> → <after>", a name as it was then, "-" for none.
+const changeLine = ({ field, before, after }: BalanceCorrectionChange): string => {
+  const shown = (value: BalanceCorrectionChange['before']): string => (value === null ? '-' : typeof value === 'object' ? value.name : field === 'as_of_date' ? thaiDate(value) : value);
+  return `${CORRECTION_FIELD_LABELS[field]} ${shown(before)} → ${shown(after)}`;
+};
+
+// What a CORRECTED or VOIDED history entry changed: each header field, then each line changed, added or voided, by
+// its number.
+const correctionLines = (facts: BalanceCorrectionFacts): string[] => [
+  ...(facts.changes ?? []).map(changeLine),
+  ...facts.lines.map((entry) =>
+    entry.change === 'CHANGED'
+      ? `รายการที่ ${entry.position + 1}: ${entry.changes.map(changeLine).join(', ')}`
+      : `${entry.change === 'ADDED' ? 'เพิ่มรายการ' : VOID_LINE_LABEL}ที่ ${entry.position + 1}: ${entry.line.stock_material.name} ${entry.line.quantity} ${entry.line.unit.name}`
+  ),
+];
+
 // A refusal names a line by its place, `lines[<i>]`: the page names it by its number in the table (ลำดับ).
 const problemLine = (problem: ConfirmProblem): string => {
   const line = /^lines\[(\d+)\]/.exec(problem.field);
@@ -44,6 +76,9 @@ const problemLine = (problem: ConfirmProblem): string => {
 const OpeningBalanceDetailContent: React.FC<{ id: string }> = ({ id }) => {
   const navigate = useNavigate();
   const [action, setAction] = useState<Action | null>(null);
+  // F010-T7 (#238): whether the void (ยกเลิกรายการ) is open, and the reason typed in it.
+  const [voiding, setVoiding] = useState(false);
+  const [reason, setReason] = useState('');
 
   const balance = useQuery<BalanceDetail, Error & { status?: number }>({
     queryKey: ['opening-balance', id],
@@ -69,12 +104,16 @@ const OpeningBalanceDetailContent: React.FC<{ id: string }> = ({ id }) => {
   const detail = balance.isError ? undefined : balance.data;
   const isForbidden = balance.error?.status === 403 || balance.error?.status === 404 || balance.error?.status === 400;
   const mayManage = detail?.can_manage === true && detail.state === 'DRAFT';
+  // F010-T7 (#238): a confirmed one is corrected or voided, by whoever may record Opening Balances.
+  const mayCorrect = detail?.can_manage === true && detail.state === 'CONFIRMED';
   // Each action waits for the token: a request sent without it is refused as if the grant were gone (#135).
-  const session = useCsrfToken(mayManage);
+  const session = useCsrfToken(mayManage || mayCorrect);
   const csrfToken = session.data ?? null;
   const offersActions = mayManage && csrfToken !== null && action === null;
   // The open form closes once the Opening Balance is no longer a Draft.
   const acting = mayManage ? action : null;
+  // F010-T7 (#238): the void closes once the Opening Balance is no longer confirmed.
+  const voidOpen = mayCorrect && voiding;
 
   return (
     <main style={{ minHeight: '100vh', backgroundColor: '#f3f4f6', padding: '1rem', fontFamily: 'system-ui, -apple-system, sans-serif', boxSizing: 'border-box' }}>
@@ -148,6 +187,63 @@ const OpeningBalanceDetailContent: React.FC<{ id: string }> = ({ id }) => {
                   {REMOVE_DRAFT_LABEL}
                 </button>
               </div>
+            )}
+
+            {mayCorrect && (
+              <div style={{ display: 'flex', gap: '0.5rem', flexWrap: 'wrap', marginBottom: '1.5rem' }}>
+                <Link to={`/opening-balances/${id}/correct`} id="opening-balance-correct-action" style={{ ...actionStyle, backgroundColor: '#f3f4f6', color: '#374151', border: '1px solid #d1d5db' }}>
+                  {RECEIPT_CORRECTION_LABEL}
+                </Link>
+                {!voiding && (
+                  <button
+                    type="button"
+                    id="opening-balance-void-action"
+                    onClick={() => {
+                      setReason('');
+                      setVoiding(true);
+                    }}
+                    style={{ ...actionStyle, backgroundColor: '#fee2e2', color: '#991b1b' }}
+                  >
+                    {VOID_LINE_LABEL}
+                  </button>
+                )}
+              </div>
+            )}
+
+            {/* F010-T7 (#238): the void of the whole Opening Balance, with a reason (story 43). */}
+            {voidOpen && csrfToken !== null && (
+              <LoanSaveForm
+                idPrefix="opening-balance-void"
+                heading={VOID_LINE_LABEL}
+                saveUrl={`/opening-balances/${encodeURIComponent(id)}/void`}
+                csrfToken={csrfToken}
+                requestError={() => (reason.trim() === '' ? 'กรุณากรอกเหตุผลที่ยกเลิก' : null)}
+                requestBody={() => ({ expected_version: detail.version, reason })}
+                refusedList={() => null}
+                forbiddenMessage={`คุณไม่มีสิทธิ์บันทึก${OPENING_BALANCE_LABEL}`}
+                refusedMessage={`ไม่สามารถ${VOID_LINE_LABEL}ได้`}
+                staleMessage={`มีผู้แก้ไข${OPENING_BALANCE_LABEL}นี้ไปแล้ว กรุณาโหลดใหม่`}
+                submitLabel={VOID_LINE_LABEL}
+                onRefresh={async () => (await balance.refetch()).isSuccess}
+                onSaved={async () => {
+                  setVoiding(false);
+                  await balance.refetch();
+                }}
+                onCancel={() => setVoiding(false)}
+                onPermissionRevoked={() => void balance.refetch()}
+              >
+                {(isLocked) => (
+                  <fieldset disabled={isLocked} style={{ border: 'none', padding: 0, margin: '0 0 1rem 0', minWidth: 0 }}>
+                    <p data-testid="opening-balance-void-notice" style={{ fontSize: '0.875rem', color: '#4b5563', margin: '0 0 0.75rem 0' }}>
+                      ระบบจะบันทึกกลับรายการของทุกรายการ โดยไม่ลบรายการเดิม {OPENING_BALANCE_LABEL}นี้จะแสดงเป็น{VOIDED_LINE_LABEL} และแก้ไขอีกไม่ได้
+                    </p>
+                    <label htmlFor="opening-balance-void-reason" style={fieldLabelStyle}>
+                      เหตุผลที่ยกเลิก
+                    </label>
+                    <textarea id="opening-balance-void-reason" value={reason} maxLength={2000} rows={3} onChange={(e) => setReason(e.target.value)} style={fieldInputStyle} />
+                  </fieldset>
+                )}
+              </LoanSaveForm>
             )}
 
             {acting !== null && csrfToken !== null && (
@@ -231,14 +327,24 @@ const OpeningBalanceDetailContent: React.FC<{ id: string }> = ({ id }) => {
                   <tbody>
                     {detail.lines.map((line) => {
                       const movement = line.stock_movements.find((recorded) => recorded.id === line.stock_movement_id);
+                      // F010-T7 (#238): a voided line stays shown, struck through, as ยกเลิกแล้ว, as a Material Receipt's.
+                      const struck: React.CSSProperties = line.is_voided ? { textDecoration: 'line-through', color: '#6b7280' } : {};
                       return (
-                        <tr key={line.id} data-testid={`opening-balance-line-${line.position}`} style={{ borderBottom: '1px solid #e5e7eb' }}>
+                        <tr key={line.id} data-testid={`opening-balance-line-${line.position}`} style={{ borderBottom: '1px solid #e5e7eb', ...struck }}>
                           <td style={cellStyle}>{line.position + 1}</td>
                           <td style={cellStyle}>
                             <Link to={`/stock-materials/${line.stock_material.id}`} style={{ color: '#2563eb', textDecoration: 'underline' }}>
                               {line.stock_material.name}
                             </Link>
                             {!line.stock_material.is_active && ` (${INACTIVE_LABEL})`}
+                            {line.is_voided && (
+                              <span
+                                data-testid={`opening-balance-line-${line.position}-voided`}
+                                style={{ marginLeft: '0.5rem', padding: '0.125rem 0.5rem', backgroundColor: '#f3f4f6', color: '#4b5563', borderRadius: '9999px', fontSize: '0.75rem', fontWeight: 600, display: 'inline-block', textDecoration: 'none' }}
+                              >
+                                {VOIDED_LINE_LABEL}
+                              </span>
+                            )}
                           </td>
                           <td style={cellStyle}>{line.quantity ?? '-'}</td>
                           <td style={cellStyle}>{line.unit?.name ?? '-'}</td>
@@ -265,6 +371,15 @@ const OpeningBalanceDetailContent: React.FC<{ id: string }> = ({ id }) => {
                     <li key={entry.version} data-testid={`opening-balance-history-${entry.version}`} style={{ marginBottom: '0.5rem' }}>
                       {OPENING_BALANCE_HISTORY_KIND_LABELS[entry.kind]} โดย {entry.recorded_by_username ?? '-'} เมื่อ {THAI_DATE_TIME.format(new Date(entry.recorded_at))}
                       {entry.reason !== null && <div style={{ color: '#4b5563', whiteSpace: 'pre-line' }}>เหตุผล: {entry.reason}</div>}
+                      {/* F010-T7 (#238, story 35): each value a correction changed, as it was and as it became, and each line
+                          the void of the whole Opening Balance voided. */}
+                      {(entry.kind === 'CORRECTED' || entry.kind === 'VOIDED') && (
+                        <ul data-testid={`opening-balance-history-${entry.version}-changes`} style={{ margin: '0.25rem 0 0 0', paddingLeft: '1.25rem', color: '#4b5563' }}>
+                          {correctionLines(entry.facts as unknown as BalanceCorrectionFacts).map((change, index) => (
+                            <li key={index}>{change}</li>
+                          ))}
+                        </ul>
+                      )}
                     </li>
                   ))}
                 </ol>

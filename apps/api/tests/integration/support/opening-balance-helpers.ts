@@ -55,5 +55,33 @@ export function openingBalanceHelpers(context: () => { api: ApiHarness; officer:
     return res.json();
   };
 
-  return { createDraft, draft, line, complete, openingBalanceOf, replaceDraft, removeDraft, confirm, confirmed, listOf };
+  // F010-T7 (#238): a correction (แก้ไขรายการที่บันทึกผิด) of the Opening Balance `id` with `payload`.
+  const correct = (id: string, payload: Record<string, unknown>, token: string = crypto.randomUUID(), actor: Actor = context().officer) =>
+    context().api.post(actor, `/opening-balances/${id}/correct`, payload, { 'x-retry-token': token });
+
+  // The correction that sends the Opening Balance `openingBalance` as its page read it, every line not voided kept, with
+  // the reason `reason`: a test changes what it fixes.
+  const correctionAsRead = (openingBalance: any, reason = 'บันทึกผิด') => ({
+    expected_version: openingBalance.version,
+    as_of_date: openingBalance.as_of_date,
+    source: openingBalance.source,
+    note: openingBalance.note,
+    lines: openingBalance.lines
+      .filter((kept: { is_voided: boolean }) => !kept.is_voided)
+      .map((kept: any) => ({
+        line_id: kept.id,
+        stock_material_id: kept.stock_material.id,
+        unit_id: kept.unit.unit_id,
+        quantity: kept.quantity,
+        note: kept.note,
+      })),
+    voided_line_ids: [] as string[],
+    reason,
+  });
+
+  // F010-T7 (#238): the void of the whole Opening Balance `id` (ยกเลิกรายการ) at `version`, with the reason `reason`.
+  const voidOpeningBalance = (id: string, version: number, reason = 'บันทึกผิดทั้งใบ', token: string = crypto.randomUUID(), actor: Actor = context().officer) =>
+    context().api.post(actor, `/opening-balances/${id}/void`, { expected_version: version, reason }, { 'x-retry-token': token });
+
+  return { createDraft, draft, line, complete, openingBalanceOf, replaceDraft, removeDraft, confirm, confirmed, listOf, correct, correctionAsRead, voidOpeningBalance };
 }

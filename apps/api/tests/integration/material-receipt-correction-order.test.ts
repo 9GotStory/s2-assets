@@ -124,7 +124,7 @@ describe('Receipt Correction write order (Seam A - F010-T6)', () => {
       );
       expect(replaced.statusCode).toBe(200);
       expect(res.statusCode).toBe(409);
-      expect(res.json()).toMatchObject({ code: 'NOT_RECEIVED', message: 'The Material Receipt is a Draft: only a Received one can be corrected', current_values: { version: 2, state: 'DRAFT' } });
+      expect(res.json()).toMatchObject({ code: 'NOT_RECEIVED', message: 'The Material Receipt is a Draft: only a Received one can be corrected or voided', current_values: { version: 2, state: 'DRAFT' } });
     });
 
     it('finds no Material Receipt only after a remove', async () => {

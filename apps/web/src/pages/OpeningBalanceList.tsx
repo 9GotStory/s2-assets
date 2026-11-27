@@ -20,6 +20,8 @@ const STATE_FILTERS = [
   { value: 'all', label: 'ทั้งหมด' },
   { value: 'draft', label: OPENING_BALANCE_STATE_LABELS.DRAFT },
   { value: 'confirmed', label: OPENING_BALANCE_STATE_LABELS.CONFIRMED },
+  // F010-T7 (#238)
+  { value: 'voided', label: OPENING_BALANCE_STATE_LABELS.VOIDED },
 ];
 
 const LOAD_ERRORS: Record<number, string> = {

@@ -604,7 +604,7 @@ describe('Material Receipt (Seam A - F010-T3)', () => {
     });
 
     it('refuses a state it does not know', async () => {
-      const refused = await api.get(readonly, '/material-receipts?state=voided');
+      const refused = await api.get(readonly, '/material-receipts?state=cancelled');
       expect(refused.statusCode).toBe(400);
       expect(refused.json()).toMatchObject({ code: 'VALIDATION_FAILED', message: expect.stringContaining('state') });
     });

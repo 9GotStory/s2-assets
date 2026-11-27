@@ -9,7 +9,10 @@ import type { OpeningBalanceReadService } from '../services/opening-balance-read
 import {
   MAX_OPENING_BALANCE_LINES,
   OpeningBalanceNotConfirmableError,
+  OpeningBalanceNotConfirmedError,
+  OpeningBalanceNotCorrectableError,
   OpeningBalanceNotDraftError,
+  OpeningBalanceVoidedError,
   type OpeningBalanceService,
 } from '../services/opening-balance.service.ts';
 import { NotFoundError, RetryTokenConflictError, StaleBeforeConflictError } from '../services/service-errors.ts';
@@ -46,9 +49,42 @@ const CreateDraftSchema = z.object(draftFields).strict();
 const ReplaceDraftSchema = z.object({ ...draftFields, expected_version: z.number().int().positive() }).strict();
 const ExpectedVersionSchema = z.object({ expected_version: z.number().int().positive(), retry_token: z.string().optional() }).strict();
 
-// #233 start decision 4: ร่าง, ยืนยันแล้ว or ทั้งหมด, and a search over the number, the source (free text, so tab and
+// F010-T7 (#238; #231 P5): a correction sends the whole Opening Balance as it should be: its header, each recorded line by
+// its id and each new line without one, the lines it voids, a reason and the version it read, as a Receipt Correction
+// does (T6). The service checks each field and names it when refused.
+const CorrectSchema = z
+  .object({
+    expected_version: z.number().int().positive(),
+    as_of_date: z.string(),
+    source: z.string().nullable().optional(),
+    note: z.string().nullable().optional(),
+    lines: z
+      .array(
+        z
+          .object({
+            line_id: z.string().nullable().optional(),
+            stock_material_id: z.string(),
+            unit_id: z.string(),
+            quantity: z.string(),
+            note: z.string().nullable().optional(),
+            recalculate: z.boolean().optional(),
+          })
+          .strict()
+      )
+      // One over the cap reaches the service, which names it.
+      .max(MAX_OPENING_BALANCE_LINES + 1),
+    voided_line_ids: z.array(z.string()).max(MAX_OPENING_BALANCE_LINES).optional(),
+    reason: z.string(),
+    retry_token: z.string().optional(),
+  })
+  .strict();
+
+// F010-T7 (#238): the void of a whole Opening Balance sends a reason and the version it read.
+const VoidSchema = z.object({ expected_version: z.number().int().positive(), reason: z.string(), retry_token: z.string().optional() }).strict();
+
+// #233 start decision 4: ร่าง, ยืนยันแล้ว, ยกเลิกแล้ว (F010-T7) or ทั้งหมด, and a search over the number, the source (free text, so tab and
 // line breaks are kept inside it, CODING_STANDARDS) and the lines' Stock Material names.
-const STATE_FILTERS = { draft: 'DRAFT', confirmed: 'CONFIRMED' } as const;
+const STATE_FILTERS = { draft: 'DRAFT', confirmed: 'CONFIRMED', voided: 'VOIDED' } as const;
 const OpeningBalanceListQuerySchema = z
   .object({
     search: z
@@ -58,17 +94,17 @@ const OpeningBalanceListQuerySchema = z
       .refine((text) => text.length > 0, 'must not be blank')
       .refine((text) => text.length <= 500, 'must be at most 500 characters')
       .optional(),
-    state: z.enum(['all', 'draft', 'confirmed']).optional(),
+    state: z.enum(['all', 'draft', 'confirmed', 'voided']).optional(),
     ...pageQueryFields,
   })
   .strict();
 
 // The answer to a refused write, or null for an error that is not a refusal.
 const refusalOf = (err: unknown) => {
-  if (err instanceof OpeningBalanceNotConfirmableError) {
+  if (err instanceof OpeningBalanceNotConfirmableError || err instanceof OpeningBalanceNotCorrectableError) {
     return { ...errorBody(err.statusCode, err.code, err.message), problems: err.problems };
   }
-  if (err instanceof StaleBeforeConflictError || err instanceof OpeningBalanceNotDraftError) {
+  if (err instanceof StaleBeforeConflictError || err instanceof OpeningBalanceNotDraftError || err instanceof OpeningBalanceNotConfirmedError || err instanceof OpeningBalanceVoidedError) {
     return { ...errorBody(err.statusCode, err.code, err.message), current_values: err.current_values, expected_values: err.expected_values };
   }
   if (err instanceof RetryTokenConflictError || err instanceof NotFoundError || err instanceof ValidationError) {
@@ -203,6 +239,46 @@ export const openingBalanceRoutes: FastifyPluginAsync<OpeningBalanceRoutesOption
     }
     const { retry_token: _retryToken, ...input } = write.data;
     const answer = await answered(200, () => openingBalanceService.confirm(request.user!.id, id.trim().toLowerCase(), input, { retryToken: write.retryToken }));
+    return reply.status(answer.statusCode).send(answer.body);
+  });
+
+  /**
+   * POST /opening-balances/:id/correct
+   * F010-T7 (#238): a correction ("แก้ไขรายการที่บันทึกผิด") of a confirmed Opening Balance, with a reason, at the version
+   * the request read: each fix that changes stock adds a Reversal and, where something did happen, a new Stock Movement.
+   * Protected: requires 'material:manage' capability (Supply Officer)
+   */
+  fastify.post('/opening-balances/:id/correct', { preHandler: [requireCapability('material:manage')] }, async (request, reply) => {
+    const { id } = request.params as { id: string };
+    if (!isValidUuid(id)) {
+      return reply.status(400).send(INVALID_ID);
+    }
+    const write = parseWrite(CorrectSchema, request);
+    if ('refusal' in write) {
+      return reply.status(400).send(write.refusal);
+    }
+    const { retry_token: _retryToken, ...input } = write.data;
+    const answer = await answered(200, () => openingBalanceService.correct(request.user!.id, id.trim().toLowerCase(), input, { retryToken: write.retryToken }));
+    return reply.status(answer.statusCode).send(answer.body);
+  });
+
+  /**
+   * POST /opening-balances/:id/void
+   * F010-T7 (#238): voids the whole confirmed Opening Balance ("ยกเลิกรายการ"), with a reason, at the version the request
+   * read: every line's Stock Movement in effect is reversed, and it stays shown as ยกเลิกแล้ว.
+   * Protected: requires 'material:manage' capability (Supply Officer)
+   */
+  fastify.post('/opening-balances/:id/void', { preHandler: [requireCapability('material:manage')] }, async (request, reply) => {
+    const { id } = request.params as { id: string };
+    if (!isValidUuid(id)) {
+      return reply.status(400).send(INVALID_ID);
+    }
+    const write = parseWrite(VoidSchema, request);
+    if ('refusal' in write) {
+      return reply.status(400).send(write.refusal);
+    }
+    const { retry_token: _retryToken, ...input } = write.data;
+    const answer = await answered(200, () => openingBalanceService.void(request.user!.id, id.trim().toLowerCase(), input, { retryToken: write.retryToken }));
     return reply.status(answer.statusCode).send(answer.body);
   });
 };
